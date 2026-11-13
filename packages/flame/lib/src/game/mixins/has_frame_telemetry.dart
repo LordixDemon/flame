@@ -1,12 +1,13 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flame/camera.dart';
 import 'package:flame/game.dart';
 
 /// Zero-allocation frame-time ring buffer & FPS tracker mixin for [FlameGame],
 /// designed for `60Hz` and `120Hz` ProMotion telemetry overlays without
 /// per-frame heap allocations.
-mixin HasFrameTelemetry on FlameGame {
+mixin HasFrameTelemetry<W extends World> on FlameGame<W> {
   static const int _ringCapacity = 60;
 
   final Float32List _ringMs = Float32List(_ringCapacity);
