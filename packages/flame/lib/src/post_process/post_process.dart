@@ -78,6 +78,19 @@ abstract class PostProcess({double? pixelRatio}) {
   /// An example of usage is to update the time uniform of a shader.
   void update(double dt) {}
 
+  /// Called when the owning [PostProcessComponent] is removed from the tree.
+  ///
+  /// Override to release transient per-mount resources (such as held frame
+  /// textures) while keeping the post process reusable if mounted again.
+  void onRemove() {}
+
+  /// Permanently releases native GPU resources (such as [FragmentShader]s or
+  /// [ui.Image]s) owned by this post process.
+  @mustCallSuper
+  void dispose() {
+    onRemove();
+  }
+
   void Function(Canvas)? _renderTree;
   void Function(PostProcess?)? _updateContext;
   Vector2? _size;
@@ -195,6 +208,21 @@ class PostProcessGroup({
     for (final postProcess in postProcesses) {
       postProcess.update(dt);
     }
+  }
+
+  @override
+  void onRemove() {
+    for (final postProcess in postProcesses) {
+      postProcess.onRemove();
+    }
+  }
+
+  @override
+  void dispose() {
+    for (final postProcess in postProcesses) {
+      postProcess.dispose();
+    }
+    super.dispose();
   }
 
   @override

@@ -13,6 +13,7 @@ export 'src/game/flame_game.dart';
 export 'src/game/game.dart';
 export 'src/game/game_widget/game_widget.dart';
 export 'src/game/mixins/defer_hit_test_to_components.dart';
+export 'src/game/mixins/has_frame_telemetry.dart';
 export 'src/game/mixins/has_performance_tracker.dart';
 export 'src/game/mixins/single_game_instance.dart';
 export 'src/game/notifying_vector2.dart';

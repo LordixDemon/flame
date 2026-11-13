@@ -191,13 +191,39 @@ class FlameGame<W extends World>({
     }
   }
 
+  /// Optional upper bound (in seconds) above which incoming frame deltas
+  /// (for example after OS App Nap or tab suspension) are clamped to
+  /// [clampedDeltaTime]. When null, frame deltas are passed through unchanged.
+  double? maxDeltaTime;
+
+  /// Replacement delta (in seconds) applied whenever `dt > maxDeltaTime`.
+  double clampedDeltaTime = 0.05;
+
+  int _clampedDeltaSpikes = 0;
+  double _lastEffectiveDt = 0.0;
+
+  /// Number of oversized frame deltas clamped by [maxDeltaTime].
+  int get clampedDeltaSpikes => _clampedDeltaSpikes;
+
+  /// Most recent effective delta time (in seconds) propagated to children.
+  double get lastEffectiveDt => _lastEffectiveDt;
+
   @override
   void updateSubtree(double dt) {
+    final limit = maxDeltaTime;
+    final double effectiveDt;
+    if (limit != null && dt > limit) {
+      effectiveDt = clampedDeltaTime;
+      _clampedDeltaSpikes++;
+    } else {
+      effectiveDt = dt;
+    }
+    _lastEffectiveDt = effectiveDt;
     if (parent != null) {
       processLifecycleEvents();
-      update(dt);
+      update(effectiveDt);
     }
-    updateChildrenFlat(dt);
+    updateChildrenFlat(effectiveDt);
   }
 
   /// This passes the new size along to every component in the tree via their

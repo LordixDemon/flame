@@ -64,6 +64,13 @@ class PostProcessComponent<T extends PostProcess>({
 
   @override
   @mustCallSuper
+  void onRemove() {
+    postProcess.onRemove();
+    super.onRemove();
+  }
+
+  @override
+  @mustCallSuper
   void onChildrenChanged(_, _) {
     _recalculateBoundingSize();
   }

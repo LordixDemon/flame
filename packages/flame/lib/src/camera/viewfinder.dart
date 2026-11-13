@@ -44,6 +44,9 @@ class Viewfinder({
   @override
   set position(Vector2 value) => _position.setFrom(value);
 
+  /// Updates [position] coordinates in place without allocating a [Vector2].
+  void setPositionValues(double x, double y) => _position.setValues(x, y);
+
   void _onPositionChanged() {
     transform.offset.setValues(-_position.x, -_position.y);
     visibleRect = null;
@@ -61,7 +64,7 @@ class Viewfinder({
   double get zoom => transform.scale.x;
   set zoom(double value) {
     assert(value > 0, 'zoom level must be positive: $value');
-    transform.scale = Vector2.all(value);
+    transform.scale.setAll(value);
     visibleRect = null;
   }
 
