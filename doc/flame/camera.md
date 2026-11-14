@@ -548,3 +548,50 @@ class WorldCalloutChip extends PositionComponent
   }
 }
 ```
+
+
+### HiDPI `worldRenderScale`, Sub-Pixel `PixelSnapMode`, Tiled 8K Export, `SceneLayerComponent`, and `WorldSpatialIndex`
+
+- **Decoupled World Render Scale & Upscaling (`worldRenderScale` & `upscaleSharpness`)**: Set
+  `camera.worldRenderScale` (`0.25 .. 2.5`) to render the `World` at reduced internal resolution
+  (`< 1.0` with `upscaleFilterQuality` / `upscaleSharpness` / `upscaleShader`) or SSAA supersampling
+  (`> 1.0`) while keeping `camera.viewport` HUD children crisp at `1:1` native display resolution,
+  even without a `PostProcess`.
+- **Non-Destructive Sub-Pixel Camera Snapping (`PixelSnapMode`)**: Set `camera.pixelSnapMode` to
+  `PixelSnapMode.physicalPixel` (HiDPI retina) or `PixelSnapMode.logicalPixel` to quantize rendered
+  viewfinder translation onto exact pixel boundaries without mutating `viewfinder.position`.
+- **Tiled Ultra-High-Resolution Scene Export (`renderHighResImage` / `renderHighResImageSync`)**:
+  Render arbitrary 4K/8K scene captures safely within GPU texture limits by tiling the frustum via
+  `tileSize` and optional `supersample` factor (`lastHighResTileCount`).
+- **Camera Layer Bitmasks & `SceneLayerComponent` (`layerMask`)**: Group world content into named
+  `SceneLayerComponent`s (`layerBit`, `parallaxFactor`, `minQualityTier`, `cacheAsPicture` +
+  `markLayerDirty()`) and filter visibility per camera via `camera.layerMask` (e.g., hiding weather
+  or world tooltips in minimap/reflection cameras).
+- **Spatial Hash World Index (`World(spatialIndexEnabled: true)` / `WorldSpatialIndex`)**: Indexes
+  top-level `PositionComponent` bounds in a uniform `SpatialGrid2D`, lazily resyncing only when
+  transforms or structure change. Reduces `World.renderFromCamera` and point hit-testing from
+  `O(N)` to `O(visible)` while preserving exact `(priority, sortKey, mountOrder)` ordering and
+  exposing zero-allocation `world.querySpatialRect`, `world.querySpatialRadius`, and
+  `world.querySpatialPoint` queries.
+
+
+### HiDPI Scaling, Scene Layers, Spatial Index, LOD & Offscreen Tick Throttling
+
+- **Dynamic `worldRenderScale` & `pixelSnapMode`**: Set `camera.worldRenderScale` (`0.5..2.0`) for
+  GPU fill-rate relief or SSAA supersampling, `camera.pixelSnapMode = PixelSnapMode.physicalPixel`
+  to eliminate subpixel tile seams on Retina screens, and `camera.renderHighResImageSync(...)` for
+  4K/8K offscreen captures. See
+  [High-Resolution, Graphics Quality & FPS](rendering/graphics_and_fps.md).
+- **`SceneLayerComponent` & `CameraComponent.layerMask`**: Partition `World` into semantic parallax
+  and quality layers (`background`, `board`, `props`, `actors`, `vfx`, `weather`, `worldUi`) with
+  32-bit `camera.layerMask` filtering (main camera vs minimap vs clean screenshot) and optional
+  `cacheAsPicture = true` (`markLayerDirty()`).
+- **`WorldSpatialIndex` (`world.spatialIndex`)**: Enable `world.spatialIndexEnabled = true` to
+  replace `O(N)` per-component frustum scanning with `O(visible)` grid bucket queries synced lazily
+  via `Transform2D.version` and `O(1)` stamp culling on `CullWhenOffscreen`.
+- **Screen-Space LOD (`HasSceneLod`)**: Mix `HasSceneLod` into `PositionComponent`s to automatically
+  transition `currentLod` across `LodLevel.high` / `medium` / `low` / `culled` with hysteresis and
+  `GraphicsProfile.lodBias` shifts (`LodLevel.culled` skips `renderTree` automatically).
+- **Off-Screen Update Throttling (`OffscreenTickPolicy`)**: Configure `offscreenTickPolicy` on any
+  `CullWhenOffscreen` component (`always`, `everyNFrames` with accumulated `dt`, or `paused`) and
+  monitor `skippedOffscreenTicks`.

@@ -754,6 +754,74 @@ class Mesh3D({
     return out;
   }
 
+  /// Builds a smooth analytic UV sphere centered at `(0, 0, centerZ)` with
+  /// [segments] longitudinal slices and [rings] latitudinal bands.
+  factory Mesh3D.uvSphere({
+    double radius = 0.5,
+    int segments = 16,
+    int rings = 12,
+    double centerZ = 0.0,
+    double bottomAo = 0.76,
+  }) {
+    final segs = math.max(4, segments);
+    final rgs = math.max(3, rings);
+    final cols = segs + 1;
+    final rows = rgs + 1;
+    final vCount = cols * rows;
+    final tCount = segs * rgs * 2;
+
+    final pos = Float32List(vCount * 3);
+    final nrm = Float32List(vCount * 3);
+    final ao = Float32List(vCount);
+    final idx = Uint16List(tCount * 3);
+
+    var v = 0;
+    for (var r = 0; r <= rgs; r++) {
+      final phi = math.pi * (r / rgs);
+      final sinPhi = math.sin(phi);
+      final cosPhi = math.cos(phi);
+      final aoVal = bottomAo + (1.0 - bottomAo) * (cosPhi * 0.5 + 0.5);
+      for (var s = 0; s <= segs; s++) {
+        final theta = 2.0 * math.pi * (s / segs);
+        final nx = sinPhi * math.cos(theta);
+        final ny = sinPhi * math.sin(theta);
+        final nz = cosPhi;
+        final pIdx = v * 3;
+        pos[pIdx] = nx * radius;
+        pos[pIdx + 1] = ny * radius;
+        pos[pIdx + 2] = centerZ + nz * radius;
+        nrm[pIdx] = nx;
+        nrm[pIdx + 1] = ny;
+        nrm[pIdx + 2] = nz;
+        ao[v] = aoVal;
+        v++;
+      }
+    }
+
+    var k = 0;
+    for (var r = 0; r < rgs; r++) {
+      for (var s = 0; s < segs; s++) {
+        final i00 = r * cols + s;
+        final i10 = i00 + 1;
+        final i01 = (r + 1) * cols + s;
+        final i11 = i01 + 1;
+        idx[k++] = i00;
+        idx[k++] = i01;
+        idx[k++] = i10;
+        idx[k++] = i10;
+        idx[k++] = i01;
+        idx[k++] = i11;
+      }
+    }
+
+    return Mesh3D(
+      positions: pos,
+      normals: nrm,
+      indices: idx,
+      ambientOcclusion: ao,
+    );
+  }
+
   /// Local AABB minimum X.
   late final double minX;
 

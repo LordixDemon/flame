@@ -279,3 +279,10 @@ for (final tileId in scratchIds) {
 - **Plain-Layer Culling Bounds Cache**: `CullWhenOffscreen` and `CullBoundsChildren` cache world
   axis-aligned bounds across non-transforming plain `Component` grouping layers, avoiding redundant
   ancestor transform walks on calm camera frames.
+- **Scene-Scale Spatial Indexing, Dirty Rendering, DRS & Frame Budgets**: Enable
+  `World(spatialIndexEnabled: true)` (`WorldSpatialIndex`) for `O(visible)` camera rendering and
+  point hit-testing, `FlameGame.idleRenderMode = IdleRenderMode.onDemandWhenIdle` to skip clean GPU
+  paints (`skippedCleanPaints`), `FlameGame.qualityGovernor` (`DynamicQualityGovernor`) for
+  automatic dynamic resolution & particle scaling, `FlameGame.resourceBudget` (`SceneResourceBudget`)
+  for bounded RGBA8 snapshot VRAM eviction, and `FlameGame.scheduleFrameTask(...)`
+  (`FrameBudgetScheduler`) to amortize preparation work across frames without frame spikes.

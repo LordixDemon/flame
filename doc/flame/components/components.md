@@ -651,6 +651,23 @@ class HudWorld extends World with HasListenableSubscriptions {
   supports hit-stop / slow-motion pulses (`applyTimePulse(scale: 0.15, realDuration: 0.06, rampBackDuration: 0.08)`).
 - **`HasAutoBatchedChildren`**: Automatically coalesces static/semi-static `SpriteComponent`
   children sharing the same atlas `Image` into a single `Canvas.drawRawAtlas` call.
+- **HiDPI & Zoom-Bucketed `SnapshotResolutionPolicy`**: Set `snapshotResolutionPolicy` on `Snapshot`
+  components to `SnapshotResolutionPolicy.autoHiDpi` or `SnapshotResolutionPolicy.autoHiDpiAndZoom`
+  to bake raster snapshots at physical pixel density across quantized zoom buckets
+  (`[0.5, 1.0, 1.5, 2.0, 3.0, 4.0]`) with hysteresis (`zoomBucketHysteresis`) and a GPU dimension
+  ceiling (`maxSnapshotTextureDimension`).
+- **Component Quality Tiers & `HasGraphicsAdaptation`**: Set `minQualityTier` on any `Component` or
+  `PositionComponent` to automatically skip both `updateTree` and `renderTree` when
+  `FlameGame.graphics.tier` is lower, or mix in `HasGraphicsAdaptation` (`onGraphicsProfileChanged`)
+  to react to live graphics tier and DRS changes. `ParticleEmitterComponent`
+  (`respectGraphicsParticleDensity`) and `Shadow3DDecorator` (`respectGraphicsShadows`) adapt
+  automatically.
+- **Continuous Screen-Space LOD (`HasSceneLod`) & Off-Screen Tick Decimation (`OffscreenTickPolicy`)**:
+  Mix `HasSceneLod` into `PositionComponent`s to switch across `LodLevel.high`, `medium`, `low`,
+  `impostor`, and `culled` based on projected screen size with hysteresis and `lodBias`, and set
+  `offscreenTickPolicy` on `CullWhenOffscreen` components (`OffscreenTickPolicy.everyNFrames(4)` or
+  `OffscreenTickPolicy.sleepWhenOffscreen`) to decimate off-screen CPU updates while passing exact
+  accumulated `dt`.
 
 
 ## Effects

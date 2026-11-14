@@ -41,7 +41,8 @@ class const RenderGameWidget({
       ..game = game
       ..buildContext = context
       ..isRepaintBoundary = addRepaintBoundary
-      ..behavior = behavior;
+      ..behavior = behavior
+      ..syncDisplayMetricsFromView();
   }
 }
 
@@ -169,10 +170,12 @@ class GameRenderBox(
 
   void _attachGame(PipelineOwner owner) {
     game.attach(owner, this);
+    syncDisplayMetricsFromView();
 
     final gameLoop = this.gameLoop = GameLoop(
       gameLoopCallback,
       minFrameIntervalGetter: () => game.minFrameIntervalSeconds,
+      vsyncDivisorGetter: () => game.effectiveVsyncDivisor,
     );
 
     if (!game.isPaused) {
@@ -218,7 +221,9 @@ class GameRenderBox(
     } else {
       game.update(dt);
     }
-    markNeedsPaint();
+    if (game.shouldRenderThisTick(dt)) {
+      markNeedsPaint();
+    }
   }
 
   @override
@@ -270,6 +275,7 @@ class GameRenderBox(
   @override
   void paint(PaintingContext context, Offset offset) {
     _paintedWidgets.clear();
+    game.onFrameRendered();
     final collectTelemetry = game.collectRenderTelemetry;
     if (firstChild == null) {
       _baseTransform = null;
@@ -454,12 +460,65 @@ class GameRenderBox(
     return (context, offset) => context.paintChild(child, offset);
   }
 
+  bool _timingsCallbackRegistered = false;
+
+  void _onPlatformFrameTimings(List<FrameTiming> timings) {
+    final g = _game;
+    final wantsTimings =
+        g.collectRenderTelemetry ||
+        (g is FlameGame && g.qualityGovernor.enabled);
+    if (!wantsTimings || timings.isEmpty) {
+      return;
+    }
+    final targetHz = g.effectiveTargetFps ?? g.displayRefreshRate;
+    final budgetMs = targetHz > 0.0 ? 1000.0 / targetHz : 16.67;
+    for (var i = 0; i < timings.length; i++) {
+      final t = timings[i];
+      g.renderTelemetry.recordPlatformFrameTiming(
+        buildMicros: t.buildDuration.inMicroseconds,
+        rasterMicros: t.rasterDuration.inMicroseconds,
+        totalSpanMicros: t.totalSpan.inMicroseconds,
+        targetBudgetMs: budgetMs,
+      );
+    }
+  }
+
+  /// Synchronizes `FlutterView.devicePixelRatio` and `display.refreshRate` into
+  /// [game].
+  @internal
+  void syncDisplayMetricsFromView() {
+    ui.FlutterView? view;
+    if (buildContext case final Element el when el.mounted) {
+      view = View.maybeOf(el);
+    }
+    view ??= ui.PlatformDispatcher.instance.views.firstOrNull;
+    if (view != null) {
+      game.updatePlatformDisplayMetrics(
+        devicePixelRatio: view.devicePixelRatio,
+        refreshRate: view.display.refreshRate,
+      );
+    }
+  }
+
   void _bindLifecycleListener() {
     WidgetsBinding.instance.addObserver(this);
+    if (!_timingsCallbackRegistered) {
+      _timingsCallbackRegistered = true;
+      SchedulerBinding.instance.addTimingsCallback(_onPlatformFrameTimings);
+    }
   }
 
   void _unbindLifecycleListener() {
     WidgetsBinding.instance.removeObserver(this);
+    if (_timingsCallbackRegistered) {
+      _timingsCallbackRegistered = false;
+      SchedulerBinding.instance.removeTimingsCallback(_onPlatformFrameTimings);
+    }
+  }
+
+  @override
+  void didChangeMetrics() {
+    syncDisplayMetricsFromView();
   }
 
   @override

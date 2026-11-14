@@ -26,7 +26,22 @@ import 'package:flame/src/experimental/geometry/shapes/rectangle.dart';
 import 'package:flame/src/experimental/geometry/shapes/rounded_rectangle.dart';
 import 'package:flame/src/experimental/geometry/shapes/shape.dart';
 import 'package:flame/src/game/flame_game.dart';
+import 'package:flame/src/game/telemetry_canvas.dart';
 import 'package:meta/meta.dart';
+
+/// Sub-pixel camera translation stabilization modes for [CameraComponent].
+enum PixelSnapMode() {
+  /// Leaves floating-point sub-pixel camera translations untouched (default).
+  none,
+
+  /// Snaps rendered camera translation to whole logical viewport pixels
+  /// (`1.0`).
+  logicalPixel,
+
+  /// Snaps rendered camera translation to physical device pixels
+  /// (`1.0 / effectiveDevicePixelRatio`) for shimmer-free Retina rendering.
+  physicalPixel,
+}
 
 /// [CameraComponent] is a component through which a [World] is observed.
 ///
@@ -187,6 +202,7 @@ class CameraComponent({
   void renderTree(Canvas canvas) {
     _lastFrameCulledCount = 0;
     _lastFrameVisibleCount = 0;
+    syncAutoDevicePixelRatio();
     canvas.save();
     canvas.translate(
       viewport.position.x - viewport.anchor.x * viewport.size.x,
@@ -203,20 +219,27 @@ class CameraComponent({
       try {
         currentCameras.add(this);
         final postProcessors = children.query<PostProcessComponent>();
+        final game = findGame();
+        final allowPostProcess =
+            game is! FlameGame || game.graphics.effectivePostProcessEnabled;
         if (postProcessors.isNotEmpty) {
           assert(
             postProcessors.length == 1,
             'Only one post process component is allowed per camera.',
           );
           final postProcessor = postProcessors.first.postProcess;
-          postProcessor.render(
-            canvas,
-            viewport.virtualSize,
-            _renderWorld,
-            _updatePostProcessContext,
-          );
+          if (allowPostProcess || postProcessor is PostProcessPipeline) {
+            postProcessor.render(
+              canvas,
+              viewport.virtualSize,
+              _renderWorld,
+              _updatePostProcessContext,
+            );
+          } else {
+            _renderScaledOrDirectWorld(canvas);
+          }
         } else {
-          _renderWorld(canvas);
+          _renderScaledOrDirectWorld(canvas);
         }
       } finally {
         currentCameras.removeLast();
@@ -237,6 +260,187 @@ class CameraComponent({
       canvas.restore();
     }
     canvas.restore();
+  }
+
+  /// Bitmask of `SceneLayerComponent.layerBit` flags visible to this camera
+  /// (defaults to all 31 positive bits `0x7fffffff`).
+  int layerMask = 0x7fffffff;
+
+  /// Controls sub-pixel stabilization of the rendered viewfinder translation
+  /// without mutating logical `viewfinder.position`.
+  PixelSnapMode pixelSnapMode = PixelSnapMode.none;
+
+  /// Whether [effectiveWorldRenderScale] multiplies [worldRenderScale] by
+  /// `FlameGame.effectiveRenderScale`.
+  bool respectGraphicsRenderScale = true;
+
+  double _worldRenderScale = 1.0;
+
+  /// Texture filtering quality used when blitting an offscreen-scaled world
+  /// (`worldRenderScale != 1.0`).
+  ui.FilterQuality upscaleFilterQuality = ui.FilterQuality.medium;
+
+  /// Optional crisp contrast enhancement (`0.0 .. 1.0`) applied when upscaling
+  /// `effectiveWorldRenderScale < 1.0` to counteract bilinear softness.
+  double upscaleSharpness = 0.0;
+
+  /// Optional custom [ui.FragmentShader] used when blitting a scaled world
+  /// surface (`uSize` at floats `0, 1`, `uSharpness` at float `2`, image at
+  /// sampler `0`).
+  ui.FragmentShader? upscaleShader;
+
+  /// Safety upper bound (in physical pixels) on scaled world surfaces.
+  int maxRenderTextureDimension = 8192;
+
+  final ui.Paint _upscalePaint = ui.Paint();
+  int _lastWorldSurfaceWidth = 0;
+  int _lastWorldSurfaceHeight = 0;
+  int _offscreenWorldRenderCount = 0;
+  ui.Offset _lastPixelSnapDelta = ui.Offset.zero;
+  int _lastHighResTileCount = 0;
+
+  /// Internal world render resolution scale (`0.25 .. 2.5`) applied
+  /// independently of `camera.viewport` HUD elements (`< 1.0` dynamic upscale,
+  /// `> 1.0` SSAA supersampling).
+  double get worldRenderScale => _worldRenderScale;
+  set worldRenderScale(double value) {
+    final clamped = value.clamp(0.25, 2.5);
+    if ((_worldRenderScale - clamped).abs() > 1e-5) {
+      _worldRenderScale = clamped;
+      syncAutoDevicePixelRatio();
+      findGame()?.markSceneDirty();
+    }
+  }
+
+  /// Effective world resolution scale combining [worldRenderScale] and
+  /// `FlameGame.effectiveRenderScale` (when [respectGraphicsRenderScale] is
+  /// `true`).
+  double get effectiveWorldRenderScale {
+    final game = findGame();
+    final graphicsScale = (respectGraphicsRenderScale && game is FlameGame)
+        ? game.effectiveRenderScale
+        : 1.0;
+    return (_worldRenderScale * graphicsScale).clamp(0.25, 2.5);
+  }
+
+  /// Effective hardware/capped `devicePixelRatio` of the owning `Game`.
+  double get effectiveDevicePixelRatio => findGame()?.devicePixelRatio ?? 1.0;
+
+  /// Width in physical pixels of the most recent scaled world offscreen buffer
+  /// (`0` when rendered directly at `1:1`).
+  @visibleForTesting
+  int get lastWorldSurfaceWidth => _lastWorldSurfaceWidth;
+
+  /// Height in physical pixels of the most recent scaled world offscreen buffer
+  /// (`0` when rendered directly at `1:1`).
+  @visibleForTesting
+  int get lastWorldSurfaceHeight => _lastWorldSurfaceHeight;
+
+  /// Total number of scaled offscreen world passes executed by this camera.
+  @visibleForTesting
+  int get offscreenWorldRenderCount => _offscreenWorldRenderCount;
+
+  /// Most recent sub-pixel stabilization offset (in viewport logical pixels)
+  /// applied by [pixelSnapMode].
+  @visibleForTesting
+  ui.Offset get lastPixelSnapDelta => _lastPixelSnapDelta;
+
+  /// Number of tiles rendered during the most recent [renderHighResImageSync]
+  /// or [renderHighResImage] call.
+  @visibleForTesting
+  int get lastHighResTileCount => _lastHighResTileCount;
+
+  /// Synchronizes auto-DPR [PostProcess] attachments with live
+  /// [effectiveDevicePixelRatio] and [effectiveWorldRenderScale].
+  @internal
+  void syncAutoDevicePixelRatio() {
+    if (!hasChildren) {
+      return;
+    }
+    final postProcessors = children.query<PostProcessComponent>();
+    if (postProcessors.isEmpty) {
+      return;
+    }
+    final targetRatio = (effectiveDevicePixelRatio * effectiveWorldRenderScale)
+        .clamp(0.25, 4.0);
+    for (final comp in postProcessors) {
+      comp.postProcess.syncDevicePixelRatio(targetRatio);
+    }
+  }
+
+  void _renderScaledOrDirectWorld(ui.Canvas canvas) {
+    final scale = effectiveWorldRenderScale;
+    final vSize = viewport.virtualSize;
+    if ((scale - 1.0).abs() <= 1e-3 || vSize.x <= 0.0 || vSize.y <= 0.0) {
+      _lastWorldSurfaceWidth = 0;
+      _lastWorldSurfaceHeight = 0;
+      _renderWorld(canvas);
+      return;
+    }
+
+    final dpr = effectiveDevicePixelRatio;
+    final maxDim = math.max(16, maxRenderTextureDimension);
+    final surfW = math.min(maxDim, math.max(1, (vSize.x * dpr * scale).ceil()));
+    final surfH = math.min(maxDim, math.max(1, (vSize.y * dpr * scale).ceil()));
+    _lastWorldSurfaceWidth = surfW;
+    _lastWorldSurfaceHeight = surfH;
+    _offscreenWorldRenderCount++;
+
+    final recorder = ui.PictureRecorder();
+    final innerCanvas = TelemetryCanvas.wrapOffscreenIfActive(
+      ui.Canvas(
+        recorder,
+        ui.Rect.fromLTWH(0, 0, surfW.toDouble(), surfH.toDouble()),
+      ),
+    )..scale(surfW / vSize.x, surfH / vSize.y);
+
+    _renderWorld(innerCanvas);
+    final picture = recorder.endRecording();
+    ui.Image? image;
+    try {
+      image = picture.toImageSync(surfW, surfH);
+      final dstRect = ui.Rect.fromLTWH(0.0, 0.0, vSize.x, vSize.y);
+      final customShader = upscaleShader;
+      if (customShader != null) {
+        customShader
+          ..setFloat(0, vSize.x)
+          ..setFloat(1, vSize.y)
+          ..setFloat(2, upscaleSharpness.clamp(0.0, 1.0))
+          ..setImageSampler(0, image);
+        _upscalePaint
+          ..shader = customShader
+          ..colorFilter = null;
+        canvas.drawRect(dstRect, _upscalePaint);
+        _upscalePaint.shader = null;
+      } else {
+        final srcRect = ui.Rect.fromLTWH(
+          0.0,
+          0.0,
+          surfW.toDouble(),
+          surfH.toDouble(),
+        );
+        final sharp = upscaleSharpness.clamp(0.0, 1.0);
+        if (sharp > 1e-3) {
+          ContrastAdaptiveSharpenHelper.drawSharpenedImageRect(
+            canvas,
+            image,
+            srcRect,
+            dstRect,
+            strength: sharp,
+            filterQuality: upscaleFilterQuality,
+          );
+        } else {
+          _upscalePaint
+            ..shader = null
+            ..colorFilter = null
+            ..filterQuality = upscaleFilterQuality;
+          canvas.drawImageRect(image, srcRect, dstRect, _upscalePaint);
+        }
+      }
+    } finally {
+      image?.dispose();
+      picture.dispose();
+    }
   }
 
   /// Optional ordered list of [RenderPass]es executed each time this camera
@@ -270,6 +474,17 @@ class CameraComponent({
     }
   }
 
+  /// Internal bulk telemetry hook invoked by `WorldSpatialIndex`.
+  @internal
+  void recordCullDecisionsBulk({required int visible, required int culled}) {
+    if (visible > 0) {
+      _lastFrameVisibleCount += visible;
+    }
+    if (culled > 0) {
+      _lastFrameCulledCount += culled;
+    }
+  }
+
   static final List<RenderPass?> _renderPassStack = [];
 
   /// Currently executing [RenderPass], or `null` during single-pass rendering.
@@ -290,18 +505,43 @@ class CameraComponent({
   /// render pass does not allocate a closure per camera per frame.
   void _renderWorld(Canvas canvas) {
     final hasShake = viewfinder.hasActiveShake;
-    if (hasShake) {
-      canvas.save();
-      final pivX = viewfinder.transform.position.x;
-      final pivY = viewfinder.transform.position.y;
-      canvas.translate(
-        pivX + viewfinder.shakeOffset.x,
-        pivY + viewfinder.shakeOffset.y,
-      );
-      if (viewfinder.shakeRoll != 0.0) {
-        canvas.rotate(viewfinder.shakeRoll);
+    var hasPixelSnap = false;
+    if (pixelSnapMode != PixelSnapMode.none && viewfinder.angle == 0.0) {
+      final step = pixelSnapMode == PixelSnapMode.physicalPixel
+          ? 1.0 / math.max(0.25, effectiveDevicePixelRatio)
+          : 1.0;
+      final z = viewfinder.zoom;
+      final tx =
+          viewfinder.transform.position.x + viewfinder.transform.offset.x * z;
+      final ty =
+          viewfinder.transform.position.y + viewfinder.transform.offset.y * z;
+      final snapX = (tx / step).roundToDouble() * step - tx;
+      final snapY = (ty / step).roundToDouble() * step - ty;
+      _lastPixelSnapDelta = ui.Offset(snapX, snapY);
+      if (snapX.abs() > 1e-6 || snapY.abs() > 1e-6) {
+        hasPixelSnap = true;
       }
-      canvas.translate(-pivX, -pivY);
+    } else {
+      _lastPixelSnapDelta = ui.Offset.zero;
+    }
+
+    if (hasShake || hasPixelSnap) {
+      canvas.save();
+      if (hasPixelSnap) {
+        canvas.translate(_lastPixelSnapDelta.dx, _lastPixelSnapDelta.dy);
+      }
+      if (hasShake) {
+        final pivX = viewfinder.transform.position.x;
+        final pivY = viewfinder.transform.position.y;
+        canvas.translate(
+          pivX + viewfinder.shakeOffset.x,
+          pivY + viewfinder.shakeOffset.y,
+        );
+        if (viewfinder.shakeRoll != 0.0) {
+          canvas.rotate(viewfinder.shakeRoll);
+        }
+        canvas.translate(-pivX, -pivY);
+      }
     }
     try {
       canvas.transform2D(viewfinder.transform);
@@ -336,7 +576,7 @@ class CameraComponent({
         viewfinder.renderTree(canvas);
       }
     } finally {
-      if (hasShake) {
+      if (hasShake || hasPixelSnap) {
         canvas.restore();
       }
     }
@@ -982,6 +1222,203 @@ class CameraComponent({
       return await recorded.picture.toImage(recorded.width, recorded.height);
     } finally {
       recorded.picture.dispose();
+    }
+  }
+
+  ({ui.Picture picture, List<ui.Image> tiles}) _recordTiledHighResComposite({
+    required int width,
+    required int height,
+    int tileSize = 2048,
+    double supersample = 1.0,
+    bool includeBackdrop = true,
+    bool includeViewport = false,
+    List<RenderPass>? passes,
+    ui.Color? backgroundColor,
+  }) {
+    assert(width > 0 && height > 0, 'Dimensions must be positive');
+    assert(tileSize >= 64, 'tileSize must be >= 64: $tileSize');
+    final ssaa = supersample.clamp(1.0, 4.0);
+    final vSize = viewport.virtualSize;
+    final fallbackSize = viewport.size;
+    final baseW = vSize.x > 0
+        ? vSize.x
+        : (fallbackSize.x > 0 ? fallbackSize.x : width.toDouble());
+    final baseH = vSize.y > 0
+        ? vSize.y
+        : (fallbackSize.y > 0 ? fallbackSize.y : height.toDouble());
+
+    final masterRecorder = ui.PictureRecorder();
+    final masterCanvas = ui.Canvas(
+      masterRecorder,
+      ui.Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+    );
+    final tilePaint = ui.Paint()..filterQuality = ui.FilterQuality.medium;
+    final tileImages = <ui.Image>[];
+
+    final prevPasses = renderPasses;
+    if (passes != null) {
+      renderPasses = passes;
+    }
+
+    try {
+      var tilesRendered = 0;
+      for (var outY = 0; outY < height; outY += tileSize) {
+        final tileOutH = math.min(tileSize, height - outY);
+        final logY = outY * (baseH / height);
+        final logH = tileOutH * (baseH / height);
+
+        for (var outX = 0; outX < width; outX += tileSize) {
+          final tileOutW = math.min(tileSize, width - outX);
+          final logX = outX * (baseW / width);
+          final logW = tileOutW * (baseW / width);
+
+          final tileRenW = math.max(1, (tileOutW * ssaa).round());
+          final tileRenH = math.max(1, (tileOutH * ssaa).round());
+
+          final tileRec = ui.PictureRecorder();
+          final tileCanvas = ui.Canvas(
+            tileRec,
+            ui.Rect.fromLTWH(0, 0, tileRenW.toDouble(), tileRenH.toDouble()),
+          );
+          final tileLogBounds = ui.Rect.fromLTWH(logX, logY, logW, logH);
+          tileCanvas
+            ..scale(tileRenW / logW, tileRenH / logH)
+            ..translate(-logX, -logY)
+            ..clipRect(tileLogBounds);
+
+          if (backgroundColor != null) {
+            tileCanvas.drawRect(
+              tileLogBounds,
+              ui.Paint()..color = backgroundColor,
+            );
+          }
+
+          if ((world?.isMounted ?? false) &&
+              currentCameras.length < maxCamerasDepth) {
+            if (includeBackdrop) {
+              backdrop.renderTree(tileCanvas);
+            }
+            currentCameras.add(this);
+            try {
+              tileCanvas.save();
+              _renderWorld(tileCanvas);
+              tileCanvas.restore();
+            } finally {
+              currentCameras.removeLast();
+            }
+            if (includeViewport) {
+              viewport.renderTree(tileCanvas);
+            }
+          }
+
+          final tilePic = tileRec.endRecording();
+          final ui.Image tileImg;
+          try {
+            tileImg = tilePic.toImageSync(tileRenW, tileRenH);
+          } finally {
+            tilePic.dispose();
+          }
+          tileImages.add(tileImg);
+          tilesRendered++;
+
+          masterCanvas.drawImageRect(
+            tileImg,
+            ui.Rect.fromLTWH(
+              0,
+              0,
+              tileRenW.toDouble(),
+              tileRenH.toDouble(),
+            ),
+            ui.Rect.fromLTWH(
+              outX.toDouble(),
+              outY.toDouble(),
+              tileOutW.toDouble(),
+              tileOutH.toDouble(),
+            ),
+            tilePaint,
+          );
+        }
+      }
+      _lastHighResTileCount = tilesRendered;
+    } catch (_) {
+      for (final img in tileImages) {
+        img.dispose();
+      }
+      rethrow;
+    } finally {
+      renderPasses = prevPasses;
+    }
+
+    return (picture: masterRecorder.endRecording(), tiles: tileImages);
+  }
+
+  /// Synchronously exports an ultra-high-resolution (`4K / 8K`) [ui.Image] in
+  /// [tileSize] × [tileSize] sub-frustum tiles with optional [supersample]
+  /// (`1.0 .. 4.0` SSAA), avoiding monolithic intermediate textures.
+  ///
+  /// Callers own the returned [ui.Image] and must call `dispose()` when done.
+  ui.Image renderHighResImageSync({
+    required int width,
+    required int height,
+    int tileSize = 2048,
+    double supersample = 1.0,
+    bool includeBackdrop = true,
+    bool includeViewport = false,
+    List<RenderPass>? passes,
+    ui.Color? backgroundColor,
+  }) {
+    final composite = _recordTiledHighResComposite(
+      width: width,
+      height: height,
+      tileSize: tileSize,
+      supersample: supersample,
+      includeBackdrop: includeBackdrop,
+      includeViewport: includeViewport,
+      passes: passes,
+      backgroundColor: backgroundColor,
+    );
+    try {
+      return composite.picture.toImageSync(width, height);
+    } finally {
+      composite.picture.dispose();
+      for (final tile in composite.tiles) {
+        tile.dispose();
+      }
+    }
+  }
+
+  /// Asynchronously exports an ultra-high-resolution (`4K / 8K`) [ui.Image] in
+  /// [tileSize] × [tileSize] sub-frustum tiles with optional [supersample]
+  /// (`1.0 .. 4.0` SSAA).
+  ///
+  /// Callers own the returned [ui.Image] and must call `dispose()` when done.
+  Future<ui.Image> renderHighResImage({
+    required int width,
+    required int height,
+    int tileSize = 2048,
+    double supersample = 1.0,
+    bool includeBackdrop = true,
+    bool includeViewport = false,
+    List<RenderPass>? passes,
+    ui.Color? backgroundColor,
+  }) async {
+    final composite = _recordTiledHighResComposite(
+      width: width,
+      height: height,
+      tileSize: tileSize,
+      supersample: supersample,
+      includeBackdrop: includeBackdrop,
+      includeViewport: includeViewport,
+      passes: passes,
+      backgroundColor: backgroundColor,
+    );
+    try {
+      return await composite.picture.toImage(width, height);
+    } finally {
+      composite.picture.dispose();
+      for (final tile in composite.tiles) {
+        tile.dispose();
+      }
     }
   }
 

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' as ui show PlatformDispatcher;
 
 import 'package:flame/cache.dart';
 import 'package:flame/components.dart';
@@ -8,9 +9,11 @@ import 'package:flame/game.dart';
 import 'package:flame/src/flame.dart';
 import 'package:flame/src/game/game_render_box.dart';
 import 'package:flame/src/game/game_widget/gesture_detector_builder.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
+// ignore: unnecessary_import
 import 'package:meta/meta.dart';
 
 /// This gives access to a low-level game API, to not build everything from a
@@ -197,6 +200,118 @@ abstract mixin class Game() {
     return _size!;
   }
 
+  double? _platformDevicePixelRatio;
+  double? _platformRefreshRate;
+  double? _overrideDevicePixelRatio;
+  double? _overrideRefreshRate;
+
+  /// Optional upper bound applied to [devicePixelRatio] (e.g. `2.0` on Retina
+  /// mobile devices to cap fillrate).
+  double? maxDevicePixelRatio;
+
+  final Vector2 _physicalCanvasSize = Vector2.zero();
+
+  static double _fallbackViewDpr() {
+    final views = ui.PlatformDispatcher.instance.views;
+    if (views.isNotEmpty) {
+      final dpr = views.first.devicePixelRatio;
+      if (dpr > 0.0) {
+        return dpr;
+      }
+    }
+    return 1.0;
+  }
+
+  static double _fallbackViewRefreshRate() {
+    final views = ui.PlatformDispatcher.instance.views;
+    if (views.isNotEmpty) {
+      final hz = views.first.display.refreshRate;
+      if (hz > 0.0) {
+        return hz;
+      }
+    }
+    return 60.0;
+  }
+
+  /// Effective upper cap on [devicePixelRatio] (`null` when uncapped).
+  @protected
+  double? get effectiveMaxDevicePixelRatio => maxDevicePixelRatio;
+
+  /// Unclamped hardware `FlutterView.devicePixelRatio` of the hosting display
+  /// (or explicit override set via [overrideDisplayMetrics]).
+  double get rawDevicePixelRatio =>
+      _overrideDevicePixelRatio ??
+      _platformDevicePixelRatio ??
+      _fallbackViewDpr();
+
+  /// Effective `devicePixelRatio` clamped by [effectiveMaxDevicePixelRatio].
+  double get devicePixelRatio {
+    final raw = rawDevicePixelRatio;
+    final cap = effectiveMaxDevicePixelRatio;
+    final capped = cap != null ? math.min(raw, cap) : raw;
+    return capped.clamp(0.25, 8.0);
+  }
+
+  /// Physical backing-store canvas dimensions (`canvasSize * devicePixelRatio`)
+  /// updated in-place with zero heap allocations.
+  Vector2 get physicalCanvasSize {
+    assertHasLayout();
+    final dpr = devicePixelRatio;
+    return _physicalCanvasSize..setValues(_size!.x * dpr, _size!.y * dpr);
+  }
+
+  /// Active monitor refresh rate in Hz (`60`, `90`, `120`, `144`, `240`, etc.).
+  double get displayRefreshRate =>
+      _overrideRefreshRate ??
+      _platformRefreshRate ??
+      _fallbackViewRefreshRate();
+
+  /// Overrides [rawDevicePixelRatio] and/or [displayRefreshRate] (pass `null`
+  /// to clear overrides and return to live `FlutterView` hardware metrics).
+  void overrideDisplayMetrics({
+    double? devicePixelRatio,
+    double? refreshRate,
+  }) {
+    final prevDpr = this.devicePixelRatio;
+    final prevHz = displayRefreshRate;
+    _overrideDevicePixelRatio = devicePixelRatio;
+    _overrideRefreshRate = refreshRate;
+    final nextDpr = this.devicePixelRatio;
+    final nextHz = displayRefreshRate;
+    if ((nextDpr - prevDpr).abs() > 1e-4 || (nextHz - prevHz).abs() > 1e-3) {
+      onDisplayMetricsChanged(nextDpr, nextHz);
+    }
+  }
+
+  /// Internal hook invoked by [GameRenderBox] on attach and `didChangeMetrics`.
+  @internal
+  void updatePlatformDisplayMetrics({
+    required double devicePixelRatio,
+    required double refreshRate,
+  }) {
+    final prevDpr = this.devicePixelRatio;
+    final prevHz = displayRefreshRate;
+    if (devicePixelRatio > 0.0) {
+      _platformDevicePixelRatio = devicePixelRatio;
+    }
+    if (refreshRate > 0.0) {
+      _platformRefreshRate = refreshRate;
+    }
+    final nextDpr = this.devicePixelRatio;
+    final nextHz = displayRefreshRate;
+    if ((nextDpr - prevDpr).abs() > 1e-4 || (nextHz - prevHz).abs() > 1e-3) {
+      onDisplayMetricsChanged(nextDpr, nextHz);
+    }
+  }
+
+  /// Invoked whenever the hosting window changes `devicePixelRatio` or monitor
+  /// `refreshRate` (for example dragging a window from a 60 Hz external monitor
+  /// onto a 120 Hz Retina display).
+  @mustCallSuper
+  void onDisplayMetricsChanged(double devicePixelRatio, double refreshRate) {
+    markSceneDirty();
+  }
+
   /// Indicates if this game instance is connected to a GameWidget that is live
   /// in the flutter widget tree.
   /// Once this is true, the game is ready to have its size used or in the case
@@ -215,10 +330,38 @@ abstract mixin class Game() {
   /// `DeferHitTestToComponents` mixin, or override this with your own rule.
   bool containsEventHandlerAt(Vector2 position) => true;
 
-  /// Returns the game background color.
-  /// By default it will return a black color.
-  /// It cannot be changed at runtime, because the game widget does not get
-  /// rebuild when this value changes.
+  final ValueNotifier<Color?> _backgroundColorNotifier = ValueNotifier<Color?>(
+    null,
+  );
+
+  /// Internal listenable updating the `GameWidget`'s background `ColoredBox`
+  /// in isolation without rebuilding `GameWidgetState`.
+  @internal
+  ValueListenable<Color?> get backgroundColorListenable =>
+      _backgroundColorNotifier;
+
+  /// Optional live runtime override for the game's background color.
+  ///
+  /// Updating this property repaints the background immediately with zero
+  /// `GameWidgetState` rebuilds; setting it to `null` falls back to
+  /// [backgroundColor].
+  Color? get backgroundColorValue => _backgroundColorNotifier.value;
+  set backgroundColorValue(Color? value) {
+    if (_backgroundColorNotifier.value == value) {
+      return;
+    }
+    _backgroundColorNotifier.value = value;
+    markSceneDirty();
+    _gameRenderBox?.markNeedsPaint();
+  }
+
+  /// Resolved background color (`backgroundColorValue ?? backgroundColor()`).
+  Color get effectiveBackgroundColor =>
+      _backgroundColorNotifier.value ?? backgroundColor();
+
+  /// Returns the default game background color when [backgroundColorValue] is
+  /// `null`. To mutate the background color dynamically at runtime without
+  /// rebuilding `GameWidget`, set [backgroundColorValue].
   Color backgroundColor() => const Color(0xFF000000);
 
   /// This is the resize hook; every time the game widget is resized, this hook
@@ -228,6 +371,7 @@ abstract mixin class Game() {
   @mustCallSuper
   void onGameResize(Vector2 size) {
     _size = (_size ?? Vector2.zero())..setFrom(size);
+    markSceneDirty();
   }
 
   @protected
@@ -432,9 +576,108 @@ abstract mixin class Game() {
     }
   }
 
-  /// Optional upper framerate cap in Hz (e.g. `60` or `120`). When `null`,
-  /// frames run uncapped at the display's native vsync rate.
+  /// Optional display-aware harmonic VSync framerate policy (`powerSave30`,
+  /// `locked60`, `harmonicHalf`, `nativeDisplay`, `uncapped`, `custom`).
+  ///
+  /// When non-null, takes precedence over [targetFps] for active pacing while
+  /// still honoring [idleFps] when [isIdleThrottled] is `true`.
+  FpsPolicy? fpsPolicy;
+
+  /// Optional upper simulation framerate cap in Hz (e.g. `60` or `120`) used
+  /// when [fpsPolicy] is `null`. When both are `null`, frames run uncapped at
+  /// the display's native VSync rate.
   double? targetFps;
+
+  /// Optional independent render framerate cap in Hz (for example `30` while
+  /// simulation [targetFps] runs at `60` or `120`). When `null`, every executed
+  /// simulation tick is eligible to render (subject to [idleRenderMode]).
+  double? renderTargetFps;
+
+  /// Controls whether clean (visually unchanged) frames skip GPU repaints while
+  /// keeping `update(dt)` simulation ticks active.
+  IdleRenderMode idleRenderMode = IdleRenderMode.always;
+
+  bool _sceneDirty = true;
+  double _renderAccumulator = 0.0;
+  int _executedUpdateTicks = 0;
+  int _executedRenderFrames = 0;
+  int _skippedRenderFrames = 0;
+  int _skippedCleanPaints = 0;
+
+  /// Whether the scene has pending visual changes requiring a paint pass.
+  bool get isSceneDirty => _sceneDirty;
+
+  /// Total `GameRenderBox` update ticks executed since creation or reset.
+  int get executedUpdateTicks => _executedUpdateTicks;
+
+  /// Total `GameRenderBox` paint frames executed since creation or reset.
+  int get executedRenderFrames => _executedRenderFrames;
+
+  /// Number of simulation ticks whose `paint` was skipped due to
+  /// [renderTargetFps] decimation.
+  int get skippedRenderFrames => _skippedRenderFrames;
+
+  /// Number of simulation ticks whose `paint` was skipped because
+  /// [idleRenderMode] detected a clean scene (`isSceneDirty == false`).
+  int get skippedCleanPaints => _skippedCleanPaints;
+
+  /// Marks the visual scene dirty so [IdleRenderMode.onDemand] /
+  /// [IdleRenderMode.onDemandWhenIdle] schedules a repaint on the next tick.
+  void markSceneDirty() {
+    _sceneDirty = true;
+  }
+
+  /// Resets update/render execution and skip counters.
+  void resetRenderSkipCounters() {
+    _executedUpdateTicks = 0;
+    _executedRenderFrames = 0;
+    _skippedRenderFrames = 0;
+    _skippedCleanPaints = 0;
+    _renderAccumulator = 0.0;
+  }
+
+  /// Subclass hook checked before skipping a paint in on-demand modes.
+  @protected
+  @internal
+  bool pollSceneDirtyForRender() => _sceneDirty;
+
+  /// Internal callback invoked by `GameRenderBox.paint` once a frame renders.
+  @mustCallSuper
+  @internal
+  void onFrameRendered() {
+    _executedRenderFrames++;
+    _sceneDirty = false;
+  }
+
+  /// Evaluates decoupled [renderTargetFps] and [idleRenderMode] after `update`
+  /// to decide whether `GameRenderBox` should call `markNeedsPaint()`.
+  @internal
+  bool shouldRenderThisTick(double dt) {
+    _executedUpdateTicks++;
+    final rFps = renderTargetFps;
+    if (rFps != null) {
+      if (rFps <= 0.0) {
+        _skippedRenderFrames++;
+        return false;
+      }
+      _renderAccumulator += dt;
+      final minRenderInterval = 1.0 / rFps;
+      if (dt > 0.0 && _renderAccumulator < minRenderInterval * 0.92) {
+        _skippedRenderFrames++;
+        return false;
+      }
+      _renderAccumulator = 0.0;
+    }
+
+    final checkDirty =
+        idleRenderMode == IdleRenderMode.onDemand ||
+        (idleRenderMode == IdleRenderMode.onDemandWhenIdle && isIdleThrottled);
+    if (checkDirty && !pollSceneDirtyForRender()) {
+      _skippedCleanPaints++;
+      return false;
+    }
+    return true;
+  }
 
   /// Optional reduced framerate in Hz (e.g. `30`, or `0` to suspend frames
   /// completely) applied automatically after [idleTimeoutSeconds] without user
@@ -459,18 +702,44 @@ abstract mixin class Game() {
       _boostRemainingSeconds <= 0.0 &&
       _idleElapsedSeconds >= idleTimeoutSeconds;
 
-  /// Currently active framerate cap in Hz combining [targetFps] and [idleFps],
-  /// or `null` if running at uncapped native vsync.
+  /// Currently active framerate cap in Hz combining [fpsPolicy], [targetFps],
+  /// and [idleFps], or `null` if running at uncapped native vsync.
   double? get effectiveTargetFps {
+    final activeBase = fpsPolicy != null
+        ? fpsPolicy!.resolveTargetFps(displayRefreshRate)
+        : targetFps;
     if (isIdleThrottled) {
       final idle = idleFps!;
       if (idle <= 0.0) {
         return 0.0;
       }
-      final target = targetFps;
-      return target != null ? math.min(target, idle) : idle;
+      return activeBase != null ? math.min(activeBase, idle) : idle;
     }
-    return targetFps;
+    return activeBase;
+  }
+
+  /// Exact integer VSync beat divisor (`1`, `2`, `3`, `4`, ...) when the active
+  /// framerate divides [displayRefreshRate] harmonically, or `null` when
+  /// non-harmonic accumulator pacing is required.
+  @internal
+  int? get effectiveVsyncDivisor {
+    final hz = displayRefreshRate;
+    if (isIdleThrottled) {
+      final eff = effectiveTargetFps;
+      if (eff == null || eff <= 0.0) {
+        return null;
+      }
+      return FpsPolicy.custom(eff).resolveVsyncDivisor(hz);
+    }
+    final policy = fpsPolicy;
+    if (policy != null) {
+      return policy.resolveVsyncDivisor(hz);
+    }
+    final target = targetFps;
+    if (target != null && target > 0.0) {
+      return FpsPolicy.custom(target).resolveVsyncDivisor(hz);
+    }
+    return null;
   }
 
   /// Minimum frame interval in seconds used by `GameLoop`, `null` when
@@ -487,11 +756,11 @@ abstract mixin class Game() {
     return 1.0 / fps;
   }
 
-  /// Resets the idle timer and optionally holds full framerate for at least
-  /// [boostSeconds] (for example during camera transitions, dice throws, or
-  /// programmatic animations).
+  /// Resets the idle timer, marks the scene dirty, and optionally holds full
+  /// framerate for at least [boostSeconds].
   void notifyActivity({double boostSeconds = 0.0}) {
     _idleElapsedSeconds = 0.0;
+    _sceneDirty = true;
     if (boostSeconds > _boostRemainingSeconds) {
       _boostRemainingSeconds = boostSeconds;
     }

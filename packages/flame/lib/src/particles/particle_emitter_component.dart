@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:flame/components.dart';
 import 'package:flame/extensions.dart';
+import 'package:flame/game.dart';
 import 'package:flame/src/particles/particle_buffer.dart';
 import 'package:flame/src/particles/particle_emitter.dart';
 import 'package:flame/src/particles/particle_force_field.dart';
@@ -151,7 +152,11 @@ class ParticleEmitterComponent({
     if (_emitting && !_completed) {
       _advanceEmission(dt);
     }
+    final hadParticles = _buffer.length > 0;
     _simulate(dt);
+    if ((hadParticles || _buffer.length > 0) && dt > 0.0) {
+      findGame()?.markSceneDirty();
+    }
     if (removeOnFinish && isFinished) {
       removeFromParent();
     }
@@ -184,14 +189,30 @@ class ParticleEmitterComponent({
     last.setFrom(current);
   }
 
+  /// Whether continuous emission rate and burst counts automatically scale by
+  /// `FlameGame.graphics.effectiveParticleDensity`.
+  bool respectGraphicsParticleDensity = true;
+
+  double _resolveParticleDensity() {
+    if (!respectGraphicsParticleDensity) {
+      return 1.0;
+    }
+    final game = findGame();
+    if (game is FlameGame) {
+      return game.graphics.effectiveParticleDensity;
+    }
+    return 1.0;
+  }
+
   void _advanceEmission(double dt) {
+    final density = _resolveParticleDensity();
     final end = emitter.emissionEndTime;
     final previous = _clock;
     _clock += dt;
-    if (emitter.rate > 0) {
+    if (emitter.rate > 0 && density > 0.0) {
       final activeTime = min(_clock, end) - previous;
       if (activeTime > 0) {
-        _emitDebt += emitter.rate * activeTime;
+        _emitDebt += emitter.rate * density * activeTime;
         final count = _emitDebt.floor();
         _emitDebt -= count;
         _spawnMany(count);
@@ -201,7 +222,10 @@ class ParticleEmitterComponent({
     for (var i = 0; i < bursts.length; i++) {
       if (!_burstFired[i] && _clock >= bursts[i].time) {
         _burstFired[i] = true;
-        _spawnMany(bursts[i].count);
+        if (density > 0.0 && bursts[i].count > 0) {
+          final scaledCount = max(1, (bursts[i].count * density).round());
+          _spawnMany(scaledCount);
+        }
       }
     }
     if (_clock >= end) {

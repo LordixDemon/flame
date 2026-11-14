@@ -1,12 +1,16 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:meta/meta.dart';
 
 /// Zero-allocation per-frame CPU/GPU draw-call and timing telemetry counters
-/// populated automatically by [TelemetryCanvas] and `FlameGame` when
-/// `Game.collectRenderTelemetry` is enabled.
+/// populated automatically by [TelemetryCanvas], `GameRenderBox`
+/// (`FrameTiming`), and `FlameGame` when `Game.collectRenderTelemetry` is
+/// enabled.
 class RenderFrameTelemetry() {
+  static const int _platformRingCapacity = 120;
+
   int _drawCalls = 0;
   int _atlasCalls = 0;
   int _verticesCalls = 0;
@@ -24,6 +28,21 @@ class RenderFrameTelemetry() {
   int _lastPictureCalls = 0;
   int _lastClipCalls = 0;
   int _lastOffscreenRasterizations = 0;
+
+  // Hardware SchedulerBinding FrameTiming ring buffers (zero heap allocation).
+  final Float32List _buildRingMs = Float32List(_platformRingCapacity);
+  final Float32List _rasterRingMs = Float32List(_platformRingCapacity);
+  final Float32List _spanRingMs = Float32List(_platformRingCapacity);
+  final Float32List _percentileScratch = Float32List(_platformRingCapacity);
+  int _platformCursor = 0;
+  int _platformFilled = 0;
+  int _lastBuildMicros = 0;
+  int _lastRasterMicros = 0;
+  int _lastTotalSpanMicros = 0;
+  double _smoothedBuildMs = 0.0;
+  double _smoothedRasterMs = 0.0;
+  double _smoothedTotalSpanMs = 0.0;
+  int _jankFrameCount = 0;
 
   /// Total canvas `draw*` calls submitted during the last completed frame
   /// (including offscreen `PostProcess` passes).
@@ -55,6 +74,110 @@ class RenderFrameTelemetry() {
   /// CPU wall-clock duration (in microseconds) of the most recent `render`
   /// pass.
   int get renderMicros => _renderMicros;
+
+  /// Number of hardware `FrameTiming` samples collected (`0..120`).
+  int get platformTimingSampleCount => _platformFilled;
+
+  /// UI/build thread duration (in microseconds) from the latest `FrameTiming`.
+  int get lastBuildMicros => _lastBuildMicros;
+
+  /// GPU rasterizer duration (in microseconds) from the latest `FrameTiming`.
+  int get lastRasterMicros => _lastRasterMicros;
+
+  /// End-to-end VSync-to-raster total span (in microseconds) from the latest
+  /// `FrameTiming`.
+  int get lastTotalSpanMicros => _lastTotalSpanMicros;
+
+  /// Exponentially smoothed UI/build duration in milliseconds.
+  double get smoothedBuildMs => _smoothedBuildMs;
+
+  /// Exponentially smoothed GPU raster duration in milliseconds.
+  double get smoothedRasterMs => _smoothedRasterMs;
+
+  /// Exponentially smoothed total frame span in milliseconds.
+  double get smoothedTotalSpanMs => _smoothedTotalSpanMs;
+
+  /// Total frames whose hardware span exceeded `1.5×` target frame budget.
+  int get jankFrameCount => _jankFrameCount;
+
+  /// Returns `true` when GPU rasterization dominates CPU UI/build work.
+  bool get isGpuBound =>
+      _platformFilled > 0 &&
+      _smoothedRasterMs > 4.0 &&
+      _smoothedRasterMs > _smoothedBuildMs * 1.15;
+
+  /// 95th-percentile total frame span in milliseconds across the ring buffer.
+  double get p95TotalSpanMs =>
+      _percentileOf(_spanRingMs, _platformFilled, 0.95);
+
+  /// 99th-percentile total frame span in milliseconds across the ring buffer.
+  double get p99TotalSpanMs =>
+      _percentileOf(_spanRingMs, _platformFilled, 0.99);
+
+  /// 95th-percentile GPU raster duration in milliseconds across the ring
+  /// buffer.
+  double get p95RasterMs => _percentileOf(_rasterRingMs, _platformFilled, 0.95);
+
+  double _percentileOf(Float32List ring, int count, double quantile) {
+    if (count <= 0) {
+      return 0.0;
+    }
+    for (var i = 0; i < count; i++) {
+      _percentileScratch[i] = ring[i];
+    }
+    // Zero-allocation in-place insertion sort over <= 120 samples.
+    for (var i = 1; i < count; i++) {
+      final v = _percentileScratch[i];
+      var j = i - 1;
+      while (j >= 0 && _percentileScratch[j] > v) {
+        _percentileScratch[j + 1] = _percentileScratch[j];
+        j--;
+      }
+      _percentileScratch[j + 1] = v;
+    }
+    final idx = ((count - 1) * quantile.clamp(0.0, 1.0)).round().clamp(
+      0,
+      count - 1,
+    );
+    return _percentileScratch[idx];
+  }
+
+  /// Records a hardware `SchedulerBinding` [FrameTiming] sample into the
+  /// zero-allocation ring buffer.
+  void recordPlatformFrameTiming({
+    required int buildMicros,
+    required int rasterMicros,
+    required int totalSpanMicros,
+    double targetBudgetMs = 16.67,
+  }) {
+    _lastBuildMicros = math.max(0, buildMicros);
+    _lastRasterMicros = math.max(0, rasterMicros);
+    _lastTotalSpanMicros = math.max(0, totalSpanMicros);
+
+    final bMs = _lastBuildMicros / 1000.0;
+    final rMs = _lastRasterMicros / 1000.0;
+    final sMs = _lastTotalSpanMicros / 1000.0;
+
+    _buildRingMs[_platformCursor] = bMs;
+    _rasterRingMs[_platformCursor] = rMs;
+    _spanRingMs[_platformCursor] = sMs;
+    _platformCursor = (_platformCursor + 1) % _platformRingCapacity;
+    if (_platformFilled == 0) {
+      _smoothedBuildMs = bMs;
+      _smoothedRasterMs = rMs;
+      _smoothedTotalSpanMs = sMs;
+    } else {
+      _smoothedBuildMs = _smoothedBuildMs * 0.85 + bMs * 0.15;
+      _smoothedRasterMs = _smoothedRasterMs * 0.85 + rMs * 0.15;
+      _smoothedTotalSpanMs = _smoothedTotalSpanMs * 0.85 + sMs * 0.15;
+    }
+    if (_platformFilled < _platformRingCapacity) {
+      _platformFilled++;
+    }
+    if (targetBudgetMs > 0.0 && sMs > targetBudgetMs * 1.5) {
+      _jankFrameCount++;
+    }
+  }
 
   /// Resets in-flight counters before recording a new render frame.
   void beginRenderFrame() {
@@ -99,6 +222,15 @@ class RenderFrameTelemetry() {
     beginRenderFrame();
     endRenderFrame(renderMicros: 0);
     _updateMicros = 0;
+    _platformCursor = 0;
+    _platformFilled = 0;
+    _lastBuildMicros = 0;
+    _lastRasterMicros = 0;
+    _lastTotalSpanMicros = 0;
+    _smoothedBuildMs = 0.0;
+    _smoothedRasterMs = 0.0;
+    _smoothedTotalSpanMs = 0.0;
+    _jankFrameCount = 0;
   }
 }
 

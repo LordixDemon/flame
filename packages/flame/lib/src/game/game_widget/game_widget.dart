@@ -424,9 +424,11 @@ class GameWidgetState<T extends Game>() extends State<GameWidget<T>> {
             opaque: widget.behavior == HitTestBehavior.opaque,
             child: Directionality(
               textDirection: textDir,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: currentGame.backgroundColor(),
+              child: ValueListenableBuilder<Color?>(
+                valueListenable: currentGame.backgroundColorListenable,
+                builder: (_, dynamicColor, child) => ColoredBox(
+                  color: dynamicColor ?? currentGame.backgroundColor(),
+                  child: child,
                 ),
                 child: LayoutBuilder(
                   builder: (layoutContext, BoxConstraints constraints) {

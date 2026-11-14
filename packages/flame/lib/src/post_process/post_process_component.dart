@@ -112,6 +112,10 @@ class PostProcessComponent<T extends PostProcess>({
   @override
   @mustCallSuper
   void renderTree(Canvas canvas) {
+    final dpr = findGame()?.devicePixelRatio;
+    if (dpr != null) {
+      postProcess.syncDevicePixelRatio(dpr);
+    }
     decorator.applyChain(
       (canvas) {
         postProcess.render(

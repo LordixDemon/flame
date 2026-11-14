@@ -178,3 +178,38 @@ class InteractiveTower extends PositionComponent
 `ParticlePool3D` simulates up to thousands of 3D particles with gravity, floor bounce, drag, and
 camera-depth sorting in contiguous Struct-of-Arrays `Float32List` columns, rendering the entire
 cloud in a single `Canvas.drawRawAtlas` call.
+
+
+## 3D Mesh LOD Chains, Micro-Triangle Culling, and `SceneEnvironment3D` (Point Lights, Fog & Frustum Culling)
+
+- **3D Mesh LOD Chains & Sub-Pixel Triangle Culling (`MeshLodChain3D`, `enqueueLodMesh`,
+  `minTrianglePixelArea`)**: Build multi-tier `MeshLodChain3D.progressive(...)` chains and call
+  `batcher.enqueueLodMesh(chain, camera: camera3d, worldX: x, worldY: y)` to automatically select
+  the optimal `Mesh3D` tier (or cull tiny distant props) based on projected screen pixel diameter
+  and `lodBias`. Set `batcher.minTrianglePixelArea` (e.g. `1.5`) to discard sub-pixel micro-triangles
+  before vertex lighting.
+- **`SceneEnvironment3D` (Zero-Allocation SoA `PointLight3D` Pool, Atmospheric Fog & Frustum
+  Culling)**: Attach a `SceneEnvironment3D` to `BatchMeshRenderer3D(environment: env, cullScreenBounds: ...)`:
+  - **Dynamic `PointLight3D` Pool**: Contiguous SoA point lights with smooth quadratic distance
+    attenuation (`addPointLight`, `updatePointLight`) accumulated alongside directional lighting.
+  - **Distance & Height Atmospheric Fog**: Blends vertex colors smoothly toward `fogColor` by view
+    depth (`fogStartDepth`..`fogEndDepth`) and elevation (`heightFogBaseZ`, `heightFogDensity`),
+    remaining invariant under pure 2D camera pans so `StaticMeshChunk3D` caches stay valid.
+  - **3D Bounding-Sphere Frustum Culling & Spatial Light Signatures**: Rejects off-screen dynamic
+    meshes and static chunks in `O(1)` before vertex transformation (`lastFrustumCulledMeshes`), and
+    hashes only point lights intersecting each `StaticMeshChunk3D`'s world AABB
+    (`computeSignatureForBounds`) so distant moving lights never trigger unnecessary chunk rebakes.
+
+
+## SceneEnvironment3D, PointLight3D, Distance Fog & MeshLodChain3D
+
+- **`SceneEnvironment3D` & `PointLight3D`**: Pass `environment: sceneEnv` to
+  `BatchMeshRenderer3D.beginFrame(...)` to combine up to `N` dynamic local point lights (smooth
+  quadratic attenuation in a zero-alloc SoA pool, capped automatically by
+  `GraphicsProfile.maxPointLights`), ambient hemisphere tint, and linear/exponential distance fog
+  (`fogDensity`, `fogStart`, `fogEnd`, `fogColor`). `StaticMeshChunk3D` computes a spatial
+  `computeLocalSignature(...)` over overlapping point-light spheres so distant light movement causes
+  **`0` chunk rebakes**.
+- **`MeshLodChain3D`**: Selects `high` / `medium` / `low` `Mesh3D` levels by projected screen radius
+  (or generates decimated chains via `MeshLodChain3D.progressive(...)`), cutting triangle counts
+  automatically during zoomed-out overview framing.

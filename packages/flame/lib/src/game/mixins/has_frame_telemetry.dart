@@ -12,6 +12,7 @@ mixin HasFrameTelemetry<W extends World> on FlameGame<W> {
   static const int _ringCapacity = 60;
 
   final Float32List _ringMs = Float32List(_ringCapacity);
+  final Float32List _sortScratchMs = Float32List(_ringCapacity);
   int _cursor = 0;
   int _filled = 0;
   double _smoothedFrameMs = 16.67;
@@ -65,6 +66,56 @@ mixin HasFrameTelemetry<W extends World> on FlameGame<W> {
 
   /// CPU wall-clock duration (in microseconds) of the last `render` pass.
   int get lastRenderMicros => renderTelemetry.renderMicros;
+
+  /// Exponentially smoothed hardware UI/build duration in milliseconds.
+  double get smoothedBuildMs => renderTelemetry.smoothedBuildMs;
+
+  /// Exponentially smoothed hardware GPU raster duration in milliseconds.
+  double get smoothedRasterMs => renderTelemetry.smoothedRasterMs;
+
+  /// Exponentially smoothed hardware end-to-end frame span in milliseconds.
+  double get smoothedTotalSpanMs => renderTelemetry.smoothedTotalSpanMs;
+
+  /// Total hardware frames exceeding `1.5×` target frame budget.
+  int get jankFrameCount => renderTelemetry.jankFrameCount;
+
+  /// Whether GPU rasterization currently dominates CPU UI/build work.
+  bool get isGpuBound => renderTelemetry.isGpuBound;
+
+  /// 95th-percentile frame duration in milliseconds (uses hardware
+  /// `FrameTiming.totalSpan` when available, falling back to loop `dt`).
+  double get p95FrameMs => renderTelemetry.platformTimingSampleCount > 0
+      ? renderTelemetry.p95TotalSpanMs
+      : _ringPercentile(0.95);
+
+  /// 99th-percentile frame duration in milliseconds (uses hardware
+  /// `FrameTiming.totalSpan` when available, falling back to loop `dt`).
+  double get p99FrameMs => renderTelemetry.platformTimingSampleCount > 0
+      ? renderTelemetry.p99TotalSpanMs
+      : _ringPercentile(0.99);
+
+  double _ringPercentile(double quantile) {
+    if (_filled <= 0) {
+      return 0.0;
+    }
+    for (var i = 0; i < _filled; i++) {
+      _sortScratchMs[i] = _ringMs[i];
+    }
+    for (var i = 1; i < _filled; i++) {
+      final v = _sortScratchMs[i];
+      var j = i - 1;
+      while (j >= 0 && _sortScratchMs[j] > v) {
+        _sortScratchMs[j + 1] = _sortScratchMs[j];
+        j--;
+      }
+      _sortScratchMs[j + 1] = v;
+    }
+    final idx = ((_filled - 1) * quantile.clamp(0.0, 1.0)).round().clamp(
+      0,
+      _filled - 1,
+    );
+    return _sortScratchMs[idx];
+  }
 
   /// Worst (largest) frame delta in milliseconds across the last 60 frames.
   double get worstFrameMs {

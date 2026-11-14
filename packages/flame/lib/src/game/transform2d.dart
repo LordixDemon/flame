@@ -35,6 +35,12 @@ class Transform2D() extends ChangeNotifier {
   bool _isBatchUpdating = false;
   int _version = 0;
 
+  /// Process-wide monotonically increasing counter incremented whenever any
+  /// [Transform2D] mutates (`position`, `scale`, `angle`, `offset`, or
+  /// `transformMatrix`). Used by `WorldSpatialIndex` and dirty-scene tracking
+  /// to skip stationary frame sweeps in `O(1)`.
+  static int globalMutationCount = 0;
+
   /// Monotonically increasing counter incremented whenever any transform
   /// property (`position`, `scale`, `angle`, `offset`, or `transformMatrix`)
   /// changes. Used by spatial caches (such as `CullWhenOffscreen`) to avoid
@@ -80,6 +86,7 @@ class Transform2D() extends ChangeNotifier {
     _isBatchUpdating = false;
     _recalculate = true;
     _version++;
+    globalMutationCount++;
     notifyListeners();
   }
 
@@ -249,6 +256,7 @@ class Transform2D() extends ChangeNotifier {
     _isBatchUpdating = false;
     _recalculate = false;
     _version++;
+    globalMutationCount++;
     notifyListeners();
   }
 
@@ -318,6 +326,7 @@ class Transform2D() extends ChangeNotifier {
   void _markAsModified() {
     _recalculate = true;
     _version++;
+    globalMutationCount++;
     if (!_isBatchUpdating) {
       notifyListeners();
     }

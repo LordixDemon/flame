@@ -19,6 +19,11 @@ class GameLoop(
   /// executed callbacks, `null` for uncapped vsync, or [double.infinity] to
   /// suspend ticks while idle until activity resumes.
   final double? Function()? minFrameIntervalGetter,
+
+  /// Optional provider returning an exact positive integer VSync divisor
+  /// (`1` = native VSync, `2` = every 2nd VSync beat, `3` = every 3rd, etc.)
+  /// to eliminate non-harmonic timestamp drift on high-refresh-rate displays.
+  final int? Function()? vsyncDivisorGetter,
 }) {
   this {
     _ticker = Ticker(_tick);
@@ -30,6 +35,7 @@ class GameLoop(
   /// Accumulated delta time across skipped vsync frames when paced.
   double _accumulatedDt = 0.0;
 
+  int _vsyncBeatCounter = 0;
   bool _hasTicked = false;
   int _executedTicks = 0;
   int _skippedTicks = 0;
@@ -58,24 +64,50 @@ class GameLoop(
     if (!_hasTicked) {
       _hasTicked = true;
       _accumulatedDt = 0.0;
+      _vsyncBeatCounter = 0;
       _executedTicks++;
       callback(dt);
       return;
     }
 
     final minInterval = minFrameIntervalGetter?.call();
-    if (minInterval == null || minInterval <= 0.0) {
-      final fireDt = _accumulatedDt > 0.0 ? _accumulatedDt + dt : dt;
+    if (minInterval != null && minInterval.isInfinite) {
+      // Deep-idle mode (`idleFps == 0`): do not accumulate unbounded delta.
+      _accumulatedDt = 0.0;
+      _vsyncBeatCounter = 0;
+      _skippedTicks++;
+      return;
+    }
+
+    final divisor = vsyncDivisorGetter?.call();
+    if (divisor != null && divisor >= 1) {
+      if (divisor == 1) {
+        final fireDt = _accumulatedDt > 0.0 ? _accumulatedDt + dt : dt;
+        _accumulatedDt = 0.0;
+        _vsyncBeatCounter = 0;
+        _executedTicks++;
+        callback(fireDt);
+        return;
+      }
+      _accumulatedDt += dt;
+      _vsyncBeatCounter++;
+      if (_vsyncBeatCounter < divisor) {
+        _skippedTicks++;
+        return;
+      }
+      _vsyncBeatCounter = 0;
+      final fireDt = _accumulatedDt;
       _accumulatedDt = 0.0;
       _executedTicks++;
       callback(fireDt);
       return;
     }
 
-    if (minInterval.isInfinite) {
-      // Deep-idle mode (`idleFps == 0`): do not accumulate unbounded delta.
+    if (minInterval == null || minInterval <= 0.0) {
+      final fireDt = _accumulatedDt > 0.0 ? _accumulatedDt + dt : dt;
       _accumulatedDt = 0.0;
-      _skippedTicks++;
+      _executedTicks++;
+      callback(fireDt);
       return;
     }
 
@@ -105,6 +137,7 @@ class GameLoop(
     _ticker.stop();
     _previous = Duration.zero;
     _accumulatedDt = 0.0;
+    _vsyncBeatCounter = 0;
     _hasTicked = false;
   }
 

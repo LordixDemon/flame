@@ -7,7 +7,67 @@ import 'package:flame/src/components/core/component.dart';
 import 'package:flame/src/components/mixins/coordinate_transform.dart';
 import 'package:flame/src/components/mixins/has_visibility.dart';
 import 'package:flame/src/components/position_component.dart';
+import 'package:flame/src/game/flame_game.dart';
 import 'package:meta/meta.dart';
+
+/// Update-tick behavior for off-screen [CullWhenOffscreen] components.
+enum OffscreenTickMode() {
+  /// Updates every frame regardless of camera visibility (default).
+  fullRate,
+
+  /// Decimates `updateTree` to once every [OffscreenTickPolicy.frameInterval]
+  /// frames while off-screen, passing the exact accumulated `dt`.
+  everyNFrames,
+
+  /// Suspends `updateTree` completely while off-screen (`0` CPU cost).
+  sleepWhenOffscreen,
+}
+
+/// Configures update-LOD / tick decimation on [CullWhenOffscreen] components.
+@immutable
+class const OffscreenTickPolicy._({
+  required this.mode,
+  this.frameInterval = 1,
+}) {
+  this : assert(frameInterval >= 1, 'frameInterval must be >= 1');
+
+  /// Updates at full framerate even when off-screen.
+  static const OffscreenTickPolicy fullRate = OffscreenTickPolicy._(
+    mode: OffscreenTickMode.fullRate,
+  );
+
+  /// Suspends `updateTree` completely while off-screen.
+  static const OffscreenTickPolicy sleepWhenOffscreen = OffscreenTickPolicy._(
+    mode: OffscreenTickMode.sleepWhenOffscreen,
+  );
+
+  /// Updates once every [interval] frames (`>= 2`) while off-screen with
+  /// accurate accumulated `dt`.
+  const OffscreenTickPolicy.everyNFrames(int interval)
+    : this._(
+        mode: interval <= 1
+            ? OffscreenTickMode.fullRate
+            : OffscreenTickMode.everyNFrames,
+        frameInterval: interval,
+      );
+
+  /// Active tick mode while off-screen.
+  final OffscreenTickMode mode;
+
+  /// Frame decimation stride used when [mode] is
+  /// [OffscreenTickMode.everyNFrames].
+  final int frameInterval;
+
+  @override
+  bool operator ==(Object other) {
+    return other is OffscreenTickPolicy &&
+        other.mode == mode &&
+        other.frameInterval == frameInterval;
+  }
+
+  @override
+  int get hashCode => Object.hash(mode, frameInterval);
+}
 
 /// Skips drawing a [PositionComponent] while it is off-screen.
 ///
@@ -43,9 +103,111 @@ mixin CullWhenOffscreen on PositionComponent {
   bool _wasCulledLastFrame = false;
   int _cullBoundsComputeCount = 0;
 
+  OffscreenTickPolicy _offscreenTickPolicy = OffscreenTickPolicy.fullRate;
+  double _offscreenAccumulatedDt = 0.0;
+  int _offscreenFrameCounter = 0;
+  int _skippedOffscreenTicks = 0;
+
+  /// Controls whether off-screen components decimate or sleep their
+  /// `updateTree(dt)` simulation ticks.
+  OffscreenTickPolicy get offscreenTickPolicy => _offscreenTickPolicy;
+  set offscreenTickPolicy(OffscreenTickPolicy value) {
+    if (_offscreenTickPolicy == value) {
+      return;
+    }
+    _offscreenTickPolicy = value;
+    _offscreenAccumulatedDt = 0.0;
+    _offscreenFrameCounter = 0;
+    final needsGate = value.mode != OffscreenTickMode.fullRate;
+    if (hasOffscreenTickGate != needsGate) {
+      hasOffscreenTickGate = needsGate;
+      if (isMounted) {
+        Component.invalidateFlatTraversalLists();
+      }
+    }
+  }
+
+  /// Number of `updateTree` ticks skipped by [offscreenTickPolicy].
+  int get skippedOffscreenTicks => _skippedOffscreenTicks;
+
+  bool _isOffscreenForUpdateTick() {
+    if (!cullingEnabled) {
+      return false;
+    }
+    final world = _world;
+    if (world == null) {
+      return false;
+    }
+    final game = findGame();
+    if (game is FlameGame && identical(game.camera.world, world)) {
+      if (game.camera.parent != null) {
+        final expanded = _expandedBounds(cullBounds);
+        return !game.camera.visibleWorldRect.overlaps(expanded);
+      }
+    }
+    return _wasCulledLastFrame;
+  }
+
+  @override
+  @internal
+  void runGatedUpdateSubtree(double dt) {
+    if (dt <= 0.0) {
+      runDefaultOrCustomSubtree(dt);
+      return;
+    }
+    final policy = _offscreenTickPolicy;
+    if (policy.mode == OffscreenTickMode.fullRate ||
+        !_isOffscreenForUpdateTick()) {
+      final fireDt = dt + _offscreenAccumulatedDt;
+      _offscreenAccumulatedDt = 0.0;
+      _offscreenFrameCounter = 0;
+      runDefaultOrCustomSubtree(fireDt);
+      return;
+    }
+
+    if (policy.mode == OffscreenTickMode.sleepWhenOffscreen) {
+      _offscreenAccumulatedDt = 0.0;
+      _skippedOffscreenTicks++;
+      return;
+    }
+
+    // OffscreenTickMode.everyNFrames
+    _offscreenAccumulatedDt += dt;
+    _offscreenFrameCounter++;
+    if (_offscreenFrameCounter < policy.frameInterval) {
+      _skippedOffscreenTicks++;
+      return;
+    }
+    _offscreenFrameCounter = 0;
+    final fireDt = _offscreenAccumulatedDt;
+    _offscreenAccumulatedDt = 0.0;
+    runDefaultOrCustomSubtree(fireDt);
+  }
+
   /// Whether this component was skipped by frustum culling on its most recent
   /// camera render check.
-  bool get wasCulledLastFrame => _wasCulledLastFrame;
+  bool get wasCulledLastFrame {
+    final w = _world;
+    if (w != null && w.spatialIndexEnabled && cullingEnabled) {
+      final idx = w.spatialIndex;
+      if (idx.renderPassStamp > 0 && idx.containsIndexed(this)) {
+        return _lastSpatialRenderStamp != idx.renderPassStamp;
+      }
+    }
+    return _wasCulledLastFrame;
+  }
+
+  bool _skipNextCullCheck = false;
+  int _lastSpatialRenderStamp = -1;
+
+  /// Marks this component accepted by `WorldSpatialIndex` on [stamp] so
+  /// [_isOffscreen] skips redundant overlap evaluation and double telemetry.
+  @internal
+  void markSpatialVisible(int stamp) {
+    _wasCulledLastFrame = false;
+    _lastSpatialRenderStamp = stamp;
+    _skipNextCullCheck = true;
+  }
 
   /// Number of times the fast-path world bounds rectangle was recomputed (used
   /// in tests to verify `Transform2D.version` caching on stationary frames).
@@ -162,6 +324,11 @@ mixin CullWhenOffscreen on PositionComponent {
   }
 
   bool _isOffscreen() {
+    if (_skipNextCullCheck) {
+      _skipNextCullCheck = false;
+      _wasCulledLastFrame = false;
+      return false;
+    }
     final world = _world;
     if (!cullingEnabled ||
         world == null ||

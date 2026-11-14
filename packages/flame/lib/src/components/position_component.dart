@@ -80,6 +80,7 @@ class PositionComponent({
   super.children,
   super.priority,
   super.sortKey,
+  super.minQualityTier,
   super.key,
 }) extends Component
     implements

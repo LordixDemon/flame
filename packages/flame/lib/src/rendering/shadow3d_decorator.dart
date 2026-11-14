@@ -1,7 +1,9 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flame/camera.dart';
 import 'package:flame/extensions.dart';
+import 'package:flame/game.dart';
 import 'package:flame/src/palette.dart';
 import 'package:flame/src/rendering/decorator.dart';
 import 'package:meta/meta.dart';
@@ -132,12 +134,16 @@ class Shadow3DDecorator({
   }
 
   Paint? _paint;
-  Paint _makePaint() {
+  Paint _makePaint(double opacityScale) {
     final paint = Paint();
-    final color = baseColor.withValues(alpha: opacity);
+    final effectiveAlpha = (opacity * opacityScale).clamp(0.0, 1.0);
+    final color = baseColor.withValues(alpha: effectiveAlpha);
     paint.colorFilter = ColorFilter.mode(color, BlendMode.srcIn);
     if (_blur > 0) {
-      paint.imageFilter = ImageFilter.blur(sigmaX: blur, sigmaY: blur / _scale);
+      paint.imageFilter = ImageFilter.blur(
+        sigmaX: blur,
+        sigmaY: _scale.abs() > 1e-4 ? blur / _scale.abs() : blur,
+      );
     }
     return paint;
   }
@@ -223,10 +229,39 @@ class Shadow3DDecorator({
     applyBounded(draw, canvas, null);
   }
 
+  /// Whether [applyBounded] automatically honors `FlameGame.graphics`
+  /// `effectiveShadowsEnabled` and `effectiveShadowOpacityScale`.
+  bool respectGraphicsShadows = true;
+
+  /// Optional explicit [GraphicsSettingsController] consulted when no camera
+  /// context is active.
+  GraphicsSettingsController? graphics;
+
+  double _lastAppliedOpacityScale = 1.0;
+
   @override
   void applyBounded(void Function(Canvas) draw, Canvas canvas, Rect? bounds) {
+    var opacityScale = 1.0;
+    if (respectGraphicsShadows) {
+      final game = CameraComponent.currentCamera?.findGame();
+      final ctrl = graphics ?? (game is FlameGame ? game.graphics : null);
+      if (ctrl != null) {
+        if (!ctrl.effectiveShadowsEnabled) {
+          _lastSaveLayerBounds = null;
+          draw(canvas);
+          return;
+        }
+        opacityScale = ctrl.effectiveShadowOpacityScale;
+      }
+    }
+
+    if ((opacityScale - _lastAppliedOpacityScale).abs() > 1e-4) {
+      _lastAppliedOpacityScale = opacityScale;
+      _paint = null;
+    }
+
     _transformMatrix ??= _makeTransform();
-    _paint ??= _makePaint();
+    _paint ??= _makePaint(opacityScale);
 
     final shadowBounds =
         (useBoundedSaveLayer && bounds != null && !bounds.isEmpty)

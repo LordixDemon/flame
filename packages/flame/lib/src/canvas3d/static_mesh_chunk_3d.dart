@@ -6,6 +6,7 @@ import 'package:flame/src/canvas3d/batch_mesh_renderer_3d.dart';
 import 'package:flame/src/canvas3d/camera_rig_3d.dart';
 import 'package:flame/src/canvas3d/matcap_shader_3d.dart';
 import 'package:flame/src/canvas3d/mesh_3d.dart';
+import 'package:flame/src/canvas3d/scene_environment_3d.dart';
 
 /// Descriptor for a single static 3D mesh placement inside a
 /// [StaticMeshChunk3D].
@@ -37,7 +38,7 @@ class const StaticMeshInstance3D({
 /// - On stationary camera frames, `BatchMeshRenderer3D.enqueueStaticChunk`
 ///   copies pre-lit, pre-culled triangles via `setRange` with zero trig,
 ///   lighting, or projection math.
-/// - During pure 2D camera pan/zoom (`camera.basisVersion` and `light.version`
+/// - During pure 2D camera pan/zoom (`camera.basisVersion` and `light`
 ///   unchanged), world-rotated positions, normals, MatCap UVs, and lit vertex
 ///   colors remain cached and only fast 2D screen coordinates are refreshed.
 class StaticMeshChunk3D() {
@@ -45,10 +46,25 @@ class StaticMeshChunk3D() {
 
   bool _geometryDirty = true;
   bool _projectionDirty = true;
+  bool _boundsDirty = true;
+
+  double _boundMinX = 0.0;
+  double _boundMinY = 0.0;
+  double _boundMinZ = 0.0;
+  double _boundMaxX = 0.0;
+  double _boundMaxY = 0.0;
+  double _boundMaxZ = 0.0;
+  double _boundCenterX = 0.0;
+  double _boundCenterY = 0.0;
+  double _boundCenterZ = 0.0;
+  double _boundRadius = 0.0;
 
   int _cachedBasisVersion = -1;
   int _cachedLightVersion = -1;
+  int _cachedEnvSignature = -1;
+  int _cachedShadowSignature = -1;
   bool? _cachedBackfaceCulling;
+  double _cachedMinTriangleArea = -1.0;
   double _cachedCamX = double.nan;
   double _cachedCamY = double.nan;
   double _cachedPersp = double.nan;
@@ -56,6 +72,7 @@ class StaticMeshChunk3D() {
 
   int _geometryBakeCount = 0;
   int _projectionBakeCount = 0;
+  int _lastCulledMicroTriangles = 0;
 
   // Cached world-space & shaded vertex data
   int _totalVertices = 0;
@@ -109,9 +126,85 @@ class StaticMeshChunk3D() {
   /// Number of times 2D screen coordinates and backface culling were baked.
   int get projectionBakeCount => _projectionBakeCount;
 
+  /// Sub-pixel micro-triangles culled during the latest projection bake.
+  int get lastCulledMicroTriangles => _lastCulledMicroTriangles;
+
+  void _ensureBounds() {
+    if (!_boundsDirty) {
+      return;
+    }
+    _boundsDirty = false;
+    if (_instances.isEmpty) {
+      _boundMinX = 0.0;
+      _boundMinY = 0.0;
+      _boundMinZ = 0.0;
+      _boundMaxX = 0.0;
+      _boundMaxY = 0.0;
+      _boundMaxZ = 0.0;
+      _boundCenterX = 0.0;
+      _boundCenterY = 0.0;
+      _boundCenterZ = 0.0;
+      _boundRadius = 0.0;
+      return;
+    }
+    var loX = double.infinity;
+    var loY = double.infinity;
+    var loZ = double.infinity;
+    var hiX = double.negativeInfinity;
+    var hiY = double.negativeInfinity;
+    var hiZ = double.negativeInfinity;
+    for (var i = 0; i < _instances.length; i++) {
+      final inst = _instances[i];
+      final maxS = math.max(
+        inst.scaleX.abs(),
+        math.max(inst.scaleY.abs(), inst.scaleZ.abs()),
+      );
+      final r = inst.mesh.boundingRadius * maxS;
+      if (inst.worldX - r < loX) {
+        loX = inst.worldX - r;
+      }
+      if (inst.worldX + r > hiX) {
+        hiX = inst.worldX + r;
+      }
+      if (inst.worldY - r < loY) {
+        loY = inst.worldY - r;
+      }
+      if (inst.worldY + r > hiY) {
+        hiY = inst.worldY + r;
+      }
+      if (inst.worldZ - r < loZ) {
+        loZ = inst.worldZ - r;
+      }
+      if (inst.worldZ + r > hiZ) {
+        hiZ = inst.worldZ + r;
+      }
+    }
+    _boundMinX = loX;
+    _boundMinY = loY;
+    _boundMinZ = loZ;
+    _boundMaxX = hiX;
+    _boundMaxY = hiY;
+    _boundMaxZ = hiZ;
+    _boundCenterX = (loX + hiX) * 0.5;
+    _boundCenterY = (loY + hiY) * 0.5;
+    _boundCenterZ = (loZ + hiZ) * 0.5;
+    final dx = (hiX - loX) * 0.5;
+    final dy = (hiY - loY) * 0.5;
+    final dz = (hiZ - loZ) * 0.5;
+    _boundRadius = math.sqrt(dx * dx + dy * dy + dz * dz);
+  }
+
+  /// Cached world-space bounding sphere `(cx, cy, cz, radius)` enclosing all
+  /// instances in this chunk.
+  (double cx, double cy, double cz, double radius) get worldBoundingSphere {
+    _ensureBounds();
+    return (_boundCenterX, _boundCenterY, _boundCenterZ, _boundRadius);
+  }
+
   /// Appends [instance] to this chunk and marks cached buffers dirty.
   void addInstance(StaticMeshInstance3D instance) {
     _instances.add(instance);
+    _boundsDirty = true;
     invalidate();
   }
 
@@ -122,6 +215,7 @@ class StaticMeshChunk3D() {
     _rawTriCount = 0;
     _shadowTriCount = 0;
     visibleTriCount = 0;
+    _boundsDirty = true;
     invalidate();
   }
 
@@ -138,21 +232,51 @@ class StaticMeshChunk3D() {
     required DirectionalLight3D light,
     required Offset canvasOrigin,
     required bool backfaceCulling,
+    SceneEnvironment3D? environment,
+    bool shadowsEnabled = true,
+    double shadowOpacityMultiplier = 1.0,
+    double minTrianglePixelArea = 0.0,
   }) {
     if (_instances.isEmpty) {
       _totalVertices = 0;
       visibleTriCount = 0;
       _shadowTriCount = 0;
+      _lastCulledMicroTriangles = 0;
       return;
     }
 
+    _ensureBounds();
     final lightVer = light.computeSignature();
+    final envSig = environment != null
+        ? environment.computeSignatureForBounds(
+            minX: _boundMinX,
+            minY: _boundMinY,
+            minZ: _boundMinZ,
+            maxX: _boundMaxX,
+            maxY: _boundMaxY,
+            maxZ: _boundMaxZ,
+          )
+        : 0;
+    final shadowSig = shadowsEnabled
+        ? (1000 + (shadowOpacityMultiplier.clamp(0.0, 2.0) * 500.0).round())
+        : 0;
+
     if (_geometryDirty ||
         _cachedBasisVersion != camera.basisVersion ||
-        _cachedLightVersion != lightVer) {
-      _bakeGeometryAndLighting(camera, light);
+        _cachedLightVersion != lightVer ||
+        _cachedEnvSignature != envSig ||
+        _cachedShadowSignature != shadowSig) {
+      _bakeGeometryAndLighting(
+        camera: camera,
+        light: light,
+        environment: environment,
+        shadowsEnabled: shadowsEnabled,
+        shadowOpacityMultiplier: shadowOpacityMultiplier,
+      );
       _cachedBasisVersion = camera.basisVersion;
       _cachedLightVersion = lightVer;
+      _cachedEnvSignature = envSig;
+      _cachedShadowSignature = shadowSig;
       _geometryDirty = false;
       _projectionDirty = true;
     }
@@ -160,6 +284,7 @@ class StaticMeshChunk3D() {
     final persp = camera.perspectiveStrength;
     if (_projectionDirty ||
         _cachedBackfaceCulling != backfaceCulling ||
+        (minTrianglePixelArea - _cachedMinTriangleArea).abs() > 1e-4 ||
         (camera.camWorldX - _cachedCamX).abs() > 1e-3 ||
         (camera.camWorldY - _cachedCamY).abs() > 1e-3 ||
         (persp - _cachedPersp).abs() > 1e-6 ||
@@ -168,8 +293,10 @@ class StaticMeshChunk3D() {
         camera: camera,
         canvasOrigin: canvasOrigin,
         backfaceCulling: backfaceCulling,
+        minTrianglePixelArea: minTrianglePixelArea,
       );
       _cachedBackfaceCulling = backfaceCulling;
+      _cachedMinTriangleArea = minTrianglePixelArea;
       _cachedCamX = camera.camWorldX;
       _cachedCamY = camera.camWorldY;
       _cachedPersp = persp;
@@ -178,13 +305,22 @@ class StaticMeshChunk3D() {
     }
   }
 
-  void _bakeGeometryAndLighting(CameraRig3D camera, DirectionalLight3D light) {
+  void _bakeGeometryAndLighting({
+    required CameraRig3D camera,
+    required DirectionalLight3D light,
+    required SceneEnvironment3D? environment,
+    required bool shadowsEnabled,
+    required double shadowOpacityMultiplier,
+  }) {
     _geometryBakeCount++;
 
     var vTotal = 0;
     var tTotal = 0;
     var sTotal = 0;
     final lz = light.dirZ;
+    final shScale = shadowsEnabled
+        ? shadowOpacityMultiplier.clamp(0.0, 2.0)
+        : 0.0;
     for (var i = 0; i < _instances.length; i++) {
       final inst = _instances[i];
       if (inst.opacity <= 0.0 || inst.mesh.triangleCount == 0) {
@@ -192,7 +328,9 @@ class StaticMeshChunk3D() {
       }
       vTotal += inst.mesh.vertexCount;
       tTotal += inst.mesh.triangleCount;
-      if (inst.castGroundShadow && inst.shadowOpacity > 0.0 && lz > 0.08) {
+      if (inst.castGroundShadow &&
+          inst.shadowOpacity * shScale > 0.0 &&
+          lz > 0.08) {
         sTotal += inst.mesh.triangleCount;
       }
     }
@@ -303,6 +441,8 @@ class StaticMeshChunk3D() {
         final rx = r00 * lxPos + r01 * lyPos + r02 * lzPos;
         final ry = r10 * lxPos + r11 * lyPos + r12 * lzPos;
         final rz = r20 * lxPos + r21 * lyPos + r22 * lzPos + inst.worldZ;
+        final wx = inst.worldX + rx;
+        final wy = inst.worldY + ry;
 
         final snx = normals[pIdx] * invSx;
         final sny = normals[pIdx + 1] * invSy;
@@ -343,18 +483,45 @@ class StaticMeshChunk3D() {
           baseB *= (vc & 0xFF) / 255.0;
         }
 
-        final lr =
-            (baseR * (ambR * ao + sunR * nDotL * difInt + inst.emissive) +
+        var ptR = 0.0;
+        var ptG = 0.0;
+        var ptB = 0.0;
+        if (environment != null && environment.pointLightCount > 0) {
+          (ptR, ptG, ptB) = environment.samplePointLights(
+            wx: wx,
+            wy: wy,
+            wz: rz,
+            nx: wnx,
+            ny: wny,
+            nz: wnz,
+          );
+        }
+
+        var lr =
+            (baseR * (ambR * ao + sunR * nDotL * difInt + ptR + inst.emissive) +
                     rim * skyR)
                 .clamp(0.0, 1.0);
-        final lg =
-            (baseG * (ambG * ao + sunG * nDotL * difInt + inst.emissive) +
+        var lg =
+            (baseG * (ambG * ao + sunG * nDotL * difInt + ptG + inst.emissive) +
                     rim * skyG)
                 .clamp(0.0, 1.0);
-        final lb =
-            (baseB * (ambB * ao + sunB * nDotL * difInt + inst.emissive) +
+        var lb =
+            (baseB * (ambB * ao + sunB * nDotL * difInt + ptB + inst.emissive) +
                     rim * skyB)
                 .clamp(0.0, 1.0);
+
+        if (environment != null && environment.fogEnabled) {
+          final vDepth = camera.viewDepth(wx, wy, rz);
+          final fog = environment.computeFogFactor(
+            viewDepth: vDepth,
+            worldZ: rz,
+          );
+          if (fog > 0.0) {
+            lr += (environment.fogColor.r - lr) * fog;
+            lg += (environment.fogColor.g - lg) * fog;
+            lb += (environment.fogColor.b - lb) * fog;
+          }
+        }
 
         final slot = vCursor++;
         _anchorX[slot] = anchor.dx;
@@ -362,8 +529,8 @@ class StaticMeshChunk3D() {
         _rx[slot] = rx;
         _ry[slot] = ry;
         _rz[slot] = rz;
-        _worldPosX[slot] = inst.worldX + rx;
-        _worldPosY[slot] = inst.worldY + ry;
+        _worldPosX[slot] = wx;
+        _worldPosY[slot] = wy;
         _vertU[slot] = u;
         _vertV[slot] = texV;
         _vertColor[slot] =
@@ -383,8 +550,9 @@ class StaticMeshChunk3D() {
         tCursor++;
       }
 
-      if (inst.castGroundShadow && inst.shadowOpacity > 0.0 && lz > 0.08) {
-        final shadowAlpha = (inst.shadowOpacity * clampedOpacity * 255.0)
+      final effShOpacity = inst.shadowOpacity * shScale;
+      if (inst.castGroundShadow && effShOpacity > 0.0 && lz > 0.08) {
+        final shadowAlpha = (effShOpacity * clampedOpacity * 255.0)
             .round()
             .clamp(0, 255);
         final shadowArgb =
@@ -419,8 +587,10 @@ class StaticMeshChunk3D() {
     required CameraRig3D camera,
     required Offset canvasOrigin,
     required bool backfaceCulling,
+    required double minTrianglePixelArea,
   }) {
     _projectionBakeCount++;
+    _lastCulledMicroTriangles = 0;
 
     for (var v = 0; v < _totalVertices; v++) {
       final (sx, sy) = camera.projectAnchored(
@@ -444,15 +614,18 @@ class StaticMeshChunk3D() {
       final a = _rawTriA[t];
       final b = _rawTriB[t];
       final c = _rawTriC[t];
-      if (backfaceCulling) {
-        final ax = projectedVertX[a];
-        final ay = projectedVertY[a];
-        final cross =
-            (projectedVertX[b] - ax) * (projectedVertY[c] - ay) -
-            (projectedVertY[b] - ay) * (projectedVertX[c] - ax);
-        if (cross <= 1e-3) {
-          continue;
-        }
+      final ax = projectedVertX[a];
+      final ay = projectedVertY[a];
+      final cross =
+          (projectedVertX[b] - ax) * (projectedVertY[c] - ay) -
+          (projectedVertY[b] - ay) * (projectedVertX[c] - ax);
+      if (backfaceCulling && cross <= 1e-3) {
+        continue;
+      }
+      if (minTrianglePixelArea > 0.0 &&
+          cross.abs() * 0.5 < minTrianglePixelArea) {
+        _lastCulledMicroTriangles++;
+        continue;
       }
       visibleTriA[visCount] = a;
       visibleTriB[visCount] = b;

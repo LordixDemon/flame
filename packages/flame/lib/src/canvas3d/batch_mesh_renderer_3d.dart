@@ -5,7 +5,10 @@ import 'dart:ui' as ui;
 import 'package:flame/src/canvas3d/camera_rig_3d.dart';
 import 'package:flame/src/canvas3d/matcap_shader_3d.dart';
 import 'package:flame/src/canvas3d/mesh_3d.dart';
+import 'package:flame/src/canvas3d/mesh_lod_chain_3d.dart';
+import 'package:flame/src/canvas3d/scene_environment_3d.dart';
 import 'package:flame/src/canvas3d/static_mesh_chunk_3d.dart';
+import 'package:flame/src/game/graphics_settings.dart';
 import 'package:flutter/painting.dart';
 
 /// Hemisphere + directional sun lighting configuration for
@@ -76,12 +79,41 @@ class DirectionalLight3D({
 /// immediately after submission.
 class BatchMeshRenderer3D({
   DirectionalLight3D? light,
+  this.environment,
   var bool backfaceCulling = true,
+  this.shadowsEnabled = true,
+  this.shadowOpacityMultiplier = 1.0,
+  this.frustumCullMeshes = true,
+  this.cullScreenBounds,
+  this.minTrianglePixelArea = 0.0,
   int initialVertexCapacity = 512,
   int initialTriangleCapacity = 512,
 }) {
   /// Active scene lighting parameters.
   final DirectionalLight3D light = light ?? DirectionalLight3D();
+
+  /// Optional 3D scene environment supplying SoA [PointLight3D]s and
+  /// atmospheric distance/height fog.
+  SceneEnvironment3D? environment;
+
+  /// Whether ground-projected shadows are emitted (`false` skips shadow
+  /// projection globally, e.g. on `GraphicsQualityTier.low`).
+  bool shadowsEnabled;
+
+  /// Global multiplier applied to every mesh's `shadowOpacity`.
+  double shadowOpacityMultiplier;
+
+  /// Whether [enqueueMesh] and [enqueueStaticChunk] perform `O(1)` 3D bounding-
+  /// sphere frustum culling against [cullScreenBounds].
+  bool frustumCullMeshes;
+
+  /// Optional screen/canvas culling rectangle in the same coordinate space as
+  /// projected mesh vertices (`null` disables frustum culling).
+  Rect? cullScreenBounds;
+
+  /// Minimum projected triangle area in square pixels (`0.0` disables); smaller
+  /// sub-pixel micro-triangles are culled during zoom-out views.
+  double minTrianglePixelArea;
 
   final Paint _meshPaint = Paint()..isAntiAlias = true;
   final Paint _shadowPaint = Paint()..isAntiAlias = true;
@@ -113,10 +145,14 @@ class BatchMeshRenderer3D({
   int _triCount = 0;
   int _shadowTriCount = 0;
   int _enqueuedMeshes = 0;
+  int _frustumCulledMeshes = 0;
+  int _culledMicroTriangles = 0;
 
   int _lastFlushTriangles = 0;
   int _lastFlushShadowTriangles = 0;
   int _lastFlushDrawCalls = 0;
+  int _lastFrustumCulledMeshes = 0;
+  int _lastCulledMicroTriangles = 0;
 
   /// Visible front-facing triangles submitted in the most recent [flushBatch].
   int get lastFlushTriangles => _lastFlushTriangles;
@@ -127,6 +163,14 @@ class BatchMeshRenderer3D({
 
   /// Total `Canvas.drawVertices` calls issued in the most recent [flushBatch].
   int get lastFlushDrawCalls => _lastFlushDrawCalls;
+
+  /// Meshes skipped by 3D bounding-sphere frustum culling in the most recent
+  /// [flushBatch].
+  int get lastFrustumCulledMeshes => _lastFrustumCulledMeshes;
+
+  /// Sub-pixel micro-triangles culled by [minTrianglePixelArea] in the most
+  /// recent [flushBatch].
+  int get lastCulledMicroTriangles => _lastCulledMicroTriangles;
 
   /// Number of [enqueueMesh] calls accumulated in the active batch.
   int get activeEnqueuedMeshes => _enqueuedMeshes;
@@ -198,6 +242,79 @@ class BatchMeshRenderer3D({
     _triCount = 0;
     _shadowTriCount = 0;
     _enqueuedMeshes = 0;
+    _frustumCulledMeshes = 0;
+    _culledMicroTriangles = 0;
+  }
+
+  /// Synchronizes shadow and anti-aliasing toggles from [profile].
+  void applyGraphicsProfile(GraphicsProfile profile) {
+    shadowsEnabled = profile.shadowsEnabled;
+    shadowOpacityMultiplier = profile.shadowOpacityScale;
+    _meshPaint.isAntiAlias = profile.antiAliasing;
+    _shadowPaint.isAntiAlias = profile.antiAliasing;
+  }
+
+  /// Selects the appropriate [Mesh3D] tier from [lodChain] for [camera] and
+  /// enqueues it (returning the selected mesh, or `null` when sub-pixel
+  /// culled).
+  Mesh3D? enqueueLodMesh(
+    MeshLodChain3D lodChain, {
+    required CameraRig3D camera,
+    required double worldX,
+    required double worldY,
+    double worldZ = 0.0,
+    Offset canvasOrigin = Offset.zero,
+    double scaleX = 1.0,
+    double scaleY = 1.0,
+    double scaleZ = 1.0,
+    double yawRad = 0.0,
+    double pitchRad = 0.0,
+    double rollRad = 0.0,
+    double lodBias = 0.0,
+    Color tint = const Color(0xFFFFFFFF),
+    double opacity = 1.0,
+    double emissive = 0.0,
+    Color? rimColor,
+    double rimHighlightIntensity = 0.0,
+    bool castGroundShadow = false,
+    double groundZ = 0.0,
+    Color shadowColor = const Color(0xFF16131F),
+    double shadowOpacity = 0.24,
+  }) {
+    final selected = lodChain.selectMesh(
+      camera: camera,
+      scaleX: scaleX,
+      scaleY: scaleY,
+      scaleZ: scaleZ,
+      lodBias: lodBias,
+    );
+    if (selected == null) {
+      return null;
+    }
+    enqueueMesh(
+      selected,
+      camera: camera,
+      worldX: worldX,
+      worldY: worldY,
+      worldZ: worldZ,
+      canvasOrigin: canvasOrigin,
+      scaleX: scaleX,
+      scaleY: scaleY,
+      scaleZ: scaleZ,
+      yawRad: yawRad,
+      pitchRad: pitchRad,
+      rollRad: rollRad,
+      tint: tint,
+      opacity: opacity,
+      emissive: emissive,
+      rimColor: rimColor,
+      rimHighlightIntensity: rimHighlightIntensity,
+      castGroundShadow: castGroundShadow,
+      groundZ: groundZ,
+      shadowColor: shadowColor,
+      shadowOpacity: shadowOpacity,
+    );
+    return selected;
   }
 
   /// Transforms, shades, culls, and appends [mesh] into the active batch.
@@ -228,6 +345,43 @@ class BatchMeshRenderer3D({
     if (clampedOpacity <= 0.0 || mesh.triangleCount == 0) {
       return;
     }
+
+    final anchorWorld = camera.gridToScreen(worldX, worldY);
+    final effShadowOpacity = (castGroundShadow && shadowsEnabled)
+        ? shadowOpacity * shadowOpacityMultiplier.clamp(0.0, 2.0)
+        : 0.0;
+
+    final cullRect = cullScreenBounds;
+    if (frustumCullMeshes && cullRect != null) {
+      final maxScale = math.max(
+        scaleX.abs(),
+        math.max(scaleY.abs(), scaleZ.abs()),
+      );
+      final midLocalZ = (mesh.minZ + mesh.maxZ) * 0.5 * scaleZ;
+      final (cx, cy) = camera.projectAnchored(
+        anchorWorld: anchorWorld,
+        canvasOrigin: canvasOrigin,
+        rx: 0.0,
+        ry: 0.0,
+        rz: worldZ + midLocalZ,
+      );
+      var radPx = mesh.boundingRadius * maxScale * camera.focalScalePx * 1.35;
+      if (effShadowOpacity > 0.0 && light.dirZ > 0.08) {
+        final maxH = math.max(
+          0.0,
+          worldZ + mesh.maxZ * scaleZ.abs() - groundZ,
+        );
+        radPx += (maxH / light.dirZ) * camera.focalScalePx;
+      }
+      if (cx + radPx < cullRect.left ||
+          cx - radPx > cullRect.right ||
+          cy + radPx < cullRect.top ||
+          cy - radPx > cullRect.bottom) {
+        _frustumCulledMeshes++;
+        return;
+      }
+    }
+
     _enqueuedMeshes++;
 
     final vCount = mesh.vertexCount;
@@ -256,7 +410,6 @@ class BatchMeshRenderer3D({
     final invSy = scaleY.abs() > 1e-6 ? 1.0 / scaleY : 1.0;
     final invSz = scaleZ.abs() > 1e-6 ? 1.0 / scaleZ : 1.0;
 
-    final anchorWorld = camera.gridToScreen(worldX, worldY);
     final positions = mesh.positions;
     final normals = mesh.normals;
     final aoList = mesh.ambientOcclusion;
@@ -351,26 +504,51 @@ class BatchMeshRenderer3D({
       final addRimG = fresnel > 0.0 ? rimColor!.g * fresnel : 0.0;
       final addRimB = fresnel > 0.0 ? rimColor!.b * fresnel : 0.0;
 
-      final lr =
-          (baseR * (ambR * ao + sunR * nDotL * difInt + emissive) +
+      final env = environment;
+      var ptR = 0.0;
+      var ptG = 0.0;
+      var ptB = 0.0;
+      if (env != null && env.pointLightCount > 0) {
+        (ptR, ptG, ptB) = env.samplePointLights(
+          wx: worldX + rx,
+          wy: worldY + ry,
+          wz: rz,
+          nx: wnx,
+          ny: wny,
+          nz: wnz,
+        );
+      }
+
+      var lr =
+          (baseR * (ambR * ao + sunR * nDotL * difInt + ptR + emissive) +
                   rim * skyR +
                   addRimR)
               .clamp(0.0, 1.0);
-      final lg =
-          (baseG * (ambG * ao + sunG * nDotL * difInt + emissive) +
+      var lg =
+          (baseG * (ambG * ao + sunG * nDotL * difInt + ptG + emissive) +
                   rim * skyG +
                   addRimG)
               .clamp(0.0, 1.0);
-      final lb =
-          (baseB * (ambB * ao + sunB * nDotL * difInt + emissive) +
+      var lb =
+          (baseB * (ambB * ao + sunB * nDotL * difInt + ptB + emissive) +
                   rim * skyB +
                   addRimB)
               .clamp(0.0, 1.0);
 
+      final vDepth = camera.viewDepth(worldX + rx, worldY + ry, rz);
+      if (env != null && env.fogEnabled) {
+        final fog = env.computeFogFactor(viewDepth: vDepth, worldZ: rz);
+        if (fog > 0.0) {
+          lr += (env.fogColor.r - lr) * fog;
+          lg += (env.fogColor.g - lg) * fog;
+          lb += (env.fogColor.b - lb) * fog;
+        }
+      }
+
       final outSlot = baseVertex + v;
       _vertX[outSlot] = sx;
       _vertY[outSlot] = sy;
-      _vertDepth[outSlot] = camera.viewDepth(worldX + rx, worldY + ry, rz);
+      _vertDepth[outSlot] = vDepth;
       _vertU[outSlot] = u;
       _vertV[outSlot] = texV;
       _vertColor[outSlot] =
@@ -385,21 +563,24 @@ class BatchMeshRenderer3D({
     final mTriCount = indices.length ~/ 3;
     _ensureTriangleCapacity(_triCount + mTriCount);
 
+    final minArea = minTrianglePixelArea;
     for (var t = 0; t < mTriCount; t++) {
       final idxBase = t * 3;
       final a = baseVertex + indices[idxBase];
       final b = baseVertex + indices[idxBase + 1];
       final c = baseVertex + indices[idxBase + 2];
 
-      if (backfaceCulling) {
-        final ax = _vertX[a];
-        final ay = _vertY[a];
-        final cross =
-            (_vertX[b] - ax) * (_vertY[c] - ay) -
-            (_vertY[b] - ay) * (_vertX[c] - ax);
-        if (cross <= 1e-3) {
-          continue;
-        }
+      final ax = _vertX[a];
+      final ay = _vertY[a];
+      final cross =
+          (_vertX[b] - ax) * (_vertY[c] - ay) -
+          (_vertY[b] - ay) * (_vertX[c] - ax);
+      if (backfaceCulling && cross <= 1e-3) {
+        continue;
+      }
+      if (minArea > 0.0 && cross.abs() * 0.5 < minArea) {
+        _culledMicroTriangles++;
+        continue;
       }
 
       final slot = _triCount++;
@@ -410,9 +591,9 @@ class BatchMeshRenderer3D({
       _triOrder[slot] = slot;
     }
 
-    if (castGroundShadow && shadowOpacity > 0.0 && lz > 0.08) {
+    if (effShadowOpacity > 0.0 && lz > 0.08) {
       _ensureShadowCapacity(_shadowTriCount + mTriCount);
-      final shadowAlpha = (shadowOpacity * clampedOpacity * 255.0)
+      final shadowAlpha = (effShadowOpacity * clampedOpacity * 255.0)
           .round()
           .clamp(0, 255);
       final shadowArgb =
@@ -471,12 +652,37 @@ class BatchMeshRenderer3D({
     required CameraRig3D camera,
     Offset canvasOrigin = Offset.zero,
   }) {
+    final cullRect = cullScreenBounds;
+    if (frustumCullMeshes && cullRect != null && chunk.instanceCount > 0) {
+      final (cx3, cy3, cz3, rad3) = chunk.worldBoundingSphere;
+      final (sx, sy) = camera.projectAnchored(
+        anchorWorld: camera.gridToScreen(cx3, cy3),
+        canvasOrigin: canvasOrigin,
+        rx: 0.0,
+        ry: 0.0,
+        rz: cz3,
+      );
+      final radPx = rad3 * camera.focalScalePx * 1.45;
+      if (sx + radPx < cullRect.left ||
+          sx - radPx > cullRect.right ||
+          sy + radPx < cullRect.top ||
+          sy - radPx > cullRect.bottom) {
+        _frustumCulledMeshes += chunk.instanceCount;
+        return;
+      }
+    }
+
     chunk.prepare(
       camera: camera,
       light: light,
+      environment: environment,
+      shadowsEnabled: shadowsEnabled,
+      shadowOpacityMultiplier: shadowOpacityMultiplier,
+      minTrianglePixelArea: minTrianglePixelArea,
       canvasOrigin: canvasOrigin,
       backfaceCulling: backfaceCulling,
     );
+    _culledMicroTriangles += chunk.lastCulledMicroTriangles;
     final vCount = chunk.vertexCount;
     final tCount = chunk.visibleTriCount;
     if (vCount == 0 || tCount == 0) {
@@ -570,6 +776,8 @@ class BatchMeshRenderer3D({
     _lastFlushTriangles = _triCount;
     _lastFlushShadowTriangles = _shadowTriCount;
     _lastFlushDrawCalls = 0;
+    _lastFrustumCulledMeshes = _frustumCulledMeshes;
+    _lastCulledMicroTriangles = _culledMicroTriangles;
 
     const maxTrisPerChunk = 21840; // 21840 * 3 = 65520 <= 65535 Uint16 limit
 
@@ -671,5 +879,7 @@ class BatchMeshRenderer3D({
     _triCount = 0;
     _shadowTriCount = 0;
     _enqueuedMeshes = 0;
+    _frustumCulledMeshes = 0;
+    _culledMicroTriangles = 0;
   }
 }

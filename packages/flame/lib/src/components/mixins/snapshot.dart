@@ -1,7 +1,9 @@
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flame/components.dart';
 import 'package:flame/extensions.dart';
+import 'package:flame/game.dart';
 import 'package:meta/meta.dart';
 
 /// Caching strategy used by [Snapshot] when [Snapshot.renderSnapshot] is true.
@@ -10,8 +12,24 @@ enum SnapshotCacheMode() {
   picture,
 
   /// Rasterizes the snapshot once into a GPU [Image] texture at
-  /// [Snapshot.snapshotPixelRatio] and blits it via a single textured quad.
+  /// [Snapshot.effectiveSnapshotPixelRatio] and blits it via a single textured
+  /// quad.
   rasterImage,
+}
+
+/// Resolution scaling policy for [SnapshotCacheMode.rasterImage].
+enum SnapshotResolutionPolicy() {
+  /// Uses the fixed [Snapshot.snapshotPixelRatio] as-is.
+  manual,
+
+  /// Multiplies [Snapshot.snapshotPixelRatio] by live `Game.devicePixelRatio`
+  /// so cached textures stay Retina-crisp across displays.
+  autoHiDpi,
+
+  /// Multiplies [Snapshot.snapshotPixelRatio] by live `Game.devicePixelRatio`
+  /// AND quantized camera zoom buckets with hysteresis so zoomed-in views stay
+  /// sharp without re-baking on every smooth zoom frame.
+  autoHiDpiAndZoom,
 }
 
 /// A mixin that enables caching a component and all its children. If
@@ -25,9 +43,36 @@ mixin Snapshot on PositionComponent {
   static final Matrix4 _inverseScratch = Matrix4.identity();
   static final Paint _rasterPaint = Paint()..filterQuality = FilterQuality.low;
 
+  static const List<double> defaultZoomBuckets = <double>[
+    0.5,
+    1.0,
+    1.5,
+    2.0,
+    3.0,
+    4.0,
+  ];
+
   bool _renderSnapshot = true;
   SnapshotCacheMode _snapshotCacheMode = SnapshotCacheMode.picture;
+  SnapshotResolutionPolicy _snapshotResolutionPolicy =
+      SnapshotResolutionPolicy.manual;
   double _snapshotPixelRatio = 1.0;
+  double _activeZoomBucket = 1.0;
+  double _bakedEffectiveRatio = 1.0;
+  int _rasterBakeCount = 0;
+
+  /// Hysteresis band (`0.0 .. 0.45`) preventing rapid raster re-bakes when
+  /// camera zoom oscillates near a bucket boundary.
+  double zoomBucketHysteresis = 0.12;
+
+  /// Quantized zoom levels evaluated when [snapshotResolutionPolicy] is
+  /// [SnapshotResolutionPolicy.autoHiDpiAndZoom].
+  List<double> snapshotZoomBuckets = defaultZoomBuckets;
+
+  /// Maximum allowed width or height (in physical pixels) of a rasterized
+  /// snapshot texture so large world backdrops never exceed GPU texture limits.
+  int maxSnapshotTextureDimension = 4096;
+
   Rect? _snapshotRegion;
 
   Picture? _picture;
@@ -35,6 +80,31 @@ mixin Snapshot on PositionComponent {
   Rect _rasterSrcRect = Rect.zero;
   Rect _rasterDstRect = Rect.zero;
   int _snapshotDisposalCount = 0;
+  int _estimatedGpuBytes = 0;
+
+  /// Resolution policy applied when [snapshotCacheMode] is
+  /// [SnapshotCacheMode.rasterImage].
+  SnapshotResolutionPolicy get snapshotResolutionPolicy =>
+      _snapshotResolutionPolicy;
+  set snapshotResolutionPolicy(SnapshotResolutionPolicy policy) {
+    if (_snapshotResolutionPolicy != policy) {
+      _snapshotResolutionPolicy = policy;
+      _disposeRasterImage();
+    }
+  }
+
+  /// Currently selected quantized camera zoom bucket (`1.0` in non-zoom modes).
+  double get activeZoomBucket => _activeZoomBucket;
+
+  /// Most recently baked effective raster pixel ratio.
+  double get effectiveSnapshotPixelRatio => _bakedEffectiveRatio;
+
+  /// Estimated RGBA8 GPU byte usage of the active [cachedSnapshotImage].
+  int get estimatedSnapshotGpuBytes => _estimatedGpuBytes;
+
+  /// Number of times [cachedSnapshotImage] was rasterized.
+  @visibleForTesting
+  int get snapshotRasterBakeCount => _rasterBakeCount;
 
   /// Caching backend used when [renderSnapshot] is `true`.
   SnapshotCacheMode get snapshotCacheMode => _snapshotCacheMode;
@@ -98,11 +168,26 @@ mixin Snapshot on PositionComponent {
     return _picture!;
   }
 
-  void _disposeRasterImage() {
+  void _onBudgetEvicted() {
     final image = _rasterImage;
     if (image != null) {
       image.dispose();
       _rasterImage = null;
+      _estimatedGpuBytes = 0;
+      _snapshotDisposalCount++;
+    }
+  }
+
+  void _disposeRasterImage() {
+    final game = findGame();
+    if (game is FlameGame) {
+      game.resourceBudget.unregisterSurface(this);
+    }
+    final image = _rasterImage;
+    if (image != null) {
+      image.dispose();
+      _rasterImage = null;
+      _estimatedGpuBytes = 0;
       _snapshotDisposalCount++;
     }
   }
@@ -155,25 +240,80 @@ mixin Snapshot on PositionComponent {
     return _picture!;
   }
 
+  double _resolveTargetPixelRatio() {
+    if (_snapshotResolutionPolicy == SnapshotResolutionPolicy.manual) {
+      _activeZoomBucket = 1.0;
+      return _snapshotPixelRatio;
+    }
+    final game = findGame();
+    final dpr = game?.devicePixelRatio ?? 1.0;
+    if (_snapshotResolutionPolicy == SnapshotResolutionPolicy.autoHiDpi) {
+      _activeZoomBucket = 1.0;
+      return (_snapshotPixelRatio * dpr).clamp(0.25, 8.0);
+    }
+
+    // SnapshotResolutionPolicy.autoHiDpiAndZoom with hysteresis
+    final camZoom =
+        CameraComponent.currentCamera?.viewfinder.zoom ??
+        (game is FlameGame ? game.camera.viewfinder.zoom : 1.0);
+    final buckets = snapshotZoomBuckets.isEmpty
+        ? defaultZoomBuckets
+        : snapshotZoomBuckets;
+    final h = zoomBucketHysteresis.clamp(0.0, 0.45);
+    var nextBucket = buckets.first;
+    for (var i = 0; i < buckets.length; i++) {
+      final candidate = buckets[i];
+      final threshold = candidate <= _activeZoomBucket
+          ? candidate * (1.0 - h)
+          : candidate * (1.0 + h);
+      if (camZoom >= threshold) {
+        nextBucket = candidate;
+      }
+    }
+    // Always snap upward immediately if zoom exceeds the highest bucket.
+    if (camZoom >= buckets.last) {
+      nextBucket = buckets.last;
+    }
+    _activeZoomBucket = nextBucket;
+    return (_snapshotPixelRatio * dpr * nextBucket).clamp(0.25, 8.0);
+  }
+
   void _ensureRasterImage() {
-    if (_rasterImage != null) {
+    final desiredRatio = _resolveTargetPixelRatio();
+    if (_rasterImage != null &&
+        (desiredRatio - _bakedEffectiveRatio).abs() <= 1e-3) {
+      final game = findGame();
+      if (game is FlameGame) {
+        game.resourceBudget.touchSurface(this);
+      }
       return;
+    }
+    if (_rasterImage != null) {
+      _disposeRasterImage();
     }
     if (_picture == null) {
       takeSnapshot();
     }
     final region = _snapshotRegion ?? Rect.fromLTWH(0.0, 0.0, size.x, size.y);
-    final dpr = _snapshotPixelRatio;
-    final pixelW = (region.width * dpr).ceil();
-    final pixelH = (region.height * dpr).ceil();
-    if (pixelW <= 0 || pixelH <= 0) {
+    if (region.width <= 0.0 || region.height <= 0.0) {
       return;
     }
+    final maxDim = math.max(16, maxSnapshotTextureDimension);
+    final maxAllowedScale = math.min(
+      maxDim / region.width,
+      maxDim / region.height,
+    );
+    final dpr = math.min(desiredRatio, maxAllowedScale);
+    final pixelW = math.min(maxDim, math.max(1, (region.width * dpr).ceil()));
+    final pixelH = math.min(maxDim, math.max(1, (region.height * dpr).ceil()));
+
+    final scaleX = pixelW / region.width;
+    final scaleY = pixelH / region.height;
 
     final recorder = PictureRecorder();
     final innerCanvas = Canvas(recorder);
-    if (dpr != 1.0) {
-      innerCanvas.scale(dpr, dpr);
+    if (scaleX != 1.0 || scaleY != 1.0) {
+      innerCanvas.scale(scaleX, scaleY);
     }
     if (region.left != 0.0 || region.top != 0.0) {
       innerCanvas.translate(-region.left, -region.top);
@@ -182,6 +322,12 @@ mixin Snapshot on PositionComponent {
     final scaledPicture = recorder.endRecording();
     try {
       _rasterImage = scaledPicture.toImageSync(pixelW, pixelH);
+      _bakedEffectiveRatio = desiredRatio;
+      _rasterBakeCount++;
+      _estimatedGpuBytes = SceneResourceBudget.estimateRgbaBytes(
+        pixelW,
+        pixelH,
+      );
       _rasterSrcRect = Rect.fromLTWH(
         0.0,
         0.0,
@@ -189,6 +335,14 @@ mixin Snapshot on PositionComponent {
         pixelH.toDouble(),
       );
       _rasterDstRect = region;
+      final game = findGame();
+      if (game is FlameGame) {
+        game.resourceBudget.registerSurface(
+          this,
+          bytes: _estimatedGpuBytes,
+          onEvict: _onBudgetEvicted,
+        );
+      }
     } finally {
       scaledPicture.dispose();
     }

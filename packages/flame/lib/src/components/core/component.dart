@@ -74,6 +74,7 @@ class Component({
   int? priority,
   double? sortKey,
   bool ticksEnabled = true,
+  GraphicsQualityTier? minQualityTier,
 
   /// A key that can be used to identify this component in the tree.
   ///
@@ -200,6 +201,55 @@ class Component({
   static const int _removed = 16;
 
   bool _ticksDisabled = false;
+  GraphicsQualityTier? _minQualityTier = minQualityTier;
+
+  /// Monotonically increasing counter bumped on component list structural
+  /// mutations.
+  @internal
+  static int get structureMutationCount => ComponentList._structureVersion;
+
+  /// Monotonically increasing counter bumped whenever any `Component.sortKey`
+  /// changes.
+  @internal
+  static int get sortKeyMutationCount => ComponentList._sortKeyVersion;
+
+  /// Invalidates all cached flattened update traversal lists across mounted
+  /// roots (used when quality tiers or offscreen tick gates change).
+  @internal
+  static void invalidateFlatTraversalLists() {
+    ComponentList._structureVersion++;
+  }
+
+  /// Optional minimum [GraphicsQualityTier] required for this component (and
+  /// its subtree) to participate in `updateTree` and `renderTree`.
+  ///
+  /// When `null` (default), the component is active at all quality tiers with
+  /// zero runtime overhead.
+  GraphicsQualityTier? get minQualityTier => _minQualityTier;
+  set minQualityTier(GraphicsQualityTier? value) {
+    if (_minQualityTier == value) {
+      return;
+    }
+    _minQualityTier = value;
+    if (isMounted) {
+      ComponentList._structureVersion++;
+      findGame()?.markSceneDirty();
+    }
+  }
+
+  /// Returns `true` when [minQualityTier] is `null` or satisfied by the active
+  /// `FlameGame.graphics` tier.
+  bool get isActiveForCurrentGraphicsTier {
+    final minTier = _minQualityTier;
+    if (minTier == null) {
+      return true;
+    }
+    final game = findGame();
+    if (game is FlameGame) {
+      return game.graphics.meetsTier(minTier);
+    }
+    return true;
+  }
 
   /// Whether this component participates in per-frame [update] (and
   /// [HasFixedUpdate.fixedUpdate]) ticks.
@@ -425,6 +475,10 @@ class Component({
   /// This component's index within [_containerList]'s backing list, or -1
   /// when the component is not in any list. Maintained by [ComponentList].
   int _containerIndex = -1;
+
+  /// Internal sibling order index within the parent's [ComponentList].
+  @internal
+  int get parentOrderIndex => _containerIndex;
 
   /// Restores the ordering of the [children] after values that their ordering
   /// depends on have changed.
@@ -701,7 +755,12 @@ class Component({
   /// override its [CustomTraversal.updateSubtree] method.
   @nonVirtual
   void updateTree(double dt) {
-    if (_isTraversalBarrier) {
+    if (!isActiveForCurrentGraphicsTier) {
+      return;
+    }
+    if (hasOffscreenTickGate) {
+      runGatedUpdateSubtree(dt);
+    } else if (_isTraversalBarrier) {
       (this as CustomTraversal).updateSubtree(dt);
     } else {
       _defaultUpdateSubtree(dt);
@@ -713,11 +772,39 @@ class Component({
   /// plain field load instead of a type check.
   bool _isTraversalBarrier = false;
 
+  /// Internal flag raised when `CullWhenOffscreen.offscreenTickPolicy` enables
+  /// offscreen tick decimation or sleep.
+  @internal
+  bool hasOffscreenTickGate = false;
+
+  /// Internal subtree update hook overridden by `CullWhenOffscreen` when
+  /// [hasOffscreenTickGate] is `true`.
+  @internal
+  void runGatedUpdateSubtree(double dt) {
+    if (_isTraversalBarrier) {
+      (this as CustomTraversal).updateSubtree(dt);
+    } else {
+      _defaultUpdateSubtree(dt);
+    }
+  }
+
+  /// Internal helper allowing `CullWhenOffscreen` to invoke standard traversal.
+  @internal
+  void runDefaultOrCustomSubtree(double dt) {
+    if (_isTraversalBarrier) {
+      (this as CustomTraversal).updateSubtree(dt);
+    } else {
+      _defaultUpdateSubtree(dt);
+    }
+  }
+
   /// Runs one update pass over a flattened traversal list produced by
   /// [_collectFlatListsInto].
   static void _updateFlatList(List<Component> list, double dt) {
     for (final component in list) {
-      if (component._isTraversalBarrier) {
+      if (component.hasOffscreenTickGate) {
+        component.runGatedUpdateSubtree(dt);
+      } else if (component._isTraversalBarrier) {
         (component as CustomTraversal).updateSubtree(dt);
       } else if (component.ticksEnabled) {
         component.update(dt);
@@ -738,13 +825,13 @@ class Component({
     }
     children._compact();
     for (final child in children._elements) {
-      if (child == null) {
+      if (child == null || !child.isActiveForCurrentGraphicsTier) {
         continue;
       }
       if (child is HasFixedUpdate && child.ticksEnabled) {
         fixedOut.add(child);
       }
-      if (child._isTraversalBarrier) {
+      if (child._isTraversalBarrier || child.hasOffscreenTickGate) {
         out.add(child);
         child._collectFixedOnlyInto(fixedOut);
       } else {
@@ -763,7 +850,7 @@ class Component({
     }
     children._compact();
     for (final child in children._elements) {
-      if (child == null) {
+      if (child == null || !child.isActiveForCurrentGraphicsTier) {
         continue;
       }
       if (child is HasFixedUpdate && child.ticksEnabled) {
@@ -828,6 +915,9 @@ class Component({
   void afterChildrenRendered(Canvas canvas) {}
 
   void renderTree(Canvas canvas) {
+    if (!isActiveForCurrentGraphicsTier) {
+      return;
+    }
     final context = renderContext;
     List<ComponentRenderContext>? renderContexts;
     if (context != null) {

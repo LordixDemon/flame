@@ -228,8 +228,13 @@ class MyGame extends FlameGame {
 }
 ```
 
-Note that the background color can't change dynamically while the game is running, but you could
-just draw a background that covers the whole canvas if you would want it to change dynamically.
+To change the background color dynamically at runtime with **`0` `GameWidget` rebuilds**, assign a
+new color to `game.backgroundColorValue.value` (backed by an isolated `ValueListenableBuilder` +
+`ColoredBox` inside `GameWidget`):
+
+```dart
+game.backgroundColorValue.value = const Color(0xFF0B1020);
+```
 
 
 ## SingleGameInstance mixin
@@ -372,3 +377,71 @@ final queue = RenderWarmupQueue()
 
 await warmupRenderPipelines(queue, tasksPerYield: 8);
 ```
+
+
+## High-Resolution `DisplayMetrics`, `GraphicsSettingsController`, `FpsPolicy` & `FrameBudgetScheduler`
+
+`FlameGame` also integrates:
+
+- **`game.displayMetrics` (`DisplayMetrics`)**: Live `devicePixelRatio`, `physicalSize`, and
+  `refreshRate` synchronized automatically from `FlutterView` on metric changes.
+- **`game.graphics` (`GraphicsSettingsController` & `DynamicQualityGovernor`)**: Preset quality
+  tiers (`low`, `medium`, `high`, `ultra`), custom `GraphicsProfile` overrides, and hysteresis-driven
+  Dynamic Resolution Scaling (DRS).
+- **`game.fpsPolicy` (`FpsPolicy`), `renderTargetFps`, and `idleRenderMode` (`IdleRenderMode`)**:
+  Exact integer harmonic VSync divisors (`60` FPS on `120`/`240 Hz`, `72` FPS on `144 Hz`),
+  decoupled simulation vs render rates with `renderInterpolationAlpha`, and zero-raster dirty-scene
+  rendering (`skippedCleanPaints`).
+- **`game.resourceBudget` (`SceneResourceBudget`) & `game.frameScheduler`
+  (`FrameBudgetScheduler`)**: Bounded LRU eviction for cached GPU `Snapshot` surfaces and
+  frame-budgeted background task execution with anti-starvation guarantees.
+
+For full API details and examples, see
+[High-Resolution Rendering, Graphics Quality & FPS Management](rendering/graphics_and_fps.md).
+
+
+## HiDPI Display Metrics, Graphics Quality Tiers, DRS, and Harmonic FPS Control
+
+- **Live HiDPI Display Metrics (`DisplayMetrics`, `devicePixelRatio`, `maxDevicePixelRatio`)**:
+  `GameRenderBox` automatically tracks the hosting `FlutterView`'s `devicePixelRatio` and
+  `display.refreshRate` across multi-monitor moves and browser zoom changes, invoking
+  `onDisplayMetricsChanged(double devicePixelRatio, double refreshRate)`. Set
+  `game.maxDevicePixelRatio` (or configure `GraphicsProfile.maxDevicePixelRatio`) to cap internal
+  render density on ultra-high-DPI 3x–4x panels, inspect `physicalCanvasSize`, or override metrics
+  deterministically in headless tests via `overrideDisplayMetrics(...)`.
+- **Reactive Graphics Quality Management (`GraphicsSettingsController`, `GraphicsQualityTier`,
+  `GraphicsProfile`)**: `FlameGame.graphics` exposes `low`, `medium`, `high`, `ultra`, and `custom`
+  quality tiers controlling `renderScale`, `maxDevicePixelRatio`, `shadowsEnabled`,
+  `postProcessEnabled`, `bloomEnabled`, `particleDensity`, `lodBias`, `msaaSamples`, and
+  `antiAlias`. Changing `game.graphics.setTier(...)` updates cameras, post-process pipelines,
+  particle emitters, 3D batchers, and `minQualityTier`-gated components without rebuilding widgets.
+- **Dynamic Resolution & Particle Governor (`DynamicQualityGovernor`)**: Enable
+  `game.qualityGovernor.enabled = true` to monitor smoothed frame spans against target frame budgets
+  with hysteresis and cooldowns (`overBudgetFramesThreshold`, `underBudgetFramesThreshold`,
+  `cooldownSeconds`), stepping `effectiveRenderScale` and `effectiveParticleDensity` down during
+  GPU spikes and recovering smoothly when headroom returns.
+- **Zero-Rebuild `backgroundColorValue` & `SceneResourceBudget`**: Mutate
+  `game.backgroundColorValue` (`backgroundColorListenable`) to update `GameWidget`'s backdrop color
+  via an isolated `ValueListenableBuilder` without rebuilding `GameWidgetState`. Configure
+  `game.resourceBudget.maxBudgetBytes` (`SceneResourceBudget`) to track offscreen RGBA8 VRAM usage
+  and automatically evict least-recently-used `Snapshot` raster surfaces via `trimToBudget()`.
+- **Harmonic VSync Divisor & `FpsPolicy`**: Configure `game.fpsPolicy` (`FpsPolicy.powerSave30()`,
+  `FpsPolicy.locked60()`, `FpsPolicy.harmonicHalf()`, `FpsPolicy.nativeDisplay()`,
+  `FpsPolicy.uncapped()`) so `GameLoop` uses an exact integer VSync beat divisor (e.g. `2` for 60
+  FPS on 120 Hz or 72 FPS on 144 Hz, `4` for 60 FPS on 240 Hz), eliminating fractional accumulator
+  judder.
+- **Decoupled Simulation vs Render Rate (`renderTargetFps` & `renderInterpolationAlpha`)**: Cap GPU
+  rasterization rate via `game.renderTargetFps` independently of `targetFps` / `fixedTimeStep`,
+  inspecting `executedUpdateTicks`, `executedRenderFrames`, `skippedRenderFrames`, and
+  `renderInterpolationAlpha`.
+- **Dirty-Scene On-Demand Rendering (`IdleRenderMode`)**: Set
+  `game.idleRenderMode = IdleRenderMode.onDemandWhenIdle` (or `IdleRenderMode.onDemand`) to skip
+  `markNeedsPaint()` (`skippedCleanPaints`) whenever transforms, component structure, camera,
+  effects, and particles are stationary, while keeping `update(dt)` timers active. Call
+  `game.markSceneDirty()` for custom procedural canvas changes.
+- **Hardware `FrameTiming` Percentiles & `FrameBudgetScheduler`**: `RenderFrameTelemetry` and
+  `HasFrameTelemetry` capture `SchedulerBinding` UI/raster durations into zero-allocation ring
+  buffers (`smoothedBuildMs`, `smoothedRasterMs`, `p95FrameMs`, `p99FrameMs`, `jankFrameCount`,
+  `isGpuBound`), while `game.scheduleFrameTask(...)` (`FrameBudgetScheduler`) amortizes scene
+  preparation callbacks across frames within remaining microsecond budgets with anti-starvation
+  guarantees (`maxStarvationFrames`).

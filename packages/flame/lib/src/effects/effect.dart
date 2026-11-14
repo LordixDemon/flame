@@ -127,10 +127,12 @@ abstract class Effect(
       final progress = controller.progress;
       apply(progress);
       _lastProgress = progress;
+      findGame()?.markSceneDirty();
     }
     if (!_finished && controller.completed) {
       _finished = true;
       onFinish();
+      findGame()?.markSceneDirty();
       if (removeOnFinish) {
         removeFromParent();
       }

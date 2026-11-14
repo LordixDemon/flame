@@ -211,6 +211,13 @@ class CrystalBallGame extends FlameGame<CrystalBallGameWorld> {
   tone-mapping + vignette/bokeh, caches intermediate offscreen GPU `ui.Image` ping-pong targets
   across frames when resolution is unchanged and exposes `disposeResources()` for deterministic GPU
   texture cleanup in `FlameGame.onRemove()`.
+- **`PostProcessPipeline` & `PostProcessStage`**: Declarative quality-aware post-processing chain
+  supporting per-stage `minQualityTier`, `activePredicate(GraphicsProfile)`, `resolutionScale` (e.g.
+  `0.5` half-res bloom), automatic `DisplayMetrics.devicePixelRatio` propagation, and a
+  zero-`toImageSync` fast bypass (`bypassedLastFrame`) when all stages are inactive.
+- **`ContrastAdaptiveSharpenPostProcess`**: Single-pass 5-tap GPU sharpening stage (plus reusable
+  GLSL helper `ContrastAdaptiveSharpenHelper.glslFunction`) to restore crisp detail when
+  `camera.worldRenderScale < 1.0`.
 
 Similarly, when applying `PaintDecorator.tint(...)`, `PaintDecorator.grayscale(...)`, or
 `PaintDecorator.blur(...)` to a `PositionComponent`, set `component.decoratorBounds` to a tight
@@ -226,3 +233,18 @@ In this code:
   group.
 
 You can explore the source code [on GitHub](https://github.com/flame-engine/flame/tree/main/examples/games/crystal_ball).
+
+
+## Live HiDPI Pixel Ratio Sync, Contrast-Adaptive Sharpening, and `PostProcessPipeline`
+
+- **Live HiDPI `pixelRatio` Sync (`autoSyncDevicePixelRatio`)**: Whenever `pixelRatio` is omitted at
+  construction, `PostProcess` automatically synchronizes its offscreen target density with live
+  `Game.devicePixelRatio * CameraComponent.effectiveWorldRenderScale` changes across display moves.
+- **`ContrastAdaptiveSharpenPostProcess` (`ContrastAdaptiveSharpenHelper`)**: Restores crisp edges
+  and typography when rendering below native resolution (`worldRenderScale < 1.0` or DRS step-down)
+  using either a custom fragment shader or a zero-shader Impeller-safe unsharp luminance composite.
+- **Declarative Quality-Aware `PostProcessPipeline` (`PostProcessStage`)**: Chains named
+  `PostProcessStage`s (`minQualityTier`, `resolutionScale`, `enabled`, `activePredicate`). Stages
+  below `FlameGame.graphics.tier` are skipped automatically, and when **zero** stages are active
+  (`bypassedLastFrame == true`), the pipeline renders the subtree directly onto the canvas with
+  **zero** offscreen `Picture.toImageSync` allocations.

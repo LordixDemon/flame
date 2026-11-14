@@ -6,6 +6,7 @@ custom shapes. Flame builds on Flutter's
 for loading sprite sheets, animating frames, rendering text with bitmap fonts, applying visual
 decorators, and running post-processing shaders.
 
+- [High-Resolution, Graphics Quality & FPS](graphics_and_fps.md)
 - [Canvas3D (3D Meshes & Picking)](canvas3d.md)
 - [Post Processing and Shaders](post_processing.md)
 - [Colors and Palette](palette.md)
@@ -18,6 +19,7 @@ decorators, and running post-processing shaders.
 ```{toctree}
 :hidden:
 
+High-Res, Graphics & FPS        <graphics_and_fps.md>
 Canvas3D (3D Meshes & Picking)  <canvas3d.md>
 Post Processing and Shaders     <post_processing.md>
 Colors and Palette              <palette.md>

@@ -5,8 +5,9 @@ export 'src/camera/behaviors/camera_billboard.dart'
 export 'src/camera/behaviors/follow_behavior.dart' show FollowBehavior;
 export 'src/camera/behaviors/tactile_camera_controller.dart'
     show TactileCameraController;
-export 'src/camera/camera_component.dart' show CameraComponent;
+export 'src/camera/camera_component.dart' show CameraComponent, PixelSnapMode;
 export 'src/camera/render_pass.dart' show MultiPassComponent, RenderPass;
+export 'src/camera/scene_layer_component.dart' show SceneLayerComponent;
 export 'src/camera/scene_transition.dart'
     show
         CircularRevealSceneTransition,
@@ -23,3 +24,4 @@ export 'src/camera/viewports/fixed_resolution_viewport.dart'
 export 'src/camera/viewports/fixed_size_viewport.dart' show FixedSizeViewport;
 export 'src/camera/viewports/max_viewport.dart' show MaxViewport;
 export 'src/camera/world.dart' show World;
+export 'src/camera/world_spatial_index.dart' show WorldSpatialIndex;

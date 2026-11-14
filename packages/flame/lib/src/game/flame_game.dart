@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flame/components.dart';
@@ -7,9 +8,13 @@ import 'package:flame/src/components/core/component.dart';
 import 'package:flame/src/devtools/connectors/hot_reload_connector.dart';
 import 'package:flame/src/devtools/dev_tools_service.dart';
 import 'package:flame/src/effects/provider_interfaces.dart';
+import 'package:flame/src/game/frame_budget_scheduler.dart';
 import 'package:flame/src/game/game.dart';
+import 'package:flame/src/game/graphics_settings.dart';
 import 'package:flame/src/game/render_warmup_queue.dart';
+import 'package:flame/src/game/scene_resource_budget.dart';
 import 'package:flame/src/game/telemetry_canvas.dart';
+import 'package:flame/src/game/transform2d.dart';
 import 'package:flutter/foundation.dart';
 // TODO(spydon): Remove this import when flutter version is updated to 3.35.0
 // ignore: unnecessary_import
@@ -121,6 +126,97 @@ class FlameGame<W extends World>({
   }
 
   CameraComponent _camera = camera ?? CameraComponent();
+
+  /// Declarative graphics preset, resolution scaling, shadow, particle-density,
+  /// and LOD controller for this game.
+  late final GraphicsSettingsController graphics = GraphicsSettingsController()
+    ..addListener(_handleGraphicsControllerChange);
+
+  /// Dynamic Resolution & Particle Scaling (DRS) governor shorthand
+  /// (`graphics.governor`).
+  DynamicQualityGovernor get qualityGovernor => graphics.governor;
+
+  /// GPU byte budget tracker and LRU cache evictor for offscreen `Snapshot`
+  /// and static layer surfaces.
+  final SceneResourceBudget resourceBudget = SceneResourceBudget();
+
+  /// Frame-budgeted micro-task scheduler amortizing heavy scene preparation
+  /// callbacks across VSync ticks.
+  final FrameBudgetScheduler frameBudgetScheduler = FrameBudgetScheduler();
+
+  /// Effective world resolution scale from [graphics] (`profile.renderScale`
+  /// multiplied by [qualityGovernor] when enabled).
+  double get effectiveRenderScale => graphics.effectiveRenderScale;
+
+  /// Enqueues [task] on [frameBudgetScheduler] ordered by descending
+  /// [priority].
+  Future<T> scheduleFrameTask<T>(T Function() task, {int priority = 0}) =>
+      frameBudgetScheduler.schedule(task, priority: priority);
+
+  /// Enqueues a fire-and-forget synchronous [task] on [frameBudgetScheduler].
+  void scheduleFrameTaskSync(void Function() task, {int priority = 0}) =>
+      frameBudgetScheduler.scheduleSync(task, priority: priority);
+
+  void _handleGraphicsControllerChange() {
+    Component.invalidateFlatTraversalLists();
+    _camera.syncAutoDevicePixelRatio();
+    markSceneDirty();
+  }
+
+  @override
+  double? get effectiveMaxDevicePixelRatio {
+    final explicitCap = maxDevicePixelRatio;
+    final profileCap = graphics.effectiveMaxDevicePixelRatio;
+    if (explicitCap == null) {
+      return profileCap;
+    }
+    return math.min(explicitCap, profileCap);
+  }
+
+  @override
+  void onDisplayMetricsChanged(double devicePixelRatio, double refreshRate) {
+    super.onDisplayMetricsChanged(devicePixelRatio, refreshRate);
+    _camera.syncAutoDevicePixelRatio();
+  }
+
+  int _lastRenderedCamTxVersion = -1;
+  int _lastRenderedGraphicsVersion = -1;
+  int _lastRenderedGlobalTxCount = -1;
+  int _lastRenderedStructureCount = -1;
+  int _lastRenderedSortKeyCount = -1;
+  World? _lastRenderedWorld;
+
+  @override
+  @internal
+  bool pollSceneDirtyForRender() {
+    if (super.pollSceneDirtyForRender()) {
+      return true;
+    }
+    if (hasLifecycleEvents ||
+        _camera.hasActiveSceneTransition ||
+        _camera.viewfinder.hasActiveShake ||
+        !identical(_world, _lastRenderedWorld) ||
+        _camera.viewfinder.transform.version != _lastRenderedCamTxVersion ||
+        graphics.version != _lastRenderedGraphicsVersion ||
+        Transform2D.globalMutationCount != _lastRenderedGlobalTxCount ||
+        Component.structureMutationCount != _lastRenderedStructureCount ||
+        Component.sortKeyMutationCount != _lastRenderedSortKeyCount) {
+      return true;
+    }
+    return false;
+  }
+
+  @override
+  @internal
+  void onFrameRendered() {
+    super.onFrameRendered();
+    _lastRenderedCamTxVersion = _camera.viewfinder.transform.version;
+    _lastRenderedGraphicsVersion = graphics.version;
+    _lastRenderedGlobalTxCount = Transform2D.globalMutationCount;
+    _lastRenderedStructureCount = Component.structureMutationCount;
+    _lastRenderedSortKeyCount = Component.sortKeyMutationCount;
+    _lastRenderedWorld = _world;
+  }
 
   @internal
   late final List<ComponentsNotifier> notifiers = [];
@@ -241,10 +337,15 @@ class FlameGame<W extends World>({
   @mustCallSuper
   void update(double dt) {
     if (parent == null) {
-      if (collectRenderTelemetry) {
+      final needsTiming =
+          collectRenderTelemetry ||
+          frameBudgetScheduler.hasPendingTasks ||
+          qualityGovernor.enabled;
+      if (needsTiming) {
         _telemetryStopwatch
           ..reset()
           ..start();
+        var elapsedUs = 0;
         try {
           processLifecycleEvents();
           if (coalesceMouseHover) {
@@ -253,10 +354,12 @@ class FlameGame<W extends World>({
           updateTree(dt);
         } finally {
           _telemetryStopwatch.stop();
-          renderTelemetry.recordUpdateMicros(
-            _telemetryStopwatch.elapsedMicroseconds,
-          );
+          elapsedUs = _telemetryStopwatch.elapsedMicroseconds;
+          if (collectRenderTelemetry) {
+            renderTelemetry.recordUpdateMicros(elapsedUs);
+          }
         }
+        _postRootUpdateMaintenance(elapsedUs);
         return;
       }
       // Lifecycle events are processed before the traversal so that they
@@ -266,6 +369,41 @@ class FlameGame<W extends World>({
         flushPendingMouseHover();
       }
       updateTree(dt);
+    }
+  }
+
+  void _postRootUpdateMaintenance(int updateElapsedMicros) {
+    final targetHz = math.max(1.0, effectiveTargetFps ?? displayRefreshRate);
+    final budgetMs = 1000.0 / targetHz;
+
+    if (qualityGovernor.enabled && _lastEffectiveDt > 0.0) {
+      final double observedMs;
+      if (renderTelemetry.platformTimingSampleCount > 0) {
+        observedMs = renderTelemetry.smoothedTotalSpanMs;
+      } else if (collectRenderTelemetry &&
+          (renderTelemetry.updateMicros > 0 ||
+              renderTelemetry.renderMicros > 0)) {
+        observedMs =
+            (renderTelemetry.updateMicros + renderTelemetry.renderMicros) /
+            1000.0;
+      } else {
+        observedMs = _lastEffectiveDt * 1000.0;
+      }
+      graphics.recordFrameSample(
+        frameTimeMs: observedMs,
+        targetBudgetMs: budgetMs,
+        dtSeconds: _lastEffectiveDt,
+      );
+    }
+
+    if (frameBudgetScheduler.hasPendingTasks) {
+      final ran = frameBudgetScheduler.drainWithinBudget(
+        elapsedUpdateMicros: updateElapsedMicros,
+        frameBudgetMicros: (budgetMs * 1000.0).round(),
+      );
+      if (ran > 0) {
+        markSceneDirty();
+      }
     }
   }
 
@@ -566,6 +704,9 @@ class FlameGame<W extends World>({
   /// After calling this method, the game is in a clean state with no
   /// components or cached resources.
   void dispose() {
+    frameBudgetScheduler.clear();
+    resourceBudget.evictAll();
+    graphics.removeListener(_handleGraphicsControllerChange);
     removeAll(children);
     processLifecycleEvents();
     images.clearCache();

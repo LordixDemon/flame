@@ -46,9 +46,11 @@ class ComponentList({
   /// Whether one or more elements changed their [Component.sortKey] since the
   /// last render or ordered read.
   bool _sortKeysDirty = false;
+  static int _sortKeyVersion = 0;
 
   void _markSortKeysDirty() {
     _sortKeysDirty = true;
+    _sortKeyVersion++;
   }
 
   /// Restores secondary [Component.sortKey] ordering in-place via zero-alloc
