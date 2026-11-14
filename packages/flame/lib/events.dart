@@ -1,3 +1,4 @@
+export 'src/components/mixins/semantics_component.dart' show SemanticsComponent;
 export 'src/events/callbacks/double_tap_callbacks.dart' show DoubleTapCallbacks;
 export 'src/events/callbacks/drag_callbacks.dart' show DragCallbacks;
 export 'src/events/callbacks/hover_callbacks.dart' show HoverCallbacks;
@@ -86,5 +87,7 @@ export 'src/events/messages/tertiary_tap_down_event.dart'
 export 'src/events/messages/tertiary_tap_up_event.dart' show TertiaryTapUpEvent;
 export 'src/events/multi_drag_scale_recognizer.dart'
     show MultiDragScaleGestureRecognizer;
+export 'src/events/pointer_metadata.dart'
+    show PointerHardwareSample, PointerTelemetryExtractor;
 export 'src/game/mixins/keyboard.dart'
     show HasKeyboardHandlerComponents, KeyboardEvents;

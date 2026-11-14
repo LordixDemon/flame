@@ -468,6 +468,37 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
     }
   }
 
+  /// Cancels all active in-flight drag, drop-target, and scale gestures (for
+  /// example when the app window loses OS focus mid-drag).
+  void cancelAllActiveGestures() {
+    if (_records.isNotEmpty) {
+      final activeDrags = _records.toList(growable: false);
+      _records.clear();
+      for (var i = 0; i < activeDrags.length; i++) {
+        final rec = activeDrags[i];
+        final lastPos = _lastCanvasPosByPointer[rec.pointerId];
+        if (rec.component.isMounted && !rec.component.isRemoving) {
+          rec.component.onDragCancel(DragCancelEvent(rec.pointerId));
+        }
+        _cancelDropForRecord(rec, lastPos);
+      }
+    }
+    _lastCanvasPosByPointer.clear();
+    _hoveredDropTargets.clear();
+    if (_scaleRecords.isNotEmpty) {
+      final activeScales = _scaleRecords.toList(growable: false);
+      _scaleRecords.clear();
+      for (var i = 0; i < activeScales.length; i++) {
+        final rec = activeScales[i];
+        if (rec.component.isMounted && !rec.component.isRemoving) {
+          rec.component.onScaleEnd(
+            ScaleEndEvent(rec.pointerId, ScaleEndDetails()),
+          );
+        }
+      }
+    }
+  }
+
   //#region MultiDragScaleGestureRecognizer drag API
 
   /// The beginning of a drag operation.

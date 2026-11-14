@@ -168,3 +168,47 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
   `GameWidgetState` rebuilds; `Game.visualMutationCount` automatically wakes
   `IdleRenderMode.onDemand` across 2D/3D particles, sprite tickers, `HasPaint`, animated rich text,
   ribbons, ropes, chunks, and 3D nodes/deformers.
+
+---
+
+## 10. Retained Compositing, Fixed Interpolation, Clipped Scroll, `AffineMatrix2D`, Accessibility, Stylus Telemetry, SDF Text & Isolate Pool
+
+- **Retained Layer Caching, External Dirty Sources & `FixedTransformInterpolation`**:
+  - `CameraLayerCacheMode.splitRetained` + `Component.subtreeVersion` caches `backdrop`, `world`, and
+    `viewport` HUD into independent `ui.Picture` layers.
+  - `Game.registerDirtyVersionSource` / `@protected pollSceneDirtyForRender()` plus automatic visual
+    dirty hooks (`HasVisibility`, `BatchedTextComponent`, `RichBatchedTextComponent`, `TextComponent`,
+    `PaintDecorator`) wake `IdleRenderMode.onDemand` with zero manual `markSceneDirty()` plumbing.
+  - `FixedTransformInterpolation` (`on PositionComponent`) interpolates `previous -> current`
+    fixed-step `position`, `scale`, and shortest-arc `angle` by `game.renderInterpolationAlpha`
+    inside `renderTree` without mutating logical simulation state (`teleportFixedState()`).
+- **Clipped Hit-Testing (`clipsChildEvents`), `ScrollContainerComponent` & `AffineMatrix2D`**:
+  - `ClipComponent` overrides `clipsChildEvents => true` so pointers outside rect/circle/polygon clip
+    regions never leak to hidden children.
+  - `ScrollContainerComponent` (`package:flame/layout.dart`) provides clipped vertical/horizontal/2D
+    scrolling with mouse-wheel/trackpad handling, touch/mouse drag inertia, rubber-band overscroll,
+    and automatic offscreen item render skipping (`lastVisibleChildCount`, `lastCulledChildCount`).
+  - `AffineMatrix2D` (`6` inline `double`s) and `PositionComponent.worldTransformMatrix` cache lazy
+    ancestor-version-tracked `2x3` world transforms (`O(1)` amortized `absolutePosition`,
+    `toAbsoluteRect`, and `containsGlobalPoint`).
+- **`SemanticsComponent` Accessibility Bridge & Hardware Pointer Telemetry / OS Blur Cancel**:
+  - `SemanticsComponent` + `GameRenderBox.assembleSemanticsNode` project world and HUD components
+    into Flutter's `SemanticsNode` tree (`VoiceOver`, `TalkBack`, Web ARIA, `find.semantics`),
+    routing `tap`, `longPress`, `increase`, `decrease`, `focus`, and `dismiss` actions while culling
+    offscreen world nodes (`semanticsEnabled`, `semanticsExcluded`).
+  - Every pointer/gesture event exposes `PointerHardwareSample` (`deviceKind`, `buttons`, `pressure`,
+    `normalizedPressure`, stylus `tilt`/`orientation`, `isShiftPressed`/`isControlPressed`/
+    `isAltPressed`/`isMetaPressed`), and `GameRenderBox` automatically cancels active drags/taps via
+    `cancelActivePointerGestures()` when the app blurs/pauses (`cancelGesturesOnLifecyclePause`).
+- **Broadphase-Accelerated 2D Raycasts + Static-Sleeping `Sweep`, `SdfFontAtlas` &
+  `EngineComputePool`**:
+  - `CollisionDetection.raycast` / `raycastAll` / `raytrace` accept `collisionMask` and prune via
+    `Broadphase.queryRay` (`Sweep` X-interval binary/early-out scan + `QuadTreeBroadphase` recursive
+    Liang–Barsky slab traversal, `lastRayBroadphaseCandidates`), while `Sweep` skips `O(N log N)`
+    passive/static re-sorts on calm frames (`passiveSortCount`, `skippedPassiveSortCount`).
+  - `SdfFontAtlas.bake` (exact linear-time `O(W * H)` Felzenszwalb–Huttenlocher 2D Euclidean Distance
+    Transform) + `SdfTextComponent` render crisp zoom-invariant text, outlines, glows, and shadows
+    via `Canvas.drawRawAtlas`.
+  - `EngineComputePool` (`package:flame/cache.dart`) manages a persistent multi-isolate worker pool
+    with `ComputePriority` (`high`, `normal`, `low`), `ComputeTaskToken` cancellation, and zero-spawn
+    inline test mode (`workerCount: 0`).

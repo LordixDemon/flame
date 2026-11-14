@@ -21,6 +21,7 @@ class TapUpEvent(
         devicePosition: details.globalPosition.toVector2(),
       );
 
+  @override
   final PointerDeviceKind deviceKind = details.kind;
 
   TapCancelEvent toTapCancel() => TapCancelEvent(pointerId);

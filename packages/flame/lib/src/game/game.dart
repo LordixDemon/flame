@@ -6,6 +6,7 @@ import 'package:flame/cache.dart';
 import 'package:flame/components.dart';
 import 'package:flame/extensions.dart';
 import 'package:flame/game.dart';
+import 'package:flame/src/events/pointer_metadata.dart';
 import 'package:flame/src/flame.dart';
 import 'package:flame/src/game/game_render_box.dart';
 import 'package:flame/src/game/game_widget/gesture_detector_builder.dart';
@@ -16,6 +17,10 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 // ignore: unnecessary_import
 import 'package:meta/meta.dart';
+
+/// Zero-allocation version callback polled by [Game.pollSceneDirtyForRender]
+/// under [IdleRenderMode.onDemand] and [IdleRenderMode.onDemandWhenIdle].
+typedef DirtyVersionSource = int Function();
 
 /// This gives access to a low-level game API, to not build everything from a
 /// low level `FlameGame` should be used.
@@ -390,6 +395,69 @@ abstract mixin class Game() {
   /// Check [AppLifecycleState] for details about the events received.
   void lifecycleStateChange(AppLifecycleState state) {}
 
+  /// Whether active in-flight pointer gestures (taps, drags, scales, hovers,
+  /// long-presses) are automatically cancelled when the app leaves
+  /// [AppLifecycleState.resumed] (for example `Alt+Tab`, notification shade,
+  /// or incoming phone call).
+  bool cancelGesturesOnLifecyclePause = true;
+
+  int _gestureBlurCancelCount = 0;
+
+  /// Number of lifecycle-blur active gesture sweeps executed on this game.
+  @visibleForTesting
+  int get gestureBlurCancelCount => _gestureBlurCancelCount;
+
+  final Map<int, PointerHardwareSample> _pointerTelemetryByPointer =
+      <int, PointerHardwareSample>{};
+  PointerHardwareSample? _latestPointerTelemetry;
+
+  /// Most recent hardware pointer telemetry sample recorded on this game.
+  PointerHardwareSample? get latestPointerTelemetry => _latestPointerTelemetry;
+
+  /// Hardware pointer telemetry sample for [pointerId], if tracked.
+  PointerHardwareSample? pointerTelemetryFor(int pointerId) =>
+      _pointerTelemetryByPointer[pointerId];
+
+  /// Records raw [PointerEvent] hardware telemetry (`kind`, `pressure`, `tilt`,
+  /// `orientation`, `buttons`) so gesture recognizer events preserve full
+  /// stylus/mouse/touch metadata.
+  @mustCallSuper
+  void recordRawPointerEvent(PointerEvent event) {
+    final sample = _pointerTelemetryByPointer[event.pointer] ??=
+        PointerHardwareSample(
+          pointerId: event.pointer,
+        );
+    sample.updateFromPointerEvent(event);
+    _latestPointerTelemetry = sample;
+    if (event is PointerUpEvent || event is PointerCancelEvent) {
+      if (_pointerTelemetryByPointer.length > 16) {
+        _pointerTelemetryByPointer.remove(event.pointer);
+      }
+    }
+  }
+
+  /// Cancels any active in-flight pointer gestures (taps, drags, scales,
+  /// long-presses, hovers). Invoked automatically on OS window blur when
+  /// [cancelGesturesOnLifecyclePause] is `true`.
+  @mustCallSuper
+  void cancelActivePointerGestures() {
+    _gestureBlurCancelCount++;
+    _pointerTelemetryByPointer.clear();
+  }
+
+  int _semanticsUpdateRequestCount = 0;
+
+  /// Number of accessibility semantics tree dirty notifications requested.
+  @visibleForTesting
+  int get semanticsUpdateRequestCount => _semanticsUpdateRequestCount;
+
+  /// Marks the hosting `GameRenderBox`'s accessibility `SemanticsNode` tree as
+  /// needing an update on the next Flutter frame.
+  void markNeedsSemantics() {
+    _semanticsUpdateRequestCount++;
+    _gameRenderBox?.markNeedsSemanticsUpdate();
+  }
+
   /// Method to perform late initialization of the [Game] class.
   ///
   /// Usually, this method is the main place where you initialize your [Game]
@@ -650,10 +718,60 @@ abstract mixin class Game() {
     _renderAccumulator = 0.0;
   }
 
+  final List<DirtyVersionSource> _dirtyVersionSources = <DirtyVersionSource>[];
+  final List<int> _dirtyVersionSnapshots = <int>[];
+
+  /// Number of external [DirtyVersionSource] callbacks registered on this game.
+  int get dirtyVersionSourceCount => _dirtyVersionSources.length;
+
+  /// Registers a zero-allocation integer version callback [source] whose return
+  /// value is compared against its last rendered snapshot whenever
+  /// [IdleRenderMode.onDemand] or [IdleRenderMode.onDemandWhenIdle] evaluates
+  /// whether to schedule a GPU paint.
+  void registerDirtyVersionSource(DirtyVersionSource source) {
+    if (_dirtyVersionSources.contains(source)) {
+      return;
+    }
+    _dirtyVersionSources.add(source);
+    _dirtyVersionSnapshots.add(source() - 1);
+    _sceneDirty = true;
+  }
+
+  /// Unregisters a previously registered [DirtyVersionSource].
+  bool unregisterDirtyVersionSource(DirtyVersionSource source) {
+    final idx = _dirtyVersionSources.indexOf(source);
+    if (idx < 0) {
+      return false;
+    }
+    _dirtyVersionSources.removeAt(idx);
+    _dirtyVersionSnapshots.removeAt(idx);
+    return true;
+  }
+
+  /// Clears all registered [DirtyVersionSource] callbacks.
+  void clearDirtyVersionSources() {
+    _dirtyVersionSources.clear();
+    _dirtyVersionSnapshots.clear();
+  }
+
   /// Subclass hook checked before skipping a paint in on-demand modes.
+  ///
+  /// Publicly overridable (`@protected`) by custom [Game] / `FlameGame`
+  /// subclasses, and automatically checks all registered
+  /// [DirtyVersionSource] callbacks with zero per-frame allocations.
   @protected
-  @internal
-  bool pollSceneDirtyForRender() => _sceneDirty;
+  @mustCallSuper
+  bool pollSceneDirtyForRender() {
+    if (_sceneDirty) {
+      return true;
+    }
+    for (var i = 0; i < _dirtyVersionSources.length; i++) {
+      if (_dirtyVersionSources[i]() != _dirtyVersionSnapshots[i]) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   /// Internal callback invoked by `GameRenderBox.paint` once a frame renders.
   @mustCallSuper
@@ -661,6 +779,9 @@ abstract mixin class Game() {
   void onFrameRendered() {
     _executedRenderFrames++;
     _sceneDirty = false;
+    for (var i = 0; i < _dirtyVersionSources.length; i++) {
+      _dirtyVersionSnapshots[i] = _dirtyVersionSources[i]();
+    }
   }
 
   /// Evaluates decoupled [renderTargetFps] and [idleRenderMode] after `update`

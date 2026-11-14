@@ -4,8 +4,8 @@ import 'package:flutter/gestures.dart';
 
 class DoubleTapDownEvent(super.game, TapDownDetails details)
     extends PositionEvent<TapDownDetails> {
-  final PointerDeviceKind deviceKind =
-      details.kind ?? PointerDeviceKind.unknown;
+  @override
+  PointerDeviceKind get deviceKind => raw.kind ?? super.deviceKind;
 
   this
     : super(

@@ -7,6 +7,7 @@ import 'package:flame/src/anchor.dart';
 import 'package:flame/src/components/core/component.dart';
 import 'package:flame/src/components/mixins/coordinate_transform.dart';
 import 'package:flame/src/effects/provider_interfaces.dart';
+import 'package:flame/src/game/affine_matrix_2d.dart';
 import 'package:flame/src/game/notifying_vector2.dart';
 import 'package:flame/src/game/transform2d.dart';
 import 'package:flame/src/rendering/decorator.dart';
@@ -80,6 +81,7 @@ class PositionComponent({
   super.children,
   super.priority,
   super.sortKey,
+  super.cameraMask,
   super.minQualityTier,
   super.key,
 }) extends Component
@@ -92,6 +94,7 @@ class PositionComponent({
         CoordinateTransform {
   this : transform = Transform2D() {
     decorator = Transform2DDecorator(transform);
+    transform.onMutated = _onTransformMutated;
     if (position != null) {
       transform.position = position;
     }
@@ -106,6 +109,72 @@ class PositionComponent({
   }
 
   final Transform2D transform;
+  final AffineMatrix2D _worldMatrix = AffineMatrix2D();
+  PositionComponent? _cachedPosAncestor;
+  int _cachedAncestorWorldVer = -1;
+  int _cachedSelfTxVer = -1;
+  int _worldMatrixVersion = 0;
+  int _worldMatrixRecalcCount = 0;
+
+  void _onTransformMutated() {
+    if (isMounted) {
+      markSubtreeDirty();
+    }
+  }
+
+  PositionComponent? _nearestPositionAncestor() {
+    var cursor = parent;
+    while (cursor != null) {
+      if (cursor is PositionComponent) {
+        return cursor;
+      }
+      cursor = cursor.parent;
+    }
+    return null;
+  }
+
+  /// Lazily cached 2D world affine matrix composing all [PositionComponent]
+  /// ancestors with this component's local [transform].
+  ///
+  /// Recomputes only when `transform.version` or an ancestor's
+  /// [worldTransformVersion] changes (`0` heap allocations).
+  AffineMatrix2D get worldTransformMatrix {
+    final posAncestor = _nearestPositionAncestor();
+    final int ancestorVer;
+    if (posAncestor != null) {
+      posAncestor.worldTransformMatrix;
+      ancestorVer = posAncestor._worldMatrixVersion;
+    } else {
+      ancestorVer = 0;
+    }
+    final selfVer = transform.version;
+    if (identical(_cachedPosAncestor, posAncestor) &&
+        _cachedAncestorWorldVer == ancestorVer &&
+        _cachedSelfTxVer == selfVer) {
+      return _worldMatrix;
+    }
+    if (posAncestor == null) {
+      _worldMatrix.setFromTransform2D(transform);
+    } else {
+      _worldMatrix.setMultiplyTransform2D(posAncestor._worldMatrix, transform);
+    }
+    _cachedPosAncestor = posAncestor;
+    _cachedAncestorWorldVer = ancestorVer;
+    _cachedSelfTxVer = selfVer;
+    _worldMatrixVersion++;
+    _worldMatrixRecalcCount++;
+    return _worldMatrix;
+  }
+
+  /// Monotonically increasing version counter of [worldTransformMatrix].
+  int get worldTransformVersion {
+    worldTransformMatrix;
+    return _worldMatrixVersion;
+  }
+
+  /// Number of times [worldTransformMatrix] was recomputed for this component.
+  @visibleForTesting
+  int get worldTransformRecalcCount => _worldMatrixRecalcCount;
   final NotifyingVector2 _size = NotifyingVector2.copy(size ?? Vector2.zero());
   Anchor _anchor = anchor ?? Anchor.topLeft;
 
@@ -328,22 +397,19 @@ class PositionComponent({
 
   /// Convert local coordinates of a point [point] inside the component
   /// into the global (world) coordinate space.
-  Vector2 absolutePositionOf(Vector2 point) {
-    var parentPoint = positionOf(point);
-    var ancestor = parent;
-    while (ancestor != null) {
-      if (ancestor is PositionComponent) {
-        parentPoint = ancestor.positionOf(parentPoint);
-      }
-      ancestor = ancestor.parent;
-    }
-    return parentPoint;
-  }
+  Vector2 absolutePositionOf(Vector2 point, {Vector2? output}) =>
+      worldTransformMatrix.transformPoint(point, output: output);
 
   /// Similar to [absolutePositionOf()], but applies to any anchor
   /// point within the component.
-  Vector2 absolutePositionOfAnchor(Anchor anchor) =>
-      absolutePositionOf(Vector2(anchor.x * size.x, anchor.y * size.y));
+  Vector2 absolutePositionOfAnchor(Anchor anchor, {Vector2? output}) {
+    final m = worldTransformMatrix;
+    final lx = anchor.x * size.x;
+    final ly = anchor.y * size.y;
+    final wx = m.transformX(lx, ly);
+    final wy = m.transformY(lx, ly);
+    return (output?..setValues(wx, wy)) ?? Vector2(wx, wy);
+  }
 
   /// Transform [point] from the parent's coordinate space into the local
   /// coordinates. This function is the inverse of [positionOf()].
@@ -356,16 +422,8 @@ class PositionComponent({
   /// This can be used, for example, to detect whether a specific point
   /// on the screen lies within this [PositionComponent], and where
   /// exactly it hits.
-  Vector2 absoluteToLocal(Vector2 point) {
-    var c = parent;
-    while (c != null) {
-      if (c is PositionComponent) {
-        return toLocal(c.absoluteToLocal(point));
-      }
-      c = c.parent;
-    }
-    return toLocal(point);
-  }
+  Vector2 absoluteToLocal(Vector2 point, {Vector2? output}) =>
+      worldTransformMatrix.inverseTransformPoint(point, output: output);
 
   /// The top-left corner's position in the parent's coordinates.
   Vector2 get topLeftPosition => positionOfAnchor(Anchor.topLeft);
@@ -563,7 +621,8 @@ class PositionComponent({
   /// This is similar to [toRect()], except the rectangle is projected into the
   /// outermost coordinate frame. All four corners are used, because an ancestor
   /// can be rotated even when this component is not.
-  Rect toAbsoluteRect() => _boundsOfCorners(absolutePositionOfAnchor);
+  Rect toAbsoluteRect() =>
+      worldTransformMatrix.transformSizeToAabb(_size.x, _size.y);
 
   Rect _toRectImpl(Vector2 Function(Anchor point) projector) {
     if (angle == 0) {

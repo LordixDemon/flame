@@ -411,15 +411,21 @@ class Bone3D({
   final double bindLocalZ;
 }
 
-/// Zero-allocation Linear Blend Skinning (LBS, up to 2 bone influences per
-/// vertex) workspace transforming a [Mesh3D] by an animated [Bone3D] hierarchy
-/// directly into `BatchMeshRenderer3D.enqueueDeformedMesh`.
+/// Zero-allocation Linear Blend Skinning (LBS, up to 4 glTF-compatible bone
+/// influences per vertex + per-bone squash/stretch scale) workspace
+/// transforming a [Mesh3D] by an animated [Bone3D] hierarchy directly into
+/// `BatchMeshRenderer3D.enqueueSkinnedMesh`.
 class SkinnedMeshWorkspace3D({
   required final Mesh3D baseMesh,
   required final List<Bone3D> bones,
   required final Uint16List boneIndices0,
   Uint16List? boneIndices1,
+  Uint16List? boneIndices2,
+  Uint16List? boneIndices3,
   Float32List? boneWeights0,
+  Float32List? boneWeights1,
+  Float32List? boneWeights2,
+  Float32List? boneWeights3,
 }) {
   this
     : assert(bones.isNotEmpty, 'bones must not be empty'),
@@ -429,13 +435,53 @@ class SkinnedMeshWorkspace3D({
       ) {
     final vCount = baseMesh.vertexCount;
     _boneIdx1 = boneIndices1 ?? Uint16List(vCount);
-    _boneW0 = boneWeights0 ?? (Float32List(vCount)..fillRange(0, vCount, 1.0));
+    _boneIdx2 = boneIndices2 ?? Uint16List(vCount);
+    _boneIdx3 = boneIndices3 ?? Uint16List(vCount);
     assert(_boneIdx1.length == vCount, 'boneIndices1 length mismatch');
-    assert(_boneW0.length == vCount, 'boneWeights0 length mismatch');
+    assert(_boneIdx2.length == vCount, 'boneIndices2 length mismatch');
+    assert(_boneIdx3.length == vCount, 'boneIndices3 length mismatch');
+
+    _hasFourBoneWeights =
+        boneWeights1 != null || boneWeights2 != null || boneWeights3 != null;
+    _boneW0 = Float32List(vCount);
+    _boneW1 = Float32List(vCount);
+    _boneW2 = Float32List(vCount);
+    _boneW3 = Float32List(vCount);
+
+    if (!_hasFourBoneWeights) {
+      if (boneWeights0 != null) {
+        assert(boneWeights0.length == vCount, 'boneWeights0 length mismatch');
+        for (var v = 0; v < vCount; v++) {
+          final w0 = boneWeights0[v].clamp(0.0, 1.0);
+          _boneW0[v] = w0;
+          _boneW1[v] = 1.0 - w0;
+        }
+      } else {
+        _boneW0.fillRange(0, vCount, 1.0);
+      }
+    } else {
+      for (var v = 0; v < vCount; v++) {
+        final w0 = math.max(0.0, boneWeights0 != null ? boneWeights0[v] : 1.0);
+        final w1 = math.max(0.0, boneWeights1 != null ? boneWeights1[v] : 0.0);
+        final w2 = math.max(0.0, boneWeights2 != null ? boneWeights2[v] : 0.0);
+        final w3 = math.max(0.0, boneWeights3 != null ? boneWeights3[v] : 0.0);
+        final sum = w0 + w1 + w2 + w3;
+        if (sum > 1e-7) {
+          final inv = 1.0 / sum;
+          _boneW0[v] = w0 * inv;
+          _boneW1[v] = w1 * inv;
+          _boneW2[v] = w2 * inv;
+          _boneW3[v] = w3 * inv;
+        } else {
+          _boneW0[v] = 1.0;
+        }
+      }
+    }
 
     final bCount = bones.length;
     _localTx = Float32List(bCount * 3);
     _localQuat = Float32List(bCount * 4);
+    _localScale = Float32List(bCount * 3)..fillRange(0, bCount * 3, 1.0);
     _bindInvX = Float32List(bCount);
     _bindInvY = Float32List(bCount);
     _bindInvZ = Float32List(bCount);
@@ -482,9 +528,16 @@ class SkinnedMeshWorkspace3D({
   late final Float32List skinnedNormals = Float32List(baseMesh.normals.length);
 
   late final Uint16List _boneIdx1;
+  late final Uint16List _boneIdx2;
+  late final Uint16List _boneIdx3;
   late final Float32List _boneW0;
+  late final Float32List _boneW1;
+  late final Float32List _boneW2;
+  late final Float32List _boneW3;
+  late final bool _hasFourBoneWeights;
   late final Float32List _localTx;
   late final Float32List _localQuat;
+  late final Float32List _localScale;
   late final Float32List _bindInvX;
   late final Float32List _bindInvY;
   late final Float32List _bindInvZ;
@@ -508,8 +561,51 @@ class SkinnedMeshWorkspace3D({
   /// Maximum local Z after latest skinning pass.
   double get maxZ => _maxZ;
 
-  /// Sets local pose rotation (unit quaternion) and optional local translation
-  /// offset `(dx, dy, dz)` relative to bind pose for bone [boneIndex].
+  /// Finds the index of the bone named [name], or `-1` if absent.
+  int findBoneIndex(String name) {
+    for (var i = 0; i < bones.length; i++) {
+      if (bones[i].name == name) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  /// Reads the current local pose `(dx, dy, dz, qx, qy, qz, qw, sx, sy, sz)` of
+  /// [boneIndex] relative to its rest bind translation.
+  ({
+    double dx,
+    double dy,
+    double dz,
+    double qx,
+    double qy,
+    double qz,
+    double qw,
+    double sx,
+    double sy,
+    double sz,
+  })
+  getBoneLocalPose(int boneIndex) {
+    final bone = bones[boneIndex];
+    final tBase = boneIndex * 3;
+    final qBase = boneIndex * 4;
+    return (
+      dx: _localTx[tBase] - bone.bindLocalX,
+      dy: _localTx[tBase + 1] - bone.bindLocalY,
+      dz: _localTx[tBase + 2] - bone.bindLocalZ,
+      qx: _localQuat[qBase],
+      qy: _localQuat[qBase + 1],
+      qz: _localQuat[qBase + 2],
+      qw: _localQuat[qBase + 3],
+      sx: _localScale[tBase],
+      sy: _localScale[tBase + 1],
+      sz: _localScale[tBase + 2],
+    );
+  }
+
+  /// Sets local pose rotation (unit quaternion), optional local translation
+  /// offset `(dx, dy, dz)` relative to bind pose, and optional local scale
+  /// `(sx, sy, sz)` for bone [boneIndex].
   void setBonePose(
     int boneIndex, {
     double qx = 0.0,
@@ -519,6 +615,9 @@ class SkinnedMeshWorkspace3D({
     double dx = 0.0,
     double dy = 0.0,
     double dz = 0.0,
+    double sx = 1.0,
+    double sy = 1.0,
+    double sz = 1.0,
   }) {
     final bone = bones[boneIndex];
     final tBase = boneIndex * 3;
@@ -526,6 +625,9 @@ class SkinnedMeshWorkspace3D({
     _localTx[tBase] = bone.bindLocalX + dx;
     _localTx[tBase + 1] = bone.bindLocalY + dy;
     _localTx[tBase + 2] = bone.bindLocalZ + dz;
+    _localScale[tBase] = sx;
+    _localScale[tBase + 1] = sy;
+    _localScale[tBase + 2] = sz;
     final (nx, ny, nz, nw) = Quaternion3D.normalize(qx, qy, qz, qw);
     _localQuat[qBase] = nx;
     _localQuat[qBase + 1] = ny;
@@ -542,8 +644,9 @@ class SkinnedMeshWorkspace3D({
     }
   }
 
-  /// Evaluates bone hierarchy and linear blend skinning into [skinnedPositions]
-  /// and [skinnedNormals] with `0` heap allocations when pose changed.
+  /// Evaluates bone hierarchy and linear blend skinning (up to 4 bone
+  /// influences per vertex) into [skinnedPositions] and [skinnedNormals] with
+  /// `0` heap allocations when pose changed.
   bool evaluateIfDirty() {
     if (!_poseDirty) {
       return false;
@@ -558,27 +661,37 @@ class SkinnedMeshWorkspace3D({
       final lx = _localTx[tOff];
       final ly = _localTx[tOff + 1];
       final lz = _localTx[tOff + 2];
+      final sx = _localScale[tOff];
+      final sy = _localScale[tOff + 1];
+      final sz = _localScale[tOff + 2];
+
+      Quaternion3D.writeMatrix3(
+        _localQuat[qOff],
+        _localQuat[qOff + 1],
+        _localQuat[qOff + 2],
+        _localQuat[qOff + 3],
+        _scratchRot,
+      );
+      if (sx != 1.0 || sy != 1.0 || sz != 1.0) {
+        _scratchRot[0] *= sx;
+        _scratchRot[3] *= sx;
+        _scratchRot[6] *= sx;
+        _scratchRot[1] *= sy;
+        _scratchRot[4] *= sy;
+        _scratchRot[7] *= sy;
+        _scratchRot[2] *= sz;
+        _scratchRot[5] *= sz;
+        _scratchRot[8] *= sz;
+      }
 
       if (pIdx < 0) {
-        Quaternion3D.writeMatrix3(
-          _localQuat[qOff],
-          _localQuat[qOff + 1],
-          _localQuat[qOff + 2],
-          _localQuat[qOff + 3],
-          _worldRot,
-          rOff,
-        );
+        for (var k = 0; k < 9; k++) {
+          _worldRot[rOff + k] = _scratchRot[k];
+        }
         _worldTx[tOff] = lx;
         _worldTx[tOff + 1] = ly;
         _worldTx[tOff + 2] = lz;
       } else {
-        Quaternion3D.writeMatrix3(
-          _localQuat[qOff],
-          _localQuat[qOff + 1],
-          _localQuat[qOff + 2],
-          _localQuat[qOff + 3],
-          _scratchRot,
-        );
         final pROff = pIdx * 9;
         final pTOff = pIdx * 3;
         Quaternion3D.multiplyMatrix3(
@@ -645,7 +758,7 @@ class SkinnedMeshWorkspace3D({
 
       final b0 = boneIndices0[v];
       final w0 = _boneW0[v];
-      final w1 = 1.0 - w0;
+      final w1 = _boneW1[v];
       final r0 = b0 * 9;
       final t0 = b0 * 3;
 
@@ -721,6 +834,87 @@ class SkinnedMeshWorkspace3D({
                 _worldRot[r1 + 7] * ny +
                 _worldRot[r1 + 8] * nz) *
             w1;
+      }
+
+      if (_hasFourBoneWeights) {
+        final w2 = _boneW2[v];
+        if (w2 > 1e-6) {
+          final b2 = _boneIdx2[v];
+          final r2 = b2 * 9;
+          final t2 = b2 * 3;
+          ox +=
+              (_worldRot[r2] * px +
+                  _worldRot[r2 + 1] * py +
+                  _worldRot[r2 + 2] * pz +
+                  _skinTx[t2]) *
+              w2;
+          oy +=
+              (_worldRot[r2 + 3] * px +
+                  _worldRot[r2 + 4] * py +
+                  _worldRot[r2 + 5] * pz +
+                  _skinTx[t2 + 1]) *
+              w2;
+          oz +=
+              (_worldRot[r2 + 6] * px +
+                  _worldRot[r2 + 7] * py +
+                  _worldRot[r2 + 8] * pz +
+                  _skinTx[t2 + 2]) *
+              w2;
+          onx +=
+              (_worldRot[r2] * nx +
+                  _worldRot[r2 + 1] * ny +
+                  _worldRot[r2 + 2] * nz) *
+              w2;
+          ony +=
+              (_worldRot[r2 + 3] * nx +
+                  _worldRot[r2 + 4] * ny +
+                  _worldRot[r2 + 5] * nz) *
+              w2;
+          onz +=
+              (_worldRot[r2 + 6] * nx +
+                  _worldRot[r2 + 7] * ny +
+                  _worldRot[r2 + 8] * nz) *
+              w2;
+        }
+        final w3 = _boneW3[v];
+        if (w3 > 1e-6) {
+          final b3 = _boneIdx3[v];
+          final r3 = b3 * 9;
+          final t3 = b3 * 3;
+          ox +=
+              (_worldRot[r3] * px +
+                  _worldRot[r3 + 1] * py +
+                  _worldRot[r3 + 2] * pz +
+                  _skinTx[t3]) *
+              w3;
+          oy +=
+              (_worldRot[r3 + 3] * px +
+                  _worldRot[r3 + 4] * py +
+                  _worldRot[r3 + 5] * pz +
+                  _skinTx[t3 + 1]) *
+              w3;
+          oz +=
+              (_worldRot[r3 + 6] * px +
+                  _worldRot[r3 + 7] * py +
+                  _worldRot[r3 + 8] * pz +
+                  _skinTx[t3 + 2]) *
+              w3;
+          onx +=
+              (_worldRot[r3] * nx +
+                  _worldRot[r3 + 1] * ny +
+                  _worldRot[r3 + 2] * nz) *
+              w3;
+          ony +=
+              (_worldRot[r3 + 3] * nx +
+                  _worldRot[r3 + 4] * ny +
+                  _worldRot[r3 + 5] * nz) *
+              w3;
+          onz +=
+              (_worldRot[r3 + 6] * nx +
+                  _worldRot[r3 + 7] * ny +
+                  _worldRot[r3 + 8] * nz) *
+              w3;
+        }
       }
 
       skinnedPositions[pBase] = ox;

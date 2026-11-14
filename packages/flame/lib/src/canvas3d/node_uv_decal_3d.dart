@@ -34,6 +34,8 @@ class Node3D({
   this.opacity = 1.0,
   this.emissive = 0.0,
   this.uvRectPx,
+  this.sortOrder = 0,
+  this.depthBias = 0.0,
   this.castGroundShadow = false,
   this.visible = true,
 }) {
@@ -88,6 +90,13 @@ class Node3D({
 
   /// Optional atlas pixel UV sub-rectangle mapped over `mesh.uvs`.
   Rect? uvRectPx;
+
+  /// Explicit render pass sort order inside `BatchMeshRenderer3D` (smaller
+  /// draws behind; larger draws on top).
+  int sortOrder;
+
+  /// Per-node depth sort bias added to view-space triangle depth.
+  double depthBias;
 
   /// Whether this node's [mesh] casts a ground shadow.
   bool castGroundShadow;
@@ -323,6 +332,8 @@ class Node3D({
         emissive: emissive,
         uvRectPx: uvRectPx,
         material: material,
+        sortOrder: sortOrder,
+        depthBias: depthBias,
         castGroundShadow: castGroundShadow,
         groundZ: groundZ,
       );
@@ -351,6 +362,8 @@ class Decal3D({
   this.pitchRad = 0.0,
   this.rollRad = 0.0,
   this.normalBias = 0.02,
+  this.sortOrder = 1,
+  this.depthBias = 0.02,
   this.tint = const Color(0xFFFFFFFF),
   this.opacity = 1.0,
   this.emissive = 0.35,
@@ -385,6 +398,13 @@ class Decal3D({
 
   /// Small `+Z`/normal lift preventing coplanar triangle sort flicker.
   double normalBias;
+
+  /// Explicit draw-order bucket (`1` by default so floor decals always draw on
+  /// top of `sortOrder == 0` floor tiles without z-fighting).
+  int sortOrder;
+
+  /// Additional view-depth bias applied during triangle sorting.
+  double depthBias;
 
   /// Decal color tint.
   Color tint;
@@ -428,6 +448,8 @@ class Decal3D({
       emissive: emissive,
       uvRectPx: uvRectPx,
       material: material,
+      sortOrder: sortOrder,
+      depthBias: depthBias,
     );
   }
 }

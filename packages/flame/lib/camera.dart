@@ -5,8 +5,10 @@ export 'src/camera/behaviors/camera_billboard.dart'
 export 'src/camera/behaviors/follow_behavior.dart' show FollowBehavior;
 export 'src/camera/behaviors/tactile_camera_controller.dart'
     show TactileCameraController;
-export 'src/camera/camera_component.dart' show CameraComponent, PixelSnapMode;
+export 'src/camera/camera_component.dart'
+    show CameraComponent, CameraLayerCacheMode, PixelSnapMode;
 export 'src/camera/render_pass.dart' show MultiPassComponent, RenderPass;
+export 'src/camera/render_texture_component.dart' show RenderTextureComponent;
 export 'src/camera/scene_layer_component.dart' show SceneLayerComponent;
 export 'src/camera/scene_transition.dart'
     show

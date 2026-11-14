@@ -1,8 +1,9 @@
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:flame/components.dart' hide Matrix4;
 import 'package:flame/extensions.dart' hide Matrix4;
 import 'package:flame/game.dart' hide Matrix4;
-import 'package:flame/src/components/widget_component.dart';
 import 'package:flame/src/game/game_loop.dart';
 import 'package:flame/src/game/proxy_canvas.dart';
 import 'package:flame/src/game/widget_components.dart';
@@ -192,10 +193,17 @@ class GameRenderBox(
   }
 
   void _detachGame() {
+    _semanticsNodesByComponent.clear();
     game.detach();
     gameLoop?.dispose();
     gameLoop = null;
     _unbindLifecycleListener();
+  }
+
+  @override
+  void handleEvent(PointerEvent event, BoxHitTestEntry entry) {
+    game.recordRawPointerEvent(event);
+    super.handleEvent(event, entry);
   }
 
   final Stopwatch _telemetryStopwatch = Stopwatch();
@@ -223,6 +231,11 @@ class GameRenderBox(
     }
     if (game.shouldRenderThisTick(dt)) {
       markNeedsPaint();
+    }
+    if ((SemanticsComponent.mountedCount > 0 ||
+            _semanticsNodesByComponent.isNotEmpty) &&
+        Transform2D.globalMutationCount != _lastSemanticsTxCount) {
+      markNeedsSemanticsUpdate();
     }
   }
 
@@ -516,6 +529,253 @@ class GameRenderBox(
     }
   }
 
+  final Map<Component, SemanticsNode> _semanticsNodesByComponent =
+      <Component, SemanticsNode>{};
+  int _lastSemanticsTxCount = -1;
+  static final Vector2 _semPtScratch = Vector2.zero();
+
+  @override
+  void describeSemanticsConfiguration(SemanticsConfiguration config) {
+    super.describeSemanticsConfiguration(config);
+    config
+      ..isSemanticBoundary = true
+      ..explicitChildNodes = true;
+  }
+
+  @override
+  void assembleSemanticsNode(
+    SemanticsNode node,
+    SemanticsConfiguration config,
+    Iterable<SemanticsNode> children,
+  ) {
+    final g = _game;
+    _lastSemanticsTxCount = Transform2D.globalMutationCount;
+    if (g is! FlameGame || !hasSize) {
+      _semanticsNodesByComponent.clear();
+      node.updateWith(
+        config: config,
+        childrenInInversePaintOrder: children.toList(growable: false),
+      );
+      return;
+    }
+
+    final boxBounds = Offset.zero & size;
+    final collected = <({SemanticsComponent comp, Rect rect})>[];
+    final cam = g.camera;
+    final activeWorld = cam.world;
+
+    // Paint order bottom-to-top: backdrop -> world -> viewfinder -> viewport
+    // -> other root children.
+    if (activeWorld != null && activeWorld.isMounted) {
+      _collectSemanticsInSubtree(
+        cam.backdrop,
+        collected,
+        mode: _SemanticsSpaceMode.viewport,
+        camera: cam,
+        clipBounds: boxBounds,
+      );
+      _collectSemanticsInSubtree(
+        activeWorld,
+        collected,
+        mode: _SemanticsSpaceMode.world,
+        camera: cam,
+        clipBounds: boxBounds,
+      );
+      _collectSemanticsInSubtree(
+        cam.viewfinder,
+        collected,
+        mode: _SemanticsSpaceMode.world,
+        camera: cam,
+        clipBounds: boxBounds,
+      );
+      _collectSemanticsInSubtree(
+        cam.viewport,
+        collected,
+        mode: _SemanticsSpaceMode.viewport,
+        camera: cam,
+        clipBounds: boxBounds,
+      );
+    }
+
+    for (final rootChild in g.children) {
+      if (identical(rootChild, cam) || identical(rootChild, activeWorld)) {
+        continue;
+      }
+      _collectSemanticsInSubtree(
+        rootChild,
+        collected,
+        mode: _SemanticsSpaceMode.canvas,
+        camera: cam,
+        clipBounds: boxBounds,
+      );
+    }
+
+    if (collected.isEmpty) {
+      _semanticsNodesByComponent.clear();
+      node.updateWith(
+        config: config,
+        childrenInInversePaintOrder: children.toList(growable: false),
+      );
+      return;
+    }
+
+    final activeSet = <Component>{};
+    final orderedNodes = <SemanticsNode>[...children];
+
+    // Flutter expects `childrenInInversePaintOrder` (front-most HUD first).
+    for (var i = collected.length - 1; i >= 0; i--) {
+      final entry = collected[i];
+      final comp = entry.comp;
+      activeSet.add(comp);
+      final semNode = _semanticsNodesByComponent.putIfAbsent(
+        comp,
+        SemanticsNode.new,
+      );
+      semNode
+        ..rect = entry.rect
+        ..transform = null;
+      semNode.updateWith(config: comp.buildSemanticsConfiguration());
+      orderedNodes.add(semNode);
+    }
+
+    _semanticsNodesByComponent.removeWhere(
+      (comp, _) => !activeSet.contains(comp),
+    );
+
+    node.updateWith(
+      config: config,
+      childrenInInversePaintOrder: orderedNodes,
+    );
+  }
+
+  void _collectSemanticsInSubtree(
+    Component current,
+    List<({SemanticsComponent comp, Rect rect})> out, {
+    required _SemanticsSpaceMode mode,
+    required CameraComponent camera,
+    required Rect clipBounds,
+  }) {
+    if (!current.isMounted ||
+        current.isRemoving ||
+        !current.isActiveForCurrentGraphicsTier) {
+      return;
+    }
+    if (current is HasVisibility && !current.isVisible) {
+      return;
+    }
+    if (mode == _SemanticsSpaceMode.world &&
+        (current.cameraMask & camera.cameraMask) == 0) {
+      return;
+    }
+
+    if (current is SemanticsComponent && !current.semanticsExcluded) {
+      final projected = _projectSemanticsRect(
+        current,
+        mode: mode,
+        camera: camera,
+        clipBounds: clipBounds,
+      );
+      if (projected != null && !projected.isEmpty) {
+        out.add((comp: current, rect: projected));
+      }
+    }
+
+    if (current.hasChildren) {
+      for (final child in current.children) {
+        _collectSemanticsInSubtree(
+          child,
+          out,
+          mode: mode,
+          camera: camera,
+          clipBounds: clipBounds,
+        );
+      }
+    }
+  }
+
+  Rect? _projectSemanticsRect(
+    SemanticsComponent comp, {
+    required _SemanticsSpaceMode mode,
+    required CameraComponent camera,
+    required Rect clipBounds,
+  }) {
+    Rect spaceRect;
+    if (comp is PositionComponent) {
+      final posComp = comp as PositionComponent;
+      final explicit = comp.semanticsLocalBounds;
+      if (explicit != null) {
+        final m = posComp.worldTransformMatrix;
+        final (x0, y0) = m.transformXY(explicit.left, explicit.top);
+        final (x1, y1) = m.transformXY(explicit.right, explicit.top);
+        final (x2, y2) = m.transformXY(explicit.right, explicit.bottom);
+        final (x3, y3) = m.transformXY(explicit.left, explicit.bottom);
+        spaceRect = Rect.fromLTRB(
+          math.min(math.min(x0, x1), math.min(x2, x3)),
+          math.min(math.min(y0, y1), math.min(y2, y3)),
+          math.max(math.max(x0, x1), math.max(x2, x3)),
+          math.max(math.max(y0, y1), math.max(y2, y3)),
+        );
+      } else {
+        spaceRect = posComp.toAbsoluteRect();
+      }
+    } else {
+      spaceRect = comp.semanticsLocalBounds ?? const Rect.fromLTWH(0, 0, 1, 1);
+    }
+
+    Rect canvasRect;
+    switch (mode) {
+      case _SemanticsSpaceMode.canvas:
+        canvasRect = spaceRect;
+      case _SemanticsSpaceMode.viewport:
+        _semPtScratch.setValues(spaceRect.left, spaceRect.top);
+        camera.viewport.localToGlobal(_semPtScratch, output: _semPtScratch);
+        final x0 = _semPtScratch.x;
+        final y0 = _semPtScratch.y;
+        _semPtScratch.setValues(spaceRect.right, spaceRect.bottom);
+        camera.viewport.localToGlobal(_semPtScratch, output: _semPtScratch);
+        final x1 = _semPtScratch.x;
+        final y1 = _semPtScratch.y;
+        canvasRect = Rect.fromLTRB(
+          math.min(x0, x1),
+          math.min(y0, y1),
+          math.max(x0, x1),
+          math.max(y0, y1),
+        );
+      case _SemanticsSpaceMode.world:
+        _semPtScratch.setValues(spaceRect.left, spaceRect.top);
+        camera.localToGlobal(_semPtScratch, output: _semPtScratch);
+        final x0 = _semPtScratch.x;
+        final y0 = _semPtScratch.y;
+        _semPtScratch.setValues(spaceRect.right, spaceRect.top);
+        camera.localToGlobal(_semPtScratch, output: _semPtScratch);
+        final x1 = _semPtScratch.x;
+        final y1 = _semPtScratch.y;
+        _semPtScratch.setValues(spaceRect.right, spaceRect.bottom);
+        camera.localToGlobal(_semPtScratch, output: _semPtScratch);
+        final x2 = _semPtScratch.x;
+        final y2 = _semPtScratch.y;
+        _semPtScratch.setValues(spaceRect.left, spaceRect.bottom);
+        camera.localToGlobal(_semPtScratch, output: _semPtScratch);
+        final x3 = _semPtScratch.x;
+        final y3 = _semPtScratch.y;
+        canvasRect = Rect.fromLTRB(
+          math.min(math.min(x0, x1), math.min(x2, x3)),
+          math.min(math.min(y0, y1), math.min(y2, y3)),
+          math.max(math.max(x0, x1), math.max(x2, x3)),
+          math.max(math.max(y0, y1), math.max(y2, y3)),
+        );
+    }
+
+    if (!canvasRect.overlaps(clipBounds)) {
+      return null;
+    }
+    final clipped = canvasRect.intersect(clipBounds);
+    if (clipped.width <= 0.0 || clipped.height <= 0.0) {
+      return null;
+    }
+    return clipped;
+  }
+
   @override
   void didChangeMetrics() {
     syncDisplayMetricsFromView();
@@ -523,8 +783,18 @@ class GameRenderBox(
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed &&
+        game.cancelGesturesOnLifecyclePause) {
+      game.cancelActivePointerGestures();
+    }
     game.lifecycleStateChange(state);
   }
+}
+
+enum _SemanticsSpaceMode() {
+  canvas,
+  viewport,
+  world,
 }
 
 class _PaintedWidget({

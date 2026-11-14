@@ -1,5 +1,8 @@
+import 'dart:math' as math;
+
 import 'package:flame/collisions.dart';
 import 'package:flame/extensions.dart';
+import 'package:flame/geometry.dart';
 
 /// QuadTree calculation class not bound to Flame. Could be used anywhere
 /// outside of Flame, for example in isolates to calculate background logic.
@@ -271,6 +274,260 @@ class QuadTree<T extends Hitbox<T>>({
       return true;
     }
     return lastPos.min != hitbox.aabb.min || lastPos.max == hitbox.aabb.max;
+  }
+
+  /// Appends hitboxes stored in quadrant subtrees intersected by [ray] within
+  /// [maxDistance] into [out], pruning non-intersecting quadrant subtrees.
+  void queryRay(Ray2 ray, double maxDistance, List<T> out) {
+    if (maxDistance.isNaN || maxDistance < 0) {
+      return;
+    }
+    _queryRayNode(
+      _rootNode,
+      mainBoxSize,
+      -double.infinity,
+      -double.infinity,
+      double.infinity,
+      double.infinity,
+      ray.origin.x,
+      ray.origin.y,
+      ray.direction.x,
+      ray.direction.y,
+      maxDistance,
+      out,
+    );
+  }
+
+  void _queryRayNode(
+    QuadTreeNode<T> node,
+    Rect box,
+    double boundMinX,
+    double boundMinY,
+    double boundMaxX,
+    double boundMaxY,
+    double ox,
+    double oy,
+    double dx,
+    double dy,
+    double maxDistance,
+    List<T> out,
+  ) {
+    final own = node.hitboxes;
+    for (var i = 0; i < own.length; i++) {
+      final item = own[i];
+      final aabb = item.aabb;
+      if (_rayIntersectsSlab(
+        ox,
+        oy,
+        dx,
+        dy,
+        maxDistance,
+        aabb.min.x,
+        aabb.min.y,
+        aabb.max.x,
+        aabb.max.y,
+      )) {
+        out.add(item);
+      }
+    }
+
+    if (_noChildren(node)) {
+      return;
+    }
+
+    final cx = box.left + box.width * 0.5;
+    final cy = box.top + box.height * 0.5;
+    final leftMaxX = math.min(boundMaxX, math.max(0.0, cx));
+    final rightMinX = cx <= 0.0 ? -double.infinity : math.max(boundMinX, cx);
+    final topMaxY = math.min(boundMaxY, math.max(0.0, cy));
+    final bottomMinY = cy <= 0.0 ? -double.infinity : math.max(boundMinY, cy);
+
+    // 0: topLeft
+    final c0 = node.children[0] as QuadTreeNode<T>?;
+    if (c0 != null &&
+        _rayIntersectsSlab(
+          ox,
+          oy,
+          dx,
+          dy,
+          maxDistance,
+          boundMinX,
+          boundMinY,
+          leftMaxX,
+          topMaxY,
+        )) {
+      _queryRayNode(
+        c0,
+        _computeBox(box, _QuadTreeZone.topLeft),
+        boundMinX,
+        boundMinY,
+        leftMaxX,
+        topMaxY,
+        ox,
+        oy,
+        dx,
+        dy,
+        maxDistance,
+        out,
+      );
+    }
+
+    // 1: topRight
+    final c1 = node.children[1] as QuadTreeNode<T>?;
+    if (c1 != null &&
+        _rayIntersectsSlab(
+          ox,
+          oy,
+          dx,
+          dy,
+          maxDistance,
+          rightMinX,
+          boundMinY,
+          boundMaxX,
+          topMaxY,
+        )) {
+      _queryRayNode(
+        c1,
+        _computeBox(box, _QuadTreeZone.topRight),
+        rightMinX,
+        boundMinY,
+        boundMaxX,
+        topMaxY,
+        ox,
+        oy,
+        dx,
+        dy,
+        maxDistance,
+        out,
+      );
+    }
+
+    // 2: bottomLeft
+    final c2 = node.children[2] as QuadTreeNode<T>?;
+    if (c2 != null &&
+        _rayIntersectsSlab(
+          ox,
+          oy,
+          dx,
+          dy,
+          maxDistance,
+          boundMinX,
+          bottomMinY,
+          leftMaxX,
+          boundMaxY,
+        )) {
+      _queryRayNode(
+        c2,
+        _computeBox(box, _QuadTreeZone.bottomLeft),
+        boundMinX,
+        bottomMinY,
+        leftMaxX,
+        boundMaxY,
+        ox,
+        oy,
+        dx,
+        dy,
+        maxDistance,
+        out,
+      );
+    }
+
+    // 3: bottomRight
+    final c3 = node.children[3] as QuadTreeNode<T>?;
+    if (c3 != null &&
+        _rayIntersectsSlab(
+          ox,
+          oy,
+          dx,
+          dy,
+          maxDistance,
+          rightMinX,
+          bottomMinY,
+          boundMaxX,
+          boundMaxY,
+        )) {
+      _queryRayNode(
+        c3,
+        _computeBox(box, _QuadTreeZone.bottomRight),
+        rightMinX,
+        bottomMinY,
+        boundMaxX,
+        boundMaxY,
+        ox,
+        oy,
+        dx,
+        dy,
+        maxDistance,
+        out,
+      );
+    }
+  }
+
+  static bool _rayIntersectsSlab(
+    double ox,
+    double oy,
+    double dx,
+    double dy,
+    double maxDistance,
+    double minX,
+    double minY,
+    double maxX,
+    double maxY,
+  ) {
+    var tMin = 0.0;
+    var tMax = maxDistance;
+
+    if (dx.abs() < 1e-12) {
+      if (ox < minX || ox > maxX) {
+        return false;
+      }
+    } else {
+      final double t1;
+      final double t2;
+      if (dx > 0) {
+        t1 = minX == -double.infinity ? -double.infinity : (minX - ox) / dx;
+        t2 = maxX == double.infinity ? double.infinity : (maxX - ox) / dx;
+      } else {
+        t1 = maxX == double.infinity ? -double.infinity : (maxX - ox) / dx;
+        t2 = minX == -double.infinity ? double.infinity : (minX - ox) / dx;
+      }
+      if (t1 > tMin) {
+        tMin = t1;
+      }
+      if (t2 < tMax) {
+        tMax = t2;
+      }
+      if (tMin > tMax) {
+        return false;
+      }
+    }
+
+    if (dy.abs() < 1e-12) {
+      if (oy < minY || oy > maxY) {
+        return false;
+      }
+    } else {
+      final double t1;
+      final double t2;
+      if (dy > 0) {
+        t1 = minY == -double.infinity ? -double.infinity : (minY - oy) / dy;
+        t2 = maxY == double.infinity ? double.infinity : (maxY - oy) / dy;
+      } else {
+        t1 = maxY == double.infinity ? -double.infinity : (maxY - oy) / dy;
+        t2 = minY == -double.infinity ? double.infinity : (minY - oy) / dy;
+      }
+      if (t1 > tMin) {
+        tMin = t1;
+      }
+      if (t2 < tMax) {
+        tMax = t2;
+      }
+      if (tMin > tMax) {
+        return false;
+      }
+    }
+
+    return tMax >= 0.0 && tMin <= maxDistance;
   }
 }
 

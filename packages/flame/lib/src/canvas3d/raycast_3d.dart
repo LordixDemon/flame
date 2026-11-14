@@ -1,6 +1,9 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flame/src/canvas3d/deformable_mesh_3d.dart';
+import 'package:flame/src/canvas3d/mesh_3d.dart';
+import 'package:flame/src/canvas3d/node_uv_decal_3d.dart';
 import 'package:meta/meta.dart';
 
 /// Immutable 3D ray in world coordinates `(x, y, z)` with unit direction
@@ -367,6 +370,270 @@ class const Raycaster3D._() {
       worldY: hy,
       worldZ: hz,
       faceIndex: bestFace,
+    );
+  }
+
+  static final Float32List _rayRotScratch = Float32List(9);
+
+  /// Intersects [worldRay] against [mesh] under full 3D world translation
+  /// `(worldX, worldY, worldZ)`, arbitrary `3x3` orientation
+  /// ([rotationMatrix3], [rotationQuat], or Euler
+  /// `(yawRad, pitchRad, rollRad)`), and non-uniform
+  /// `(scaleX, scaleY, scaleZ)`, accelerated by `O(log T)` [Mesh3D.bvh] when
+  /// [useBvh] is `true`.
+  ///
+  /// Returns `(worldDistance, faceIndex)` in world units along [worldRay], or
+  /// `null` on a miss.
+  static (double distance, int faceIndex)? raycastMeshTransform(
+    Ray3D worldRay,
+    Mesh3D mesh, {
+    required double worldX,
+    required double worldY,
+    double worldZ = 0.0,
+    double scaleX = 1.0,
+    double scaleY = 1.0,
+    double scaleZ = 1.0,
+    double yawRad = 0.0,
+    double pitchRad = 0.0,
+    double rollRad = 0.0,
+    (double, double, double, double)? rotationQuat,
+    Float32List? rotationMatrix3,
+    double maxDistance = double.infinity,
+    bool cullBackfaces = true,
+    bool useBvh = true,
+  }) {
+    if (scaleX.abs() <= 1e-6 ||
+        scaleY.abs() <= 1e-6 ||
+        scaleZ.abs() <= 1e-6 ||
+        mesh.triangleCount == 0) {
+      return null;
+    }
+
+    final Float32List rot;
+    if (rotationMatrix3 != null && rotationMatrix3.length >= 9) {
+      rot = rotationMatrix3;
+    } else if (rotationQuat != null) {
+      final (qx, qy, qz, qw) = rotationQuat;
+      Quaternion3D.writeMatrix3(qx, qy, qz, qw, _rayRotScratch);
+      rot = _rayRotScratch;
+    } else {
+      Quaternion3D.writeEulerMatrix3(
+        yawRad: yawRad,
+        pitchRad: pitchRad,
+        rollRad: rollRad,
+        out: _rayRotScratch,
+      );
+      rot = _rayRotScratch;
+    }
+
+    final invSx = 1.0 / scaleX;
+    final invSy = 1.0 / scaleY;
+    final invSz = 1.0 / scaleZ;
+
+    final relX = worldRay.ox - worldX;
+    final relY = worldRay.oy - worldY;
+    final relZ = worldRay.oz - worldZ;
+
+    // R^T * rel, then divide by non-uniform scale:
+    final lox = (rot[0] * relX + rot[3] * relY + rot[6] * relZ) * invSx;
+    final loy = (rot[1] * relX + rot[4] * relY + rot[7] * relZ) * invSy;
+    final loz = (rot[2] * relX + rot[5] * relY + rot[8] * relZ) * invSz;
+
+    final rawDx =
+        (rot[0] * worldRay.dx + rot[3] * worldRay.dy + rot[6] * worldRay.dz) *
+        invSx;
+    final rawDy =
+        (rot[1] * worldRay.dx + rot[4] * worldRay.dy + rot[7] * worldRay.dz) *
+        invSy;
+    final rawDz =
+        (rot[2] * worldRay.dx + rot[5] * worldRay.dy + rot[8] * worldRay.dz) *
+        invSz;
+
+    final localDirLen = math.sqrt(
+      rawDx * rawDx + rawDy * rawDy + rawDz * rawDz,
+    );
+    if (localDirLen <= 1e-12) {
+      return null;
+    }
+    final invLocalDirLen = 1.0 / localDirLen;
+    final localRay = Ray3D(
+      ox: lox,
+      oy: loy,
+      oz: loz,
+      dx: rawDx * invLocalDirLen,
+      dy: rawDy * invLocalDirLen,
+      dz: rawDz * invLocalDirLen,
+    );
+    final maxLocalT = maxDistance.isFinite
+        ? maxDistance * localDirLen
+        : double.infinity;
+    final flipWinding = (scaleX * scaleY * scaleZ) < 0.0;
+
+    if (useBvh) {
+      final hit = mesh.bvh.raycastLocal(
+        localRay,
+        maxLocalDistance: maxLocalT,
+        cullBackfaces: cullBackfaces,
+        flipWinding: flipWinding,
+      );
+      if (hit == null) {
+        return null;
+      }
+      return (hit.$1 * invLocalDirLen, hit.$2);
+    }
+
+    if (!intersectAabb(
+      localRay,
+      minX: mesh.minX,
+      minY: mesh.minY,
+      minZ: mesh.minZ,
+      maxX: mesh.maxX,
+      maxY: mesh.maxY,
+      maxZ: mesh.maxZ,
+      maxDistance: maxLocalT,
+    )) {
+      return null;
+    }
+
+    final pos = mesh.positions;
+    final idx = mesh.indices;
+    final faceCount = idx.length ~/ 3;
+    var bestLocalT = maxLocalT;
+    var bestFace = -1;
+    final ldx = localRay.dx;
+    final ldy = localRay.dy;
+    final ldz = localRay.dz;
+
+    for (var f = 0; f < faceCount; f++) {
+      final f3 = f * 3;
+      final i0 = idx[f3] * 3;
+      final i1 = idx[f3 + 1] * 3;
+      final i2 = idx[f3 + 2] * 3;
+
+      final v0x = pos[i0];
+      final v0y = pos[i0 + 1];
+      final v0z = pos[i0 + 2];
+
+      final e1x = pos[i1] - v0x;
+      final e1y = pos[i1 + 1] - v0y;
+      final e1z = pos[i1 + 2] - v0z;
+
+      final e2x = pos[i2] - v0x;
+      final e2y = pos[i2 + 1] - v0y;
+      final e2z = pos[i2 + 2] - v0z;
+
+      final px = ldy * e2z - ldz * e2y;
+      final py = ldz * e2x - ldx * e2z;
+      final pz = ldx * e2y - ldy * e2x;
+
+      final det = e1x * px + e1y * py + e1z * pz;
+      if (cullBackfaces) {
+        if (flipWinding ? det > -1e-7 : det < 1e-7) {
+          continue;
+        }
+      } else if (det.abs() < 1e-7) {
+        continue;
+      }
+
+      final invDet = 1.0 / det;
+      final tx = lox - v0x;
+      final ty = loy - v0y;
+      final tz = loz - v0z;
+
+      final u = (tx * px + ty * py + tz * pz) * invDet;
+      if (u < 0.0 || u > 1.0) {
+        continue;
+      }
+
+      final qx = ty * e1z - tz * e1y;
+      final qy = tz * e1x - tx * e1z;
+      final qz = tx * e1y - ty * e1x;
+
+      final v = (ldx * qx + ldy * qy + ldz * qz) * invDet;
+      if (v < 0.0 || u + v > 1.0) {
+        continue;
+      }
+
+      final t = (e2x * qx + e2y * qy + e2z * qz) * invDet;
+      if (t > 1e-5 && t < bestLocalT) {
+        bestLocalT = t;
+        bestFace = f;
+      }
+    }
+
+    if (bestFace < 0) {
+      return null;
+    }
+    return (bestLocalT * invLocalDirLen, bestFace);
+  }
+
+  /// Intersects [worldRay] against all visible meshes in a [Node3D] hierarchy,
+  /// returning the closest hit node, world distance, face index, and world hit
+  /// point.
+  static ({
+    Node3D node,
+    double distance,
+    int faceIndex,
+    double worldX,
+    double worldY,
+    double worldZ,
+  })?
+  raycastNodeHierarchy(
+    Ray3D worldRay,
+    Node3D root, {
+    double maxDistance = double.infinity,
+    bool cullBackfaces = true,
+  }) {
+    if (root.parent == null) {
+      root.updateWorldTransforms();
+    }
+    Node3D? bestNode;
+    var bestDist = maxDistance;
+    var bestFace = -1;
+
+    void visit(Node3D n) {
+      if (!n.visible || n.opacity <= 0.0) {
+        return;
+      }
+      final m = n.mesh;
+      if (m != null) {
+        final hit = raycastMeshTransform(
+          worldRay,
+          m,
+          worldX: n.worldX,
+          worldY: n.worldY,
+          worldZ: n.worldZ,
+          scaleX: n.worldScaleX,
+          scaleY: n.worldScaleY,
+          scaleZ: n.worldScaleZ,
+          rotationMatrix3: n.worldRotationMatrix,
+          maxDistance: bestDist,
+          cullBackfaces: cullBackfaces,
+        );
+        if (hit != null && hit.$1 < bestDist) {
+          bestDist = hit.$1;
+          bestFace = hit.$2;
+          bestNode = n;
+        }
+      }
+      final kids = n.children;
+      for (var i = 0; i < kids.length; i++) {
+        visit(kids[i]);
+      }
+    }
+
+    visit(root);
+    if (bestNode == null) {
+      return null;
+    }
+    final (hx, hy, hz) = worldRay.pointAt(bestDist);
+    return (
+      node: bestNode!,
+      distance: bestDist,
+      faceIndex: bestFace,
+      worldX: hx,
+      worldY: hy,
+      worldZ: hz,
     );
   }
 }

@@ -48,12 +48,14 @@ mixin HasPaint<T extends Object> on Component
   /// Sets a paint on the collection.
   void setPaint(T paintId, Paint paint) {
     _paints[paintId] = paint;
+    markSubtreeDirty();
     Game.notifyVisualMutation();
   }
 
   /// Removes a paint from the collection.
   void deletePaint(T paintId) {
     if (_paints.remove(paintId) != null) {
+      markSubtreeDirty();
       Game.notifyVisualMutation();
     }
   }
@@ -68,6 +70,7 @@ mixin HasPaint<T extends Object> on Component
 
   set paintLayers(List<Paint> paintLayers) {
     paintLayersInternal = paintLayers;
+    markSubtreeDirty();
     Game.notifyVisualMutation();
   }
 
@@ -120,6 +123,7 @@ mixin HasPaint<T extends Object> on Component
     final targetPaint = getPaint(paintId);
     if (targetPaint.color != color) {
       targetPaint.color = color;
+      markSubtreeDirty();
       Game.notifyVisualMutation();
     }
     onChanged();
@@ -130,6 +134,7 @@ mixin HasPaint<T extends Object> on Component
   /// tinted with the given color.
   void tint(Color color, {T? paintId}) {
     getPaint(paintId).colorFilter = ColorFilter.mode(color, BlendMode.srcATop);
+    markSubtreeDirty();
     Game.notifyVisualMutation();
     onChanged();
   }
@@ -153,6 +158,7 @@ mixin HasPaint<T extends Object> on Component
       }
     }
     if (changed) {
+      markSubtreeDirty();
       Game.notifyVisualMutation();
     }
     onChanged();
@@ -183,6 +189,7 @@ mixin HasPaint<T extends Object> on Component
         layerPaint.colorFilter = filter;
       }
     }
+    markSubtreeDirty();
     Game.notifyVisualMutation();
     onChanged();
   }

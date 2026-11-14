@@ -1,4 +1,5 @@
 import 'package:flame/collisions.dart';
+import 'package:flame/geometry.dart';
 
 /// The [Broadphase] class is used to make collision detection more efficient
 /// by doing a rough estimation of which hitboxes that can collide before their
@@ -48,4 +49,17 @@ abstract class Broadphase<T extends Hitbox<T>>() {
 
   /// Returns the potential hitbox collisions
   Iterable<CollisionProspect<T>> query();
+
+  /// Appends hitboxes whose spatial bounds may intersect [ray] within
+  /// [maxDistance] into [out].
+  ///
+  /// Broadphase implementations override this to prune distant hitboxes in
+  /// sub-linear time (`Sweep` sorted X-interval pruning, `QuadTree` quadrant
+  /// slab culling). Custom subclasses default to scanning [items].
+  void queryRayCandidates(Ray2 ray, double maxDistance, List<T> out) {
+    if (maxDistance.isNaN) {
+      return;
+    }
+    out.addAll(items);
+  }
 }

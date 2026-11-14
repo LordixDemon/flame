@@ -8,3 +8,5 @@ export 'src/layout/flex_grid_layout.dart'
         GridLayoutComponent,
         NineSlicePanelComponent,
         RowLayoutComponent;
+export 'src/layout/scroll_container_component.dart'
+    show ScrollContainerComponent, ScrollDirection;

@@ -2,6 +2,7 @@ export 'src/cache/asset_scope.dart';
 export 'src/cache/assets_cache.dart';
 export 'src/cache/async_asset_streamer.dart';
 export 'src/cache/dynamic_sprite_atlas.dart';
+export 'src/cache/engine_compute_pool.dart';
 export 'src/cache/images.dart';
 export 'src/cache/memory_cache.dart';
 export 'src/cache/mip_atlas.dart';

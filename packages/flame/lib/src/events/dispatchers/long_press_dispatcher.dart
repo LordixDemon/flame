@@ -77,6 +77,21 @@ class LongPressDispatcher() extends Dispatcher<FlameGame> {
     });
   }
 
+  /// Cancels all active in-flight long-press gestures.
+  void cancelAllActiveLongPresses() {
+    if (_records.isEmpty) {
+      return;
+    }
+    final active = _records.toList(growable: false);
+    _records.clear();
+    for (var i = 0; i < active.length; i++) {
+      final rec = active[i];
+      if (rec.component.isMounted && !rec.component.isRemoving) {
+        rec.component.onLongPressCancel(LongPressCancelEvent(rec.pointerId));
+      }
+    }
+  }
+
   //#region Gesture recognizer handlers
 
   @internal

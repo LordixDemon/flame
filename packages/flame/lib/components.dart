@@ -4,8 +4,10 @@ library;
 export 'src/anchor.dart';
 export 'src/camera/behaviors/camera_billboard.dart'
     show CameraBillboard, ViewportClampedPin;
-export 'src/camera/camera_component.dart' show CameraComponent, PixelSnapMode;
+export 'src/camera/camera_component.dart'
+    show CameraComponent, CameraLayerCacheMode, PixelSnapMode;
 export 'src/camera/render_pass.dart' show MultiPassComponent, RenderPass;
+export 'src/camera/render_texture_component.dart' show RenderTextureComponent;
 export 'src/camera/scene_layer_component.dart' show SceneLayerComponent;
 export 'src/camera/world.dart' show World;
 export 'src/camera/world_spatial_index.dart' show WorldSpatialIndex;
@@ -38,6 +40,7 @@ export 'src/components/mixins/component_viewport_margin.dart';
 export 'src/components/mixins/coordinate_transform.dart';
 export 'src/components/mixins/cull_bounds_children.dart';
 export 'src/components/mixins/cull_when_offscreen.dart';
+export 'src/components/mixins/fixed_transform_interpolation.dart';
 export 'src/components/mixins/gesture_hitboxes.dart';
 export 'src/components/mixins/has_ancestor.dart';
 export 'src/components/mixins/has_auto_batched_children.dart'
@@ -60,6 +63,7 @@ export 'src/components/mixins/parent_is_a.dart';
 export 'src/components/mixins/passive_component.dart';
 export 'src/components/mixins/recyclable_component.dart';
 export 'src/components/mixins/renders_sprite.dart';
+export 'src/components/mixins/semantics_component.dart';
 export 'src/components/mixins/snapshot.dart';
 export 'src/components/nine_tile_box_component.dart';
 export 'src/components/parallax_component.dart';
@@ -90,5 +94,7 @@ export 'src/sprite_warp/has_warp_grid.dart';
 export 'src/sprite_warp/warp_grid.dart' show WarpGrid, WarpInterpolation;
 export 'src/text/renderers/rich_batched_text_component.dart'
     show RichBatchedTextComponent, RichTextIconSpan;
+export 'src/text/renderers/sdf_font_atlas.dart'
+    show SdfFontAtlas, SdfGlyphMetrics, SdfTextComponent, SdfTextStyle;
 export 'src/text/renderers/text_paint.dart';
 export 'src/timer.dart';

@@ -31,6 +31,10 @@ class Decorator() {
   /// The next decorator in the chain, or null if there is none.
   Decorator? _next;
 
+  /// Internal read-only link to the next decorator in the chain.
+  @internal
+  Decorator? get nextDecorator => _next;
+
   /// Applies this and all subsequent decorators if any.
   ///
   /// When [bounds] is provided in the coordinate frame seen by the decorated

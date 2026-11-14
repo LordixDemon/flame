@@ -595,3 +595,30 @@ class WorldCalloutChip extends PositionComponent
 - **Off-Screen Update Throttling (`OffscreenTickPolicy`)**: Configure `offscreenTickPolicy` on any
   `CullWhenOffscreen` component (`always`, `everyNFrames` with accumulated `dt`, or `paused`) and
   monitor `skippedOffscreenTicks`.
+
+
+### Retained Layer Caching (`CameraLayerCacheMode`), Per-Component `cameraMask`, `RenderTextureComponent` & Deep `WorldSpatialIndex`
+
+- **Split Retained `ui.Picture` Layer Caching (`CameraLayerCacheMode.splitRetained` &
+  `Component.subtreeVersion`)**: Set `camera.layerCacheMode = CameraLayerCacheMode.splitRetained` so
+  `backdrop`, `world`, and `viewport` HUD record independent GPU `ui.Picture` layers invalidated via
+  monotonically propagating `Component.subtreeVersion` (`markSubtreeDirty()`), canvas resizes, and
+  camera transform/mask/scale changes (`backdropCacheHitCount`, `worldCacheHitCount`,
+  `viewportCacheHitCount`). Animating a HUD badge no longer re-records `world`, and moving a world
+  actor no longer re-records `viewport` HUD.
+- **Per-Component `cameraMask`, Stack-Safe Nested `currentCamera` & `RenderTextureComponent`**:
+  - Every `Component` carries a 32-bit `cameraMask` (`0x7fffffff` default) checked against
+    `CameraComponent.cameraMask` across 2D world rendering, `WorldSpatialIndex`, 2D pointer
+    hit-testing, 3D `SpatialHitbox3D` ray picking, and accessibility semantics.
+  - `CameraComponent.currentCameras` uses try/finally stack scoping (`maxCamerasDepth = 4`) so an
+    offscreen `renderToImageSync` or `RenderTextureComponent` inside another camera's render pass
+    cleanly restores the outer `CameraComponent.currentCamera`.
+  - `RenderTextureComponent(sourceCamera: ...)` rasterizes any `CameraComponent` into a retained GPU
+    `ui.Image` texture (`refreshFps` throttling, `cornerRadius` RRect clipping, re-entrant
+    self-capture guard for in-world mirrors/monitors, and deterministic `ui.Image.dispose()` on
+    unmount).
+- **Deep Subtree `WorldSpatialIndex` & `WorldQuery`**: `World(spatialIndexEnabled: true)` recursively
+  indexes `PositionComponent` leaves inside organizational containers and unit-parallax
+  `SceneLayerComponent`s (`parallaxFactor == (1, 1)`), preserving exact hierarchical render and
+  hit-test order while skipping offscreen sectors in `O(visible)` (`indexedCount`). `WorldQuery<T>`
+  similarly traverses full world subtrees by default (`includeSubtree: true`).

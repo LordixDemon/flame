@@ -46,6 +46,11 @@ class Transform2D() extends ChangeNotifier {
   /// changes. Used by spatial caches (such as `CullWhenOffscreen`) to avoid
   /// recomputing world bounds on stationary frames.
   int get version => _version;
+
+  /// Optional zero-allocation owner hook invoked whenever this transform
+  /// mutates (used by `PositionComponent` for `O(1)` subtree dirty tracking).
+  @internal
+  VoidCallback? onMutated;
   double _angle;
   double _cosAngle;
   double _sinAngle;
@@ -87,6 +92,7 @@ class Transform2D() extends ChangeNotifier {
     _recalculate = true;
     _version++;
     globalMutationCount++;
+    onMutated?.call();
     notifyListeners();
   }
 
@@ -257,6 +263,7 @@ class Transform2D() extends ChangeNotifier {
     _recalculate = false;
     _version++;
     globalMutationCount++;
+    onMutated?.call();
     notifyListeners();
   }
 
@@ -328,6 +335,7 @@ class Transform2D() extends ChangeNotifier {
     _version++;
     globalMutationCount++;
     if (!_isBatchUpdating) {
+      onMutated?.call();
       notifyListeners();
     }
   }

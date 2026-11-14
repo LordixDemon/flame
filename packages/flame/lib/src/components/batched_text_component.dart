@@ -2,6 +2,7 @@ import 'dart:ui';
 
 import 'package:flame/components.dart';
 import 'package:flame/src/effects/provider_interfaces.dart';
+import 'package:flame/src/game/game.dart';
 import 'package:flame/src/text/renderers/raster_font_atlas.dart';
 
 /// Lightweight GPU-batched text component backed by a [RasterFontAtlas].
@@ -13,7 +14,7 @@ import 'package:flame/src/text/renderers/raster_font_atlas.dart';
 class BatchedTextComponent({
   required var RasterFontAtlas atlas,
   String text = '',
-  var Color color = const Color(0xFFFFFFFF),
+  Color color = const Color(0xFFFFFFFF),
   double letterSpacing = 0.0,
   super.position,
   super.scale,
@@ -22,6 +23,7 @@ class BatchedTextComponent({
   super.children,
   super.priority,
   super.sortKey,
+  super.cameraMask,
   super.key,
 }) extends PositionComponent with HasVisibility implements OpacityProvider {
   this {
@@ -33,8 +35,19 @@ class BatchedTextComponent({
   );
 
   String _text = text;
+  Color _color = color;
   double _letterSpacing = letterSpacing;
   double _opacity = 1.0;
+
+  /// Tint color applied to baked glyphs.
+  Color get color => _color;
+  set color(Color value) {
+    if (_color != value) {
+      _color = value;
+      markSubtreeDirty();
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// String rendered by this component.
   String get text => _text;
@@ -42,6 +55,8 @@ class BatchedTextComponent({
     if (_text != value) {
       _text = value;
       _recomputeSize();
+      markSubtreeDirty();
+      Game.notifyVisualMutation();
     }
   }
 
@@ -51,6 +66,8 @@ class BatchedTextComponent({
     if (_letterSpacing != value) {
       _letterSpacing = value;
       _recomputeSize();
+      markSubtreeDirty();
+      Game.notifyVisualMutation();
     }
   }
 
@@ -59,7 +76,12 @@ class BatchedTextComponent({
 
   @override
   set opacity(double value) {
-    _opacity = value.clamp(0.0, 1.0);
+    final clamped = value.clamp(0.0, 1.0);
+    if ((_opacity - clamped).abs() > 1e-6) {
+      _opacity = clamped;
+      markSubtreeDirty();
+      Game.notifyVisualMutation();
+    }
   }
 
   /// Effective modulated color incorporating [opacity].

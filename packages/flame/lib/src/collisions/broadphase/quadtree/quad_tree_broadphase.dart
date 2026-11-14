@@ -2,6 +2,7 @@ import 'dart:collection';
 
 import 'package:flame/collisions.dart';
 import 'package:flame/extensions.dart';
+import 'package:flame/geometry.dart';
 
 typedef ExternalBroadphaseCheck = bool Function(
   ShapeHitbox first,
@@ -142,6 +143,11 @@ class QuadTreeBroadphase({
     activeHitboxes.clear();
     _broadphaseCheckCache.clear();
     _cachedCenters.clear();
+  }
+
+  @override
+  void queryRayCandidates(Ray2 ray, double maxDistance, List<ShapeHitbox> out) {
+    tree.queryRay(ray, maxDistance, out);
   }
 
   /// Caches hitbox center because calculating on-the-fly is too expensive

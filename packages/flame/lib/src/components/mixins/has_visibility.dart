@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:flame/components.dart';
+import 'package:flame/src/game/game.dart';
 
 /// A mixin that allows a component visibility to be toggled
 /// without removing it from the tree. Visibility affects
@@ -22,11 +23,20 @@ import 'package:flame/components.dart';
 /// }
 /// ```
 mixin HasVisibility on Component {
-  bool isVisible = true;
+  bool _isVisible = true;
+
+  bool get isVisible => _isVisible;
+  set isVisible(bool value) {
+    if (_isVisible != value) {
+      _isVisible = value;
+      markSubtreeDirty();
+      Game.notifyVisualMutation();
+    }
+  }
 
   @override
   void renderTree(Canvas canvas) {
-    if (isVisible) {
+    if (_isVisible) {
       super.renderTree(canvas);
     }
   }

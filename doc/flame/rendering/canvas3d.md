@@ -245,3 +245,38 @@ cloud in a single `Canvas.drawRawAtlas` call.
   registry of mounted `SpatialHitbox3D` components and `CameraComponent` prunes non-intersecting 3D
   bounds via `Raycaster3D.intersectSphereDistance` (`lastSpatialRayCandidatesTested`,
   `lastSpatialRayNarrowphaseTests`) without traversing non-3D world props.
+
+
+## True Pinhole Perspective + Near-Plane Clipping, 65k+ Vertex Partitioning, 4-Bone `AnimationMixer3D` & `MeshBvh3D`
+
+- **Explicit Sort Keys, `TriangleDepthMode3D` (`centroid` / `nearest` / `farthest`) & `> 65,535`
+  Vertex Meshes**:
+  - Pass `sortOrder`, `depthBias`, and `depthMode` (`TriangleDepthMode3D.centroid`, `nearest`, or
+    `farthest`) to `BatchMeshRenderer3D.enqueueMesh` / `Node3D` to eliminate painter's-algorithm
+    popping where tall walls meet large ground planes.
+  - Partition arbitrary 32-bit `Uint32List` high-poly meshes into `Uint16List`-safe submeshes via
+    `Mesh3D.partitionByVertexLimit` / `Mesh3D.splitByVertexLimit`, or stream `Uint32List` buffers
+    directly into `BatchMeshRenderer3D.enqueueLargeBuffers32` (auto-splitting `Vertices.raw` chunks
+    at `65,535` vertices).
+- **True Pinhole `CameraProjectionMode3D.perspective` & Sutherland–Hodgman Near-Plane Clipping**:
+  - Set `CameraRig3D(projectionMode: CameraProjectionMode3D.perspective, fovYDeg: 45, nearClip: 0.25)`
+    for exact pinhole perspective projection (`tan(fovY / 2)` focal scaling) and perspective-aware
+    divergent `unprojectWorldRay` rays.
+  - `BatchMeshRenderer3D` clips every world-space triangle straddling `z_cam <= nearClip` via exact
+    zero-allocation 3D Sutherland–Hodgman polygon clipping (emitting `0`, `1`, or `2` triangles with
+    interpolated positions, normals, colors, MatCap/atlas UVs, and fog) — zero `w <= 0` coordinate
+    inversion or `NaN` explosions.
+- **4-Bone glTF Skeletal Skinning (`SkinnedMeshWorkspace3D`) & Keyframed `AnimationClip3D` /
+  `AnimationMixer3D`**:
+  - `SkinnedMeshWorkspace3D` supports full 4-influence per-vertex Linear Blend Skinning
+    (`boneIndices0..3`, `boneWeights0..3`, defaulting `2`/`3` cleanly when 2-bone rigs are used).
+  - `TransformTrack3D`, `MorphWeightTrack3D`, `AnimationClip3D` (`O(log K)` binary-searched keyframe
+    sampling with shortest-arc quaternion slerp), and `AnimationMixer3D` (`play`, `crossFadeTo`,
+    bone TRS + morph weight driving) animate 3D characters with zero per-frame heap allocations.
+- **Flat Zero-Alloc `MeshBvh3D` (`O(log T)` Ray Picking) & Full `3x3` Transform `Raycaster3D`**:
+  - `Mesh3D.bvh` lazily builds and caches a flat `Float32List`/`Int32List` median-split Bounding
+    Volume Hierarchy (`MeshBvh3D`, `8` floats + `2` ints per node).
+  - `Raycaster3D.raycastMeshTransform` transforms world rays by the exact inverse `3x3` rotation
+    (`yaw`/`pitch`/`roll`, `Quaternion3D`, or `Matrix3`) and non-uniform/negative `scaleX/Y/Z` (with
+    automatic winding-flip compensation when `det < 0`), accelerating `MeshHitbox3D` narrowphase
+    raycasts to `O(log T)`.

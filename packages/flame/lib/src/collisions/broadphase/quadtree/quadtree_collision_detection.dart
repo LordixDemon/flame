@@ -1,4 +1,5 @@
 import 'package:flame/collisions.dart';
+import 'package:flame/geometry.dart';
 import 'package:flutter/widgets.dart';
 
 /// Collision detection modification to support a Quad Tree broadphase.
@@ -72,12 +73,39 @@ class QuadTreeCollisionDetection({
     }
   }
 
-  @override
-  void run() {
+  void _flushScheduledUpdates() {
+    if (_scheduledUpdate.isEmpty) {
+      return;
+    }
     for (final hitbox in _scheduledUpdate) {
       broadphase.updateTransform(hitbox);
     }
     _scheduledUpdate.clear();
+  }
+
+  @override
+  void run() {
+    _flushScheduledUpdates();
     super.run();
+  }
+
+  @override
+  RaycastResult<ShapeHitbox>? raycast(
+    Ray2 ray, {
+    double? maxDistance,
+    int collisionMask = 0xFFFFFFFF,
+    bool Function(ShapeHitbox candidate)? hitboxFilter,
+    List<ShapeHitbox>? ignoreHitboxes,
+    RaycastResult<ShapeHitbox>? out,
+  }) {
+    _flushScheduledUpdates();
+    return super.raycast(
+      ray,
+      maxDistance: maxDistance,
+      collisionMask: collisionMask,
+      hitboxFilter: hitboxFilter,
+      ignoreHitboxes: ignoreHitboxes,
+      out: out,
+    );
   }
 }

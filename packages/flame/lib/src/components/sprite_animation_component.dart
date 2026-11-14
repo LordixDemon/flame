@@ -145,7 +145,14 @@ class SpriteAnimationComponent({
   @override
   void update(double dt) {
     if (playing) {
-      _animationTicker?.update(dt);
+      final ticker = _animationTicker;
+      if (ticker != null) {
+        final prevIndex = ticker.currentIndex;
+        ticker.update(dt);
+        if (ticker.currentIndex != prevIndex) {
+          markSubtreeDirty();
+        }
+      }
       _resizeToSprite();
     }
     if (removeOnFinish && (_animationTicker?.done() ?? false)) {

@@ -1,5 +1,6 @@
 import 'dart:ui';
 
+import 'package:flame/src/game/game.dart';
 import 'package:flame/src/rendering/decorator.dart';
 import 'package:meta/meta.dart';
 
@@ -18,12 +19,11 @@ class PaintDecorator extends Decorator {
   }
 
   PaintDecorator.tint(Color color) {
-    _paint.colorFilter = ColorFilter.mode(color, BlendMode.srcATop);
+    setTint(color);
   }
 
   PaintDecorator.grayscale({double opacity = 1.0}) {
-    _paint.color = Color.fromARGB((255 * opacity).toInt(), 0, 0, 0);
-    _paint.blendMode = BlendMode.luminosity;
+    setGrayscale(opacity: opacity);
   }
 
   final _paint = Paint();
@@ -55,6 +55,27 @@ class PaintDecorator extends Decorator {
       sigmaY: sigmaY,
     );
     _cachedLayerBounds = null;
+    Game.notifyVisualMutation();
+  }
+
+  /// Updates the active color tint filter dynamically.
+  void setTint(Color? color) {
+    _paint.colorFilter = color == null
+        ? null
+        : ColorFilter.mode(color, BlendMode.srcATop);
+    Game.notifyVisualMutation();
+  }
+
+  /// Updates the grayscale luminosity filter dynamically.
+  void setGrayscale({double opacity = 1.0}) {
+    _paint.color = Color.fromARGB(
+      (255 * opacity.clamp(0.0, 1.0)).toInt(),
+      0,
+      0,
+      0,
+    );
+    _paint.blendMode = BlendMode.luminosity;
+    Game.notifyVisualMutation();
   }
 
   Rect _resolveLayerBounds(Rect bounds) {

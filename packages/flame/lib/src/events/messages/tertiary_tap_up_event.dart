@@ -18,6 +18,7 @@ class TertiaryTapUpEvent(super.game, TapUpDetails details)
         devicePosition: details.globalPosition.toVector2(),
       );
 
+  @override
   final PointerDeviceKind deviceKind = details.kind;
 
   @override

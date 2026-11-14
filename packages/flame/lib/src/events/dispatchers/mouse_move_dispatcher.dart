@@ -107,6 +107,22 @@ class MouseMoveDispatcher() extends Dispatcher<FlameGame> {
     _toRemoveScratch.clear();
   }
 
+  /// Clears pending coalesced hover events and cancels active hover states.
+  void cancelAllActiveHovers() {
+    _pendingHoverByPointer.clear();
+    if (_records.isEmpty) {
+      return;
+    }
+    final active = _records.toList(growable: false);
+    _records.clear();
+    for (var i = 0; i < active.length; i++) {
+      final comp = active[i].component;
+      if (comp is HoverCallbacks && comp.isHovered) {
+        comp.cancelHover();
+      }
+    }
+  }
+
   static void addDispatcher(Component component) {
     Dispatcher.addDispatcher(
       component,

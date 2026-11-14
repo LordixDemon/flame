@@ -110,6 +110,13 @@ class ClipComponent({
   void render(Canvas canvas) => canvas.clipPath(_path);
 
   @override
+  bool get clipsChildEvents => true;
+
+  @override
+  bool containsClipPoint(Vector2 localPoint) =>
+      _shape.containsPoint(localPoint);
+
+  @override
   bool containsPoint(Vector2 point) {
     return _shape.containsPoint(point - position);
   }

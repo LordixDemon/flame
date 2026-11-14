@@ -10,9 +10,13 @@ mixin HasTags on Component {
       _tags == null ? const <String>{} : Set<String>.unmodifiable(_tags!);
 
   void _notifyTagMutation() {
-    final p = parent;
-    if (p is World) {
-      p.revalidateQueriesFor(this);
+    var cursor = parent;
+    while (cursor != null) {
+      if (cursor is World) {
+        cursor.revalidateQueriesFor(this);
+        break;
+      }
+      cursor = cursor.parent;
     }
   }
 
@@ -65,9 +69,13 @@ class WorldQuery<T extends Component>({
   final bool Function(T component)? filter,
   Iterable<String> withTags = const [],
   Iterable<String> withoutTags = const [],
+  this.includeSubtree = true,
   this.onMatched,
   this.onUnmatched,
 }) {
+  /// Whether nested descendants inside layer/group containers under `World`
+  /// are indexed in addition to direct `world.children` (`true` by default).
+  final bool includeSubtree;
   final Set<String> _withTags = Set<String>.of(withTags);
   final Set<String> _withoutTags = Set<String>.of(withoutTags);
 

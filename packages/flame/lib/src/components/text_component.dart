@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:flame/components.dart';
+import 'package:flame/src/game/game.dart';
 import 'package:flame/text.dart';
 import 'package:flutter/painting.dart';
 import 'package:meta/meta.dart';
@@ -16,6 +17,7 @@ class TextComponent<T extends TextRenderer>({
   super.children,
   super.priority,
   super.sortKey,
+  super.cameraMask,
   super.key,
 }) extends PositionComponent with HasPaint {
   this {
@@ -39,6 +41,8 @@ class TextComponent<T extends TextRenderer>({
     if (_text != text) {
       _text = text;
       updateBounds();
+      markSubtreeDirty();
+      Game.notifyVisualMutation();
     }
   }
 
@@ -54,6 +58,8 @@ class TextComponent<T extends TextRenderer>({
     _ownsRenderer = false;
     _usingRendererPaintCopy = false;
     updateBounds();
+    markSubtreeDirty();
+    Game.notifyVisualMutation();
   }
 
   late InlineTextElement _textElement;

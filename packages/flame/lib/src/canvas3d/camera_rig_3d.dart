@@ -3,19 +3,38 @@ import 'dart:ui';
 
 import 'package:flame/src/canvas3d/raycast_3d.dart';
 
+/// 3D projection mode for [CameraRig3D].
+enum CameraProjectionMode3D() {
+  /// Isometric / dimetric orthonormal projection with subtle height parallax
+  /// (default).
+  axonometric,
+
+  /// True pinhole perspective projection (`1 / camZ` foreshortening, true
+  /// vanishing points, and Sutherland–Hodgman near-plane clipping in
+  /// `BatchMeshRenderer3D`).
+  perspective,
+}
+
 /// Orthonormal 3D view/projection camera rig for isometric, dimetric, and
-/// perspective-assisted 3D worlds rendered onto Flutter's 2D `Canvas`.
+/// true perspective 3D worlds rendered onto Flutter's 2D `Canvas`.
 ///
 /// At rest (`orbitYawDeltaRad == 0`, `pitchDeltaRad == 0`), the orthonormal
 /// basis reproduces exact `2:1` isometric projection while supporting smooth
-/// 3D elevation tilt, azimuth orbit, height perspective parallax, and exact
-/// 2D-to-3D ray unprojection (`unprojectWorldRay`).
+/// 3D elevation tilt, azimuth orbit, true pinhole
+/// [CameraProjectionMode3D.perspective] with configurable [fovYRad] /
+/// [cameraDistance] / [nearClip], and exact 2D-to-3D ray unprojection
+/// (`unprojectWorldRay`).
 class CameraRig3D({
   this.cellHalfW = 44.0,
   this.cellHalfH = 22.0,
   this.groundOriginY = -18.0,
   this.baseAzimuthRad = math.pi * 0.25,
   this.baseElevationRad = math.pi / 6.0,
+  CameraProjectionMode3D projectionMode = CameraProjectionMode3D.axonometric,
+  double cameraDistance = 18.0,
+  double? fovYRad,
+  this.referenceHalfHeightPx = 360.0,
+  double nearClip = 0.15,
 }) {
   /// Horizontal half-width in pixels of one ground cell.
   final double cellHalfW;
@@ -31,6 +50,70 @@ class CameraRig3D({
 
   /// Rest elevation angle above ground in radians (default `pi / 6` = `30°`).
   final double baseElevationRad;
+
+  /// Reference viewport half-height in pixels used when [fovYRad] is set.
+  final double referenceHalfHeightPx;
+
+  CameraProjectionMode3D _projectionMode = projectionMode;
+  double _cameraDistance = cameraDistance;
+  double? _fovYRad = fovYRad;
+  double _nearClip = nearClip;
+
+  /// Active 3D projection mode (`axonometric` or `perspective`).
+  CameraProjectionMode3D get projectionMode => _projectionMode;
+  set projectionMode(CameraProjectionMode3D value) {
+    if (_projectionMode != value) {
+      _projectionMode = value;
+      _basisVersion++;
+    }
+  }
+
+  /// Distance in 3D world units from the look-at target along `view` to the
+  /// perspective pinhole eye (`> nearClip`).
+  double get cameraDistance => _cameraDistance;
+  set cameraDistance(double value) {
+    final clamped = math.max(_nearClip + 0.05, value);
+    if ((_cameraDistance - clamped).abs() > 1e-6) {
+      _cameraDistance = clamped;
+      _basisVersion++;
+    }
+  }
+
+  /// Optional vertical field-of-view angle in radians for
+  /// [CameraProjectionMode3D.perspective]. When `null`, focal length matches
+  /// `cameraDistance * focalScalePx` so geometry at the look-at target matches
+  /// `axonometric` scale 1:1.
+  double? get fovYRad => _fovYRad;
+  set fovYRad(double? value) {
+    if (_fovYRad != value) {
+      _fovYRad = value;
+      _basisVersion++;
+    }
+  }
+
+  /// Near-plane clipping distance (`> 0.01`) in front of the perspective eye.
+  double get nearClip => _nearClip;
+  set nearClip(double value) {
+    final clamped = math.max(0.01, value);
+    if ((_nearClip - clamped).abs() > 1e-6) {
+      _nearClip = clamped;
+      if (_cameraDistance < _nearClip + 0.05) {
+        _cameraDistance = _nearClip + 0.05;
+      }
+      _basisVersion++;
+    }
+  }
+
+  /// Effective pinhole focal length in pixels for
+  /// [CameraProjectionMode3D.perspective].
+  double get perspectiveFocalLengthPx {
+    final fov = _fovYRad;
+    if (fov != null) {
+      final halfFov = (fov * 0.5).clamp(0.05, 1.45);
+      return (referenceHalfHeightPx / math.tan(halfFov)) * camZoom;
+    }
+    return _cameraDistance * focalScalePx;
+  }
 
   /// Focal scale (`cellHalfW * sqrt(2)`) mapping unit 3D basis to pixels.
   late final double focalScalePx = cellHalfW * math.sqrt2;
@@ -148,6 +231,41 @@ class CameraRig3D({
     return ((dx + dy) * 0.5, (dy - dx) * 0.5);
   }
 
+  /// Transforms an absolute 3D world point `(wx, wy, wz)` into pinhole
+  /// camera-space `(camX, camY, camZ)` where `+camX` is screen-right, `+camY`
+  /// is screen-down, and `camZ > 0` is forward distance in front of the
+  /// perspective eye (`camZ == cameraDistance` at the look-at target).
+  (double camX, double camY, double camZ) worldToCameraSpace(
+    double wx,
+    double wy,
+    double wz,
+  ) {
+    final (targetX, targetY) = screenToGrid(Offset(camWorldX, camWorldY));
+    final dx = wx - targetX;
+    final dy = wy - targetY;
+    final dz = wz;
+    final camX = dx * _rightX + dy * _rightY;
+    final camY = dx * _downX + dy * _downY + dz * _downZ;
+    final camZ = _cameraDistance - (dx * _viewX + dy * _viewY + dz * _viewZ);
+    return (camX, camY, camZ);
+  }
+
+  /// Projects a pinhole camera-space point `(camX, camY, camZ)` onto the 2D
+  /// canvas relative to [canvasOrigin].
+  (double sx, double sy) projectCameraSpace(
+    double camX,
+    double camY,
+    double camZ, {
+    Offset canvasOrigin = Offset.zero,
+  }) {
+    final safeZ = math.max(_nearClip, camZ);
+    final invZ = perspectiveFocalLengthPx / safeZ;
+    return (
+      camWorldX + camX * invZ - canvasOrigin.dx,
+      camWorldY + camY * invZ - canvasOrigin.dy,
+    );
+  }
+
   /// Projects a local 3D offset `(rx, ry, rz)` anchored at [anchorWorld] into
   /// canvas coordinates relative to [canvasOrigin] with zero heap allocations.
   (double, double) projectAnchored({
@@ -157,6 +275,11 @@ class CameraRig3D({
     required double ry,
     required double rz,
   }) {
+    if (_projectionMode == CameraProjectionMode3D.perspective) {
+      final (ax, ay) = screenToGrid(anchorWorld);
+      final (camX, camY, camZ) = worldToCameraSpace(ax + rx, ay + ry, rz);
+      return projectCameraSpace(camX, camY, camZ, canvasOrigin: canvasOrigin);
+    }
     final gx = anchorWorld.dx + (_rightX * rx + _rightY * ry) * focalScalePx;
     final gy = anchorWorld.dy + (_downX * rx + _downY * ry) * focalScalePx;
     final persp = rz * perspectiveStrength;
@@ -171,6 +294,11 @@ class CameraRig3D({
 
   /// Projects an absolute 3D point `(wx, wy, wz)` into 2D world coordinates.
   Offset projectWorldPoint(double wx, double wy, double wz) {
+    if (_projectionMode == CameraProjectionMode3D.perspective) {
+      final (camX, camY, camZ) = worldToCameraSpace(wx, wy, wz);
+      final (sx, sy) = projectCameraSpace(camX, camY, camZ);
+      return Offset(sx, sy);
+    }
     final anchor = gridToScreen(wx, wy);
     final (sx, sy) = projectAnchored(
       anchorWorld: anchor,
@@ -196,11 +324,36 @@ class CameraRig3D({
   }
 
   /// Unprojects a 2D world tap [worldTap] into an exact [Ray3D] accounting for
-  /// camera elevation, azimuth, and height perspective parallax.
+  /// camera elevation, azimuth, and active [projectionMode] (`axonometric` or
+  /// pinhole `perspective`).
   Ray3D unprojectWorldRay(
     Offset worldTap, {
-    double cameraDistance = 18.0,
+    double? cameraDistance,
   }) {
+    final effDist = cameraDistance ?? _cameraDistance;
+    if (_projectionMode == CameraProjectionMode3D.perspective) {
+      final (targetX, targetY) = screenToGrid(Offset(camWorldX, camWorldY));
+      final ox = targetX + _viewX * effDist;
+      final oy = targetY + _viewY * effDist;
+      final oz = _viewZ * effDist;
+
+      final f = perspectiveFocalLengthPx;
+      final u = (worldTap.dx - camWorldX) / f;
+      final v = (worldTap.dy - camWorldY) / f;
+
+      var dirX = u * _rightX + v * _downX - _viewX;
+      var dirY = u * _rightY + v * _downY - _viewY;
+      var dirZ = v * _downZ - _viewZ;
+      final len = math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
+      if (len > 1e-7) {
+        final inv = 1.0 / len;
+        dirX *= inv;
+        dirY *= inv;
+        dirZ *= inv;
+      }
+      return Ray3D(ox: ox, oy: oy, oz: oz, dx: dirX, dy: dirY, dz: dirZ);
+    }
+
     final (groundX, groundY) = screenToGrid(worldTap);
     final p1 = perspectiveStrength;
     final invX1 = 1.0 / (1.0 + p1);
@@ -222,9 +375,9 @@ class CameraRig3D({
     }
 
     return Ray3D(
-      ox: groundX - dirX * cameraDistance,
-      oy: groundY - dirY * cameraDistance,
-      oz: -dirZ * cameraDistance,
+      ox: groundX - dirX * effDist,
+      oy: groundY - dirY * effDist,
+      oz: -dirZ * effDist,
       dx: dirX,
       dy: dirY,
       dz: dirZ,

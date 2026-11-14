@@ -73,6 +73,7 @@ class Component({
   Iterable<Component>? children,
   int? priority,
   double? sortKey,
+  int? cameraMask,
   bool ticksEnabled = true,
   GraphicsQualityTier? minQualityTier,
 
@@ -202,6 +203,51 @@ class Component({
 
   bool _ticksDisabled = false;
   GraphicsQualityTier? _minQualityTier = minQualityTier;
+  int _cameraMask = cameraMask ?? 0xFFFFFFFF;
+  int _subtreeVersion = 0;
+
+  /// 32-bit camera visibility & hit-test mask (`0xFFFFFFFF` by default).
+  ///
+  /// When rendered or hit-tested through a [CameraComponent], this component
+  /// (and its entire subtree) is active if and only if
+  /// `(cameraMask & camera.cameraMask) != 0`. Use distinct bit flags to isolate
+  /// minimap icons, 3D portrait rigs, split-screen HUDs, or mirror layers.
+  int get cameraMask => _cameraMask;
+  set cameraMask(int value) {
+    if (_cameraMask != value) {
+      _cameraMask = value;
+      markSubtreeDirty();
+      Game.notifyVisualMutation();
+    }
+  }
+
+  /// Monotonically increasing counter incremented whenever this component or
+  /// any mounted descendant mutates its transform, structure, sort key, or
+  /// calls [markSubtreeDirty]. Used by `CameraComponent` retained layer caching
+  /// (`CameraLayerCacheMode.splitRetained`) for `O(1)` dirty detection.
+  int get subtreeVersion => _subtreeVersion;
+
+  /// Increments [subtreeVersion] on this component and every mounted ancestor
+  /// up to the tree root (`O(depth)`, zero allocations).
+  void markSubtreeDirty() {
+    Component? cursor = this;
+    while (cursor != null) {
+      cursor._subtreeVersion++;
+      cursor = cursor._parent;
+    }
+  }
+
+  /// Whether pointer/hover/drop hit-testing ([componentsAtLocation]) clips
+  /// descendant components to [containsClipPoint] before recursing into
+  /// children. Overridden to `true` by `ClipComponent` and
+  /// `ScrollContainerComponent`.
+  @protected
+  bool get clipsChildEvents => false;
+
+  /// Evaluates whether [localPoint] lies inside this component's active clip
+  /// shape when [clipsChildEvents] is `true`.
+  @protected
+  bool containsClipPoint(Vector2 localPoint) => true;
 
   /// Monotonically increasing counter bumped on component list structural
   /// mutations.
@@ -925,6 +971,10 @@ class Component({
     if (!isActiveForCurrentGraphicsTier) {
       return;
     }
+    final activeCamera = CameraComponent.currentCamera;
+    if (activeCamera != null && (_cameraMask & activeCamera.cameraMask) == 0) {
+      return;
+    }
     final context = renderContext;
     List<ComponentRenderContext>? renderContexts;
     if (context != null) {
@@ -940,10 +990,19 @@ class Component({
     }
     final children = _children;
     if (children != null) {
-      children._ensureSortKeysOrdered();
-      for (final child in children._elements) {
-        if (child != null) {
-          renderChild(canvas, child);
+      final spatialPass = WorldSpatialIndex.activeRenderIndex;
+      final visiblePure = spatialPass?.visibleChildrenForPureContainer(this);
+      if (visiblePure != null) {
+        for (var i = 0; i < visiblePure.length; i++) {
+          renderChild(canvas, visiblePure[i]);
+        }
+      } else {
+        children._ensureSortKeysOrdered();
+        for (final child in children._elements) {
+          if (child != null &&
+              (spatialPass == null || spatialPass.shouldRenderChild(child))) {
+            renderChild(canvas, child);
+          }
         }
       }
       afterChildrenRendered(canvas);
@@ -1234,7 +1293,17 @@ class Component({
     T? Function(CoordinateTransform, T) transformContext,
     bool Function(Component, T) checkContains,
   ) sync* {
+    final activeCamera = CameraComponent.currentCamera;
+    if (activeCamera != null && (_cameraMask & activeCamera.cameraMask) == 0) {
+      return;
+    }
     nestedContexts?.add(locationContext);
+    if (clipsChildEvents &&
+        locationContext is Vector2 &&
+        !containsClipPoint(locationContext)) {
+      nestedContexts?.removeLast();
+      return;
+    }
     final children = _children;
     if (children != null) {
       for (final child in children.reversed) {
@@ -1310,6 +1379,7 @@ class Component({
     if (_sortKey != newSortKey) {
       _sortKey = newSortKey;
       _containerList?._markSortKeysDirty();
+      markSubtreeDirty();
     }
   }
 
@@ -1572,7 +1642,17 @@ class Component({
     _parent!.children._add(this);
     _reAddChildren();
     _parent!.onChildrenChanged(this, ChildrenChangeType.added);
+    _parent!.markSubtreeDirty();
     _clearMountingBit();
+
+    var worldCursor = _parent;
+    while (worldCursor != null) {
+      if (worldCursor is World) {
+        worldCursor.handleDescendantMounted(this);
+        break;
+      }
+      worldCursor = worldCursor._parent;
+    }
 
     if (key != null) {
       final currentGame = findGame();
@@ -1638,7 +1718,17 @@ class Component({
   }
 
   void _remove(Component parent, {bool notifyPool = true}) {
+    World? enclosingWorld;
+    Component? worldCursor = parent;
+    while (worldCursor != null) {
+      if (worldCursor is World) {
+        enclosingWorld = worldCursor;
+        break;
+      }
+      worldCursor = worldCursor._parent;
+    }
     parent.children._remove(this);
+    parent.markSubtreeDirty();
     final removedSubtree = _collectDescendants();
     for (final component in removedSubtree) {
       component
@@ -1650,6 +1740,7 @@ class Component({
         .._removeCompleter?.complete()
         .._removeCompleter = null
         .._parent!.onChildrenChanged(component, ChildrenChangeType.removed);
+      enclosingWorld?.handleDescendantRemoved(component);
     }
     _parent = null;
     if (notifyPool) {

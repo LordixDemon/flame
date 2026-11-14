@@ -185,15 +185,23 @@ class FlameGame<W extends World>({
   int _lastRenderedStructureCount = -1;
   int _lastRenderedSortKeyCount = -1;
   int _lastRenderedVisualMutationCount = -1;
+  double _lastRenderedInterpolationAlpha = 1.0;
   World? _lastRenderedWorld;
 
   @override
-  @internal
+  @protected
+  @mustCallSuper
   bool pollSceneDirtyForRender() {
     if (super.pollSceneDirtyForRender()) {
       return true;
     }
+    final interpChanged =
+        fixedTimeStep != null &&
+        activeFixedUpdateCount > 0 &&
+        (_renderInterpolationAlpha - _lastRenderedInterpolationAlpha).abs() >
+            1e-6;
     if (hasLifecycleEvents ||
+        interpChanged ||
         _camera.hasActiveSceneTransition ||
         _camera.viewfinder.hasActiveShake ||
         !identical(_world, _lastRenderedWorld) ||
@@ -218,6 +226,7 @@ class FlameGame<W extends World>({
     _lastRenderedStructureCount = Component.structureMutationCount;
     _lastRenderedSortKeyCount = Component.sortKeyMutationCount;
     _lastRenderedVisualMutationCount = Game.visualMutationCount;
+    _lastRenderedInterpolationAlpha = _renderInterpolationAlpha;
     _lastRenderedWorld = _world;
   }
 
@@ -388,6 +397,26 @@ class FlameGame<W extends World>({
     findByKey<MouseMoveDispatcher>(
       const MouseMoveDispatcherKey(),
     )?.flushPendingHover();
+  }
+
+  @override
+  void cancelActivePointerGestures() {
+    super.cancelActivePointerGestures();
+    findByKey<MultiTapDispatcher>(
+      const MultiTapDispatcherKey(),
+    )?.cancelAllActiveTaps();
+    findByKey<MultiDragScaleDispatcher>(
+      const MultiDragScaleDispatcherKey(),
+    )?.cancelAllActiveGestures();
+    findByKey<LongPressDispatcher>(
+      const LongPressDispatcherKey(),
+    )?.cancelAllActiveLongPresses();
+    findByKey<NonPrimaryTapDispatcher>(
+      const NonPrimaryTapDispatcherKey(),
+    )?.cancelAllActiveNonPrimaryTaps();
+    findByKey<MouseMoveDispatcher>(
+      const MouseMoveDispatcherKey(),
+    )?.cancelAllActiveHovers();
   }
 
   @override

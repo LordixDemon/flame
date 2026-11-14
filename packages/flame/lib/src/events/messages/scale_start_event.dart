@@ -25,8 +25,8 @@ class ScaleStartEvent(
       );
 
   /// The type of device that initiated the gesture.
-  final PointerDeviceKind deviceKind =
-      details.kind ?? PointerDeviceKind.unknown;
+  @override
+  PointerDeviceKind get deviceKind => raw.kind ?? super.deviceKind;
 
   @override
   String toString() =>

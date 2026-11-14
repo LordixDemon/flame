@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flame/src/canvas3d/mesh_bvh_3d.dart';
+
 /// Immutable Struct-of-Arrays 3D triangle mesh for `BatchMeshRenderer3D`.
 ///
 /// Coordinates follow Flame `canvas3d`'s right-handed world convention where
@@ -912,4 +914,172 @@ class Mesh3D({
 
   /// Number of triangles in this mesh.
   int get triangleCount => indices.length ~/ 3;
+
+  MeshBvh3D? _bvh;
+
+  /// Whether the lazy [bvh] spatial acceleration structure has been built.
+  bool get hasBuiltBvh => _bvh != null;
+
+  /// Lazily constructed flat SoA [MeshBvh3D] for `O(log T)` 3D raycasting.
+  MeshBvh3D get bvh =>
+      _bvh ??= MeshBvh3D.build(positions: positions, indices: indices);
+
+  /// Splits this mesh into sub-meshes of at most [maxVerticesPerPart]
+  /// (`<= 65,535`) vertices each while preserving connectivity, normals, UVs,
+  /// AO, and vertex colors.
+  List<Mesh3D> splitByVertexLimit({int maxVerticesPerPart = 65535}) {
+    final idx32 = Uint32List(indices.length);
+    for (var i = 0; i < indices.length; i++) {
+      idx32[i] = indices[i];
+    }
+    return partitionByVertexLimit(
+      positions: positions,
+      normals: normals,
+      indices: idx32,
+      uvs: uvs,
+      ambientOcclusion: ambientOcclusion,
+      vertexColors: vertexColors,
+      maxVerticesPerPart: maxVerticesPerPart,
+    );
+  }
+
+  /// Partitions a 32-bit indexed mesh (`> 65,535` vertices) into compact
+  /// 16-bit [Mesh3D] sub-meshes of at most [maxVerticesPerPart] (`<= 65,535`)
+  /// vertices each, preserving exact triangle connectivity, normals, UVs, AO,
+  /// and vertex colors.
+  static List<Mesh3D> partitionByVertexLimit({
+    required Float32List positions,
+    required Float32List normals,
+    required Uint32List indices,
+    Float32List? uvs,
+    Float32List? ambientOcclusion,
+    Int32List? vertexColors,
+    int maxVerticesPerPart = 65535,
+  }) {
+    assert(
+      maxVerticesPerPart >= 3 && maxVerticesPerPart <= 65535,
+      'maxVerticesPerPart must be in [3..65535]',
+    );
+    final totalVertices = positions.length ~/ 3;
+    final totalFaces = indices.length ~/ 3;
+    if (totalFaces == 0) {
+      return <Mesh3D>[];
+    }
+    if (totalVertices <= maxVerticesPerPart) {
+      final idx16 = Uint16List(indices.length);
+      for (var i = 0; i < indices.length; i++) {
+        idx16[i] = indices[i];
+      }
+      return <Mesh3D>[
+        Mesh3D(
+          positions: positions,
+          normals: normals,
+          indices: idx16,
+          uvs: uvs,
+          ambientOcclusion: ambientOcclusion,
+          vertexColors: vertexColors,
+        ),
+      ];
+    }
+
+    final remap = Int32List(totalVertices)..fillRange(0, totalVertices, -1);
+    final usedGlobals = Int32List(maxVerticesPerPart);
+    final partIndices = Uint16List(totalFaces * 3);
+    final parts = <Mesh3D>[];
+
+    var localVertCount = 0;
+    var localIndexCount = 0;
+
+    void flushPart() {
+      if (localIndexCount == 0) {
+        return;
+      }
+      final subPos = Float32List(localVertCount * 3);
+      final subNrm = Float32List(localVertCount * 3);
+      final subUvs = uvs != null ? Float32List(localVertCount * 2) : null;
+      final subAo = ambientOcclusion != null
+          ? Float32List(localVertCount)
+          : null;
+      final subCols = vertexColors != null ? Int32List(localVertCount) : null;
+
+      for (var lv = 0; lv < localVertCount; lv++) {
+        final gv = usedGlobals[lv];
+        remap[gv] = -1;
+        final l3 = lv * 3;
+        final g3 = gv * 3;
+        subPos[l3] = positions[g3];
+        subPos[l3 + 1] = positions[g3 + 1];
+        subPos[l3 + 2] = positions[g3 + 2];
+        subNrm[l3] = normals[g3];
+        subNrm[l3 + 1] = normals[g3 + 1];
+        subNrm[l3 + 2] = normals[g3 + 2];
+        if (subUvs != null) {
+          final l2 = lv * 2;
+          final g2 = gv * 2;
+          subUvs[l2] = uvs![g2];
+          subUvs[l2 + 1] = uvs[g2 + 1];
+        }
+        if (subAo != null) {
+          subAo[lv] = ambientOcclusion![gv];
+        }
+        if (subCols != null) {
+          subCols[lv] = vertexColors![gv];
+        }
+      }
+
+      final subIdx = Uint16List(localIndexCount)
+        ..setRange(0, localIndexCount, partIndices);
+      parts.add(
+        Mesh3D(
+          positions: subPos,
+          normals: subNrm,
+          indices: subIdx,
+          uvs: subUvs,
+          ambientOcclusion: subAo,
+          vertexColors: subCols,
+        ),
+      );
+      localVertCount = 0;
+      localIndexCount = 0;
+    }
+
+    for (var f = 0; f < totalFaces; f++) {
+      final f3 = f * 3;
+      final g0 = indices[f3];
+      final g1 = indices[f3 + 1];
+      final g2 = indices[f3 + 2];
+
+      var needed = 0;
+      if (remap[g0] < 0) {
+        needed++;
+      }
+      if (g1 != g0 && remap[g1] < 0) {
+        needed++;
+      }
+      if (g2 != g0 && g2 != g1 && remap[g2] < 0) {
+        needed++;
+      }
+
+      if (localVertCount + needed > maxVerticesPerPart) {
+        flushPart();
+      }
+
+      int mapVertex(int gv) {
+        var lv = remap[gv];
+        if (lv < 0) {
+          lv = localVertCount++;
+          remap[gv] = lv;
+          usedGlobals[lv] = gv;
+        }
+        return lv;
+      }
+
+      partIndices[localIndexCount++] = mapVertex(g0);
+      partIndices[localIndexCount++] = mapVertex(g1);
+      partIndices[localIndexCount++] = mapVertex(g2);
+    }
+
+    flushPart();
+    return parts;
+  }
 }

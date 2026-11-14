@@ -17,8 +17,8 @@ class SecondaryTapDownEvent(super.game, TapDownDetails details)
         devicePosition: details.globalPosition.toVector2(),
       );
 
-  final PointerDeviceKind deviceKind =
-      details.kind ?? PointerDeviceKind.unknown;
+  @override
+  PointerDeviceKind get deviceKind => raw.kind ?? super.deviceKind;
 
   @override
   String toString() =>

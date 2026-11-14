@@ -43,6 +43,19 @@ enum PixelSnapMode() {
   physicalPixel,
 }
 
+/// Retained GPU `ui.Picture` layer caching policy for [CameraComponent].
+enum CameraLayerCacheMode() {
+  /// Re-records `backdrop`, `world`, and `viewport` trees every frame
+  /// (default).
+  none,
+
+  /// Retains independent GPU-ready `ui.Picture` layers for `backdrop`, `world`
+  /// (when `postProcess == null` and no [SceneTransition] is active), and
+  /// `viewport` HUD, re-recording ONLY layers whose `Component.subtreeVersion`
+  /// or camera transform changed since the previous paint.
+  splitRetained,
+}
+
 /// [CameraComponent] is a component through which a [World] is observed.
 ///
 /// A camera consists of two parts: a [Viewport], and a [Viewfinder]. It also
@@ -85,6 +98,8 @@ class CameraComponent({
   Viewfinder? viewfinder,
   Component? backdrop,
   List<Component>? hudComponents,
+  CameraLayerCacheMode layerCacheMode = CameraLayerCacheMode.none,
+  super.cameraMask,
   super.children,
   super.key,
 }) extends Component {
@@ -109,6 +124,8 @@ class CameraComponent({
     Viewfinder? viewfinder,
     Component? backdrop,
     List<Component>? hudComponents,
+    CameraLayerCacheMode layerCacheMode = CameraLayerCacheMode.none,
+    int? cameraMask,
     Iterable<Component>? children,
     ComponentKey? key,
   }) : this(
@@ -117,6 +134,8 @@ class CameraComponent({
          viewfinder: viewfinder ?? Viewfinder(),
          backdrop: backdrop,
          hudComponents: hudComponents,
+         layerCacheMode: layerCacheMode,
+         cameraMask: cameraMask,
          children: children,
          key: key,
        );
@@ -211,10 +230,16 @@ class CameraComponent({
     // Render the world through the viewport
     if ((world?.isMounted ?? false) &&
         currentCameras.length < maxCamerasDepth) {
+      final useRetained = _layerCacheMode == CameraLayerCacheMode.splitRetained;
+      final vSize = viewport.virtualSize;
       canvas.save();
       viewport.clip(canvas);
       viewport.transformCanvas(canvas);
-      backdrop.renderTree(canvas);
+      if (useRetained && vSize.x > 0 && vSize.y > 0) {
+        _renderRetainedBackdrop(canvas, vSize.x, vSize.y);
+      } else {
+        backdrop.renderTree(canvas);
+      }
       canvas.save();
       try {
         currentCameras.add(this);
@@ -231,13 +256,19 @@ class CameraComponent({
           if (allowPostProcess || postProcessor is PostProcessPipeline) {
             postProcessor.render(
               canvas,
-              viewport.virtualSize,
+              vSize,
               _renderWorld,
               _updatePostProcessContext,
             );
           } else {
             _renderScaledOrDirectWorld(canvas);
           }
+        } else if (useRetained &&
+            vSize.x > 0 &&
+            vSize.y > 0 &&
+            !hasActiveSceneTransition &&
+            !viewfinder.hasActiveShake) {
+          _renderRetainedWorld(canvas, vSize.x, vSize.y, game);
         } else {
           _renderScaledOrDirectWorld(canvas);
         }
@@ -251,7 +282,11 @@ class CameraComponent({
         _renderActiveTransition(canvas);
       }
       // Render the viewport elements, which will be in front of the world.
-      viewport.renderTree(canvas);
+      if (useRetained && vSize.x > 0 && vSize.y > 0) {
+        _renderRetainedViewport(canvas, vSize.x, vSize.y);
+      } else {
+        viewport.renderTree(canvas);
+      }
       if (_activeTransition != null &&
           _transitionSnapshot != null &&
           _activeTransition!.aboveViewportHud) {
@@ -260,6 +295,217 @@ class CameraComponent({
       canvas.restore();
     }
     canvas.restore();
+  }
+
+  CameraLayerCacheMode _layerCacheMode = layerCacheMode;
+
+  /// Retained GPU `ui.Picture` layer compositing mode (`none` or
+  /// `splitRetained`).
+  CameraLayerCacheMode get layerCacheMode => _layerCacheMode;
+  set layerCacheMode(CameraLayerCacheMode value) {
+    if (_layerCacheMode == value) {
+      return;
+    }
+    _layerCacheMode = value;
+    if (value == CameraLayerCacheMode.none) {
+      invalidateLayerCaches();
+    } else {
+      findGame()?.markSceneDirty();
+    }
+  }
+
+  ui.Picture? _cachedBackdropPicture;
+  int _cachedBackdropVersion = -1;
+  double _cachedBackdropW = -1.0;
+  double _cachedBackdropH = -1.0;
+  int _backdropCacheHitCount = 0;
+  int _backdropCacheRebuildCount = 0;
+
+  ui.Picture? _cachedWorldPicture;
+  World? _cachedWorldRef;
+  int _cachedWorldSubtreeVersion = -1;
+  int _cachedViewfinderSubtreeVersion = -1;
+  int _cachedViewfinderTxVersion = -1;
+  double _cachedWorldScale = -1.0;
+  int _cachedWorldCamMask = 0;
+  int _cachedWorldLayerMask = 0;
+  int _cachedWorldGraphicsVersion = -1;
+  double _cachedWorldInterpAlpha = -1.0;
+  PixelSnapMode _cachedWorldSnapMode = PixelSnapMode.none;
+  double _cachedWorldDpr = -1.0;
+  double _cachedWorldW = -1.0;
+  double _cachedWorldH = -1.0;
+  int _worldCacheHitCount = 0;
+  int _worldCacheRebuildCount = 0;
+
+  ui.Picture? _cachedViewportPicture;
+  int _cachedViewportVersion = -1;
+  double _cachedViewportW = -1.0;
+  double _cachedViewportH = -1.0;
+  int _viewportCacheHitCount = 0;
+  int _viewportCacheRebuildCount = 0;
+
+  /// Number of frames where `backdrop` reused its retained `ui.Picture`.
+  int get backdropCacheHitCount => _backdropCacheHitCount;
+
+  /// Number of frames where `backdrop` recorded a fresh `ui.Picture`.
+  int get backdropCacheRebuildCount => _backdropCacheRebuildCount;
+
+  /// Number of frames where `world` reused its retained `ui.Picture` (`0`
+  /// `world.renderTree` work).
+  int get worldCacheHitCount => _worldCacheHitCount;
+
+  /// Number of frames where `world` recorded a fresh `ui.Picture`.
+  int get worldCacheRebuildCount => _worldCacheRebuildCount;
+
+  /// Number of frames where `viewport` HUD reused its retained `ui.Picture`.
+  int get viewportCacheHitCount => _viewportCacheHitCount;
+
+  /// Number of frames where `viewport` HUD recorded a fresh `ui.Picture`.
+  int get viewportCacheRebuildCount => _viewportCacheRebuildCount;
+
+  /// Disposes any retained `backdrop`, `world`, and `viewport` `ui.Picture`s
+  /// and resets their version keys (preserving hit/rebuild telemetry counters
+  /// unless [resetCounters] is `true`).
+  void invalidateLayerCaches({bool resetCounters = false}) {
+    _cachedBackdropPicture?.dispose();
+    _cachedBackdropPicture = null;
+    _cachedBackdropVersion = -1;
+
+    _cachedWorldPicture?.dispose();
+    _cachedWorldPicture = null;
+    _cachedWorldRef = null;
+    _cachedWorldSubtreeVersion = -1;
+
+    _cachedViewportPicture?.dispose();
+    _cachedViewportPicture = null;
+    _cachedViewportVersion = -1;
+
+    if (resetCounters) {
+      _backdropCacheHitCount = 0;
+      _backdropCacheRebuildCount = 0;
+      _worldCacheHitCount = 0;
+      _worldCacheRebuildCount = 0;
+      _viewportCacheHitCount = 0;
+      _viewportCacheRebuildCount = 0;
+    }
+  }
+
+  void _renderRetainedBackdrop(ui.Canvas canvas, double w, double h) {
+    final ver = backdrop.subtreeVersion;
+    if (_cachedBackdropPicture != null &&
+        _cachedBackdropVersion == ver &&
+        _cachedBackdropW == w &&
+        _cachedBackdropH == h) {
+      _backdropCacheHitCount++;
+      canvas.drawPicture(_cachedBackdropPicture!);
+      return;
+    }
+    _cachedBackdropPicture?.dispose();
+    final recorder = ui.PictureRecorder();
+    final recCanvas = TelemetryCanvas.wrapOffscreenIfActive(
+      ui.Canvas(recorder, ui.Rect.fromLTWH(0, 0, w, h)),
+    );
+    backdrop.renderTree(recCanvas);
+    final pic = recorder.endRecording();
+    _cachedBackdropPicture = pic;
+    _cachedBackdropVersion = ver;
+    _cachedBackdropW = w;
+    _cachedBackdropH = h;
+    _backdropCacheRebuildCount++;
+    canvas.drawPicture(pic);
+  }
+
+  void _renderRetainedWorld(
+    ui.Canvas canvas,
+    double w,
+    double h,
+    FlameGame? game,
+  ) {
+    final activeWorld = world!;
+    final worldVer = activeWorld.subtreeVersion;
+    final vfSubVer = viewfinder.subtreeVersion;
+    final vfTxVer = viewfinder.transform.version;
+    final scale = effectiveWorldRenderScale;
+    final cMask = cameraMask;
+    final lMask = layerMask;
+    final gfxVer = game?.graphics.version ?? 0;
+    final interpAlpha =
+        (game != null &&
+            game.fixedTimeStep != null &&
+            game.activeFixedUpdateCount > 0)
+        ? game.renderInterpolationAlpha
+        : 1.0;
+    final snapMode = pixelSnapMode;
+    final dpr = effectiveDevicePixelRatio;
+
+    if (_cachedWorldPicture != null &&
+        identical(_cachedWorldRef, activeWorld) &&
+        _cachedWorldSubtreeVersion == worldVer &&
+        _cachedViewfinderSubtreeVersion == vfSubVer &&
+        _cachedViewfinderTxVersion == vfTxVer &&
+        _cachedWorldScale == scale &&
+        _cachedWorldCamMask == cMask &&
+        _cachedWorldLayerMask == lMask &&
+        _cachedWorldGraphicsVersion == gfxVer &&
+        (_cachedWorldInterpAlpha - interpAlpha).abs() <= 1e-6 &&
+        _cachedWorldSnapMode == snapMode &&
+        _cachedWorldDpr == dpr &&
+        _cachedWorldW == w &&
+        _cachedWorldH == h) {
+      _worldCacheHitCount++;
+      canvas.drawPicture(_cachedWorldPicture!);
+      return;
+    }
+
+    _cachedWorldPicture?.dispose();
+    final recorder = ui.PictureRecorder();
+    final recCanvas = TelemetryCanvas.wrapOffscreenIfActive(
+      ui.Canvas(recorder, ui.Rect.fromLTWH(0, 0, w, h)),
+    );
+    _renderScaledOrDirectWorld(recCanvas);
+    final pic = recorder.endRecording();
+    _cachedWorldPicture = pic;
+    _cachedWorldRef = activeWorld;
+    _cachedWorldSubtreeVersion = worldVer;
+    _cachedViewfinderSubtreeVersion = vfSubVer;
+    _cachedViewfinderTxVersion = vfTxVer;
+    _cachedWorldScale = scale;
+    _cachedWorldCamMask = cMask;
+    _cachedWorldLayerMask = lMask;
+    _cachedWorldGraphicsVersion = gfxVer;
+    _cachedWorldInterpAlpha = interpAlpha;
+    _cachedWorldSnapMode = snapMode;
+    _cachedWorldDpr = dpr;
+    _cachedWorldW = w;
+    _cachedWorldH = h;
+    _worldCacheRebuildCount++;
+    canvas.drawPicture(pic);
+  }
+
+  void _renderRetainedViewport(ui.Canvas canvas, double w, double h) {
+    final ver = viewport.subtreeVersion;
+    if (_cachedViewportPicture != null &&
+        _cachedViewportVersion == ver &&
+        _cachedViewportW == w &&
+        _cachedViewportH == h) {
+      _viewportCacheHitCount++;
+      canvas.drawPicture(_cachedViewportPicture!);
+      return;
+    }
+    _cachedViewportPicture?.dispose();
+    final recorder = ui.PictureRecorder();
+    final recCanvas = TelemetryCanvas.wrapOffscreenIfActive(
+      ui.Canvas(recorder, ui.Rect.fromLTWH(0, 0, w, h)),
+    );
+    viewport.renderTree(recCanvas);
+    final pic = recorder.endRecording();
+    _cachedViewportPicture = pic;
+    _cachedViewportVersion = ver;
+    _cachedViewportW = w;
+    _cachedViewportH = h;
+    _viewportCacheRebuildCount++;
+    canvas.drawPicture(pic);
   }
 
   /// Bitmask of `SceneLayerComponent.layerBit` flags visible to this camera
@@ -836,7 +1082,8 @@ class CameraComponent({
       var blockedByAncestor = false;
       Component? cursor = child;
       while (cursor != null && !identical(cursor, activeWorld)) {
-        if ((cursor is IgnoreEvents && cursor.ignoreEvents) ||
+        if ((cursor.cameraMask & cameraMask) == 0 ||
+            (cursor is IgnoreEvents && cursor.ignoreEvents) ||
             !cursor.isActiveForCurrentGraphicsTier ||
             (cursor is HasVisibility && !cursor.isVisible)) {
           blockedByAncestor = true;
@@ -987,7 +1234,7 @@ class CameraComponent({
   /// this particular camera, and reset back to `null` at the end. This variable
   /// is not set when rendering components that are attached to the viewport.
   static CameraComponent? get currentCamera {
-    return currentCameras.isEmpty ? null : currentCameras[0];
+    return currentCameras.isEmpty ? null : currentCameras.last;
   }
 
   /// Stack of all current cameras in the render tree.
@@ -1661,8 +1908,15 @@ class CameraComponent({
   }
 
   @override
+  void onGameResize(Vector2 size) {
+    invalidateLayerCaches();
+    super.onGameResize(size);
+  }
+
+  @override
   void onRemove() {
     cancelSceneTransition();
+    invalidateLayerCaches();
     super.onRemove();
   }
 }

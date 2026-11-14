@@ -206,6 +206,9 @@ class ComponentTreeRoot({
       if (component.ticksEnabled) {
         final scale = _subtreeTimeScaleBelowRoot(component);
         if (scale > 0.0) {
+          if (component is FixedTransformInterpolation) {
+            component.capturePreFixedState();
+          }
           component.fixedUpdate(fixedDt * scale);
         }
       }

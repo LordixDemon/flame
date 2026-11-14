@@ -2,6 +2,13 @@
 /// {@canonicalFor text.TextRenderer}
 library;
 
+export 'src/cache/engine_compute_pool.dart'
+    show
+        ComputeCancellationToken,
+        ComputeCancelledException,
+        ComputePriority,
+        ComputeTaskCallback,
+        EngineComputePool;
 export 'src/collisions/has_collision_detection.dart';
 export 'src/components/mixins/has_fixed_update.dart';
 export 'src/components/mixins/passive_component.dart';
@@ -11,6 +18,7 @@ export 'src/components/router/router_component.dart' show RouterComponent;
 export 'src/components/router/value_route.dart' show ValueRoute;
 export 'src/components/router/world_route.dart' show WorldRoute;
 export 'src/extensions/vector2.dart';
+export 'src/game/affine_matrix_2d.dart';
 export 'src/game/display_metrics.dart';
 export 'src/game/flame_game.dart';
 export 'src/game/fps_policy.dart';

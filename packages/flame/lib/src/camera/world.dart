@@ -81,9 +81,9 @@ class World({
   WorldEventBus get eventBus => _eventBus ??= WorldEventBus();
 
   /// Registers and populates a reactive [WorldQuery] maintained incrementally
-  /// whenever direct children of this world are added or removed.
+  /// whenever direct or nested descendants of this world are added or removed.
   WorldQuery<T> registerQuery<T extends Component>(WorldQuery<T> query) {
-    query.rebuild(children);
+    query.rebuild(query.includeSubtree ? descendants() : children);
     (_queries ??= <WorldQuery<Component>>[]).add(query);
     return query;
   }
@@ -158,16 +158,40 @@ class World({
   @internal
   void postDefaultUpdateSubtree() => flushEventBusIfPending();
 
-  @override
-  void onChildrenChanged(Component child, ChildrenChangeType type) {
-    super.onChildrenChanged(child, type);
+  /// Internal lifecycle notification invoked when [descendant] mounts anywhere
+  /// inside this world's subtree.
+  @internal
+  void handleDescendantMounted(Component descendant) {
+    _spatialIndex?.markMembershipDirty();
+    final queries = _queries;
+    if (queries != null) {
+      final isDirect = identical(descendant.parent, this);
+      for (var i = 0; i < queries.length; i++) {
+        final q = queries[i];
+        if (q.includeSubtree || isDirect) {
+          q.handleChildChanged(descendant, ChildrenChangeType.added);
+        }
+      }
+    }
+  }
+
+  /// Internal lifecycle notification invoked when [descendant] unmounts from
+  /// anywhere inside this world's subtree.
+  @internal
+  void handleDescendantRemoved(Component descendant) {
     _spatialIndex?.markMembershipDirty();
     final queries = _queries;
     if (queries != null) {
       for (var i = 0; i < queries.length; i++) {
-        queries[i].handleChildChanged(child, type);
+        queries[i].handleChildChanged(descendant, ChildrenChangeType.removed);
       }
     }
+  }
+
+  @override
+  void onChildrenChanged(Component child, ChildrenChangeType type) {
+    super.onChildrenChanged(child, type);
+    _spatialIndex?.markMembershipDirty();
   }
 
   /// Appends all spatially indexed direct [PositionComponent] children
@@ -227,6 +251,7 @@ class World({
     final (visibleIndexed, visibleCullables) = idx.collectVisibleForRender(
       camera.visibleWorldRect,
       _spatialRenderScratch,
+      cameraMask: camera.cameraMask,
     );
     _lastSpatialRenderedCount = visibleIndexed;
     camera.recordCullDecisionsBulk(
@@ -234,8 +259,14 @@ class World({
       culled: idx.indexedCullableCount - visibleCullables,
     );
 
-    for (var i = 0; i < _spatialRenderScratch.length; i++) {
-      renderChild(canvas, _spatialRenderScratch[i]);
+    final prevActiveIndex = WorldSpatialIndex.activeRenderIndex;
+    WorldSpatialIndex.activeRenderIndex = idx;
+    try {
+      for (var i = 0; i < _spatialRenderScratch.length; i++) {
+        renderChild(canvas, _spatialRenderScratch[i]);
+      }
+    } finally {
+      WorldSpatialIndex.activeRenderIndex = prevActiveIndex;
     }
 
     afterChildrenRendered(canvas);
@@ -286,10 +317,12 @@ class World({
 
     final idx = spatialIndex..syncWithChildren(children);
     final candidates = <Component>[];
+    final activeCam = CameraComponent.currentCamera;
     idx.collectCandidatesAtPoint(
       locationContext.x,
       locationContext.y,
       candidates,
+      cameraMask: activeCam?.cameraMask ?? 0xFFFFFFFF,
     );
 
     for (var i = 0; i < candidates.length; i++) {

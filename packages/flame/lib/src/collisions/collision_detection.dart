@@ -105,6 +105,7 @@ abstract class CollisionDetection<
   RaycastResult<T>? raycast(
     Ray2 ray, {
     double? maxDistance,
+    int collisionMask = 0xFFFFFFFF,
     bool Function(T candidate)? hitboxFilter,
     List<T>? ignoreHitboxes,
     RaycastResult<T>? out,
@@ -142,6 +143,7 @@ abstract class CollisionDetection<
     double startAngle = 0,
     double sweepAngle = tau,
     double? maxDistance,
+    int collisionMask = 0xFFFFFFFF,
     List<Ray2>? rays,
     bool Function(T candidate)? hitboxFilter,
     List<T>? ignoreHitboxes,
@@ -171,6 +173,7 @@ abstract class CollisionDetection<
   Iterable<RaycastResult<T>> raytrace(
     Ray2 ray, {
     int maxDepth = 10,
+    int collisionMask = 0xFFFFFFFF,
     bool Function(T candidate)? hitboxFilter,
     List<T>? ignoreHitboxes,
     List<RaycastResult<T>>? out,

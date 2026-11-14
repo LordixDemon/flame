@@ -109,6 +109,22 @@ class MultiTapDispatcher() extends Dispatcher<FlameGame> {
     });
   }
 
+  /// Cancels every currently pressed tap across all active pointer IDs (for
+  /// example when the app window loses OS focus mid-tap).
+  void cancelAllActiveTaps() {
+    if (_record.isEmpty) {
+      return;
+    }
+    final active = _record.toList(growable: false);
+    _record.clear();
+    for (var i = 0; i < active.length; i++) {
+      final pair = active[i];
+      if (pair.component.isMounted && !pair.component.isRemoving) {
+        pair.component.onTapCancel(TapCancelEvent(pair.pointerId));
+      }
+    }
+  }
+
   //#region MultiTapGestureRecognizer API
 
   /// The delay (in seconds) after which a tap is considered a long tap.

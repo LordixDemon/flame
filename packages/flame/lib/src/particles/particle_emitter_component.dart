@@ -107,6 +107,7 @@ class ParticleEmitterComponent({
     _completed = false;
     _lastAbsolutePosition = null;
     _emitting = autoStart;
+    markSubtreeDirty();
     Game.notifyVisualMutation();
   }
 
@@ -143,6 +144,7 @@ class ParticleEmitterComponent({
     final before = _buffer.length;
     _spawnMany(count);
     if (_buffer.length != before) {
+      markSubtreeDirty();
       Game.notifyVisualMutation();
     }
   }
@@ -151,6 +153,7 @@ class ParticleEmitterComponent({
   void clearParticles() {
     if (_buffer.length > 0) {
       _buffer.clear();
+      markSubtreeDirty();
       Game.notifyVisualMutation();
     }
   }
@@ -167,6 +170,7 @@ class ParticleEmitterComponent({
     final hadParticles = _buffer.length > 0;
     _simulate(dt);
     if ((hadParticles || _buffer.length > 0) && dt > 0.0) {
+      markSubtreeDirty();
       Game.notifyVisualMutation();
     }
     if (removeOnFinish && isFinished) {

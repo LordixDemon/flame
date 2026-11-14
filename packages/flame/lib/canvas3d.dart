@@ -4,12 +4,14 @@
 /// standard `Canvas` (`drawVertices`) without requiring `--enable-flutter-gpu`.
 library;
 
+export 'src/canvas3d/animation_3d.dart';
 export 'src/canvas3d/batch_mesh_renderer_3d.dart';
 export 'src/canvas3d/camera_rig_3d.dart';
 export 'src/canvas3d/deformable_mesh_3d.dart';
 export 'src/canvas3d/matcap_shader_3d.dart';
 export 'src/canvas3d/material_3d.dart';
 export 'src/canvas3d/mesh_3d.dart';
+export 'src/canvas3d/mesh_bvh_3d.dart';
 export 'src/canvas3d/mesh_lod_chain_3d.dart';
 export 'src/canvas3d/node_uv_decal_3d.dart';
 export 'src/canvas3d/particle_pool_3d.dart';

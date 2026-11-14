@@ -67,6 +67,8 @@ class RichBatchedTextComponent({
   super.angle,
   super.anchor,
   super.priority,
+  super.sortKey,
+  super.cameraMask,
   super.key,
 }) extends PositionComponent with HasVisibility {
   this {
@@ -99,6 +101,7 @@ class RichBatchedTextComponent({
     if (_markup != value) {
       _markup = value;
       _reparse();
+      markSubtreeDirty();
       Game.notifyVisualMutation();
     }
   }
@@ -114,6 +117,7 @@ class RichBatchedTextComponent({
     revealTokensPerSecond = tokensPerSecond;
     visibleTokenLimit = 0;
     _revealAccumulator = 0.0;
+    markSubtreeDirty();
     Game.notifyVisualMutation();
   }
 
@@ -341,6 +345,7 @@ class RichBatchedTextComponent({
       }
     }
     if (dt > 0.0 && isVisible && (_hasAnimatedTokens || advancedTypewriter)) {
+      markSubtreeDirty();
       Game.notifyVisualMutation();
     }
   }

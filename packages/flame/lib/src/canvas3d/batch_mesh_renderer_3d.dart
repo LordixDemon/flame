@@ -71,10 +71,24 @@ class DirectionalLight3D({
   }
 }
 
+/// Triangle depth representative mode used by [BatchMeshRenderer3D] when
+/// sorting triangles back-to-front.
+enum TriangleDepthMode3D() {
+  /// Mean depth of the three vertices (`(d0 + d1 + d2) / 3`).
+  centroid,
+
+  /// Closest vertex to the camera (`max(d0, d1, d2)`).
+  nearestVertex,
+
+  /// Farthest vertex from the camera (`min(d0, d1, d2)`).
+  farthestVertex,
+}
+
 /// Zero-allocation Struct-of-Arrays 3D mesh batcher onto Flutter's standard
 /// `Canvas` (`Canvas.drawVertices`).
 ///
-/// Transforms, lights, back-face culls, globally depth-sorts across multiple
+/// Transforms, lights, back-face culls, near-plane clips in perspective mode,
+/// globally depth-sorts across `[sortOrder, depth + depthBias]` and multiple
 /// [Material3D]s (textures, MatCap presets, and [ui.BlendMode]s), and batches
 /// arbitrary [Mesh3D], [MorphMeshWorkspace3D], [SkinnedMeshWorkspace3D], and
 /// [StaticMeshChunk3D] instances into minimal `Vertices.raw` GPU draw calls.
@@ -82,6 +96,7 @@ class BatchMeshRenderer3D({
   DirectionalLight3D? light,
   this.environment,
   var bool backfaceCulling = true,
+  var TriangleDepthMode3D depthMode = TriangleDepthMode3D.centroid,
   this.shadowsEnabled = true,
   this.shadowOpacityMultiplier = 1.0,
   this.cullBackfaceShadows = true,
@@ -130,11 +145,15 @@ class BatchMeshRenderer3D({
   final Paint _meshPaint = Paint()..isAntiAlias = true;
   final Paint _shadowPaint = Paint()..isAntiAlias = true;
   final Float32List _rotScratch = Float32List(9);
+  final Int32List _clipPoly = Int32List(4);
   final List<Material3D?> _materials = <Material3D?>[null];
 
   Float32List _vertX = Float32List(initialVertexCapacity);
   Float32List _vertY = Float32List(initialVertexCapacity);
   Float32List _vertDepth = Float32List(initialVertexCapacity);
+  Float32List _vertCamX = Float32List(initialVertexCapacity);
+  Float32List _vertCamY = Float32List(initialVertexCapacity);
+  Float32List _vertCamZ = Float32List(initialVertexCapacity);
   Float32List _vertU = Float32List(initialVertexCapacity);
   Float32List _vertV = Float32List(initialVertexCapacity);
   Float32List _vertTexU = Float32List(initialVertexCapacity);
@@ -146,6 +165,7 @@ class BatchMeshRenderer3D({
   Int32List _triV1 = Int32List(initialTriangleCapacity);
   Int32List _triV2 = Int32List(initialTriangleCapacity);
   Uint16List _triMatSlot = Uint16List(initialTriangleCapacity);
+  Int32List _triSortOrder = Int32List(initialTriangleCapacity);
   Float32List _triDepth = Float32List(initialTriangleCapacity);
   Int32List _triOrder = Int32List(initialTriangleCapacity);
 
@@ -165,6 +185,7 @@ class BatchMeshRenderer3D({
   int _enqueuedMeshes = 0;
   int _frustumCulledMeshes = 0;
   int _culledMicroTriangles = 0;
+  int _nearPlaneClippedTriangles = 0;
 
   int _lastFlushTriangles = 0;
   int _lastFlushShadowTriangles = 0;
@@ -172,6 +193,7 @@ class BatchMeshRenderer3D({
   int _lastFlushMaterialSwitches = 0;
   int _lastFrustumCulledMeshes = 0;
   int _lastCulledMicroTriangles = 0;
+  int _lastNearPlaneClippedTriangles = 0;
 
   /// Visible front-facing triangles submitted in the most recent flush.
   int get lastFlushTriangles => _lastFlushTriangles;
@@ -194,6 +216,10 @@ class BatchMeshRenderer3D({
   /// Sub-pixel micro-triangles culled by [minTrianglePixelArea] in the most
   /// recent flush.
   int get lastCulledMicroTriangles => _lastCulledMicroTriangles;
+
+  /// Triangles clipped against `CameraRig3D.nearClip` in perspective mode
+  /// during the most recent flush.
+  int get lastNearPlaneClippedTriangles => _lastNearPlaneClippedTriangles;
 
   /// Number of [enqueueMesh] calls accumulated in the active batch.
   int get activeEnqueuedMeshes => _enqueuedMeshes;
@@ -237,6 +263,9 @@ class BatchMeshRenderer3D({
     _vertX = Float32List(cap)..setRange(0, _vertCount, _vertX);
     _vertY = Float32List(cap)..setRange(0, _vertCount, _vertY);
     _vertDepth = Float32List(cap)..setRange(0, _vertCount, _vertDepth);
+    _vertCamX = Float32List(cap)..setRange(0, _vertCount, _vertCamX);
+    _vertCamY = Float32List(cap)..setRange(0, _vertCount, _vertCamY);
+    _vertCamZ = Float32List(cap)..setRange(0, _vertCount, _vertCamZ);
     _vertU = Float32List(cap)..setRange(0, _vertCount, _vertU);
     _vertV = Float32List(cap)..setRange(0, _vertCount, _vertV);
     _vertTexU = Float32List(cap)..setRange(0, _vertCount, _vertTexU);
@@ -258,6 +287,7 @@ class BatchMeshRenderer3D({
     _triV1 = Int32List(cap)..setRange(0, _triCount, _triV1);
     _triV2 = Int32List(cap)..setRange(0, _triCount, _triV2);
     _triMatSlot = Uint16List(cap)..setRange(0, _triCount, _triMatSlot);
+    _triSortOrder = Int32List(cap)..setRange(0, _triCount, _triSortOrder);
     _triDepth = Float32List(cap)..setRange(0, _triCount, _triDepth);
     _triOrder = Int32List(cap)..setRange(0, _triCount, _triOrder);
     _outPositions = Float32List(cap * 6);
@@ -291,6 +321,7 @@ class BatchMeshRenderer3D({
     _enqueuedMeshes = 0;
     _frustumCulledMeshes = 0;
     _culledMicroTriangles = 0;
+    _nearPlaneClippedTriangles = 0;
     if (_materials.length > 1) {
       _materials
         ..clear()
@@ -332,6 +363,8 @@ class BatchMeshRenderer3D({
     double rimHighlightIntensity = 0.0,
     Rect? uvRectPx,
     Material3D? material,
+    int sortOrder = 0,
+    double depthBias = 0.0,
     bool castGroundShadow = false,
     double groundZ = 0.0,
     Color shadowColor = const Color(0xFF16131F),
@@ -369,6 +402,8 @@ class BatchMeshRenderer3D({
       rimHighlightIntensity: rimHighlightIntensity,
       uvRectPx: uvRectPx,
       material: material,
+      sortOrder: sortOrder,
+      depthBias: depthBias,
       castGroundShadow: castGroundShadow,
       groundZ: groundZ,
       shadowColor: shadowColor,
@@ -401,6 +436,8 @@ class BatchMeshRenderer3D({
     double rimHighlightIntensity = 0.0,
     Rect? uvRectPx,
     Material3D? material,
+    int sortOrder = 0,
+    double depthBias = 0.0,
     bool castGroundShadow = false,
     double groundZ = 0.0,
     Color shadowColor = const Color(0xFF16131F),
@@ -438,6 +475,8 @@ class BatchMeshRenderer3D({
       rimHighlightIntensity: rimHighlightIntensity,
       uvRectPx: uvRectPx,
       material: material,
+      sortOrder: sortOrder,
+      depthBias: depthBias,
       castGroundShadow: castGroundShadow,
       groundZ: groundZ,
       shadowColor: shadowColor,
@@ -469,6 +508,8 @@ class BatchMeshRenderer3D({
     double rimHighlightIntensity = 0.0,
     Rect? uvRectPx,
     Material3D? material,
+    int sortOrder = 0,
+    double depthBias = 0.0,
     bool castGroundShadow = false,
     double groundZ = 0.0,
     Color shadowColor = const Color(0xFF16131F),
@@ -506,6 +547,8 @@ class BatchMeshRenderer3D({
       rimHighlightIntensity: rimHighlightIntensity,
       uvRectPx: uvRectPx,
       material: material,
+      sortOrder: sortOrder,
+      depthBias: depthBias,
       castGroundShadow: castGroundShadow,
       groundZ: groundZ,
       shadowColor: shadowColor,
@@ -540,6 +583,8 @@ class BatchMeshRenderer3D({
     double rimHighlightIntensity = 0.0,
     Rect? uvRectPx,
     Material3D? material,
+    int sortOrder = 0,
+    double depthBias = 0.0,
     bool castGroundShadow = false,
     double groundZ = 0.0,
     Color shadowColor = const Color(0xFF16131F),
@@ -575,6 +620,8 @@ class BatchMeshRenderer3D({
       rimHighlightIntensity: rimHighlightIntensity,
       uvRectPx: uvRectPx,
       material: material,
+      sortOrder: sortOrder,
+      depthBias: depthBias,
       castGroundShadow: castGroundShadow,
       groundZ: groundZ,
       shadowColor: shadowColor,
@@ -583,8 +630,8 @@ class BatchMeshRenderer3D({
   }
 
   /// Low-level zero-allocation entry point streaming pre-allocated vertex
-  /// [positions], [normals], and [indices] directly into the internal SoA
-  /// lighting & depth-sorting buffers without constructing a [Mesh3D].
+  /// [positions], [normals], and 16-bit [indices] directly into the internal
+  /// SoA lighting & depth-sorting buffers without constructing a [Mesh3D].
   void enqueueDeformedBuffers({
     required Float32List positions,
     required Float32List normals,
@@ -615,13 +662,174 @@ class BatchMeshRenderer3D({
     double rimHighlightIntensity = 0.0,
     Rect? uvRectPx,
     Material3D? material,
+    int sortOrder = 0,
+    double depthBias = 0.0,
+    bool castGroundShadow = false,
+    double groundZ = 0.0,
+    Color shadowColor = const Color(0xFF16131F),
+    double shadowOpacity = 0.24,
+  }) {
+    _enqueueIndexedBuffers(
+      positions: positions,
+      normals: normals,
+      indices16: indices,
+      indices32: null,
+      boundingRadius: boundingRadius,
+      minZ: minZ,
+      maxZ: maxZ,
+      camera: camera,
+      worldX: worldX,
+      worldY: worldY,
+      uvs: uvs,
+      ambientOcclusion: ambientOcclusion,
+      vertexColors: vertexColors,
+      worldZ: worldZ,
+      canvasOrigin: canvasOrigin,
+      scaleX: scaleX,
+      scaleY: scaleY,
+      scaleZ: scaleZ,
+      yawRad: yawRad,
+      pitchRad: pitchRad,
+      rollRad: rollRad,
+      rotationQuat: rotationQuat,
+      rotationMatrix3: rotationMatrix3,
+      tint: tint,
+      opacity: opacity,
+      emissive: emissive,
+      rimColor: rimColor,
+      rimHighlightIntensity: rimHighlightIntensity,
+      uvRectPx: uvRectPx,
+      material: material,
+      sortOrder: sortOrder,
+      depthBias: depthBias,
+      castGroundShadow: castGroundShadow,
+      groundZ: groundZ,
+      shadowColor: shadowColor,
+      shadowOpacity: shadowOpacity,
+    );
+  }
+
+  /// Streams 32-bit indexed geometry (`> 65,535` vertices) directly into the
+  /// internal 32-bit SoA vertex/triangle batcher, automatically chunking into
+  /// `<= 21,840`-triangle `Vertices.raw` GPU draw calls during [flushGeometry].
+  void enqueueLargeBuffers32({
+    required Float32List positions,
+    required Float32List normals,
+    required Uint32List indices,
+    required double boundingRadius,
+    required double minZ,
+    required double maxZ,
+    required CameraRig3D camera,
+    required double worldX,
+    required double worldY,
+    Float32List? uvs,
+    Float32List? ambientOcclusion,
+    Int32List? vertexColors,
+    double worldZ = 0.0,
+    Offset canvasOrigin = Offset.zero,
+    double scaleX = 1.0,
+    double scaleY = 1.0,
+    double scaleZ = 1.0,
+    double yawRad = 0.0,
+    double pitchRad = 0.0,
+    double rollRad = 0.0,
+    (double, double, double, double)? rotationQuat,
+    Float32List? rotationMatrix3,
+    Color tint = const Color(0xFFFFFFFF),
+    double opacity = 1.0,
+    double emissive = 0.0,
+    Color? rimColor,
+    double rimHighlightIntensity = 0.0,
+    Rect? uvRectPx,
+    Material3D? material,
+    int sortOrder = 0,
+    double depthBias = 0.0,
+    bool castGroundShadow = false,
+    double groundZ = 0.0,
+    Color shadowColor = const Color(0xFF16131F),
+    double shadowOpacity = 0.24,
+  }) {
+    _enqueueIndexedBuffers(
+      positions: positions,
+      normals: normals,
+      indices16: null,
+      indices32: indices,
+      boundingRadius: boundingRadius,
+      minZ: minZ,
+      maxZ: maxZ,
+      camera: camera,
+      worldX: worldX,
+      worldY: worldY,
+      uvs: uvs,
+      ambientOcclusion: ambientOcclusion,
+      vertexColors: vertexColors,
+      worldZ: worldZ,
+      canvasOrigin: canvasOrigin,
+      scaleX: scaleX,
+      scaleY: scaleY,
+      scaleZ: scaleZ,
+      yawRad: yawRad,
+      pitchRad: pitchRad,
+      rollRad: rollRad,
+      rotationQuat: rotationQuat,
+      rotationMatrix3: rotationMatrix3,
+      tint: tint,
+      opacity: opacity,
+      emissive: emissive,
+      rimColor: rimColor,
+      rimHighlightIntensity: rimHighlightIntensity,
+      uvRectPx: uvRectPx,
+      material: material,
+      sortOrder: sortOrder,
+      depthBias: depthBias,
+      castGroundShadow: castGroundShadow,
+      groundZ: groundZ,
+      shadowColor: shadowColor,
+      shadowOpacity: shadowOpacity,
+    );
+  }
+
+  void _enqueueIndexedBuffers({
+    required Float32List positions,
+    required Float32List normals,
+    required Uint16List? indices16,
+    required Uint32List? indices32,
+    required double boundingRadius,
+    required double minZ,
+    required double maxZ,
+    required CameraRig3D camera,
+    required double worldX,
+    required double worldY,
+    Float32List? uvs,
+    Float32List? ambientOcclusion,
+    Int32List? vertexColors,
+    double worldZ = 0.0,
+    Offset canvasOrigin = Offset.zero,
+    double scaleX = 1.0,
+    double scaleY = 1.0,
+    double scaleZ = 1.0,
+    double yawRad = 0.0,
+    double pitchRad = 0.0,
+    double rollRad = 0.0,
+    (double, double, double, double)? rotationQuat,
+    Float32List? rotationMatrix3,
+    Color tint = const Color(0xFFFFFFFF),
+    double opacity = 1.0,
+    double emissive = 0.0,
+    Color? rimColor,
+    double rimHighlightIntensity = 0.0,
+    Rect? uvRectPx,
+    Material3D? material,
+    int sortOrder = 0,
+    double depthBias = 0.0,
     bool castGroundShadow = false,
     double groundZ = 0.0,
     Color shadowColor = const Color(0xFF16131F),
     double shadowOpacity = 0.24,
   }) {
     final clampedOpacity = opacity.clamp(0.0, 1.0);
-    final mTriCount = indices.length ~/ 3;
+    final rawIdxLen = indices16?.length ?? indices32!.length;
+    final mTriCount = rawIdxLen ~/ 3;
     if (clampedOpacity <= 0.0 || mTriCount == 0) {
       return;
     }
@@ -746,6 +954,9 @@ class BatchMeshRenderer3D({
     final lz = light.dirZ;
 
     const matCapRes = MatCapShader3D.resolution;
+    final isPerspective =
+        camera.projectionMode == CameraProjectionMode3D.perspective;
+    final nearClip = camera.nearClip;
 
     for (var v = 0; v < vCount; v++) {
       final pIdx = v * 3;
@@ -757,13 +968,37 @@ class BatchMeshRenderer3D({
       final ry = r10 * lxPos + r11 * lyPos + r12 * lzPos;
       final rz = r20 * lxPos + r21 * lyPos + r22 * lzPos + worldZ;
 
-      final (sx, sy) = camera.projectAnchored(
-        anchorWorld: anchorWorld,
-        canvasOrigin: canvasOrigin,
-        rx: rx,
-        ry: ry,
-        rz: rz,
-      );
+      final double sx;
+      final double sy;
+      var camX = 0.0;
+      var camY = 0.0;
+      var camZ = nearClip;
+      if (isPerspective) {
+        (camX, camY, camZ) = camera.worldToCameraSpace(
+          worldX + rx,
+          worldY + ry,
+          rz,
+        );
+        if (camZ >= nearClip) {
+          (sx, sy) = camera.projectCameraSpace(
+            camX,
+            camY,
+            camZ,
+            canvasOrigin: canvasOrigin,
+          );
+        } else {
+          sx = 0.0;
+          sy = 0.0;
+        }
+      } else {
+        (sx, sy) = camera.projectAnchored(
+          anchorWorld: anchorWorld,
+          canvasOrigin: canvasOrigin,
+          rx: rx,
+          ry: ry,
+          rz: rz,
+        );
+      }
 
       final snx = normals[pIdx] * invSx;
       final sny = normals[pIdx + 1] * invSy;
@@ -876,6 +1111,11 @@ class BatchMeshRenderer3D({
       _vertX[outSlot] = sx;
       _vertY[outSlot] = sy;
       _vertDepth[outSlot] = vDepth;
+      if (isPerspective) {
+        _vertCamX[outSlot] = camX;
+        _vertCamY[outSlot] = camY;
+        _vertCamZ[outSlot] = camZ;
+      }
       _vertU[outSlot] = u;
       _vertV[outSlot] = texV;
       _vertTexU[outSlot] = meshTexU;
@@ -895,30 +1135,52 @@ class BatchMeshRenderer3D({
     final minArea = minTrianglePixelArea;
     for (var t = 0; t < mTriCount; t++) {
       final idxBase = t * 3;
-      final a = baseVertex + indices[idxBase];
-      final b = baseVertex + indices[idxBase + 1];
-      final c = baseVertex + indices[idxBase + 2];
-
-      final ax = _vertX[a];
-      final ay = _vertY[a];
-      final cross =
-          (_vertX[b] - ax) * (_vertY[c] - ay) -
-          (_vertY[b] - ay) * (_vertX[c] - ax);
-      if (backfaceCulling && cross <= 1e-3) {
-        continue;
-      }
-      if (minArea > 0.0 && cross.abs() * 0.5 < minArea) {
-        _culledMicroTriangles++;
-        continue;
+      final int a;
+      final int b;
+      final int c;
+      if (indices16 != null) {
+        a = baseVertex + indices16[idxBase];
+        b = baseVertex + indices16[idxBase + 1];
+        c = baseVertex + indices16[idxBase + 2];
+      } else {
+        a = baseVertex + indices32![idxBase];
+        b = baseVertex + indices32[idxBase + 1];
+        c = baseVertex + indices32[idxBase + 2];
       }
 
-      final slot = _triCount++;
-      _triV0[slot] = a;
-      _triV1[slot] = b;
-      _triV2[slot] = c;
-      _triMatSlot[slot] = matSlot;
-      _triDepth[slot] = (_vertDepth[a] + _vertDepth[b] + _vertDepth[c]) / 3.0;
-      _triOrder[slot] = slot;
+      if (isPerspective) {
+        final za = _vertCamZ[a];
+        final zb = _vertCamZ[b];
+        final zc = _vertCamZ[c];
+        if (za < nearClip || zb < nearClip || zc < nearClip) {
+          if (za < nearClip && zb < nearClip && zc < nearClip) {
+            continue;
+          }
+          _clipAndEmitPerspectiveTriangle(
+            a: a,
+            b: b,
+            c: c,
+            nearClip: nearClip,
+            camera: camera,
+            canvasOrigin: canvasOrigin,
+            matSlot: matSlot,
+            sortOrder: sortOrder,
+            depthBias: depthBias,
+            minArea: minArea,
+          );
+          continue;
+        }
+      }
+
+      _emitProjectedTriangle(
+        a: a,
+        b: b,
+        c: c,
+        matSlot: matSlot,
+        sortOrder: sortOrder,
+        depthBias: depthBias,
+        minArea: minArea,
+      );
     }
 
     if (effShadowOpacity > 0.0 && lz > 0.08) {
@@ -941,9 +1203,18 @@ class BatchMeshRenderer3D({
 
       for (var t = 0; t < mTriCount; t++) {
         final idxBase = t * 3;
-        final i0 = indices[idxBase] * 3;
-        final i1 = indices[idxBase + 1] * 3;
-        final i2 = indices[idxBase + 2] * 3;
+        final int i0;
+        final int i1;
+        final int i2;
+        if (indices16 != null) {
+          i0 = indices16[idxBase] * 3;
+          i1 = indices16[idxBase + 1] * 3;
+          i2 = indices16[idxBase + 2] * 3;
+        } else {
+          i0 = indices32![idxBase] * 3;
+          i1 = indices32[idxBase + 1] * 3;
+          i2 = indices32[idxBase + 2] * 3;
+        }
 
         final (rx0, ry0, rz0) = worldRelPos(i0);
         final (rx1, ry1, rz1) = worldRelPos(i1);
@@ -1014,6 +1285,167 @@ class BatchMeshRenderer3D({
     }
   }
 
+  double _computeTriangleDepth(double d0, double d1, double d2) {
+    return switch (depthMode) {
+      TriangleDepthMode3D.centroid => (d0 + d1 + d2) * (1.0 / 3.0),
+      TriangleDepthMode3D.nearestVertex => math.max(d0, math.max(d1, d2)),
+      TriangleDepthMode3D.farthestVertex => math.min(d0, math.min(d1, d2)),
+    };
+  }
+
+  void _emitProjectedTriangle({
+    required int a,
+    required int b,
+    required int c,
+    required int matSlot,
+    required int sortOrder,
+    required double depthBias,
+    required double minArea,
+  }) {
+    final ax = _vertX[a];
+    final ay = _vertY[a];
+    final cross =
+        (_vertX[b] - ax) * (_vertY[c] - ay) -
+        (_vertY[b] - ay) * (_vertX[c] - ax);
+    if (backfaceCulling && cross <= 1e-3) {
+      return;
+    }
+    if (minArea > 0.0 && cross.abs() * 0.5 < minArea) {
+      _culledMicroTriangles++;
+      return;
+    }
+
+    _ensureTriangleCapacity(_triCount + 1);
+    final slot = _triCount++;
+    _triV0[slot] = a;
+    _triV1[slot] = b;
+    _triV2[slot] = c;
+    _triMatSlot[slot] = matSlot;
+    _triSortOrder[slot] = sortOrder;
+    _triDepth[slot] =
+        _computeTriangleDepth(_vertDepth[a], _vertDepth[b], _vertDepth[c]) +
+        depthBias;
+    _triOrder[slot] = slot;
+  }
+
+  int _interpolateClippedVertex(
+    int p,
+    int q,
+    double frac,
+    double nearClip,
+    CameraRig3D camera,
+    Offset canvasOrigin,
+  ) {
+    final slot = _vertCount++;
+    final cx = _vertCamX[p] + (_vertCamX[q] - _vertCamX[p]) * frac;
+    final cy = _vertCamY[p] + (_vertCamY[q] - _vertCamY[p]) * frac;
+    final (sx, sy) = camera.projectCameraSpace(
+      cx,
+      cy,
+      nearClip,
+      canvasOrigin: canvasOrigin,
+    );
+    _vertX[slot] = sx;
+    _vertY[slot] = sy;
+    _vertCamX[slot] = cx;
+    _vertCamY[slot] = cy;
+    _vertCamZ[slot] = nearClip;
+    _vertDepth[slot] = _vertDepth[p] + (_vertDepth[q] - _vertDepth[p]) * frac;
+    _vertU[slot] = _vertU[p] + (_vertU[q] - _vertU[p]) * frac;
+    _vertV[slot] = _vertV[p] + (_vertV[q] - _vertV[p]) * frac;
+    _vertTexU[slot] = _vertTexU[p] + (_vertTexU[q] - _vertTexU[p]) * frac;
+    _vertTexV[slot] = _vertTexV[p] + (_vertTexV[q] - _vertTexV[p]) * frac;
+    _vertTexPixelSpace[slot] = _vertTexPixelSpace[p];
+
+    final cp = _vertColor[p];
+    final cq = _vertColor[q];
+    final ap = (cp >>> 24) & 0xFF;
+    final rp = (cp >>> 16) & 0xFF;
+    final gp = (cp >>> 8) & 0xFF;
+    final bp = cp & 0xFF;
+    final aq = (cq >>> 24) & 0xFF;
+    final rq = (cq >>> 16) & 0xFF;
+    final gq = (cq >>> 8) & 0xFF;
+    final bq = cq & 0xFF;
+    final ai = (ap + (aq - ap) * frac).round().clamp(0, 255);
+    final ri = (rp + (rq - rp) * frac).round().clamp(0, 255);
+    final gi = (gp + (gq - gp) * frac).round().clamp(0, 255);
+    final bi = (bp + (bq - bp) * frac).round().clamp(0, 255);
+    _vertColor[slot] = (ai << 24) | (ri << 16) | (gi << 8) | bi;
+    return slot;
+  }
+
+  void _clipAndEmitPerspectiveTriangle({
+    required int a,
+    required int b,
+    required int c,
+    required double nearClip,
+    required CameraRig3D camera,
+    required Offset canvasOrigin,
+    required int matSlot,
+    required int sortOrder,
+    required double depthBias,
+    required double minArea,
+  }) {
+    _ensureVertexCapacity(_vertCount + 2);
+    _ensureTriangleCapacity(_triCount + 2);
+
+    var polyCount = 0;
+
+    void clipEdge(int p, int q) {
+      final zp = _vertCamZ[p];
+      final zq = _vertCamZ[q];
+      final inP = zp >= nearClip;
+      final inQ = zq >= nearClip;
+      if (inP) {
+        _clipPoly[polyCount++] = p;
+      }
+      if (inP != inQ) {
+        final denom = zq - zp;
+        final frac = denom.abs() > 1e-9
+            ? ((nearClip - zp) / denom).clamp(0.0, 1.0)
+            : 0.5;
+        _clipPoly[polyCount++] = _interpolateClippedVertex(
+          p,
+          q,
+          frac,
+          nearClip,
+          camera,
+          canvasOrigin,
+        );
+      }
+    }
+
+    clipEdge(a, b);
+    clipEdge(b, c);
+    clipEdge(c, a);
+
+    if (polyCount < 3) {
+      return;
+    }
+    _nearPlaneClippedTriangles++;
+    _emitProjectedTriangle(
+      a: _clipPoly[0],
+      b: _clipPoly[1],
+      c: _clipPoly[2],
+      matSlot: matSlot,
+      sortOrder: sortOrder,
+      depthBias: depthBias,
+      minArea: minArea,
+    );
+    if (polyCount == 4) {
+      _emitProjectedTriangle(
+        a: _clipPoly[0],
+        b: _clipPoly[2],
+        c: _clipPoly[3],
+        matSlot: matSlot,
+        sortOrder: sortOrder,
+        depthBias: depthBias,
+        minArea: minArea,
+      );
+    }
+  }
+
   /// Appends a pre-baked [StaticMeshChunk3D] into the active batch using fast
   /// typed-array range copies, preserving both texture UVs (`mesh.uvs` /
   /// `uvRectPx`) and per-instance [Material3D] assignments, and participating
@@ -1023,6 +1455,8 @@ class BatchMeshRenderer3D({
     required CameraRig3D camera,
     Offset canvasOrigin = Offset.zero,
     Material3D? materialOverride,
+    int sortOrder = 0,
+    double depthBias = 0.0,
   }) {
     final cullRect = cullScreenBounds;
     if (frustumCullMeshes && cullRect != null && chunk.instanceCount > 0) {
@@ -1114,7 +1548,8 @@ class BatchMeshRenderer3D({
         _triMatSlot[slot] = overrideSlot >= 0
             ? overrideSlot
             : remappedSlots[visM[t]];
-        _triDepth[slot] = visD[t];
+        _triSortOrder[slot] = sortOrder;
+        _triDepth[slot] = visD[t] + depthBias;
         _triOrder[slot] = slot;
       }
       _triCount += tCount;
@@ -1145,12 +1580,14 @@ class BatchMeshRenderer3D({
       }
       for (var i = gap; i < count; i++) {
         final tempIdx = _triOrder[i];
+        final tempSort = _triSortOrder[tempIdx];
         final tempDepth = _triDepth[tempIdx];
         var j = i;
         while (j >= gap) {
           final prevIdx = _triOrder[j - gap];
-          final prevDepth = _triDepth[prevIdx];
-          if (prevDepth <= tempDepth) {
+          final prevSort = _triSortOrder[prevIdx];
+          if (prevSort < tempSort ||
+              (prevSort == tempSort && _triDepth[prevIdx] <= tempDepth)) {
             break;
           }
           _triOrder[j] = prevIdx;
@@ -1223,6 +1660,7 @@ class BatchMeshRenderer3D({
     _lastFlushMaterialSwitches = 0;
     _lastFrustumCulledMeshes = _frustumCulledMeshes;
     _lastCulledMicroTriangles = _culledMicroTriangles;
+    _lastNearPlaneClippedTriangles = _nearPlaneClippedTriangles;
     var draws = 0;
 
     const maxTrisPerChunk = 21840;
@@ -1395,6 +1833,7 @@ class BatchMeshRenderer3D({
       _enqueuedMeshes = 0;
       _frustumCulledMeshes = 0;
       _culledMicroTriangles = 0;
+      _nearPlaneClippedTriangles = 0;
       if (_materials.length > 1) {
         _materials
           ..clear()

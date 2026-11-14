@@ -72,6 +72,13 @@ class StandardCollisionDetection<B extends Broadphase<ShapeHitbox>>({
   /// ray enters their boxes. They are kept between the rays of this instance,
   /// to not allocate for each ray.
   final _candidates = _RaycastCandidates();
+  final List<ShapeHitbox> _broadphaseRayScratch = <ShapeHitbox>[];
+
+  int _lastRaycastCandidatesTested = 0;
+
+  /// Number of broadphase candidate hitboxes inspected during the most recent
+  /// non-nested [raycast] call.
+  int get lastRaycastCandidatesTested => _lastRaycastCandidatesTested;
 
   /// Whether a [raycast] of this instance is running, so that one started
   /// from inside of it, by a hitbox filter or by a
@@ -100,17 +107,34 @@ class StandardCollisionDetection<B extends Broadphase<ShapeHitbox>>({
   RaycastResult<ShapeHitbox>? raycast(
     Ray2 ray, {
     double? maxDistance,
+    int collisionMask = 0xFFFFFFFF,
     bool Function(ShapeHitbox candidate)? hitboxFilter,
     List<ShapeHitbox>? ignoreHitboxes,
     RaycastResult<ShapeHitbox>? out,
   }) {
     var finalResult = out?..reset();
+    if (collisionMask == 0) {
+      if (!_isCasting) {
+        _lastRaycastCandidatesTested = 0;
+      }
+      return null;
+    }
     final limit = maxDistance ?? double.infinity;
     final isNested = _isCasting;
     final candidates = isNested ? _RaycastCandidates() : _candidates;
+    final rawCandidates = isNested ? <ShapeHitbox>[] : _broadphaseRayScratch;
     _isCasting = true;
     try {
-      for (final item in items) {
+      rawCandidates.clear();
+      broadphase.queryRayCandidates(ray, limit, rawCandidates);
+      if (!isNested) {
+        _lastRaycastCandidatesTested = rawCandidates.length;
+      }
+      for (var i = 0; i < rawCandidates.length; i++) {
+        final item = rawCandidates[i];
+        if ((item.collisionLayer & collisionMask) == 0) {
+          continue;
+        }
         if (!_isCandidate(item, hitboxFilter, ignoreHitboxes)) {
           continue;
         }
@@ -139,6 +163,7 @@ class StandardCollisionDetection<B extends Broadphase<ShapeHitbox>>({
     } finally {
       // Do not keep the hitboxes alive through the candidates, also if one of
       // the callbacks throws.
+      rawCandidates.clear();
       candidates.clear();
       if (!isNested) {
         _isCasting = false;
@@ -190,6 +215,7 @@ class StandardCollisionDetection<B extends Broadphase<ShapeHitbox>>({
     double startAngle = 0,
     double sweepAngle = tau,
     double? maxDistance,
+    int collisionMask = 0xFFFFFFFF,
     List<Ray2>? rays,
     bool Function(ShapeHitbox candidate)? hitboxFilter,
     List<ShapeHitbox>? ignoreHitboxes,
@@ -223,6 +249,7 @@ class StandardCollisionDetection<B extends Broadphase<ShapeHitbox>>({
       result = raycast(
         ray,
         maxDistance: maxDistance,
+        collisionMask: collisionMask,
         hitboxFilter: hitboxFilter,
         ignoreHitboxes: ignoreHitboxes,
         out: result,
@@ -239,6 +266,7 @@ class StandardCollisionDetection<B extends Broadphase<ShapeHitbox>>({
   Iterable<RaycastResult<ShapeHitbox>> raytrace(
     Ray2 ray, {
     int maxDepth = 10,
+    int collisionMask = 0xFFFFFFFF,
     bool Function(ShapeHitbox candidate)? hitboxFilter,
     List<ShapeHitbox>? ignoreHitboxes,
     List<RaycastResult<ShapeHitbox>>? out,
@@ -256,6 +284,7 @@ class StandardCollisionDetection<B extends Broadphase<ShapeHitbox>>({
           : RaycastResult<ShapeHitbox>();
       final currentResult = raycast(
         currentRay,
+        collisionMask: collisionMask,
         hitboxFilter: hitboxFilter,
         ignoreHitboxes: ignoreHitboxes,
         out: storeResult,

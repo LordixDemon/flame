@@ -1,4 +1,7 @@
+import 'dart:typed_data';
+
 import 'package:flame/src/camera/world.dart';
+import 'package:flame/src/canvas3d/mesh_3d.dart';
 import 'package:flame/src/canvas3d/raycast_3d.dart';
 import 'package:flame/src/components/core/component.dart';
 import 'package:flame/src/extensions/vector2.dart';
@@ -100,5 +103,45 @@ mixin SpatialHitbox3D on Component {
       maxZ: maxZ,
       maxDistance: maxDistance,
     );
+  }
+
+  /// Convenience helper intersecting [ray] against [mesh] using its flat
+  /// `O(log T)` [Mesh3D.bvh] under full 3D rotation and non-uniform scale.
+  @protected
+  double? intersectMesh3D(
+    Ray3D ray,
+    Mesh3D mesh, {
+    required double worldX,
+    required double worldY,
+    double worldZ = 0.0,
+    double scaleX = 1.0,
+    double scaleY = 1.0,
+    double scaleZ = 1.0,
+    double yawRad = 0.0,
+    double pitchRad = 0.0,
+    double rollRad = 0.0,
+    (double, double, double, double)? rotationQuat,
+    Float32List? rotationMatrix3,
+    double maxDistance = double.infinity,
+    bool cullBackfaces = true,
+  }) {
+    final hit = Raycaster3D.raycastMeshTransform(
+      ray,
+      mesh,
+      worldX: worldX,
+      worldY: worldY,
+      worldZ: worldZ,
+      scaleX: scaleX,
+      scaleY: scaleY,
+      scaleZ: scaleZ,
+      yawRad: yawRad,
+      pitchRad: pitchRad,
+      rollRad: rollRad,
+      rotationQuat: rotationQuat,
+      rotationMatrix3: rotationMatrix3,
+      maxDistance: maxDistance,
+      cullBackfaces: cullBackfaces,
+    );
+    return hit?.$1;
   }
 }
