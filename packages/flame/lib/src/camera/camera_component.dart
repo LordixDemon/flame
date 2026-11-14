@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flame/components.dart';
 import 'package:flame/extensions.dart';
@@ -276,36 +278,56 @@ class CameraComponent({
   /// transform. An instance method rather than a local function, so that the
   /// render pass does not allocate a closure per camera per frame.
   void _renderWorld(Canvas canvas) {
-    canvas.transform2D(viewfinder.transform);
-    final activeWorld = world!;
-    final overridePass = currentRenderPass;
-    final passes = renderPasses;
-    if (overridePass != null) {
-      activeWorld.onBeforeRenderPass(canvas, overridePass);
-      activeWorld.beforePassCallback?.call(canvas, overridePass);
-      activeWorld.renderFromCamera(canvas);
-      activeWorld.afterPassCallback?.call(canvas, overridePass);
-      activeWorld.onAfterRenderPass(canvas, overridePass);
-    } else if (passes == null || passes.isEmpty) {
-      activeWorld.renderFromCamera(canvas);
-    } else {
-      for (final pass in passes) {
-        pushRenderPass(pass);
-        try {
-          activeWorld.onBeforeRenderPass(canvas, pass);
-          activeWorld.beforePassCallback?.call(canvas, pass);
-          activeWorld.renderFromCamera(canvas);
-          activeWorld.afterPassCallback?.call(canvas, pass);
-          activeWorld.onAfterRenderPass(canvas, pass);
-        } finally {
-          popRenderPass();
+    final hasShake = viewfinder.hasActiveShake;
+    if (hasShake) {
+      canvas.save();
+      final pivX = viewfinder.transform.position.x;
+      final pivY = viewfinder.transform.position.y;
+      canvas.translate(
+        pivX + viewfinder.shakeOffset.x,
+        pivY + viewfinder.shakeOffset.y,
+      );
+      if (viewfinder.shakeRoll != 0.0) {
+        canvas.rotate(viewfinder.shakeRoll);
+      }
+      canvas.translate(-pivX, -pivY);
+    }
+    try {
+      canvas.transform2D(viewfinder.transform);
+      final activeWorld = world!;
+      final overridePass = currentRenderPass;
+      final passes = renderPasses;
+      if (overridePass != null) {
+        activeWorld.onBeforeRenderPass(canvas, overridePass);
+        activeWorld.beforePassCallback?.call(canvas, overridePass);
+        activeWorld.renderFromCamera(canvas);
+        activeWorld.afterPassCallback?.call(canvas, overridePass);
+        activeWorld.onAfterRenderPass(canvas, overridePass);
+      } else if (passes == null || passes.isEmpty) {
+        activeWorld.renderFromCamera(canvas);
+      } else {
+        for (final pass in passes) {
+          pushRenderPass(pass);
+          try {
+            activeWorld.onBeforeRenderPass(canvas, pass);
+            activeWorld.beforePassCallback?.call(canvas, pass);
+            activeWorld.renderFromCamera(canvas);
+            activeWorld.afterPassCallback?.call(canvas, pass);
+            activeWorld.onAfterRenderPass(canvas, pass);
+          } finally {
+            popRenderPass();
+          }
         }
       }
-    }
-    // Render the viewfinder elements, which will be in front of the world,
-    // but with the same transforms applied to them.
-    if (overridePass == null || !overridePass.exclusiveToMultiPass) {
-      viewfinder.renderTree(canvas);
+      // Render the viewfinder elements, which will be in front of the world,
+      // but with the same transforms applied to them.
+      if (overridePass == null || !overridePass.exclusiveToMultiPass) {
+        viewfinder.renderTree(canvas);
+      }
+    } finally {
+      if (hasShake) {
+        canvas.restore();
+      }
     }
   }
 
@@ -536,7 +558,12 @@ class CameraComponent({
 
         if (validTransform) {
           yieldedSpatial.add(hit.component);
-          yield hit.component;
+          hit.component.isActiveSpatialRayHit = true;
+          try {
+            yield hit.component;
+          } finally {
+            hit.component.isActiveSpatialRayHit = false;
+          }
         }
         if (nestedContexts != null && nestedContexts.length > savedLength) {
           nestedContexts.removeRange(savedLength, nestedContexts.length);
@@ -622,6 +649,10 @@ class CameraComponent({
   void follow(
     ReadOnlyPositionProvider target, {
     double maxSpeed = double.infinity,
+    double? smoothing,
+    Rect? deadzone,
+    double leadFactor = 0.0,
+    double maxLeadDistance = 240.0,
     bool horizontalOnly = false,
     bool verticalOnly = false,
     bool snap = false,
@@ -632,6 +663,10 @@ class CameraComponent({
         target: target,
         owner: viewfinder,
         maxSpeed: maxSpeed,
+        smoothing: smoothing,
+        deadzone: deadzone,
+        leadFactor: leadFactor,
+        maxLeadDistance: maxLeadDistance,
         horizontalOnly: horizontalOnly,
         verticalOnly: verticalOnly,
       ),
@@ -795,6 +830,147 @@ class CameraComponent({
     removeAll([...postProcessComponents, ...?queuedPostProcessAdds]);
     if (postProcess != null) {
       add(PostProcessComponent(postProcess: postProcess));
+    }
+  }
+
+  ({ui.Picture picture, int width, int height}) _recordViewToPicture({
+    int? width,
+    int? height,
+    double pixelRatio = 1.0,
+    bool includePostProcess = true,
+    bool includeBackdrop = true,
+    bool includeViewport = false,
+    List<RenderPass>? passes,
+    ui.Color? backgroundColor,
+  }) {
+    assert(pixelRatio > 0, 'pixelRatio must be positive: $pixelRatio');
+    final vSize = viewport.virtualSize;
+    final fallbackSize = viewport.size;
+    final baseW = vSize.x > 0
+        ? vSize.x
+        : (fallbackSize.x > 0 ? fallbackSize.x : (width?.toDouble() ?? 1.0));
+    final baseH = vSize.y > 0
+        ? vSize.y
+        : (fallbackSize.y > 0 ? fallbackSize.y : (height?.toDouble() ?? 1.0));
+    final outW = math.max(1, width ?? (baseW * pixelRatio).round());
+    final outH = math.max(1, height ?? (baseH * pixelRatio).round());
+
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(
+      recorder,
+      ui.Rect.fromLTWH(0, 0, outW.toDouble(), outH.toDouble()),
+    );
+    final logicalBounds = ui.Rect.fromLTWH(0, 0, baseW, baseH);
+    canvas.scale(outW / baseW, outH / baseH);
+    canvas.clipRect(logicalBounds);
+    if (backgroundColor != null) {
+      canvas.drawRect(logicalBounds, ui.Paint()..color = backgroundColor);
+    }
+
+    if ((world?.isMounted ?? false) &&
+        currentCameras.length < maxCamerasDepth) {
+      if (includeBackdrop) {
+        backdrop.renderTree(canvas);
+      }
+      final prevPasses = renderPasses;
+      if (passes != null) {
+        renderPasses = passes;
+      }
+      currentCameras.add(this);
+      try {
+        final postProcessors = includePostProcess
+            ? children.query<PostProcessComponent>()
+            : const <PostProcessComponent>[];
+        if (postProcessors.isNotEmpty) {
+          postProcessors.first.postProcess.render(
+            canvas,
+            Vector2(baseW, baseH),
+            _renderWorld,
+            _updatePostProcessContext,
+          );
+        } else {
+          canvas.save();
+          _renderWorld(canvas);
+          canvas.restore();
+        }
+      } finally {
+        currentCameras.removeLast();
+        renderPasses = prevPasses;
+      }
+      if (includeViewport) {
+        viewport.renderTree(canvas);
+      }
+    }
+
+    return (
+      picture: recorder.endRecording(),
+      width: outW,
+      height: outH,
+    );
+  }
+
+  /// Renders this camera's current view into an offscreen [ui.Image]
+  /// synchronously without modifying the live screen canvas.
+  ///
+  /// When [width] or [height] are omitted, `viewport.virtualSize` (falling back
+  /// to `viewport.size`) scaled by [pixelRatio] is used. Callers own the
+  /// returned [ui.Image] and must call `dispose()` on it when finished.
+  ui.Image renderToImageSync({
+    int? width,
+    int? height,
+    double pixelRatio = 1.0,
+    bool includePostProcess = true,
+    bool includeBackdrop = true,
+    bool includeViewport = false,
+    List<RenderPass>? passes,
+    ui.Color? backgroundColor,
+  }) {
+    final recorded = _recordViewToPicture(
+      width: width,
+      height: height,
+      pixelRatio: pixelRatio,
+      includePostProcess: includePostProcess,
+      includeBackdrop: includeBackdrop,
+      includeViewport: includeViewport,
+      passes: passes,
+      backgroundColor: backgroundColor,
+    );
+    try {
+      return recorded.picture.toImageSync(recorded.width, recorded.height);
+    } finally {
+      recorded.picture.dispose();
+    }
+  }
+
+  /// Asynchronously rasterizes this camera's current view into an offscreen
+  /// [ui.Image] without modifying the live screen canvas.
+  ///
+  /// Callers own the returned [ui.Image] and must call `dispose()` on it when
+  /// finished.
+  Future<ui.Image> renderToImage({
+    int? width,
+    int? height,
+    double pixelRatio = 1.0,
+    bool includePostProcess = true,
+    bool includeBackdrop = true,
+    bool includeViewport = false,
+    List<RenderPass>? passes,
+    ui.Color? backgroundColor,
+  }) async {
+    final recorded = _recordViewToPicture(
+      width: width,
+      height: height,
+      pixelRatio: pixelRatio,
+      includePostProcess: includePostProcess,
+      includeBackdrop: includeBackdrop,
+      includeViewport: includeViewport,
+      passes: passes,
+      backgroundColor: backgroundColor,
+    );
+    try {
+      return await recorded.picture.toImage(recorded.width, recorded.height);
+    } finally {
+      recorded.picture.dispose();
     }
   }
 }

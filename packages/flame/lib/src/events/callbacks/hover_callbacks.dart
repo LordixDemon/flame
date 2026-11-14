@@ -1,14 +1,15 @@
 import 'package:flame/components.dart';
 import 'package:flame/events.dart';
+import 'package:flame/src/canvas3d/spatial_hit_testing_3d.dart';
 import 'package:meta/meta.dart';
 
 /// This mixin can be added to a [Component] allowing it to receive hover
 /// events.
 ///
-/// In addition to adding this mixin, the component must also implement the
-/// [containsLocalPoint] method -- the component will only be considered
-/// "hovered" if the point where the hover event occurred is inside the
-/// component.
+/// In addition to adding this mixin, the component must implement either
+/// [containsLocalPoint] or [SpatialHitbox3D] -- the component will be
+/// considered "hovered" if the pointer intersects its 2D bounds or its 3D
+/// spatial hitbox ray.
 ///
 /// This mixin is the replacement of the Hoverable mixin.
 ///
@@ -16,7 +17,12 @@ import 'package:meta/meta.dart';
 mixin HoverCallbacks on Component implements MouseMoveCallbacks {
   bool _isHovered = false;
 
-  /// Returns true while the component is being dragged.
+  /// When `true`, hovering this component stops propagation of [MouseMoveEvent]
+  /// to components behind it, preventing occluded background tiles or 3D
+  /// objects from entering a hovered state simultaneously.
+  bool stopHoverPropagation = false;
+
+  /// Returns true while the component is being hovered.
   bool get isHovered => _isHovered;
 
   void onHoverEnter() {}
@@ -55,10 +61,16 @@ mixin HoverCallbacks on Component implements MouseMoveCallbacks {
 
   @override
   void onMouseMove(MouseMoveEvent event) {
-    final position = event.localPosition;
-    if (containsLocalPoint(position)) {
+    final hit3d =
+        this is SpatialHitbox3D &&
+        (this as SpatialHitbox3D).spatialHitEnabled &&
+        (this as SpatialHitbox3D).isActiveSpatialRayHit;
+    if (hit3d || containsLocalPoint(event.localPosition)) {
       if (!_isHovered) {
         _doHoverEnter();
+      }
+      if (stopHoverPropagation) {
+        event.continuePropagation = false;
       }
     } else {
       if (_isHovered) {

@@ -222,6 +222,20 @@ class FlameGame<W extends World>({
     }
   }
 
+  /// Whether incoming high-frequency OS `PointerHoverEvent`s (such as
+  /// 500–1000 Hz desktop gaming mice) are coalesced into a single scene hover
+  /// raycast per frame at the start of [update] instead of running
+  /// synchronously per OS pointer packet.
+  bool coalesceMouseHover = false;
+
+  /// Immediately dispatches any coalesced mouse hover event queued since the
+  /// previous tick.
+  void flushPendingMouseHover() {
+    findByKey<MouseMoveDispatcher>(
+      const MouseMoveDispatcherKey(),
+    )?.flushPendingHover();
+  }
+
   @override
   @mustCallSuper
   void update(double dt) {
@@ -232,6 +246,9 @@ class FlameGame<W extends World>({
           ..start();
         try {
           processLifecycleEvents();
+          if (coalesceMouseHover) {
+            flushPendingMouseHover();
+          }
           updateTree(dt);
         } finally {
           _telemetryStopwatch.stop();
@@ -244,6 +261,9 @@ class FlameGame<W extends World>({
       // Lifecycle events are processed before the traversal so that they
       // complete even while the traversal is paused through a time scale.
       processLifecycleEvents();
+      if (coalesceMouseHover) {
+        flushPendingMouseHover();
+      }
       updateTree(dt);
     }
   }

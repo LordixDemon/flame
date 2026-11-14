@@ -7,6 +7,7 @@ import 'package:flame/extensions.dart';
 import 'package:flame/rendering.dart';
 import 'package:flame/src/collisions/hitboxes/shape_hitbox.dart';
 import 'package:flame/src/components/core/component.dart';
+import 'package:flame/src/components/mixins/coordinate_transform.dart';
 import 'package:flame/src/components/mixins/has_decorator.dart';
 import 'package:flame/src/components/mixins/has_paint.dart';
 import 'package:flame/src/components/mixins/snapshot.dart';
@@ -50,6 +51,18 @@ mixin HasAutoBatchedChildren on Component {
   /// Defaults to `false` to preserve strict `drawAtlas`-only fallback semantics
   /// unless opted into.
   bool allowAffineVerticesBatching = false;
+
+  /// When `true` (default), automatically supplies
+  /// `CameraComponent.currentCamera?.visibleWorldRect` as `cullRect` to
+  /// `Canvas.drawAtlas` whenever this container renders directly in `World`
+  /// coordinates so Impeller/Skia skips offscreen atlas quads in hardware.
+  bool autoCullRect = true;
+
+  Rect? _lastEffectiveCullRect;
+
+  /// Effective `cullRect` passed to `drawAtlas` on the most recent flush.
+  @visibleForTesting
+  Rect? get lastEffectiveCullRect => _lastEffectiveCullRect;
 
   // Atlas accumulators keyed by (Image, BlendMode).
   final Map<(Image, BlendMode), _BatchAccumulator> _accumulators = {};
@@ -162,9 +175,45 @@ mixin HasAutoBatchedChildren on Component {
     }
   }
 
+  Rect? _resolveAutoWorldCullRect() {
+    if (!autoCullRect) {
+      return null;
+    }
+    final camera = CameraComponent.currentCamera;
+    if (camera == null || camera.parent == null) {
+      return null;
+    }
+    final targetWorld = camera.world;
+    if (targetWorld == null) {
+      return null;
+    }
+    Component? cursor = this;
+    while (cursor != null) {
+      if (identical(cursor, targetWorld)) {
+        return camera.visibleWorldRect;
+      }
+      if (cursor is PositionComponent) {
+        final t = cursor.transform;
+        if (!t.position.isZero() ||
+            !t.offset.isZero() ||
+            t.angle != 0.0 ||
+            t.scale.x != 1.0 ||
+            t.scale.y != 1.0) {
+          return null;
+        }
+      } else if (cursor is CoordinateTransform) {
+        return null;
+      }
+      cursor = cursor.parent;
+    }
+    return null;
+  }
+
   void _flushAtlasOnly(Canvas canvas) {
+    final cullRect = _resolveAutoWorldCullRect();
+    _lastEffectiveCullRect = cullRect;
     for (final acc in _accumulators.values) {
-      acc.flush(canvas);
+      acc.flush(canvas, cullRect: cullRect);
     }
   }
 
@@ -323,11 +372,12 @@ class _BatchAccumulator(Image atlas, final BlendMode blendMode) {
     batch.addTransform(source: source, transform: transform, color: color);
   }
 
-  void flush(Canvas canvas) {
+  void flush(Canvas canvas, {Rect? cullRect}) {
     if (!batch.isEmpty) {
       batch.render(
         canvas,
         blendMode: BlendMode.srcOver,
+        cullRect: cullRect,
         paint: blendMode == BlendMode.srcOver ? null : _paint,
       );
       batch.clear();

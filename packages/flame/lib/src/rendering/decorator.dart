@@ -33,13 +33,25 @@ class Decorator() {
 
   /// Applies this and all subsequent decorators if any.
   ///
-  /// This method is the main method through which the decorator is applied.
-  void applyChain(void Function(Canvas) draw, Canvas canvas) {
-    apply(
+  /// When [bounds] is provided in the coordinate frame seen by the decorated
+  /// draw callback, offscreen-layer decorators (such as [PaintDecorator] and
+  /// [Shadow3DDecorator]) can allocate a tight bounded `Canvas.saveLayer`
+  /// texture instead of a full-viewport render target.
+  void applyChain(
+    void Function(Canvas) draw,
+    Canvas canvas, {
+    Rect? bounds,
+  }) {
+    applyBounded(
       _next == null
           ? draw
-          : (nextCanvas) => _next!.applyChain(draw, nextCanvas),
+          : (nextCanvas) => _next!.applyChain(
+              draw,
+              nextCanvas,
+              bounds: transformBoundsForNext(bounds),
+            ),
       canvas,
+      bounds,
     );
   }
 
@@ -54,6 +66,26 @@ class Decorator() {
   void apply(void Function(Canvas) draw, Canvas canvas) {
     draw(canvas);
   }
+
+  /// Bounds-aware variant of [apply].
+  ///
+  /// Subclasses that allocate offscreen layers (`Canvas.saveLayer`) can
+  /// override this method to use [bounds] when non-null. By default it
+  /// delegates to [apply] so existing [Decorator] subclasses remain fully
+  /// compatible.
+  @protected
+  void applyBounded(
+    void Function(Canvas) draw,
+    Canvas canvas,
+    Rect? bounds,
+  ) {
+    apply(draw, canvas);
+  }
+
+  /// Transforms [bounds] into the coordinate space passed to the next decorator
+  /// in the chain. Defaults to returning [bounds] unchanged.
+  @protected
+  Rect? transformBoundsForNext(Rect? bounds) => bounds;
 
   //#region Decorator chain functionality
 

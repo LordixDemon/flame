@@ -20,12 +20,21 @@ mixin SpatialHitbox3D on Component {
 
   double? _lastHitDistance3D;
   (double, double, double)? _lastHitPoint3D;
+  bool _isActiveSpatialRayHit = false;
 
   /// Distance `t` along the camera ray from the most recent successful 3D hit.
   double? get lastHitDistance3D => _lastHitDistance3D;
 
   /// World `(x, y, z)` coordinates of the most recent successful 3D hit.
   (double, double, double)? get lastHitPoint3D => _lastHitPoint3D;
+
+  /// Whether the currently dispatching pointer/hover event matched this
+  /// component via a 3D ray intersection rather than 2D bounds.
+  @internal
+  bool get isActiveSpatialRayHit => _isActiveSpatialRayHit;
+
+  @internal
+  set isActiveSpatialRayHit(bool value) => _isActiveSpatialRayHit = value;
 
   /// Records hit metadata when picked by `CameraComponent`.
   @internal

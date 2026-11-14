@@ -1,8 +1,10 @@
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flame/extensions.dart';
 import 'package:flame/src/palette.dart';
 import 'package:flame/src/rendering/decorator.dart';
+import 'package:meta/meta.dart';
 // TODO(spydon): Remove this import when flutter version is updated to 3.35.0
 // ignore: unnecessary_import
 import 'package:vector_math/vector_math.dart';
@@ -40,6 +42,7 @@ class Shadow3DDecorator({
   set base(Vector2 value) {
     _base.setFrom(value);
     _transformMatrix = null;
+    _cachedShadowBounds = null;
   }
 
   /// How high is the component above the ground.
@@ -48,6 +51,7 @@ class Shadow3DDecorator({
   set ascent(double value) {
     _ascent = value;
     _transformMatrix = null;
+    _cachedShadowBounds = null;
   }
 
   /// The amount of skew the shadow is experiencing. The value of 0 corresponds
@@ -62,6 +66,7 @@ class Shadow3DDecorator({
   set xShift(double value) {
     _shift = value;
     _transformMatrix = null;
+    _cachedShadowBounds = null;
   }
 
   /// The length of the shadow relative to the height of the object. If the sun
@@ -73,6 +78,8 @@ class Shadow3DDecorator({
   set yScale(double value) {
     _scale = value;
     _transformMatrix = null;
+    _paint = null;
+    _cachedShadowBounds = null;
   }
 
   /// Visual angle between a vertically standing component and the ground. This
@@ -85,6 +92,7 @@ class Shadow3DDecorator({
   set angle(double value) {
     _angle = value;
     _transformMatrix = null;
+    _cachedShadowBounds = null;
   }
 
   /// The amount of blur to apply to the shadow. The value of 0 produces crisp
@@ -101,6 +109,7 @@ class Shadow3DDecorator({
   set blur(double value) {
     _blur = value;
     _paint = null;
+    _cachedShadowBounds = null;
   }
 
   /// Shadow's intensity. The value of 1 will create a hard pitch-black shadow,
@@ -148,12 +157,83 @@ class Shadow3DDecorator({
       );
   }
 
+  /// Whether [applyChain] bounds should be projected into a tight shadow
+  /// `Canvas.saveLayer` rectangle instead of allocating an unbounded layer.
+  bool useBoundedSaveLayer = true;
+
+  Rect? _lastInputBounds;
+  Rect? _cachedShadowBounds;
+  bool _hasCachedShadowBounds = false;
+  Rect? _lastSaveLayerBounds;
+
+  /// Most recent bounds passed to [Canvas.saveLayer] (`null` when unbounded).
+  @visibleForTesting
+  Rect? get lastSaveLayerBounds => _lastSaveLayerBounds;
+
+  Rect? _resolveShadowLayerBounds(Rect bounds) {
+    if (_hasCachedShadowBounds && _lastInputBounds == bounds) {
+      return _cachedShadowBounds;
+    }
+    final m = _transformMatrix!.storage;
+    final tx = base.x + _shift;
+    final ty = base.y;
+
+    var minX = double.infinity;
+    var minY = double.infinity;
+    var maxX = double.negativeInfinity;
+    var maxY = double.negativeInfinity;
+
+    for (var i = 0; i < 4; i++) {
+      final px = (i & 1) == 0 ? bounds.left : bounds.right;
+      final py = (i & 2) == 0 ? bounds.top : bounds.bottom;
+      final rw = m[3] * px + m[7] * py + m[15];
+      if (rw <= 1e-3) {
+        _lastInputBounds = bounds;
+        _cachedShadowBounds = null;
+        _hasCachedShadowBounds = true;
+        return null;
+      }
+      final invW = 1.0 / rw;
+      final sx = tx + (m[0] * px + m[4] * py + m[12]) * invW;
+      final sy = ty + (m[1] * px + m[5] * py + m[13]) * invW;
+      minX = math.min(minX, sx);
+      minY = math.min(minY, sy);
+      maxX = math.max(maxX, sx);
+      maxY = math.max(maxY, sy);
+    }
+
+    final absScale = _scale.abs();
+    final sigmaY = (_blur > 0 && absScale > 1e-4) ? _blur / absScale : _blur;
+    final padX = _blur > 0 ? 3.0 * _blur + 2.0 : 1.0;
+    final padY = _blur > 0 ? 3.0 * sigmaY + 2.0 : 1.0;
+    final resolved = Rect.fromLTRB(
+      minX - padX,
+      minY - padY,
+      maxX + padX,
+      maxY + padY,
+    );
+    _lastInputBounds = bounds;
+    _cachedShadowBounds = resolved;
+    _hasCachedShadowBounds = true;
+    return resolved;
+  }
+
   @override
   void apply(void Function(Canvas) draw, Canvas canvas) {
+    applyBounded(draw, canvas, null);
+  }
+
+  @override
+  void applyBounded(void Function(Canvas) draw, Canvas canvas, Rect? bounds) {
     _transformMatrix ??= _makeTransform();
     _paint ??= _makePaint();
 
-    canvas.saveLayer(null, _paint!);
+    final shadowBounds =
+        (useBoundedSaveLayer && bounds != null && !bounds.isEmpty)
+        ? _resolveShadowLayerBounds(bounds)
+        : null;
+    _lastSaveLayerBounds = shadowBounds;
+    canvas.saveLayer(shadowBounds, _paint!);
     canvas.translate(base.x + _shift, base.y);
     canvas.transform32(_transformMatrix!.storage);
     draw(canvas);

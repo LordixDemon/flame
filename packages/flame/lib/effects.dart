@@ -20,6 +20,7 @@ export 'src/effects/controllers/reverse_linear_effect_controller.dart';
 export 'src/effects/controllers/sequence_effect_controller.dart';
 export 'src/effects/controllers/sine_effect_controller.dart';
 export 'src/effects/controllers/speed_effect_controller.dart';
+export 'src/effects/controllers/spring_effect_controller.dart';
 export 'src/effects/controllers/zigzag_effect_controller.dart';
 export 'src/effects/effect.dart';
 export 'src/effects/effect_target.dart';

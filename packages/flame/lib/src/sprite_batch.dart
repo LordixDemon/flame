@@ -510,6 +510,8 @@ class SpriteBatch(
     return handle;
   }
 
+  static final Vector2 _zeroVector = Vector2.zero();
+
   /// Add a new batch item.
   ///
   /// The [source] parameter is the source location on the [atlas]. You can
@@ -547,24 +549,23 @@ class SpriteBatch(
     Color? color,
     double bleed = 0,
   }) {
-    anchor ??= Vector2.zero();
-    offset ??= Vector2.zero();
+    final resolvedAnchor = anchor ?? _zeroVector;
+    final resolvedOffset = offset ?? _zeroVector;
     RSTransform? transform;
 
     // If any of the transform arguments is different from the defaults,
-    // then we create one. This is to prevent unnecessary computations
-    // of the sine and cosine of the rotation.
+    // then we create one without allocating temporary Vector2.zero() objects.
     if (scale != 1.0 ||
-        anchor != Vector2.zero() ||
+        !resolvedAnchor.isZero() ||
         rotation != 0 ||
-        offset != Vector2.zero()) {
+        !resolvedOffset.isZero()) {
       transform = RSTransform.fromComponents(
         scale: scale,
-        anchorX: anchor.x,
-        anchorY: anchor.y,
+        anchorX: resolvedAnchor.x,
+        anchorY: resolvedAnchor.y,
         rotation: rotation,
-        translateX: offset.x,
-        translateY: offset.y,
+        translateX: resolvedOffset.x,
+        translateY: resolvedOffset.y,
       );
     }
 

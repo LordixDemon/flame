@@ -12,10 +12,23 @@ import 'package:meta/meta.dart';
 class MouseMoveDispatcher() extends Dispatcher<FlameGame> {
   /// The record of all components currently being hovered.
   final Set<TaggedComponent<MouseMoveCallbacks>> _records = {};
+  final Set<TaggedComponent<MouseMoveCallbacks>> _updatedScratch = {};
+  final List<TaggedComponent<MouseMoveCallbacks>> _toRemoveScratch = [];
+  final Map<int, flutter.PointerHoverEvent> _pendingHoverByPointer = {};
+
+  int _rawHoverEventsReceived = 0;
+  int _dispatchCount = 0;
+
+  /// Total number of raw OS `PointerHoverEvent`s received from Flutter.
+  int get rawHoverEventsReceived => _rawHoverEventsReceived;
+
+  /// Total number of scene hover raycasts/dispatches actually executed.
+  int get dispatchCount => _dispatchCount;
 
   @mustCallSuper
   void onMouseMove(MouseMoveEvent event) {
-    final updated = <TaggedComponent<MouseMoveCallbacks>>{};
+    _dispatchCount++;
+    _updatedScratch.clear();
 
     event.deliverAtPoint(
       rootComponent: gameRef,
@@ -23,23 +36,53 @@ class MouseMoveDispatcher() extends Dispatcher<FlameGame> {
       eventHandler: (MouseMoveCallbacks component) {
         final tagged = TaggedComponent(event.pointerId, component);
         _records.add(tagged);
-        updated.add(tagged);
+        _updatedScratch.add(tagged);
         component.onMouseMove(event);
       },
     );
 
-    final toRemove = <TaggedComponent<MouseMoveCallbacks>>{};
+    _toRemoveScratch.clear();
     for (final record in _records) {
-      if (record.pointerId == event.pointerId && !updated.contains(record)) {
+      if (record.pointerId == event.pointerId &&
+          !_updatedScratch.contains(record)) {
         // one last "exit" event
         record.component.onMouseMoveStop(event);
-        toRemove.add(record);
+        _toRemoveScratch.add(record);
       }
     }
-    _records.removeAll(toRemove);
+    for (var i = 0; i < _toRemoveScratch.length; i++) {
+      _records.remove(_toRemoveScratch[i]);
+    }
+    _toRemoveScratch.clear();
+    _updatedScratch.clear();
+  }
+
+  /// Flushes any coalesced OS `PointerHoverEvent`s queued since the previous
+  /// frame when [FlameGame.coalesceMouseHover] is enabled.
+  void flushPendingHover() {
+    if (_pendingHoverByPointer.isEmpty) {
+      return;
+    }
+    if (_pendingHoverByPointer.length == 1) {
+      final raw = _pendingHoverByPointer.values.first;
+      _pendingHoverByPointer.clear();
+      onMouseMove(MouseMoveEvent.fromPointerHoverEvent(gameRef, raw));
+      return;
+    }
+    final pending = _pendingHoverByPointer.values.toList(growable: false);
+    _pendingHoverByPointer.clear();
+    for (final raw in pending) {
+      onMouseMove(MouseMoveEvent.fromPointerHoverEvent(gameRef, raw));
+    }
   }
 
   void _handleMouseMove(flutter.PointerHoverEvent event) {
+    _rawHoverEventsReceived++;
+    if (gameRef.coalesceMouseHover && !gameRef.isPaused) {
+      _pendingHoverByPointer[event.pointer] = event;
+      gameRef.notifyActivity();
+      return;
+    }
     onMouseMove(MouseMoveEvent.fromPointerHoverEvent(gameRef, event));
   }
 
@@ -48,16 +91,20 @@ class MouseMoveDispatcher() extends Dispatcher<FlameGame> {
   /// presses through `Listener.onPointerDown` (not `MouseRegion.onHover`), so
   /// without this hook hovered components would never learn the hover ended.
   /// See issue #2741.
-  void _handlePointerPress(flutter.PointerDownEvent _) {
-    final cancelled = <TaggedComponent<MouseMoveCallbacks>>[];
+  void _handlePointerPress(flutter.PointerDownEvent event) {
+    _pendingHoverByPointer.remove(event.pointer);
+    _toRemoveScratch.clear();
     for (final record in _records) {
       final component = record.component;
       if (component is HoverCallbacks && component.isHovered) {
         component.cancelHover();
-        cancelled.add(record);
+        _toRemoveScratch.add(record);
       }
     }
-    _records.removeAll(cancelled);
+    for (var i = 0; i < _toRemoveScratch.length; i++) {
+      _records.remove(_toRemoveScratch[i]);
+    }
+    _toRemoveScratch.clear();
   }
 
   static void addDispatcher(Component component) {

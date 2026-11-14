@@ -482,7 +482,20 @@ class PositionComponent({
   /// or the [anchor] change.
   void _onModifiedSizeOrAnchor() {
     transform.offset = Vector2(-_anchor.x * _size.x, -_anchor.y * _size.y);
+    _localBoundsRect = Rect.fromLTWH(0, 0, _size.x, _size.y);
   }
+
+  Rect _localBoundsRect = Rect.zero;
+
+  /// Optional local-space bounds override forwarded to [decorator] during
+  /// [renderTree].
+  ///
+  /// Useful for custom-rendered 2.5D/3D components whose `size` is zero or
+  /// whose artwork extends beyond `Offset.zero & size` (or container components
+  /// with children whose combined local extent is known). When `null`, leaf
+  /// [PositionComponent]s with positive [size] automatically forward
+  /// `Offset.zero & size`.
+  Rect? decoratorBounds;
 
   @override
   void renderDebugMode(Canvas canvas) {
@@ -518,7 +531,16 @@ class PositionComponent({
 
   @override
   void renderTree(Canvas canvas) {
-    decorator.applyChain(super.renderTree, canvas);
+    final explicitBounds = decoratorBounds;
+    final localBounds =
+        explicitBounds ??
+        ((!hasChildren &&
+                _size.x > 0 &&
+                _size.y > 0 &&
+                decorator is Transform2DDecorator)
+            ? _localBoundsRect
+            : null);
+    decorator.applyChain(super.renderTree, canvas, bounds: localBounds);
   }
 
   @internal

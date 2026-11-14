@@ -1,12 +1,15 @@
+import 'dart:math' as math;
+
 import 'package:flame/components.dart';
 
-/// A pool for managing reusable components.
+/// A zero-allocation pool for managing reusable [Component]s.
 ///
-/// This class allows you to efficiently reuse components, reducing the overhead
-/// of creating and destroying them frequently. The pool automatically manages
-/// component lifecycle by listening to the component's [Component.removed]
-/// future, returning components to the pool when they are removed from their
-/// parent.
+/// Components acquired via [acquire] are automatically returned to the pool in
+/// `O(1)` time without allocating `Future` or `Completer` closures when they
+/// finish detaching from their parent (or when cancelled before mounting).
+/// Components mixing in [RecyclableComponent] also receive synchronous
+/// [RecyclableComponent.onAcquire] and [RecyclableComponent.onRelease]
+/// callbacks.
 ///
 /// Example usage:
 /// ```dart
@@ -16,91 +19,110 @@ import 'package:flame/components.dart';
 ///   initialSize: 10,
 /// );
 ///
-/// // Acquire a bullet from the pool
 /// final bullet = bulletPool.acquire();
-/// // Configure the bullet as needed
 /// bullet.position = Vector2(10, 20);
-/// bullet.velocity = Vector2(100, 0);
-/// // Add it to the game
 /// game.add(bullet);
 ///
-/// // Later, when the bullet should be destroyed:
+/// // Later, when the bullet should be recycled:
 /// bullet.removeFromParent(); // Automatically returns to pool
 /// ```
-///
-/// The pool automatically returns components when they are removed from their
-/// parent, so you don't need to manually release them. Simply call
-/// [Component.removeFromParent] when the component should be destroyed, and it
-/// will be automatically returned to the pool for reuse.
 class ComponentPool<T extends Component>({
   required final T Function() _factory,
 
-  /// The maximum number of components that can be stored in the pool. If the
-  /// pool reaches this limit, additional components released back to the pool
-  /// will be discarded.
+  /// The maximum number of idle components that can be stored in the pool. If
+  /// the pool reaches this limit, additional released components are discarded.
   final int maxSize = 100,
   int initialSize = 0,
 }) {
   final List<T> _available = [];
+  int _inUseCount = 0;
 
   /// Creates a new component pool with the specified factory, maximum size, and
-  /// initial size. The [_factory] is a function that creates new instances of
-  /// the component type. The [maxSize] parameter limits the number of
-  /// components that can be stored in the pool, while the [initialSize]
-  /// parameter determines how many components are created initially.
-  ///
-  /// If the [initialSize] exceeds the [maxSize], only [maxSize] components
-  /// will be created and added to the pool.
+  /// initial size.
   this {
-    for (var i = 0; i < initialSize && i < maxSize; i++) {
-      _available.add(_factory());
+    if (initialSize > 0) {
+      prewarm(initialSize);
     }
   }
 
-  /// The number of components currently available in the pool for acquisition.
-  ///
-  /// This does not include components that are currently in use (i.e., those
-  /// that have been acquired but not yet returned to the pool). It only counts
-  /// the components that are ready to be acquired.
+  /// Number of idle components currently available in the pool.
   int get availableCount => _available.length;
 
-  /// Acquires a component from the pool. If the pool is empty, a new component
-  /// is created using the factory function. Otherwise, the last available
-  /// component is removed from the pool and returned.
-  ///
-  /// A listener is automatically attached that will return the component to
-  /// the pool when it is removed from its parent. The listener waits for the
-  /// component to be [Component.mounted] first, then listens for
-  /// [Component.removed]. This ensures recycled components (whose `removed`
-  /// future is already completed) don't get immediately returned to the pool
-  /// before they have a chance to mount.
-  ///
-  /// Just call [Component.removeFromParent] when done with the component.
-  T acquire() {
-    final component = _available.isEmpty ? _factory() : _available.removeLast();
-    component.mounted.then((_) {
-      component.removed.then((_) => _release(component));
-    });
-    return component;
-  }
+  /// Number of components currently checked out via [acquire] that have not yet
+  /// been returned to the pool.
+  int get inUseCount => _inUseCount;
 
-  /// Returns a component to the pool. This is called automatically when
-  /// a component's [Component.removed] future completes (i.e., after it has
-  /// been removed from its parent).
-  ///
-  /// The component is only added back to the pool if the pool has not reached
-  /// its [maxSize].
-  void _release(T component) {
-    if (!_available.contains(component) && _available.length < maxSize) {
+  /// Pre-allocates up to [count] additional idle components (capped so
+  /// [availableCount] never exceeds [maxSize]).
+  void prewarm(int count) {
+    if (count <= 0 || _available.length >= maxSize) {
+      return;
+    }
+    final targetAdd = math.min(count, maxSize - _available.length);
+    for (var i = 0; i < targetAdd; i++) {
+      final component = _factory()
+        ..isInComponentPool = true
+        ..poolReturnHook = _releaseFromTree;
       _available.add(component);
     }
   }
 
-  /// Clears all available components from the pool. This can be useful if you
-  /// want to free up memory or reset the pool state.
+  /// Acquires a component from the pool (or constructs a new one via the
+  /// factory when empty) with zero `Future` or closure allocations.
   ///
-  /// Note: This does not affect components that are currently in use.
+  /// Simply call [Component.removeFromParent] when done with the component (or
+  /// [release] if it was never added to a parent).
+  T acquire() {
+    final T component;
+    if (_available.isEmpty) {
+      component = _factory();
+    } else {
+      component = _available.removeLast()..isInComponentPool = false;
+    }
+    component.poolReturnHook = _releaseFromTree;
+    _inUseCount++;
+    if (component is RecyclableComponent) {
+      component.onAcquire();
+    }
+    return component;
+  }
+
+  /// Explicitly returns [component] to the pool.
+  ///
+  /// Useful when an acquired component is discarded before ever being added to
+  /// a parent; if [component] currently belongs to a parent, this delegates to
+  /// [Component.removeFromParent].
+  void release(T component) {
+    if (component.parent != null) {
+      component.removeFromParent();
+      return;
+    }
+    _releaseFromTree(component);
+  }
+
+  void _releaseFromTree(Component raw) {
+    if (raw.isInComponentPool) {
+      return;
+    }
+    final component = raw as T;
+    if (_inUseCount > 0) {
+      _inUseCount--;
+    }
+    if (component is RecyclableComponent) {
+      component.onRelease();
+    }
+    if (_available.length < maxSize) {
+      component.isInComponentPool = true;
+      _available.add(component);
+    }
+  }
+
+  /// Clears all idle components currently parked in the pool without affecting
+  /// components that are currently in use.
   void clear() {
+    for (final item in _available) {
+      item.isInComponentPool = false;
+    }
     _available.clear();
   }
 }

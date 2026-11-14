@@ -264,6 +264,96 @@ class Viewfinder({
   @internal
   void updateTransform() => onViewportResize();
 
+  // --- Non-Destructive Trauma Camera Shake ---
+
+  double _trauma = 0.0;
+  double _shakeTime = 0.0;
+  final Vector2 _shakeOffset = Vector2.zero();
+  double _shakeRoll = 0.0;
+
+  /// Rate (in trauma units per second) at which [trauma] linearly decays back
+  /// to `0.0`.
+  double traumaDecay = 1.8;
+
+  /// Maximum translational shake amplitude (in viewport virtual pixels) at
+  /// `trauma == 1.0`.
+  double maxShakeOffset = 14.0;
+
+  /// Maximum rotational roll shake amplitude (in radians) at `trauma == 1.0`.
+  double maxShakeRoll = 0.035;
+
+  /// Angular frequency multiplier driving the multi-harmonic trauma shake.
+  double shakeFrequency = 29.0;
+
+  /// Current normalized trauma level in `[0.0 .. 1.0]`.
+  ///
+  /// Shake amplitude scales quadratically (`trauma * trauma`) for natural
+  /// physical impact falloff without mutating [position], [angle], or
+  /// [visibleWorldRect].
+  double get trauma => _trauma;
+
+  /// Current transient render-only viewport offset produced by [trauma].
+  Vector2 get shakeOffset => _shakeOffset;
+
+  /// Current transient render-only roll angle (in radians) produced by
+  /// [trauma].
+  double get shakeRoll => _shakeRoll;
+
+  /// Whether a non-zero trauma shake offset or roll is currently active.
+  @internal
+  bool get hasActiveShake =>
+      _shakeOffset.x != 0.0 || _shakeOffset.y != 0.0 || _shakeRoll != 0.0;
+
+  /// Adds [amount] (`> 0`) to [trauma], clamped to `[0.0 .. 1.0]`, and wakes
+  /// per-frame updates if sleeping.
+  void addTrauma(double amount) {
+    if (amount <= 0.0) {
+      return;
+    }
+    _trauma = (_trauma + amount).clamp(0.0, 1.0);
+    wakeUpdates();
+    _recomputeShake();
+  }
+
+  /// Immediately resets [trauma], [shakeOffset], and [shakeRoll] to zero.
+  void clearTrauma() {
+    _trauma = 0.0;
+    _shakeTime = 0.0;
+    _shakeOffset.setZero();
+    _shakeRoll = 0.0;
+  }
+
+  void _recomputeShake() {
+    final intensity = _trauma * _trauma;
+    final p = _shakeTime * shakeFrequency;
+    final nx = sin(p + 0.7) * 0.65 + cos(p * 1.73 + 1.9) * 0.35;
+    final ny = cos(p * 1.31 + 2.3) * 0.65 + sin(p * 2.17 + 0.4) * 0.35;
+    final nr = sin(p * 1.13 + 1.1) * 0.70 + cos(p * 2.41 + 0.5) * 0.30;
+    _shakeOffset.setValues(
+      nx * maxShakeOffset * intensity,
+      ny * maxShakeOffset * intensity,
+    );
+    _shakeRoll = nr * maxShakeRoll * intensity;
+  }
+
+  @override
+  void update(double dt) {
+    super.update(dt);
+    if (_trauma > 0.0) {
+      _shakeTime += dt;
+      if (traumaDecay > 0.0 && dt > 0.0) {
+        _trauma = max(0.0, _trauma - traumaDecay * dt);
+      }
+      if (_trauma <= 0.0) {
+        _trauma = 0.0;
+        _shakeOffset.setZero();
+        _shakeRoll = 0.0;
+      } else {
+        _recomputeShake();
+      }
+    }
+  }
+
   /// [ScaleProvider]'s API.
   @internal
   @override

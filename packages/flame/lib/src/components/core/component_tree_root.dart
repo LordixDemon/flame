@@ -196,26 +196,36 @@ class ComponentTreeRoot({
   }
 
   /// Runs one deterministic fixed-step simulation pass of [fixedDt] seconds
-  /// across all active [HasFixedUpdate] components.
+  /// across all active [HasFixedUpdate] components, scaling `fixedDt` by any
+  /// [HasTimeScale] ancestors below this root and skipping subtrees paused at
+  /// `timeScale == 0`.
   @internal
   void runFixedUpdatePass(double fixedDt) {
     ensureFlatUpdateLists();
     for (final component in _fixedUpdateList) {
-      if (component.ticksEnabled && !_isPausedByTimeScaleAncestor(component)) {
-        component.fixedUpdate(fixedDt);
+      if (component.ticksEnabled) {
+        final scale = _subtreeTimeScaleBelowRoot(component);
+        if (scale > 0.0) {
+          component.fixedUpdate(fixedDt * scale);
+        }
       }
     }
   }
 
-  static bool _isPausedByTimeScaleAncestor(Component component) {
+  double _subtreeTimeScaleBelowRoot(Component component) {
+    var scale = 1.0;
     Component? cursor = component;
-    while (cursor != null) {
-      if (cursor is HasTimeScale && cursor.timeScale == 0.0) {
-        return true;
+    while (cursor != null && !identical(cursor, this)) {
+      if (cursor is HasTimeScale) {
+        final s = cursor.timeScale;
+        if (s <= 0.0) {
+          return 0.0;
+        }
+        scale *= s;
       }
       cursor = cursor._parent;
     }
-    return false;
+    return scale;
   }
 
   /// Updates every active component below this root using the flattened

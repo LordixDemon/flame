@@ -6,6 +6,7 @@ import 'package:flame/game.dart';
 import 'package:flame/input.dart';
 import 'package:flame/src/game/game_render_box.dart';
 import 'package:flame/src/game/game_widget/gesture_detector_builder.dart';
+import 'package:flame/src/game/overlay_manager.dart';
 import 'package:flame/src/game/widget_components.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -230,6 +231,12 @@ class GameWidgetState<T extends Game>() extends State<GameWidget<T>> {
   /// The number of `build()` functions currently executing.
   int _buildDepth = 0;
 
+  int _debugBuildCount = 0;
+
+  /// Number of times [GameWidgetState.build] has executed.
+  @visibleForTesting
+  int get debugBuildCount => _debugBuildCount;
+
   /// If true, then a fresh build will be scheduled after the current one
   /// completes. This should only be set to true when the [_buildDepth] is
   /// non-zero.
@@ -373,6 +380,7 @@ class GameWidgetState<T extends Game>() extends State<GameWidget<T>> {
 
   @override
   Widget build(BuildContext context) {
+    _debugBuildCount++;
     return _protectedBuild(() {
       Widget? internalGameWidget = RenderGameWidget(
         game: currentGame,
@@ -482,8 +490,10 @@ class GameWidgetState<T extends Game>() extends State<GameWidget<T>> {
   }
 
   void _addOverlays(BuildContext context, List<Widget> stackWidgets) {
-    stackWidgets.addAll(
-      currentGame.overlays.buildCurrentOverlayWidgets(context),
+    stackWidgets.add(
+      Positioned.fill(
+        child: OverlayHost(game: currentGame),
+      ),
     );
   }
 }

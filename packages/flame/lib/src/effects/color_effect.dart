@@ -21,6 +21,7 @@ class ColorEffect(
 }) extends ComponentEffect<HasPaint> {
   ColorFilter? _original;
   late final Tween<double> _tween;
+  double _lastAppliedAlpha = double.nan;
 
   this
     : assert(
@@ -35,21 +36,25 @@ class ColorEffect(
   @override
   Future<void> onMount() async {
     super.onMount();
-
+    _lastAppliedAlpha = double.nan;
     _original = target.getPaint(paintId).colorFilter;
   }
 
   @override
   void apply(double progress) {
-    final currentColor = color.withValues(
-      alpha: min(max(_tween.transform(progress), 0), 1),
-    );
+    final alpha = min(max(_tween.transform(progress), 0.0), 1.0);
+    if (alpha == _lastAppliedAlpha) {
+      return;
+    }
+    _lastAppliedAlpha = alpha;
+    final currentColor = color.withValues(alpha: alpha);
     target.tint(currentColor, paintId: paintId);
   }
 
   @override
   void reset() {
     super.reset();
+    _lastAppliedAlpha = double.nan;
     target.getPaint(paintId).colorFilter = _original;
   }
 }

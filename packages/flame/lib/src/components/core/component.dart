@@ -281,6 +281,33 @@ class Component({
   Completer<void>? _mountCompleter;
   Completer<void>? _removeCompleter;
 
+  /// Internal zero-allocation return callback registered by `ComponentPool`.
+  @internal
+  void Function(Component)? poolReturnHook;
+
+  /// Whether this component is currently parked inside a `ComponentPool`'s
+  /// available list.
+  @internal
+  bool isInComponentPool = false;
+
+  /// Cumulative `HasTimeScale.timeScale` across this component and all of its
+  /// ancestors (`1.0` when no `HasTimeScale` is present).
+  double get effectiveTimeScale {
+    var scale = 1.0;
+    Component? cursor = this;
+    while (cursor != null) {
+      if (cursor is HasTimeScale) {
+        final s = cursor.timeScale;
+        if (s <= 0.0) {
+          return 0.0;
+        }
+        scale *= s;
+      }
+      cursor = cursor._parent;
+    }
+    return scale;
+  }
+
   /// The error thrown by [onLoad], if it failed.
   ///
   /// This is kept around so that [loaded] can report the failure to whoever
@@ -1008,6 +1035,7 @@ class Component({
       } else if (!child.isRemoved) {
         root._dequeueAdd(child, this);
         child._parent = null;
+        child.poolReturnHook?.call(child);
       } else if (isRemoving) {
         // This parent is being removed from the tree, and the child was
         // already marked as removed during ancestor removal propagation.
@@ -1015,10 +1043,12 @@ class Component({
         // via removeAll(children) in onRemove), so detach it.
         children._remove(child);
         child._parent = null;
+        child.poolReturnHook?.call(child);
       }
     } else {
       _detachChild(child);
       child._parent = null;
+      child.poolReturnHook?.call(child);
     }
   }
 
@@ -1198,6 +1228,7 @@ class Component({
       // from the parent it never made it into.
       _parent = null;
       parent._children?._remove(this);
+      poolReturnHook?.call(this);
       return _LifecycleEventStatus.done;
     }
     if (parent.isMounted && isLoaded) {
@@ -1231,7 +1262,7 @@ class Component({
   _LifecycleEventStatus _handleLifecycleEventMove(Component newParent) {
     final parent = _parent;
     if (parent != null) {
-      _remove(parent);
+      _remove(parent, notifyPool: false);
     }
     if (newParent.isMounted) {
       _parent = newParent;
@@ -1433,6 +1464,7 @@ class Component({
       _parent = null;
       _clearRemovingBit();
       _setRemovedBit();
+      poolReturnHook?.call(this);
       return;
     }
     debugMode |= _parent!.debugMode;
@@ -1474,6 +1506,7 @@ class Component({
       for (final child in _tmpChildren) {
         child._parent = null;
         if (_tmpPendingRemoves.contains(child)) {
+          child.poolReturnHook?.call(child);
           continue;
         }
         _addChild(child);
@@ -1507,9 +1540,10 @@ class Component({
     _removeCompleter = null;
   }
 
-  void _remove(Component parent) {
+  void _remove(Component parent, {bool notifyPool = true}) {
     parent.children._remove(this);
-    for (final component in _collectDescendants()) {
+    final removedSubtree = _collectDescendants();
+    for (final component in removedSubtree) {
       component
         ..onRemove()
         .._unregisterKey()
@@ -1521,6 +1555,18 @@ class Component({
         .._parent!.onChildrenChanged(component, ChildrenChangeType.removed);
     }
     _parent = null;
+    if (notifyPool) {
+      for (final component in removedSubtree) {
+        final hook = component.poolReturnHook;
+        if (hook != null) {
+          if (!identical(component, this) && component._parent != null) {
+            component._parent!._children?._remove(component);
+            component._parent = null;
+          }
+          hook(component);
+        }
+      }
+    }
   }
 
   /// Collects this component and all its descendants into a list, in the

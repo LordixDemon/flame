@@ -102,6 +102,11 @@ mixin CullWhenOffscreen on PositionComponent {
   World? _world;
   bool _hasDirectWorldCoords = false;
 
+  /// Whether this component has no transforming ancestors between itself and
+  /// its owning [World].
+  @internal
+  bool get hasDirectWorldCoords => _hasDirectWorldCoords;
+
   bool _resolveDirectWorldCoords() {
     var cursor = parent;
     while (cursor != null) {

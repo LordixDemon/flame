@@ -16,12 +16,20 @@ import 'package:flame/src/rendering/decorator.dart';
 mixin HasDecorator on Component {
   Decorator? decorator;
 
+  /// Optional local-space bounds hint passed to [Decorator.applyChain] so
+  /// offscreen-layer decorators can use a tight bounded `Canvas.saveLayer`.
+  Rect? decoratorBounds;
+
   @override
   void renderTree(Canvas canvas) {
     if (decorator == null) {
       super.renderTree(canvas);
     } else {
-      decorator!.applyChain(super.renderTree, canvas);
+      decorator!.applyChain(
+        super.renderTree,
+        canvas,
+        bounds: decoratorBounds,
+      );
     }
   }
 }

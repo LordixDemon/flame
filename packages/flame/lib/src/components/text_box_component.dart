@@ -171,6 +171,7 @@ class TextBoxComponent<T extends TextRenderer>({
   @override
   @mustCallSuper
   void onMount() {
+    super.onMount();
     if (cache == null) {
       redraw();
     }
