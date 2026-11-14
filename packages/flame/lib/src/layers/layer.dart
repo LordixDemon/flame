@@ -46,8 +46,18 @@ abstract class Layer() {
   }
 
   void finishRendering() {
+    _picture?.dispose();
     _picture = _recorder?.endRecording();
 
+    _recorder = null;
+    _canvas = null;
+  }
+
+  /// Disposes the retained GPU [Picture] owned by this layer.
+  @mustCallSuper
+  void dispose() {
+    _picture?.dispose();
+    _picture = null;
     _recorder = null;
     _canvas = null;
   }

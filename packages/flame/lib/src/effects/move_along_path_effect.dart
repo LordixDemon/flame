@@ -28,6 +28,7 @@ class MoveAlongPathEffect(
   EffectController controller, {
   bool absolute = false,
   bool oriented = false,
+  PathMetric? pathMetric,
   PositionProvider? target,
   super.onComplete,
   super.key,
@@ -37,13 +38,17 @@ class MoveAlongPathEffect(
         controller,
         target,
       ) {
-    final metrics = path.computeMetrics().toList();
-    if (metrics.length != 1) {
-      throw ArgumentError(
-        'Only single-contour paths are allowed in MoveAlongPathEffect',
-      );
+    if (pathMetric != null) {
+      _pathMetric = pathMetric;
+    } else {
+      final metrics = path.computeMetrics().toList();
+      if (metrics.length != 1) {
+        throw ArgumentError(
+          'Only single-contour paths are allowed in MoveAlongPathEffect',
+        );
+      }
+      _pathMetric = metrics[0];
     }
-    _pathMetric = metrics[0];
     _pathLength = _pathMetric.length;
     assert(_pathLength > 0);
   }
@@ -68,14 +73,14 @@ class MoveAlongPathEffect(
   /// This is needed in order to make updates to `target.position` incremental
   /// (which in turn is necessary in order to allow multiple effects to be able
   /// to apply to the same target simultaneously).
-  late Vector2 _lastOffset;
+  final Vector2 _lastOffset = Vector2.zero();
 
   /// Target's angle of rotation on the previous iteration.
-  late double _lastAngle;
+  double _lastAngle = 0;
 
   @override
   void onStart() {
-    _lastOffset = Vector2.zero();
+    _lastOffset.setZero();
     _lastAngle = 0;
     final start = _pathMetric.getTangentForOffset(0)!;
     if (_followDirection) {

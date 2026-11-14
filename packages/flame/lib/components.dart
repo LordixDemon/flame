@@ -2,11 +2,15 @@
 library;
 
 export 'src/anchor.dart';
+export 'src/camera/behaviors/camera_billboard.dart'
+    show CameraBillboard, ViewportClampedPin;
 export 'src/camera/camera_component.dart' show CameraComponent;
 export 'src/camera/render_pass.dart' show MultiPassComponent, RenderPass;
 export 'src/camera/world.dart' show World;
 export 'src/collisions/has_collision_detection.dart';
 export 'src/collisions/hitboxes/screen_hitbox.dart';
+export 'src/components/batched_text_component.dart'
+    show BatchedTextComponent, GlyphBatchLayer;
 export 'src/components/clip_component.dart';
 export 'src/components/component_pool.dart';
 export 'src/components/components_notifier.dart';
@@ -34,6 +38,7 @@ export 'src/components/mixins/has_auto_batched_children.dart'
 export 'src/components/mixins/has_decorator.dart' show HasDecorator;
 export 'src/components/mixins/has_fixed_update.dart';
 export 'src/components/mixins/has_game_ref.dart';
+export 'src/components/mixins/has_listenable_subscriptions.dart';
 export 'src/components/mixins/has_paint.dart';
 export 'src/components/mixins/has_time_scale.dart';
 export 'src/components/mixins/has_visibility.dart';
@@ -62,6 +67,7 @@ export 'src/components/sprite_group_component.dart';
 export 'src/components/text_box_component.dart';
 export 'src/components/text_component.dart';
 export 'src/components/text_element_component.dart';
+export 'src/components/timeline_component.dart';
 export 'src/components/timer_component.dart';
 export 'src/components/widget_component.dart';
 export 'src/extensions/vector2.dart';

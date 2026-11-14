@@ -1,6 +1,7 @@
 export 'src/effects/anchor_by_effect.dart' show AnchorByEffect;
 export 'src/effects/anchor_effect.dart' show AnchorEffect;
 export 'src/effects/anchor_to_effect.dart' show AnchorToEffect;
+export 'src/effects/arc_move_effect.dart' show ArcMoveEffect, ElevationTarget;
 export 'src/effects/color_effect.dart';
 export 'src/effects/combined_effect.dart';
 export 'src/effects/component_effect.dart';
@@ -57,3 +58,4 @@ export 'src/effects/sequence_effect.dart' show SequenceEffect;
 export 'src/effects/size_effect.dart';
 export 'src/effects/transform2d_effect.dart';
 export 'src/effects/warp_effect.dart';
+export 'src/effects/waypoint_path_effect.dart' show WaypointPathEffect;

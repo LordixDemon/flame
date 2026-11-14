@@ -10,3 +10,4 @@ export 'src/canvas3d/mesh_3d.dart';
 export 'src/canvas3d/particle_pool_3d.dart';
 export 'src/canvas3d/raycast_3d.dart';
 export 'src/canvas3d/spatial_hit_testing_3d.dart';
+export 'src/canvas3d/static_mesh_chunk_3d.dart';

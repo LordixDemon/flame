@@ -50,6 +50,16 @@ class ParticleBuffer(
   /// The current color as a 32-bit ARGB value.
   final Int32List color = Int32List(capacity);
 
+  /// Deterministic per-particle variant seed (`0..65535`) assigned at spawn,
+  /// used by `VariantSpriteParticleRenderer` and `FlipbookParticleRenderer`.
+  final Uint16List variant = Uint16List(capacity);
+
+  /// Anisotropic elongation factor along the velocity axis (`1.0` = uniform).
+  final Float32List stretch = Float32List(capacity);
+
+  /// Whether any live particle currently has `stretch > 1.001`.
+  bool hasStretch = false;
+
   int _length = 0;
 
   /// The number of currently live particles.
@@ -87,9 +97,14 @@ class ParticleBuffer(
       rotation[index] = rotation[last];
       spin[index] = spin[last];
       color[index] = color[last];
+      variant[index] = variant[last];
+      stretch[index] = stretch[last];
     }
   }
 
   /// Removes all live particles.
-  void clear() => _length = 0;
+  void clear() {
+    _length = 0;
+    hasStretch = false;
+  }
 }

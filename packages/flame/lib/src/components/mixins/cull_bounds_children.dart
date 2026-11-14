@@ -53,7 +53,7 @@ mixin CullBoundsChildren on CullWhenOffscreen {
   int _cachedChildrenCount = -1;
   int _unionRecomputeCount = 0;
 
-  /// Number of times the union bounds across [cullBoundsChildren] was
+  /// Number of times the union bounds box across [cullBoundsChildren] was
   /// recomputed.
   @visibleForTesting
   int get cullUnionRecomputeCount => _unionRecomputeCount;

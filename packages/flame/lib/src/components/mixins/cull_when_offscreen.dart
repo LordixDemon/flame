@@ -102,7 +102,7 @@ mixin CullWhenOffscreen on PositionComponent {
   World? _world;
   bool _hasDirectWorldCoords = false;
 
-  /// Whether this component has no transforming ancestors between itself and
+  /// Whether this component has zero transforming ancestors between itself and
   /// its owning [World].
   @internal
   bool get hasDirectWorldCoords => _hasDirectWorldCoords;

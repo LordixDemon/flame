@@ -60,10 +60,15 @@ class CameraRig3D({
   double _viewX = 0.6123724356957945;
   double _viewY = 0.6123724356957945;
   double _viewZ = 0.5;
+  int _basisVersion = 0;
 
   this {
     _recomputeBasis();
   }
+
+  /// Monotonically increasing counter incremented whenever the 3D camera
+  /// azimuth or elevation basis vectors change.
+  int get basisVersion => _basisVersion;
 
   /// Scene-to-camera unit vector `(viewX, viewY, viewZ)`.
   double get viewX => _viewX;
@@ -125,6 +130,7 @@ class CameraRig3D({
     _viewX = ca * cp;
     _viewY = sa * cp;
     _viewZ = sp;
+    _basisVersion++;
   }
 
   /// Projects ground grid coordinates `(gx, gy)` (`z = 0`) to 2D world pixels.

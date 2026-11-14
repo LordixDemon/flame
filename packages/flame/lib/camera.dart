@@ -1,10 +1,18 @@
 export 'src/camera/behaviors/bounded_position_behavior.dart'
     show BoundedPositionBehavior;
+export 'src/camera/behaviors/camera_billboard.dart'
+    show CameraBillboard, ViewportClampedPin;
 export 'src/camera/behaviors/follow_behavior.dart' show FollowBehavior;
 export 'src/camera/behaviors/tactile_camera_controller.dart'
     show TactileCameraController;
 export 'src/camera/camera_component.dart' show CameraComponent;
 export 'src/camera/render_pass.dart' show MultiPassComponent, RenderPass;
+export 'src/camera/scene_transition.dart'
+    show
+        CircularRevealSceneTransition,
+        CrossFadeSceneTransition,
+        SceneTransition,
+        ShaderSceneTransition;
 export 'src/camera/viewfinder.dart' show Viewfinder;
 export 'src/camera/viewport.dart' show Viewport;
 export 'src/camera/viewports/circular_viewport.dart' show CircularViewport;

@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flame/src/particles/particle_buffer.dart';
+import 'package:meta/meta.dart';
 
 /// Draws the live particles of an emitter component.
 ///
@@ -13,6 +14,9 @@ abstract class ParticleRenderer() {
   /// Called once when the owning component loads. Override to prepare
   /// textures or other resources.
   FutureOr<void> onLoad() {}
+
+  /// Releases any private native resources owned exclusively by this renderer.
+  void dispose() {}
 
   /// Renders all live particles in [particles]. The canvas is already
   /// transformed to the emitter component's local coordinate system.
@@ -36,14 +40,9 @@ class CallbackParticleRenderer(
 }
 
 /// Base class for renderers that draw every particle as a transformed,
-/// tinted copy of a single texture region, batched into one
-/// [Canvas.drawRawAtlas] call.
-///
-/// Each particle is drawn centered on its position, rotated by its rotation,
-/// and uniformly scaled so the texture region's width matches the particle's
-/// current size. The particle's color tints the texture through
-/// [BlendMode.modulate], so white texture pixels take on the particle color
-/// exactly.
+/// tinted copy of a texture region, batched into one [Canvas.drawRawAtlas]
+/// call (or one [Canvas.drawVertices] call when anisotropic velocity stretch
+/// is active).
 abstract class TextureParticleRenderer({BlendMode? blendMode, Paint? paint})
     extends ParticleRenderer {
   /// Creates a texture renderer.
@@ -63,11 +62,116 @@ abstract class TextureParticleRenderer({BlendMode? blendMode, Paint? paint})
   /// The texture to draw, or null while the renderer has not loaded yet.
   Image? get texture;
 
-  /// The region of [texture] to draw, in texture pixels.
+  /// Default region of [texture] to draw, in texture pixels.
   Rect get srcRect;
+
+  /// Whether subclasses select a distinct source rectangle per particle via
+  /// [frameRectForParticle] (e.g. flipbooks or random sprite variants).
+  bool get hasPerParticleRects => false;
+
+  /// Returns the texture region for particle [index] when
+  /// [hasPerParticleRects] is `true`.
+  Rect frameRectForParticle(ParticleBuffer particles, int index) => srcRect;
 
   Float32List _transforms = Float32List(0);
   Float32List _rects = Float32List(0);
+
+  Float32List _quadPositions = Float32List(0);
+  Float32List _quadUvs = Float32List(0);
+  Int32List _quadColors = Int32List(0);
+  Uint16List _quadIndices = Uint16List(0);
+  Image? _cachedShaderTexture;
+  ImageShader? _cachedImageShader;
+
+  @override
+  void dispose() {
+    _cachedImageShader?.dispose();
+    _cachedImageShader = null;
+    _cachedShaderTexture = null;
+    super.dispose();
+  }
+
+  /// Whether this renderer can merge its particles into a shared
+  /// `ParticleBatchGroup` `drawRawAtlas` call.
+  @internal
+  bool canBatchInAtlas(ParticleBuffer particles) =>
+      texture != null &&
+      !particles.hasStretch &&
+      paint.colorFilter == null &&
+      paint.imageFilter == null &&
+      paint.shader == null;
+
+  /// Appends [particles] transformed by `(offsetX, offsetY, cosA, sinA)` into
+  /// the caller's shared `drawRawAtlas` buffers starting at particle slot
+  /// [startSlot], returning the updated slot count.
+  @internal
+  int appendToSharedAtlas({
+    required ParticleBuffer particles,
+    required Float32List outTransforms,
+    required Float32List outRects,
+    required Int32List outColors,
+    required int startSlot,
+    required double offsetX,
+    required double offsetY,
+    required double cosA,
+    required double sinA,
+    required double uniformScale,
+  }) {
+    final count = particles.length;
+    if (count == 0) {
+      return startSlot;
+    }
+    final perParticle = hasPerParticleRects;
+    final defaultSrc = srcRect;
+    final defaultAnchorX = defaultSrc.width * 0.5;
+    final defaultAnchorY = defaultSrc.height * 0.5;
+    final defaultInvW = defaultSrc.width > 0 ? 1.0 / defaultSrc.width : 1.0;
+
+    for (var i = 0; i < count; i++) {
+      final slot = startSlot + i;
+      final j = slot * 4;
+      final Rect src;
+      final double anchorX;
+      final double anchorY;
+      final double invW;
+      if (perParticle) {
+        src = frameRectForParticle(particles, i);
+        anchorX = src.width * 0.5;
+        anchorY = src.height * 0.5;
+        invW = src.width > 0 ? 1.0 / src.width : 1.0;
+      } else {
+        src = defaultSrc;
+        anchorX = defaultAnchorX;
+        anchorY = defaultAnchorY;
+        invW = defaultInvW;
+      }
+
+      final lx = particles.posX[i];
+      final ly = particles.posY[i];
+      final wx = offsetX + (lx * cosA - ly * sinA) * uniformScale;
+      final wy = offsetY + (lx * sinA + ly * cosA) * uniformScale;
+
+      final scale = particles.size[i] * uniformScale * invW;
+      final rot = particles.rotation[i];
+      final cR = cos(rot);
+      final sR = sin(rot);
+      // Combined rotation: emitter angle + particle rotation
+      final scos = (cR * cosA - sR * sinA) * scale;
+      final ssin = (sR * cosA + cR * sinA) * scale;
+
+      outTransforms[j] = scos;
+      outTransforms[j + 1] = ssin;
+      outTransforms[j + 2] = wx - scos * anchorX + ssin * anchorY;
+      outTransforms[j + 3] = wy - ssin * anchorX - scos * anchorY;
+
+      outRects[j] = src.left;
+      outRects[j + 1] = src.top;
+      outRects[j + 2] = src.right;
+      outRects[j + 3] = src.bottom;
+      outColors[slot] = particles.color[i];
+    }
+    return startSlot + count;
+  }
 
   @override
   void render(Canvas canvas, ParticleBuffer particles) {
@@ -76,15 +180,36 @@ abstract class TextureParticleRenderer({BlendMode? blendMode, Paint? paint})
     if (texture == null || count == 0) {
       return;
     }
+    if (particles.hasStretch) {
+      _renderStretchedVertices(canvas, texture, particles, count);
+      return;
+    }
     if (_transforms.length < count * 4) {
       _transforms = Float32List(particles.capacity * 4);
       _rects = Float32List(particles.capacity * 4);
     }
-    final src = srcRect;
-    final anchorX = src.width / 2;
-    final anchorY = src.height / 2;
-    final invWidth = 1 / src.width;
+    final perParticle = hasPerParticleRects;
+    final defaultSrc = srcRect;
+    final defaultAnchorX = defaultSrc.width / 2;
+    final defaultAnchorY = defaultSrc.height / 2;
+    final defaultInvWidth = defaultSrc.width > 0 ? 1 / defaultSrc.width : 1.0;
+
     for (var i = 0; i < count; i++) {
+      final Rect src;
+      final double anchorX;
+      final double anchorY;
+      final double invWidth;
+      if (perParticle) {
+        src = frameRectForParticle(particles, i);
+        anchorX = src.width / 2;
+        anchorY = src.height / 2;
+        invWidth = src.width > 0 ? 1 / src.width : 1.0;
+      } else {
+        src = defaultSrc;
+        anchorX = defaultAnchorX;
+        anchorY = defaultAnchorY;
+        invWidth = defaultInvWidth;
+      }
       final scale = particles.size[i] * invWidth;
       final rotation = particles.rotation[i];
       final scos = cos(rotation) * scale;
@@ -108,5 +233,112 @@ abstract class TextureParticleRenderer({BlendMode? blendMode, Paint? paint})
       null,
       paint,
     );
+  }
+
+  void _renderStretchedVertices(
+    Canvas canvas,
+    Image texture,
+    ParticleBuffer particles,
+    int count,
+  ) {
+    final safeCount = min(count, 16383);
+    final vertCap = max(particles.capacity, safeCount) * 4;
+    if (_quadPositions.length < vertCap * 2) {
+      _quadPositions = Float32List(vertCap * 2);
+      _quadUvs = Float32List(vertCap * 2);
+      _quadColors = Int32List(vertCap);
+      final maxQuads = vertCap ~/ 4;
+      _quadIndices = Uint16List(maxQuads * 6);
+      for (var q = 0; q < maxQuads; q++) {
+        final b = q * 4;
+        final k = q * 6;
+        _quadIndices[k] = b;
+        _quadIndices[k + 1] = b + 1;
+        _quadIndices[k + 2] = b + 2;
+        _quadIndices[k + 3] = b;
+        _quadIndices[k + 4] = b + 2;
+        _quadIndices[k + 5] = b + 3;
+      }
+    }
+
+    final perParticle = hasPerParticleRects;
+    final defaultSrc = srcRect;
+
+    for (var i = 0; i < safeCount; i++) {
+      final src = perParticle ? frameRectForParticle(particles, i) : defaultSrc;
+      final halfH = particles.size[i] * 0.5;
+      final stretch = max(1.0, particles.stretch[i]);
+      final halfW =
+          halfH * (src.height > 0 ? src.width / src.height : 1.0) * stretch;
+      final rot = particles.rotation[i];
+      final c = cos(rot);
+      final s = sin(rot);
+      final px = particles.posX[i];
+      final py = particles.posY[i];
+
+      final ux = c * halfW;
+      final uy = s * halfW;
+      final vx = -s * halfH;
+      final vy = c * halfH;
+
+      final pBase = i * 8;
+      _quadPositions[pBase] = px - ux - vx;
+      _quadPositions[pBase + 1] = py - uy - vy;
+      _quadPositions[pBase + 2] = px + ux - vx;
+      _quadPositions[pBase + 3] = py + uy - vy;
+      _quadPositions[pBase + 4] = px + ux + vx;
+      _quadPositions[pBase + 5] = py + uy + vy;
+      _quadPositions[pBase + 6] = px - ux + vx;
+      _quadPositions[pBase + 7] = py - uy + vy;
+
+      _quadUvs[pBase] = src.left;
+      _quadUvs[pBase + 1] = src.top;
+      _quadUvs[pBase + 2] = src.right;
+      _quadUvs[pBase + 3] = src.top;
+      _quadUvs[pBase + 4] = src.right;
+      _quadUvs[pBase + 5] = src.bottom;
+      _quadUvs[pBase + 6] = src.left;
+      _quadUvs[pBase + 7] = src.bottom;
+
+      final col = particles.color[i];
+      final cBase = i * 4;
+      _quadColors[cBase] = col;
+      _quadColors[cBase + 1] = col;
+      _quadColors[cBase + 2] = col;
+      _quadColors[cBase + 3] = col;
+    }
+
+    if (!identical(_cachedShaderTexture, texture) ||
+        _cachedImageShader == null) {
+      _cachedImageShader?.dispose();
+      _cachedShaderTexture = texture;
+      _cachedImageShader = ImageShader(
+        texture,
+        TileMode.clamp,
+        TileMode.clamp,
+        Float64List.fromList(const <double>[
+          1, 0, 0, 0, //
+          0, 1, 0, 0, //
+          0, 0, 1, 0, //
+          0, 0, 0, 1, //
+        ]),
+      );
+    }
+
+    final savedShader = paint.shader;
+    paint.shader = _cachedImageShader;
+    final vertices = Vertices.raw(
+      VertexMode.triangles,
+      Float32List.sublistView(_quadPositions, 0, safeCount * 8),
+      textureCoordinates: Float32List.sublistView(_quadUvs, 0, safeCount * 8),
+      colors: Int32List.sublistView(_quadColors, 0, safeCount * 4),
+      indices: Uint16List.sublistView(_quadIndices, 0, safeCount * 6),
+    );
+    try {
+      canvas.drawVertices(vertices, BlendMode.modulate, paint);
+    } finally {
+      vertices.dispose();
+      paint.shader = savedShader;
+    }
   }
 }

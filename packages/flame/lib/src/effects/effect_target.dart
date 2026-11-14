@@ -1,4 +1,5 @@
 import 'package:flame/src/effects/effect.dart';
+import 'package:meta/meta.dart';
 
 /// Mixin adds field [target] of type [T] to an [Effect]. The target can be
 /// either set explicitly by the effect class, or acquired automatically from
@@ -11,6 +12,17 @@ mixin EffectTarget<T> on Effect {
   T? _target;
   set target(T? value) {
     _target = value;
+  }
+
+  /// Binds [candidate] as [target] if no explicit target was provided yet.
+  @internal
+  void bindTargetIfUnset(Object candidate) {
+    if (_target == null) {
+      if (candidate is! T) {
+        throw UnsupportedError('Can only apply this effect to $T');
+      }
+      _target = candidate as T;
+    }
   }
 
   @override

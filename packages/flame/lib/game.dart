@@ -21,6 +21,7 @@ export 'src/game/mixins/single_game_instance.dart';
 export 'src/game/notifying_vector2.dart';
 export 'src/game/overlay_manager.dart'
     show OverlayBuilderFunction, OverlayManager, OverlayTransitionBuilder;
+export 'src/game/render_warmup_queue.dart' show RenderWarmupQueue;
 export 'src/game/telemetry_canvas.dart';
 export 'src/game/transform2d.dart';
 export 'src/text/renderers/text_paint.dart';

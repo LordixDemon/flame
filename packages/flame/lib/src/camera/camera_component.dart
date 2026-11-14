@@ -8,6 +8,7 @@ import 'package:flame/post_process.dart';
 import 'package:flame/src/camera/behaviors/bounded_position_behavior.dart';
 import 'package:flame/src/camera/behaviors/follow_behavior.dart';
 import 'package:flame/src/camera/behaviors/viewport_aware_bounds_behavior.dart';
+import 'package:flame/src/camera/scene_transition.dart';
 import 'package:flame/src/camera/viewfinder.dart';
 import 'package:flame/src/camera/viewport.dart';
 import 'package:flame/src/camera/viewports/fixed_resolution_viewport.dart';
@@ -221,8 +222,18 @@ class CameraComponent({
         currentCameras.removeLast();
       }
       canvas.restore();
+      if (_activeTransition != null &&
+          _transitionSnapshot != null &&
+          !_activeTransition!.aboveViewportHud) {
+        _renderActiveTransition(canvas);
+      }
       // Render the viewport elements, which will be in front of the world.
       viewport.renderTree(canvas);
+      if (_activeTransition != null &&
+          _transitionSnapshot != null &&
+          _activeTransition!.aboveViewportHud) {
+        _renderActiveTransition(canvas);
+      }
       canvas.restore();
     }
     canvas.restore();
@@ -972,6 +983,131 @@ class CameraComponent({
     } finally {
       recorded.picture.dispose();
     }
+  }
+
+  SceneTransition? _activeTransition;
+  ui.Image? _transitionSnapshot;
+  double _transitionElapsed = 0.0;
+  Completer<void>? _transitionCompleter;
+
+  /// Whether a visual [SceneTransition] is currently active on this camera.
+  bool get hasActiveSceneTransition => _activeTransition != null;
+
+  /// Normalized `[0.0 .. 1.0]` curved progress of the active [SceneTransition],
+  /// or `1.0` when no transition is running.
+  double get sceneTransitionProgress {
+    final active = _activeTransition;
+    if (active == null || active.duration <= 0) {
+      return 1.0;
+    }
+    final raw = (_transitionElapsed / active.duration).clamp(0.0, 1.0);
+    return active.curve.transform(raw).clamp(0.0, 1.0);
+  }
+
+  /// Captures the camera's current view synchronously into an offscreen
+  /// [ui.Image] and plays [transition] over the live incoming scene for
+  /// `transition.duration` seconds, deterministically disposing the GPU image
+  /// when finished or cancelled.
+  ///
+  /// Call this immediately *before* mutating world state (e.g. changing biomes,
+  /// swapping levels, or teleporting the camera) to get a seamless visual
+  /// cross-fade/iris/shader transition without `saveLayer` overhead.
+  Future<void> startSceneTransition(
+    SceneTransition transition,
+  ) {
+    cancelSceneTransition();
+    if (transition.duration <= 0 || !(world?.isMounted ?? false)) {
+      return Future<void>.value();
+    }
+    final vSize = viewport.virtualSize;
+    final fSize = viewport.size;
+    if (vSize.x <= 0 && fSize.x <= 0) {
+      return Future<void>.value();
+    }
+    _transitionSnapshot = renderToImageSync(
+      pixelRatio: transition.capturePixelRatio,
+      includeViewport: transition.aboveViewportHud,
+    );
+    _activeTransition = transition;
+    _transitionElapsed = 0.0;
+    final completer = Completer<void>();
+    _transitionCompleter = completer;
+    findGame()?.notifyActivity();
+    return completer.future;
+  }
+
+  /// Captures the outgoing world view, switches to [nextWorld], and plays
+  /// [transition] smoothly across `transition.duration` seconds.
+  Future<void> transitionToWorld(
+    World nextWorld, {
+    SceneTransition transition = const CrossFadeSceneTransition(),
+  }) {
+    final future = startSceneTransition(transition);
+    final game = findGame();
+    if (game is FlameGame && identical(game.camera, this)) {
+      game.world = nextWorld;
+    } else {
+      world?.removeFromParent();
+      world = nextWorld;
+      if (nextWorld.parent == null && parent != null) {
+        parent!.add(nextWorld);
+      }
+    }
+    return future;
+  }
+
+  /// Cancels any active [SceneTransition] and immediately disposes its retained
+  /// snapshot [ui.Image].
+  void cancelSceneTransition() {
+    _transitionSnapshot?.dispose();
+    _transitionSnapshot = null;
+    _activeTransition = null;
+    _transitionElapsed = 0.0;
+    final c = _transitionCompleter;
+    _transitionCompleter = null;
+    if (c != null && !c.isCompleted) {
+      c.complete();
+    }
+  }
+
+  void _renderActiveTransition(ui.Canvas canvas) {
+    final transition = _activeTransition;
+    final snapshot = _transitionSnapshot;
+    if (transition == null || snapshot == null) {
+      return;
+    }
+    final vSize = viewport.virtualSize;
+    final fSize = viewport.size;
+    final w = vSize.x > 0 ? vSize.x : fSize.x;
+    final h = vSize.y > 0 ? vSize.y : fSize.y;
+    if (w <= 0 || h <= 0) {
+      return;
+    }
+    transition.renderTransition(
+      canvas,
+      snapshot,
+      ui.Rect.fromLTWH(0, 0, w, h),
+      sceneTransitionProgress,
+    );
+  }
+
+  @override
+  void update(double dt) {
+    super.update(dt);
+    final active = _activeTransition;
+    if (active != null) {
+      _transitionElapsed += dt;
+      findGame()?.notifyActivity();
+      if (_transitionElapsed >= active.duration) {
+        cancelSceneTransition();
+      }
+    }
+  }
+
+  @override
+  void onRemove() {
+    cancelSceneTransition();
+    super.onRemove();
   }
 }
 

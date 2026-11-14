@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 import 'package:flame/src/canvas3d/camera_rig_3d.dart';
 import 'package:flame/src/canvas3d/matcap_shader_3d.dart';
 import 'package:flame/src/canvas3d/mesh_3d.dart';
+import 'package:flame/src/canvas3d/static_mesh_chunk_3d.dart';
 import 'package:flutter/painting.dart';
 
 /// Hemisphere + directional sun lighting configuration for
@@ -45,6 +46,23 @@ class DirectionalLight3D({
       _ly = y / len;
       _lz = z / len;
     }
+  }
+
+  /// Computes a fast 31-bit state signature across light direction, colors, and
+  /// intensities so [StaticMeshChunk3D] automatically invalidates on lighting
+  /// changes.
+  int computeSignature() {
+    var h = 17;
+    h = 0x1fffffff & (h * 31 + (_lx * 10000).round());
+    h = 0x1fffffff & (h * 31 + (_ly * 10000).round());
+    h = 0x1fffffff & (h * 31 + (_lz * 10000).round());
+    h = 0x1fffffff & (h * 31 + sunColor.toARGB32());
+    h = 0x1fffffff & (h * 31 + skyColor.toARGB32());
+    h = 0x1fffffff & (h * 31 + groundColor.toARGB32());
+    h = 0x1fffffff & (h * 31 + (ambientIntensity * 1000).round());
+    h = 0x1fffffff & (h * 31 + (diffuseIntensity * 1000).round());
+    h = 0x1fffffff & (h * 31 + (rimIntensity * 1000).round());
+    return h;
   }
 }
 
@@ -199,6 +217,8 @@ class BatchMeshRenderer3D({
     Color tint = const Color(0xFFFFFFFF),
     double opacity = 1.0,
     double emissive = 0.0,
+    Color? rimColor,
+    double rimHighlightIntensity = 0.0,
     bool castGroundShadow = false,
     double groundZ = 0.0,
     Color shadowColor = const Color(0xFF16131F),
@@ -308,7 +328,11 @@ class BatchMeshRenderer3D({
       final ambB = (gndB + (skyB - gndB) * hemiMix) * ambInt;
 
       final nDotL = math.max(0.0, wnx * lx + wny * ly + wnz * lz);
-      final rim = math.pow(1.0 - vz.clamp(0.0, 1.0), 2.2) * rimInt;
+      final clampedVz = vz.clamp(0.0, 1.0);
+      final rim = math.pow(1.0 - clampedVz, 2.2) * rimInt;
+      final fresnel = (rimColor != null && rimHighlightIntensity > 0.0)
+          ? (1.0 - clampedVz) * (1.0 - clampedVz) * rimHighlightIntensity
+          : 0.0;
       final ao = aoList != null ? aoList[v] : 1.0;
 
       var baseR = tintR;
@@ -323,14 +347,24 @@ class BatchMeshRenderer3D({
         baseB *= (vc & 0xFF) / 255.0;
       }
 
+      final addRimR = fresnel > 0.0 ? rimColor!.r * fresnel : 0.0;
+      final addRimG = fresnel > 0.0 ? rimColor!.g * fresnel : 0.0;
+      final addRimB = fresnel > 0.0 ? rimColor!.b * fresnel : 0.0;
+
       final lr =
-          (baseR * (ambR * ao + sunR * nDotL * difInt + emissive) + rim * skyR)
+          (baseR * (ambR * ao + sunR * nDotL * difInt + emissive) +
+                  rim * skyR +
+                  addRimR)
               .clamp(0.0, 1.0);
       final lg =
-          (baseG * (ambG * ao + sunG * nDotL * difInt + emissive) + rim * skyG)
+          (baseG * (ambG * ao + sunG * nDotL * difInt + emissive) +
+                  rim * skyG +
+                  addRimG)
               .clamp(0.0, 1.0);
       final lb =
-          (baseB * (ambB * ao + sunB * nDotL * difInt + emissive) + rim * skyB)
+          (baseB * (ambB * ao + sunB * nDotL * difInt + emissive) +
+                  rim * skyB +
+                  addRimB)
               .clamp(0.0, 1.0);
 
       final outSlot = baseVertex + v;
@@ -426,6 +460,75 @@ class BatchMeshRenderer3D({
         _shadowColors[cOut + 2] = shadowArgb;
         _shadowTriCount++;
       }
+    }
+  }
+
+  /// Appends a pre-baked [StaticMeshChunk3D] into the active batch using fast
+  /// typed-array range copies, participating seamlessly in global depth sorting
+  /// alongside dynamic [enqueueMesh] calls.
+  void enqueueStaticChunk(
+    StaticMeshChunk3D chunk, {
+    required CameraRig3D camera,
+    Offset canvasOrigin = Offset.zero,
+  }) {
+    chunk.prepare(
+      camera: camera,
+      light: light,
+      canvasOrigin: canvasOrigin,
+      backfaceCulling: backfaceCulling,
+    );
+    final vCount = chunk.vertexCount;
+    final tCount = chunk.visibleTriCount;
+    if (vCount == 0 || tCount == 0) {
+      return;
+    }
+    _enqueuedMeshes += chunk.instanceCount;
+
+    final baseVertex = _vertCount;
+    _ensureVertexCapacity(baseVertex + vCount);
+    final (uBuf, vBuf, colBuf, shTris) = chunk.internalBuffers();
+
+    _vertX.setRange(baseVertex, baseVertex + vCount, chunk.projectedVertX);
+    _vertY.setRange(baseVertex, baseVertex + vCount, chunk.projectedVertY);
+    _vertDepth.setRange(
+      baseVertex,
+      baseVertex + vCount,
+      chunk.projectedVertDepth,
+    );
+    _vertU.setRange(baseVertex, baseVertex + vCount, uBuf);
+    _vertV.setRange(baseVertex, baseVertex + vCount, vBuf);
+    _vertColor.setRange(baseVertex, baseVertex + vCount, colBuf);
+    _vertCount += vCount;
+
+    final baseTri = _triCount;
+    _ensureTriangleCapacity(baseTri + tCount);
+    final visA = chunk.visibleTriA;
+    final visB = chunk.visibleTriB;
+    final visC = chunk.visibleTriC;
+    final visD = chunk.visibleTriDepth;
+    for (var t = 0; t < tCount; t++) {
+      final slot = baseTri + t;
+      _triV0[slot] = baseVertex + visA[t];
+      _triV1[slot] = baseVertex + visB[t];
+      _triV2[slot] = baseVertex + visC[t];
+      _triDepth[slot] = visD[t];
+      _triOrder[slot] = slot;
+    }
+    _triCount += tCount;
+
+    if (shTris > 0) {
+      _ensureShadowCapacity(_shadowTriCount + shTris);
+      _shadowPositions.setRange(
+        _shadowTriCount * 6,
+        (_shadowTriCount + shTris) * 6,
+        chunk.projectedShadowPositions,
+      );
+      _shadowColors.setRange(
+        _shadowTriCount * 3,
+        (_shadowTriCount + shTris) * 3,
+        chunk.projectedShadowColors,
+      );
+      _shadowTriCount += shTris;
     }
   }
 

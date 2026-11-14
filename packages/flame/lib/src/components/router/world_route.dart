@@ -1,13 +1,17 @@
+import 'dart:async';
+
 import 'package:flame/camera.dart';
 import 'package:flame/game.dart';
 import 'package:flame/rendering.dart';
 import 'package:meta/meta.dart';
 
 /// [WorldRoute] is a class that allows setting the world that a camera is
-/// looking at.
+/// looking at, with optional GPU snapshot [transition] and [Decorator] render
+/// effects.
 class WorldRoute(
   final World Function() builder, {
   final CameraComponent? camera,
+  final SceneTransition? transition,
   super.maintainState,
 }) extends Route {
   /// A world route that uses the specified [builder]. This builder will be
@@ -15,14 +19,16 @@ class WorldRoute(
   /// first activated.
   ///
   /// The [camera] parameter is optional and can be used to set the camera
-  /// that will be used to render the world, if not provided the default camera
-  /// will be used.
+  /// that will be used to render the world; if not provided, the default camera
+  /// on [FlameGame] will be used.
   this : super(null);
 
   late World? _previousWorld;
   World? world;
 
   Game get game => findGame()!;
+
+  CameraComponent get _targetCamera => camera ?? (game as FlameGame).camera;
 
   @override
   String get name => super.name!;
@@ -49,18 +55,27 @@ class WorldRoute(
       'You need to either provide a camera or use a FlameGame to use the '
       'WorldRoute',
     );
+    final nextWorld = build();
+    final activeTransition = transition;
+    if (activeTransition != null) {
+      unawaited(_targetCamera.startSceneTransition(activeTransition));
+    }
     if (camera != null) {
       _previousWorld = camera?.world;
-      camera?.world = build();
+      camera?.world = nextWorld;
     } else {
       _previousWorld = (game as FlameGame).world;
-      (game as FlameGame).world = build();
+      (game as FlameGame).world = nextWorld;
     }
   }
 
   @mustCallSuper
   @override
   void onPop(Route nextRoute) {
+    final activeTransition = transition;
+    if (activeTransition != null) {
+      unawaited(_targetCamera.startSceneTransition(activeTransition));
+    }
     if (camera != null) {
       camera?.world = _previousWorld;
     } else {
@@ -69,14 +84,12 @@ class WorldRoute(
   }
 
   @override
-  @internal
-  void addRenderEffect(Decorator effect) => UnimplementedError(
-    'WorldRoute does not support render effects',
-  );
+  void addRenderEffect(Decorator effect) {
+    (world ?? build()).decorator.addLast(effect);
+  }
 
   @override
-  @internal
-  void removeRenderEffect() => UnimplementedError(
-    'WorldRoute does not support render effects',
-  );
+  void removeRenderEffect() {
+    world?.decorator.removeLast();
+  }
 }

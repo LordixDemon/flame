@@ -4,6 +4,7 @@ import 'package:flame/src/camera/camera_component.dart';
 import 'package:flame/src/camera/render_pass.dart';
 import 'package:flame/src/components/core/component.dart';
 import 'package:flame/src/components/mixins/coordinate_transform.dart';
+import 'package:flame/src/rendering/decorator.dart';
 import 'package:vector_math/vector_math.dart';
 
 /// The root component for all game world elements.
@@ -20,6 +21,10 @@ class World({
   super.priority = -0x7fffffff,
   super.key,
 }) extends Component implements CoordinateTransform {
+  /// Optional decorator chain applied when this world is rendered through a
+  /// [CameraComponent] (also used by `WorldRoute.addRenderEffect`).
+  final Decorator decorator = Decorator();
+
   /// Optional callback invoked before each [RenderPass] when observed by a
   /// multi-pass [CameraComponent].
   void Function(Canvas canvas, RenderPass pass)? beforePassCallback;
@@ -46,7 +51,11 @@ class World({
   /// method that you want to override, not [renderTree].
   void renderFromCamera(Canvas canvas) {
     assert(CameraComponent.currentCamera != null);
-    super.renderTree(canvas);
+    if (decorator.isLastDecorator) {
+      super.renderTree(canvas);
+    } else {
+      decorator.applyChain(super.renderTree, canvas);
+    }
   }
 
   @override

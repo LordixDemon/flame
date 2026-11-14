@@ -10,3 +10,4 @@ export 'src/geometry/ray2.dart';
 export 'src/geometry/rectangle_component.dart';
 export 'src/geometry/shape_component.dart';
 export 'src/geometry/shape_intersections.dart';
+export 'src/geometry/spatial_grid_2d.dart' show SpatialGrid2D;

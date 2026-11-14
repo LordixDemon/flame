@@ -5,48 +5,20 @@ import 'package:flame/components.dart';
 import 'package:flame/extensions.dart';
 import 'package:flame/src/particles/particle_buffer.dart';
 import 'package:flame/src/particles/particle_emitter.dart';
+import 'package:flame/src/particles/particle_force_field.dart';
 import 'package:flame/src/particles/particle_range.dart';
 import 'package:flame/src/particles/particle_renderer.dart';
+import 'package:meta/meta.dart';
 
 /// A component that spawns, simulates, and renders particles described by a
 /// [ParticleEmitter].
 ///
-/// The simulation is data-oriented: all particle state lives in a
-/// preallocated [ParticleBuffer], and the built-in texture renderers draw
-/// every particle in a single batched canvas call, so tens of thousands of
-/// particles are cheap.
-///
-/// ```dart
-/// world.add(
-///   ParticleEmitterComponent(
-///     position: Vector2(200, 100),
-///     emitter: ParticleEmitter(
-///       bursts: [EmitterBurst(0, 200)],
-///       lifespan: (0.4, 1.2),
-///       speed: (50, 150),
-///       gravity: Vector2(0, 200),
-///       scaleOverLife: ParticleCurve(1, 0),
-///       colorOverLife: ColorRamp([Colors.yellow, Colors.red]),
-///     ),
-///     renderer: CircleParticleRenderer(),
-///   ),
-/// );
-/// ```
-///
-/// Particles simulate in the component's local coordinate system, so moving
-/// the component moves all live particles with it. Set [worldSpace] to true
-/// to leave already-spawned particles behind instead, which is what trails
-/// and exhaust effects want.
-///
-/// [emitter] describes what to spawn and how it behaves; [renderer]
-/// describes how it is drawn. When [removeOnFinish] is true (the
-/// default), the component removes itself once emission has naturally
-/// finished and the last particle has died; endless emitters are never
-/// removed automatically. Pass a seeded [random] for deterministic
-/// behavior.
+/// Supports zero-allocation pooling via [RecyclableComponent] (`ComponentPool`)
+/// and automatic multi-emitter `drawRawAtlas` merging when placed inside a
+/// `ParticleBatchGroup`.
 class ParticleEmitterComponent({
   /// The description of what to spawn and how particles behave.
-  required final ParticleEmitter emitter,
+  required var ParticleEmitter emitter,
 
   /// The renderer that draws the live particles.
   required final ParticleRenderer renderer,
@@ -70,15 +42,23 @@ class ParticleEmitterComponent({
   super.anchor,
   super.children,
   super.priority,
+  super.sortKey,
   super.key,
-}) extends PositionComponent {
+}) extends PositionComponent with RecyclableComponent {
   /// The random source used for all sampling; seed it for determinism.
   final Random random = random ?? Random();
 
-  final ParticleBuffer _buffer = ParticleBuffer(emitter.maxParticles);
-  final List<bool> _burstFired = List.filled(emitter.bursts.length, false);
+  late ParticleBuffer _buffer = ParticleBuffer(emitter.maxParticles);
+  late List<bool> _burstFired = List.filled(emitter.bursts.length, false);
   final Vector2 _sampledPosition = Vector2.zero();
+  final Vector2 _fieldScratch = Vector2.zero();
+  List<int> _arrivedScratch = const [];
   Vector2? _lastAbsolutePosition;
+
+  /// Set to `true` by an ancestor `ParticleBatchGroup` while rendering so the
+  /// group can merge all compatible child emitters into one `drawRawAtlas`.
+  @internal
+  bool renderedByBatchGroup = false;
 
   bool _completed = false;
   double _clock = 0;
@@ -99,6 +79,46 @@ class ParticleEmitterComponent({
 
   @override
   FutureOr<void> onLoad() => renderer.onLoad();
+
+  /// Reconfigures and restarts this emitter in-place without reallocating its
+  /// [ParticleBuffer] unless the new [nextEmitter] exceeds `_buffer.capacity`.
+  void reconfigure({
+    Vector2? position,
+    ParticleEmitter? nextEmitter,
+    bool autoStart = true,
+  }) {
+    if (position != null) {
+      this.position.setFrom(position);
+    }
+    if (nextEmitter != null && !identical(nextEmitter, emitter)) {
+      if (nextEmitter.maxParticles > _buffer.capacity) {
+        _buffer = ParticleBuffer(nextEmitter.maxParticles);
+      }
+      if (_burstFired.length != nextEmitter.bursts.length) {
+        _burstFired = List.filled(nextEmitter.bursts.length, false);
+      }
+      emitter = nextEmitter;
+    }
+    _buffer.clear();
+    _clock = 0;
+    _emitDebt = 0;
+    _burstFired.fillRange(0, _burstFired.length, false);
+    _completed = false;
+    _lastAbsolutePosition = null;
+    _emitting = autoStart;
+  }
+
+  @override
+  void onAcquire() {
+    reconfigure();
+  }
+
+  @override
+  void onRelease() {
+    _buffer.clear();
+    _emitting = false;
+    _lastAbsolutePosition = null;
+  }
 
   /// Starts (or resumes) emission; if emission had finished, the timeline
   /// restarts from the beginning.
@@ -140,7 +160,9 @@ class ParticleEmitterComponent({
   @override
   void render(Canvas canvas) {
     super.render(canvas);
-    renderer.render(canvas, _buffer);
+    if (!renderedByBatchGroup) {
+      renderer.render(canvas, _buffer);
+    }
   }
 
   void _compensateMovement() {
@@ -224,23 +246,54 @@ class ParticleEmitterComponent({
     buffer.size[index] = scaleCurve == null
         ? size
         : size * scaleCurve.transform(0);
-    buffer.rotation[index] = emitter.rotateToVelocity
+    final vStretch = emitter.velocityStretch;
+    buffer.rotation[index] = (emitter.rotateToVelocity || vStretch > 0)
         ? direction
         : emitter.rotation.sample(random);
     buffer.spin[index] = emitter.spin.sample(random);
     buffer.color[index] = _colorAt(0);
+    buffer.variant[index] = random.nextInt(0x10000);
+    if (vStretch > 0) {
+      final st = 1.0 + speed * vStretch;
+      buffer.stretch[index] = st;
+      if (st > 1.001) {
+        buffer.hasStretch = true;
+      }
+    } else {
+      buffer.stretch[index] = 1.0;
+    }
     return true;
   }
 
   void _simulate(double dt) {
     final buffer = _buffer;
+    if (buffer.length == 0) {
+      buffer.hasStretch = false;
+      return;
+    }
     final accelerationX = emitter.gravity.x;
     final accelerationY = emitter.gravity.y;
     final damping = emitter.drag > 0 ? 1 / (1 + emitter.drag * dt) : 1.0;
     final scaleCurve = emitter.scaleOverLife;
     final tintsOverLife =
         emitter.colorOverLife != null || emitter.opacityOverLife != null;
+    final fields = emitter.fields;
+    final hasFields = fields.isNotEmpty;
+    if (hasFields && _arrivedScratch.length < fields.length) {
+      _arrivedScratch = List<int>.filled(fields.length, 0);
+    } else if (hasFields) {
+      _arrivedScratch.fillRange(0, fields.length, 0);
+    }
+
+    final floorY = emitter.floorY;
+    final restitution = emitter.floorRestitution;
+    final friction = emitter.floorFriction;
+    final vStretch = emitter.velocityStretch;
+    final orientToVel = emitter.rotateToVelocity || vStretch > 0;
+    var anyStretch = false;
+
     var i = 0;
+    particleLoop:
     while (i < buffer.length) {
       final age = buffer.age[i] + dt;
       final progress = age * buffer.invLifespan[i];
@@ -249,17 +302,99 @@ class ParticleEmitterComponent({
         continue;
       }
       buffer.age[i] = age;
-      final velX = (buffer.velX[i] + accelerationX * dt) * damping;
-      final velY = (buffer.velY[i] + accelerationY * dt) * damping;
-      buffer.velX[i] = velX;
+
+      var ax = accelerationX;
+      var ay = accelerationY;
+      final px = buffer.posX[i];
+      final py = buffer.posY[i];
+
+      if (hasFields) {
+        for (var f = 0; f < fields.length; f++) {
+          final field = fields[f];
+          switch (field) {
+            case ParticleAttractor():
+              field.resolveTarget(_fieldScratch);
+              final dx = _fieldScratch.x - px;
+              final dy = _fieldScratch.y - py;
+              final distSq = dx * dx + dy * dy;
+              final r = field.arrivalRadius;
+              if (distSq <= r * r) {
+                _arrivedScratch[f]++;
+                if (field.consumeOnArrival) {
+                  buffer.removeAt(i);
+                  continue particleLoop;
+                }
+              }
+              if (distSq > 1e-8) {
+                final invDist = 1.0 / sqrt(distSq);
+                final nx = dx * invDist;
+                final ny = dy * invDist;
+                ax += nx * field.strength - ny * field.swirl;
+                ay += ny * field.strength + nx * field.swirl;
+              }
+            case ParticleVortex():
+              field.resolveCenter(_fieldScratch);
+              final dx = px - _fieldScratch.x;
+              final dy = py - _fieldScratch.y;
+              final distSq = dx * dx + dy * dy;
+              final maxR = field.radius;
+              if (distSq > 1e-8 && distSq < maxR * maxR) {
+                final dist = sqrt(distSq);
+                final falloff = 1.0 - dist / maxR;
+                final nx = dx / dist;
+                final ny = dy / dist;
+                // Tangential (-ny, nx) + inward (-nx, -ny)
+                ax +=
+                    (-ny * field.angularAcceleration - nx * field.radialPull) *
+                    falloff;
+                ay +=
+                    (nx * field.angularAcceleration - ny * field.radialPull) *
+                    falloff;
+              }
+          }
+        }
+      }
+
+      final velX = (buffer.velX[i] + ax * dt) * damping;
+      var velY = (buffer.velY[i] + ay * dt) * damping;
+      final nextX = px + velX * dt;
+      var nextY = py + velY * dt;
+
+      var finalVelX = velX;
+      if (floorY != null && nextY >= floorY && velY > 0) {
+        nextY = floorY - (nextY - floorY) * restitution;
+        velY = -velY * restitution;
+        finalVelX = velX * friction;
+        if (velY.abs() < 4.0) {
+          velY = 0;
+          nextY = floorY;
+        }
+      }
+
+      buffer.velX[i] = finalVelX;
       buffer.velY[i] = velY;
-      buffer.posX[i] += velX * dt;
-      buffer.posY[i] += velY * dt;
-      if (emitter.rotateToVelocity) {
-        buffer.rotation[i] = atan2(velY, velX);
+      buffer.posX[i] = nextX;
+      buffer.posY[i] = nextY;
+
+      if (orientToVel) {
+        if (finalVelX != 0 || velY != 0) {
+          buffer.rotation[i] = atan2(velY, finalVelX);
+        }
       } else {
         buffer.rotation[i] += buffer.spin[i] * dt;
       }
+
+      if (vStretch > 0) {
+        final spd = sqrt(finalVelX * finalVelX + velY * velY);
+        final st = 1.0 + spd * vStretch;
+        buffer.stretch[i] = st;
+        if (st > 1.001) {
+          anyStretch = true;
+        }
+      } else {
+        buffer.stretch[i] = 1.0;
+      }
+
       if (scaleCurve != null) {
         buffer.size[i] = buffer.baseSize[i] * scaleCurve.transform(progress);
       }
@@ -267,6 +402,20 @@ class ParticleEmitterComponent({
         buffer.color[i] = _colorAt(progress);
       }
       i++;
+    }
+
+    buffer.hasStretch = anyStretch;
+
+    if (hasFields) {
+      for (var f = 0; f < fields.length; f++) {
+        final count = _arrivedScratch[f];
+        if (count > 0) {
+          final field = fields[f];
+          if (field is ParticleAttractor) {
+            field.onParticlesArrived?.call(count);
+          }
+        }
+      }
     }
   }
 

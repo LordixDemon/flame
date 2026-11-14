@@ -8,6 +8,7 @@ import 'package:flame/src/devtools/connectors/hot_reload_connector.dart';
 import 'package:flame/src/devtools/dev_tools_service.dart';
 import 'package:flame/src/effects/provider_interfaces.dart';
 import 'package:flame/src/game/game.dart';
+import 'package:flame/src/game/render_warmup_queue.dart';
 import 'package:flame/src/game/telemetry_canvas.dart';
 import 'package:flutter/foundation.dart';
 // TODO(spydon): Remove this import when flutter version is updated to 3.35.0
@@ -569,5 +570,35 @@ class FlameGame<W extends World>({
     processLifecycleEvents();
     images.clearCache();
     assets.clearCache();
+  }
+
+  /// Incrementally pre-warms all GPU shaders, textures, and vertex pipelines
+  /// registered in [queue] before gameplay begins (skipped automatically when
+  /// [isHotReloadShadow] is `true`).
+  Future<void> warmupRenderPipelines(
+    RenderWarmupQueue queue, {
+    int surfaceSize = 16,
+    int tasksPerYield = 4,
+    void Function(double progress)? onProgress,
+  }) {
+    if (isHotReloadShadow) {
+      return Future<void>.value();
+    }
+    return queue.warmupAll(
+      surfaceSize: surfaceSize,
+      tasksPerYield: tasksPerYield,
+      onProgress: onProgress,
+    );
+  }
+
+  /// Synchronously pre-warms all GPU pipelines registered in [queue].
+  void warmupRenderPipelinesSync(
+    RenderWarmupQueue queue, {
+    int surfaceSize = 16,
+  }) {
+    if (isHotReloadShadow) {
+      return;
+    }
+    queue.warmupAllSync(surfaceSize: surfaceSize);
   }
 }

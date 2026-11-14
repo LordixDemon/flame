@@ -3,6 +3,7 @@ import 'package:flame/src/geometry/constants.dart';
 import 'package:flame/src/particles/color_ramp.dart';
 import 'package:flame/src/particles/emitter_shape.dart';
 import 'package:flame/src/particles/particle_curve.dart';
+import 'package:flame/src/particles/particle_force_field.dart';
 import 'package:flame/src/particles/particle_range.dart';
 
 /// A one-off release of [count] particles, [time] seconds after emission
@@ -95,6 +96,25 @@ class ParticleEmitter({
   /// The particle's color over its lifetime. When null, particles are
   /// white; with texture renderers this leaves the texture untinted.
   final ColorRamp? colorOverLife,
+
+  /// Spatial force fields (such as [ParticleAttractor] and [ParticleVortex])
+  /// applied to every live particle during simulation.
+  final List<ParticleForceField> fields = const [],
+
+  /// Optional horizontal ground plane `y` in local simulation coordinates.
+  /// Particles crossing `y >= floorY` with positive `velY` bounce upward.
+  final double? floorY,
+
+  /// Coefficient of restitution (`0..1`) applied to vertical velocity when a
+  /// particle bounces off [floorY].
+  final double floorRestitution = 0.45,
+
+  /// Horizontal velocity multiplier (`0..1`) applied on each [floorY] bounce.
+  final double floorFriction = 0.82,
+
+  /// Anisotropic elongation factor (`>= 0`) stretching particles along their
+  /// velocity vector (`stretch = 1 + speed * velocityStretch`).
+  final double velocityStretch = 0,
 }) {
   /// Creates an emitter preset.
   ///
@@ -109,6 +129,15 @@ class ParticleEmitter({
       assert(rate >= 0, 'rate must not be negative'),
       assert(spread >= 0, 'spread must not be negative'),
       assert(drag >= 0, 'drag must not be negative'),
+      assert(
+        floorRestitution >= 0 && floorRestitution <= 1,
+        'floorRestitution must be between 0 and 1',
+      ),
+      assert(
+        floorFriction >= 0 && floorFriction <= 1,
+        'floorFriction must be between 0 and 1',
+      ),
+      assert(velocityStretch >= 0, 'velocityStretch must not be negative'),
       assert(duration == null || duration > 0, 'duration must be positive'),
       assert(
         !loop || duration != null,
