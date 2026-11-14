@@ -51,6 +51,19 @@ mixin FixedTransformInterpolation on PositionComponent, HasFixedUpdate {
     capturePreFixedState();
   }
 
+  /// Whether this component currently has a non-zero transform delta between
+  /// its previous and current fixed-timestep states.
+  bool get hasPendingFixedInterpolationDelta {
+    if (!fixedInterpolationEnabled || !_hasCapturedState) {
+      return false;
+    }
+    return (_prevX - transform.x).abs() > 1e-6 ||
+        (_prevY - transform.y).abs() > 1e-6 ||
+        (_prevAngle - transform.angle).abs() > 1e-6 ||
+        (_prevScaleX - transform.scale.x).abs() > 1e-6 ||
+        (_prevScaleY - transform.scale.y).abs() > 1e-6;
+  }
+
   @override
   void onMount() {
     super.onMount();

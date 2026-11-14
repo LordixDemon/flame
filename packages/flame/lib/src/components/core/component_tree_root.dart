@@ -175,6 +175,22 @@ class ComponentTreeRoot({
   /// Number of mounted [HasFixedUpdate] components currently active.
   int get activeFixedUpdateCount => _fixedUpdateList.length;
 
+  /// Whether at least one active [FixedTransformInterpolation] component has a
+  /// non-zero transform delta between fixed steps that visually depends on
+  /// `renderInterpolationAlpha`.
+  bool get hasMovingFixedInterpolation {
+    ensureFlatUpdateLists();
+    for (var i = 0; i < _fixedUpdateList.length; i++) {
+      final comp = _fixedUpdateList[i];
+      if (comp is FixedTransformInterpolation &&
+          comp.ticksEnabled &&
+          comp.hasPendingFixedInterpolationDelta) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// Number of times the flattened update list has been rebuilt.
   @visibleForTesting
   int get flatRebuildCount => _flatRebuildCount;

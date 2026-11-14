@@ -264,6 +264,13 @@ void main() {
         _renderOnce(game);
         expect(sprite.renderedTx, closeTo(200.0, 1e-3));
         expect(sprite.renderedTy, closeTo(150.0, 1e-3));
+
+        // When stationary (prev == curr), varying renderInterpolationAlpha
+        // MUST NOT falsely wake IdleRenderMode.onDemand!
+        game.idleRenderMode = IdleRenderMode.onDemand;
+        _renderOnce(game);
+        game.update(0.016);
+        expect(game.shouldRenderThisTick(0.016), isFalse);
       },
     );
 

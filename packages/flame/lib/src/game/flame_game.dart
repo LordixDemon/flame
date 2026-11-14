@@ -197,7 +197,7 @@ class FlameGame<W extends World>({
     }
     final interpChanged =
         fixedTimeStep != null &&
-        activeFixedUpdateCount > 0 &&
+        hasMovingFixedInterpolation &&
         (_renderInterpolationAlpha - _lastRenderedInterpolationAlpha).abs() >
             1e-6;
     if (hasLifecycleEvents ||

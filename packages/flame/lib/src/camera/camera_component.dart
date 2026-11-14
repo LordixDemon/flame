@@ -433,7 +433,7 @@ class CameraComponent({
     final interpAlpha =
         (game != null &&
             game.fixedTimeStep != null &&
-            game.activeFixedUpdateCount > 0)
+            game.hasMovingFixedInterpolation)
         ? game.renderInterpolationAlpha
         : 1.0;
     final snapMode = pixelSnapMode;
