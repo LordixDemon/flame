@@ -79,6 +79,7 @@ class PositionComponent({
   Anchor? anchor,
   super.children,
   super.priority,
+  super.sortKey,
   super.key,
 }) extends Component
     implements

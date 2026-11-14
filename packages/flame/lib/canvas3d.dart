@@ -7,3 +7,4 @@ export 'src/canvas3d/camera_rig_3d.dart';
 export 'src/canvas3d/matcap_shader_3d.dart';
 export 'src/canvas3d/particle_pool_3d.dart';
 export 'src/canvas3d/raycast_3d.dart';
+export 'src/canvas3d/spatial_hit_testing_3d.dart';

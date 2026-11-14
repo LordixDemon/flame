@@ -170,7 +170,10 @@ class GameRenderBox(
   void _attachGame(PipelineOwner owner) {
     game.attach(owner, this);
 
-    final gameLoop = this.gameLoop = GameLoop(gameLoopCallback);
+    final gameLoop = this.gameLoop = GameLoop(
+      gameLoopCallback,
+      minFrameIntervalGetter: () => game.minFrameIntervalSeconds,
+    );
 
     if (!game.isPaused) {
       gameLoop.start();
@@ -192,12 +195,29 @@ class GameRenderBox(
     _unbindLifecycleListener();
   }
 
+  final Stopwatch _telemetryStopwatch = Stopwatch();
+
   void gameLoopCallback(double dt) {
     assert(attached);
     if (!attached) {
       return;
     }
-    game.update(dt);
+    game.advanceAdaptivePacing(dt);
+    if (game.collectRenderTelemetry && game is! FlameGame) {
+      _telemetryStopwatch
+        ..reset()
+        ..start();
+      try {
+        game.update(dt);
+      } finally {
+        _telemetryStopwatch.stop();
+        game.renderTelemetry.recordUpdateMicros(
+          _telemetryStopwatch.elapsedMicroseconds,
+        );
+      }
+    } else {
+      game.update(dt);
+    }
     markNeedsPaint();
   }
 
@@ -250,12 +270,33 @@ class GameRenderBox(
   @override
   void paint(PaintingContext context, Offset offset) {
     _paintedWidgets.clear();
+    final collectTelemetry = game.collectRenderTelemetry;
     if (firstChild == null) {
       _baseTransform = null;
       _inverseBaseTransform = null;
       context.canvas.save();
       context.canvas.translate(offset.dx, offset.dy);
-      game.render(context.canvas);
+      if (collectTelemetry && game is! FlameGame) {
+        game.renderTelemetry.beginRenderFrame();
+        TelemetryCanvas.pushActiveTelemetry(game.renderTelemetry);
+        final tc = game.rootTelemetryCanvas
+          ..bind(context.canvas, game.renderTelemetry);
+        _telemetryStopwatch
+          ..reset()
+          ..start();
+        try {
+          game.render(tc);
+        } finally {
+          _telemetryStopwatch.stop();
+          tc.unbind();
+          TelemetryCanvas.popActiveTelemetry();
+          game.renderTelemetry.endRenderFrame(
+            renderMicros: _telemetryStopwatch.elapsedMicroseconds,
+          );
+        }
+      } else {
+        game.render(context.canvas);
+      }
       context.canvas.restore();
       return;
     }
@@ -263,7 +304,19 @@ class GameRenderBox(
     for (final child in _childByComponent.values) {
       (child.parentData! as WidgetComponentParentData).paintedThisFrame = false;
     }
-    final canvas = ProxyCanvas(context.canvas);
+    final ui.Canvas underlyingCanvas;
+    if (collectTelemetry) {
+      game.renderTelemetry.beginRenderFrame();
+      TelemetryCanvas.pushActiveTelemetry(game.renderTelemetry);
+      underlyingCanvas = game.rootTelemetryCanvas
+        ..bind(context.canvas, game.renderTelemetry);
+      _telemetryStopwatch
+        ..reset()
+        ..start();
+    } else {
+      underlyingCanvas = context.canvas;
+    }
+    final canvas = ProxyCanvas(underlyingCanvas);
     _paintingContext = context;
     _canvas = canvas;
     canvas.save();
@@ -277,6 +330,14 @@ class GameRenderBox(
       canvas.restore();
       _paintingContext = null;
       _canvas = null;
+      if (collectTelemetry) {
+        _telemetryStopwatch.stop();
+        game.rootTelemetryCanvas.unbind();
+        TelemetryCanvas.popActiveTelemetry();
+        game.renderTelemetry.endRenderFrame(
+          renderMicros: _telemetryStopwatch.elapsedMicroseconds,
+        );
+      }
     }
     _updatePaintedState();
   }
@@ -367,7 +428,12 @@ class GameRenderBox(
     } else {
       context.pushTransform(true, Offset.zero, transform, _paintChildOf(child));
     }
-    proxyCanvas.swap(context.canvas);
+    if (game.collectRenderTelemetry) {
+      game.rootTelemetryCanvas.bind(context.canvas, game.renderTelemetry);
+      proxyCanvas.swap(game.rootTelemetryCanvas);
+    } else {
+      proxyCanvas.swap(context.canvas);
+    }
   }
 
   /// Whether [clip], given in the coordinate space of the canvas that the game

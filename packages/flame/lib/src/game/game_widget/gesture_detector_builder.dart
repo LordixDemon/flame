@@ -43,7 +43,8 @@ class GestureDetectorBuilder([final void Function()? _onChange]) {
 bool hasMouseDetectors(Game game) {
   return game.mouseDetector != null ||
       game.mousePressDetector != null ||
-      game.scrollDetector != null;
+      game.scrollDetector != null ||
+      game.idleFps != null;
 }
 
 Widget applyMouseDetectors(Game game, Widget child) {
@@ -55,14 +56,24 @@ Widget applyMouseDetectors(Game game, Widget child) {
     // on hovered HoverCallbacks components — Flutter stops emitting
     // PointerHoverEvents the moment a button is pressed, so without this hook
     // the hover state would silently linger. See issue #2741.
-    onPointerDown: mousePressDetector,
+    onPointerDown: (event) {
+      game.notifyActivity();
+      mousePressDetector?.call(event);
+    },
+    onPointerMove: (_) => game.notifyActivity(),
+    onPointerPanZoomStart: (_) => game.notifyActivity(),
+    onPointerPanZoomUpdate: (_) => game.notifyActivity(),
     onPointerSignal: (event) {
+      game.notifyActivity();
       if (event is PointerScrollEvent) {
         scrollDetector?.call(event);
       }
     },
     child: MouseRegion(
-      onHover: mouseDetector,
+      onHover: (event) {
+        game.notifyActivity();
+        mouseDetector?.call(event);
+      },
       child: child,
     ),
   );

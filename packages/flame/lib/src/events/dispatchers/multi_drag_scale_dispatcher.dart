@@ -36,8 +36,32 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
   /// The minimum scale factor change required before a scale gesture is
   /// recognized. Must be greater than 1.0. The default value is 1.05, meaning
   /// the fingers must spread or pinch by at least 5% before scale events start
-  /// firing. Set this before the first [ScaleCallbacks] component mounts.
-  double scaleThreshold = 1.05;
+  /// firing.
+  double get scaleThreshold => _scaleThreshold;
+  double _scaleThreshold = 1.05;
+  set scaleThreshold(double value) {
+    _scaleThreshold = value;
+    _recognizer?.scaleThreshold = value;
+  }
+
+  /// Minimum rotation angle (in radians) required to start a pure rotation
+  /// gesture.
+  double get rotationThreshold => _rotationThreshold;
+  double _rotationThreshold = 0.05;
+  set rotationThreshold(double value) {
+    _rotationThreshold = value;
+    _recognizer?.rotationThreshold = value;
+  }
+
+  /// Whether desktop/macOS trackpad `PointerPanZoom` gestures bypass the
+  /// 5% scale and pan-slop deadzones and begin immediately on the first
+  /// non-zero pan, pinch, or rotation delta.
+  bool get zeroTrackpadDeadzone => _zeroTrackpadDeadzone;
+  bool _zeroTrackpadDeadzone = false;
+  set zeroTrackpadDeadzone(bool value) {
+    _zeroTrackpadDeadzone = value;
+    _recognizer?.zeroTrackpadDeadzone = value;
+  }
 
   @visibleForTesting
   bool get hasDrag => _dragCount > 0;
@@ -94,7 +118,8 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
       const MultiDragScaleDispatcherKey(),
     ) as MultiDragScaleDispatcher?;
     if (dispatcher == null) {
-      dispatcher = MultiDragScaleDispatcher();
+      dispatcher = MultiDragScaleDispatcher()
+        ..zeroTrackpadDeadzone = game.trackpadImmediateScale;
       game.registerKey(const MultiDragScaleDispatcherKey(), dispatcher);
       game.add(dispatcher);
     }
@@ -397,9 +422,16 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
   @override
   void onMount() {
     gameRef.gestureDetectors.register<MultiDragScaleGestureRecognizer>(
-      () => MultiDragScaleGestureRecognizer(scaleThreshold: scaleThreshold),
+      () => MultiDragScaleGestureRecognizer(
+        scaleThreshold: _scaleThreshold,
+        rotationThreshold: _rotationThreshold,
+        zeroTrackpadDeadzone: _zeroTrackpadDeadzone,
+      ),
       (MultiDragScaleGestureRecognizer instance) {
         _recognizer = instance;
+        instance.scaleThreshold = _scaleThreshold;
+        instance.rotationThreshold = _rotationThreshold;
+        instance.zeroTrackpadDeadzone = _zeroTrackpadDeadzone;
         instance.hasDrag = _dragCount > 0;
         instance.hasScale = _scaleCount > 0;
         instance.onStart = (Offset point) => _FlameDragAdapter(this, point);

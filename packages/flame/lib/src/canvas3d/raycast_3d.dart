@@ -54,8 +54,10 @@ class const MeshCollider3D({
 
 /// Zero-allocation 3D slab AABB + Möller–Trumbore triangle raycaster.
 class const Raycaster3D._() {
-  /// Fast slab-method ray vs axis-aligned bounding box test.
-  static bool intersectAabb(
+  /// Slab-method ray vs axis-aligned bounding box test returning the
+  /// non-negative entry distance `t` along [ray], or `null` if the ray misses
+  /// `[0..maxDistance]`.
+  static double? intersectAabbDistance(
     Ray3D ray, {
     required double minX,
     required double minY,
@@ -70,7 +72,7 @@ class const Raycaster3D._() {
 
     if (ray.dx.abs() < 1e-8) {
       if (ray.ox < minX || ray.ox > maxX) {
-        return false;
+        return null;
       }
     } else {
       final inv = 1.0 / ray.dx;
@@ -88,13 +90,13 @@ class const Raycaster3D._() {
         tMax = t2;
       }
       if (tMin > tMax) {
-        return false;
+        return null;
       }
     }
 
     if (ray.dy.abs() < 1e-8) {
       if (ray.oy < minY || ray.oy > maxY) {
-        return false;
+        return null;
       }
     } else {
       final inv = 1.0 / ray.dy;
@@ -112,13 +114,13 @@ class const Raycaster3D._() {
         tMax = t2;
       }
       if (tMin > tMax) {
-        return false;
+        return null;
       }
     }
 
     if (ray.dz.abs() < 1e-8) {
       if (ray.oz < minZ || ray.oz > maxZ) {
-        return false;
+        return null;
       }
     } else {
       final inv = 1.0 / ray.dz;
@@ -136,11 +138,35 @@ class const Raycaster3D._() {
         tMax = t2;
       }
       if (tMin > tMax) {
-        return false;
+        return null;
       }
     }
 
-    return tMax >= 0.0;
+    return tMax >= 0.0 ? tMin : null;
+  }
+
+  /// Fast slab-method ray vs axis-aligned bounding box boolean test.
+  static bool intersectAabb(
+    Ray3D ray, {
+    required double minX,
+    required double minY,
+    required double minZ,
+    required double maxX,
+    required double maxY,
+    required double maxZ,
+    double maxDistance = double.infinity,
+  }) {
+    return intersectAabbDistance(
+          ray,
+          minX: minX,
+          minY: minY,
+          minZ: minZ,
+          maxX: maxX,
+          maxY: maxY,
+          maxZ: maxZ,
+          maxDistance: maxDistance,
+        ) !=
+        null;
   }
 
   /// Intersects [worldRay] against an indexed triangle mesh positioned at

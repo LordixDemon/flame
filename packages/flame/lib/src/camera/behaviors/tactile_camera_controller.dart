@@ -78,6 +78,35 @@ class TactileCameraController({
     _zoomFactor = (_zoomFactor * factor).clamp(minZoomFactor, maxZoomFactor);
   }
 
+  /// Multiplies manual zoom by [factor] while shifting manual pan so that the
+  /// focal point at `(viewportDeltaX, viewportDeltaY)` from the viewport center
+  /// (at `baseZoom` before manual zoom) remains stationary on screen.
+  void zoomByFactorAnchored(
+    double factor, {
+    required double viewportDeltaX,
+    required double viewportDeltaY,
+    double baseZoom = 1.0,
+  }) {
+    _returning = false;
+    final prevFactor = _zoomFactor;
+    final nextFactor = (prevFactor * factor).clamp(
+      minZoomFactor,
+      maxZoomFactor,
+    );
+    if ((nextFactor - prevFactor).abs() < 1e-9 || baseZoom <= 1e-6) {
+      return;
+    }
+    final prevTotalZoom = baseZoom * prevFactor;
+    final nextTotalZoom = baseZoom * nextFactor;
+    final shiftWorldX =
+        viewportDeltaX * (1.0 / prevTotalZoom - 1.0 / nextTotalZoom);
+    final shiftWorldY =
+        viewportDeltaY * (1.0 / prevTotalZoom - 1.0 / nextTotalZoom);
+    _zoomFactor = nextFactor;
+    _panX = (_panX + shiftWorldX).clamp(-maxPanX, maxPanX);
+    _panY = (_panY + shiftWorldY).clamp(-maxPanY, maxPanY);
+  }
+
   /// Springs (or snaps when [instant] is true) manual pan & zoom back to
   /// neutral framing.
   void reset({bool instant = false}) {

@@ -20,7 +20,16 @@ class MultiDragScaleGestureRecognizer({
 
   /// The threshold for determining when a scale gesture has occurred.
   /// Default is 1.05 (5% change in scale).
-  final double scaleThreshold = 1.05,
+  var double scaleThreshold = 1.05,
+
+  /// Minimum rotation angle (in radians) required to start a pure rotation
+  /// scale gesture.
+  var double rotationThreshold = 0.05,
+
+  /// When `true`, desktop/macOS trackpad `PointerPanZoom` gestures bypass the
+  /// 5% scale and pan-slop deadzones and fire `onScaleStart`/`onScaleUpdate`
+  /// on the very first non-zero pan, pinch, or rotation update.
+  var bool zeroTrackpadDeadzone = false,
 }) extends GestureRecognizer {
   /// Create a gesture recognizer for tracking multi-drag and scale gestures.
   this
@@ -317,10 +326,23 @@ class MultiDragScaleGestureRecognizer({
     final scaleFactor = _scale.scaleFactor;
     final focalDelta =
         (_scale.currentFocalPoint! - _scale.initialFocalPoint!).distance;
+    final rotationDelta = _computeRotationFactor().abs();
 
-    if (spanDelta > computeScaleSlop(kind) ||
-        math.max(scaleFactor, 1.0 / scaleFactor) > scaleThreshold ||
-        focalDelta > computePanSlop(kind, gestureSettings)) {
+    final bool exceedsThreshold;
+    if (zeroTrackpadDeadzone && kind == PointerDeviceKind.trackpad) {
+      exceedsThreshold =
+          (scaleFactor - 1.0).abs() > 1e-9 ||
+          focalDelta > 0.0 ||
+          rotationDelta > 0.0;
+    } else {
+      exceedsThreshold =
+          spanDelta > computeScaleSlop(kind) ||
+          math.max(scaleFactor, 1.0 / scaleFactor) > scaleThreshold ||
+          focalDelta > computePanSlop(kind, gestureSettings) ||
+          rotationDelta > rotationThreshold;
+    }
+
+    if (exceedsThreshold) {
       for (final state in _drag.pointers.values) {
         if (!state._resolved) {
           state._arenaEntry?.resolve(GestureDisposition.accepted);

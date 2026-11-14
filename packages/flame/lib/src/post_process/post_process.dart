@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:ui' as ui show Image;
 import 'dart:ui' hide Image;
 
 import 'package:flame/components.dart';
 import 'package:flame/post_process.dart';
+import 'package:flame/src/game/telemetry_canvas.dart';
 import 'package:flutter/foundation.dart';
 
 /// A way to apply effects to a whole component tree.
@@ -94,6 +96,15 @@ abstract class PostProcess({double? pixelRatio}) {
   void Function(Canvas)? _renderTree;
   void Function(PostProcess?)? _updateContext;
   Vector2? _size;
+  Object? _currentPassTag;
+
+  /// Tag identifying the currently executing [rasterizePass] invocation, or
+  /// `null` during standard [rasterizeSubtree] / [renderSubtree] passes.
+  ///
+  /// Descendant components can inspect this via
+  /// `findPostProcessFromContext()?.currentPassTag` to alter their rendering
+  /// per pass (for example, drawing emissive masks or depth weights).
+  Object? get currentPassTag => _currentPassTag;
 
   /// This method is called to render the post process, to be called by the
   /// "owner" of
@@ -135,18 +146,67 @@ abstract class PostProcess({double? pixelRatio}) {
   @protected
   ui.Image rasterizeSubtree() {
     final recorder = PictureRecorder();
-    final innerCanvas = Canvas(recorder)..scale(pixelRatio);
+    final innerCanvas = TelemetryCanvas.wrapOffscreenIfActive(Canvas(recorder))
+      ..scale(pixelRatio);
 
     renderSubtree(innerCanvas);
 
     final picture = recorder.endRecording();
     try {
       return picture.toImageSync(
-        (pixelRatio * _size!.x).ceil(),
-        (pixelRatio * _size!.y).ceil(),
+        math.max(1, (pixelRatio * _size!.x).ceil()),
+        math.max(1, (pixelRatio * _size!.y).ceil()),
       );
     } finally {
       picture.dispose();
+    }
+  }
+
+  /// Rasterizes the subtree into an offscreen [ui.Image] scaled by
+  /// `pixelRatio * resolutionScale` (clamped so dimensions stay `>= 1x1`),
+  /// optionally tagging [currentPassTag] with [passTag] and pushing
+  /// [cameraRenderPass] onto `CameraComponent.currentRenderPass` for the
+  /// duration of the pass.
+  @nonVirtual
+  @protected
+  ui.Image rasterizePass({
+    double resolutionScale = 1.0,
+    Object? passTag,
+    RenderPass? cameraRenderPass,
+  }) {
+    final baseDpr = pixelRatio.clamp(0.5, 3.0);
+    final effectiveScale = (baseDpr * resolutionScale.clamp(0.125, 2.0)).clamp(
+      0.0625,
+      4.0,
+    );
+    final imgW = math.max(1, (_size!.x * effectiveScale).ceil());
+    final imgH = math.max(1, (_size!.y * effectiveScale).ceil());
+
+    final previousTag = _currentPassTag;
+    _currentPassTag = passTag;
+    if (cameraRenderPass != null) {
+      CameraComponent.pushRenderPass(cameraRenderPass);
+    }
+    try {
+      final recorder = PictureRecorder();
+      final innerCanvas = TelemetryCanvas.wrapOffscreenIfActive(
+        Canvas(recorder),
+      );
+      if (effectiveScale != 1.0) {
+        innerCanvas.scale(effectiveScale, effectiveScale);
+      }
+      renderSubtree(innerCanvas);
+      final picture = recorder.endRecording();
+      try {
+        return picture.toImageSync(imgW, imgH);
+      } finally {
+        picture.dispose();
+      }
+    } finally {
+      if (cameraRenderPass != null) {
+        CameraComponent.popRenderPass();
+      }
+      _currentPassTag = previousTag;
     }
   }
 

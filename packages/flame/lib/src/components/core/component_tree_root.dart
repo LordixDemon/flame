@@ -155,36 +155,76 @@ class ComponentTreeRoot({
 
   bool get hasLifecycleEvents => queue.isNotEmpty;
 
-  /// The flattened pre-order list of all components below this root, stopping
-  /// at (and including) `CustomTraversal` barriers, whose subtrees are
+  /// The flattened pre-order list of active ticking components below this root,
+  /// stopping at (and including) `CustomTraversal` barriers, whose subtrees are
   /// traversed by their own `updateSubtree` implementations.
   final List<Component> _flatUpdateList = [];
+
+  /// Mounted [HasFixedUpdate] components with [Component.ticksEnabled] set.
+  final List<HasFixedUpdate> _fixedUpdateList = [];
 
   /// The [ComponentList._structureVersion] that [_flatUpdateList] was built
   /// against.
   int _flatVersion = -1;
 
-  /// Updates every component below this root using the flattened traversal
-  /// list, rebuilding the list first when the tree structure has possibly
-  /// changed since the previous tick.
-  ///
-  /// The visit order is identical to the recursive
-  /// standard traversal: pre-order, children in
-  /// priority order. Components mixing in `CustomTraversal` are treated as
-  /// barriers: they appear in the list themselves, and their `updateSubtree`
-  /// drives their subtree.
+  int _flatRebuildCount = 0;
+
+  /// Number of components currently participating in the flattened update pass.
+  int get activeUpdateCount => _flatUpdateList.length;
+
+  /// Number of mounted [HasFixedUpdate] components currently active.
+  int get activeFixedUpdateCount => _fixedUpdateList.length;
+
+  /// Number of times the flattened update list has been rebuilt.
+  @visibleForTesting
+  int get flatRebuildCount => _flatRebuildCount;
+
+  /// Ensures [_flatUpdateList] and [_fixedUpdateList] reflect the current
+  /// component tree structure.
   @internal
-  void updateChildrenFlat(double dt) {
+  void ensureFlatUpdateLists() {
     if (_flatVersion != ComponentList._structureVersion) {
       // The version is captured before the pass: structural changes made by
       // update callbacks (pause toggles, detached-tree edits) invalidate the
       // list that is being built and must trigger a rebuild next tick.
       _flatVersion = ComponentList._structureVersion;
+      _flatRebuildCount++;
       _flatUpdateList.clear();
-      _updateAndFlattenInto(_flatUpdateList, dt);
-    } else {
-      Component._updateFlatList(_flatUpdateList, dt);
+      _fixedUpdateList.clear();
+      _collectFlatListsInto(_flatUpdateList, _fixedUpdateList);
     }
+  }
+
+  /// Runs one deterministic fixed-step simulation pass of [fixedDt] seconds
+  /// across all active [HasFixedUpdate] components.
+  @internal
+  void runFixedUpdatePass(double fixedDt) {
+    ensureFlatUpdateLists();
+    for (final component in _fixedUpdateList) {
+      if (component.ticksEnabled && !_isPausedByTimeScaleAncestor(component)) {
+        component.fixedUpdate(fixedDt);
+      }
+    }
+  }
+
+  static bool _isPausedByTimeScaleAncestor(Component component) {
+    Component? cursor = component;
+    while (cursor != null) {
+      if (cursor is HasTimeScale && cursor.timeScale == 0.0) {
+        return true;
+      }
+      cursor = cursor._parent;
+    }
+    return false;
+  }
+
+  /// Updates every active component below this root using the flattened
+  /// traversal list, rebuilding the list first when the tree structure has
+  /// possibly changed since the previous tick.
+  @internal
+  void updateChildrenFlat(double dt) {
+    ensureFlatUpdateLists();
+    Component._updateFlatList(_flatUpdateList, dt);
   }
 
   /// A future that will complete once all lifecycle events have been

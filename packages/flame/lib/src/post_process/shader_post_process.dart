@@ -7,27 +7,32 @@ import 'package:flutter/painting.dart';
 import 'package:meta/meta.dart';
 
 /// Base class for GPU fragment-shader post processes that automatically caches
-/// a single [ui.FragmentShader] instance across frames and disposes transient
-/// rasterized subtree [ui.Image]s without per-frame shader allocations or GPU
-/// texture leaks.
+/// a single [ui.FragmentShader] instance across frames, skips redundant float
+/// uniform FFI uploads via [uniforms], and disposes transient rasterized
+/// subtree [ui.Image]s without per-frame shader allocations or GPU texture
+/// leaks.
 abstract class ShaderPostProcess extends PostProcess {
-  /// Creates a [ShaderPostProcess] that loads `assetPath` during [onLoad].
+  /// Creates a [ShaderPostProcess] that loads [assetPath] during [onLoad] or
+  /// uses an already-loaded [program].
   ShaderPostProcess({
-    this._assetPath,
-    this._program,
+    this.assetPath,
+    ui.FragmentProgram? program,
     this.enabled = true,
     super.pixelRatio,
-  });
+  }) {
+    _program = program;
+  }
 
   /// Creates a [ShaderPostProcess] backed by an already-loaded [program].
   ShaderPostProcess.fromProgram(
     ui.FragmentProgram program, {
     this.enabled = true,
     super.pixelRatio,
-  }) : _assetPath = null,
+  }) : assetPath = null,
        _program = program;
 
-  final String? _assetPath;
+  /// Optional asset path passed to [ui.FragmentProgram.fromAsset] in [onLoad].
+  final String? assetPath;
   ui.FragmentProgram? _program;
   ui.FragmentProgram? _shaderProgram;
   ui.FragmentShader? _cachedShader;
@@ -41,6 +46,9 @@ abstract class ShaderPostProcess extends PostProcess {
 
   double _time = 0.0;
 
+  /// Dirty-checked float32 uniform cache associated with this post-process.
+  final UniformSlotBuffer uniforms = UniformSlotBuffer();
+
   /// Whether shader post-processing is active; when false, the subtree is
   /// rendered directly without offscreen rasterization.
   bool enabled;
@@ -51,6 +59,12 @@ abstract class ShaderPostProcess extends PostProcess {
   /// Whether a live [ui.FragmentShader] instance is currently cached.
   bool get hasCachedShader => _cachedShader != null;
 
+  /// Writes [value] into uniform slot [index] on [shader] only when its 32-bit
+  /// float representation changed since the previous upload.
+  @protected
+  bool setShaderFloat(ui.FragmentShader shader, int index, double value) =>
+      uniforms.setFloat(shader, index, value);
+
   /// Returns the active [ui.FragmentProgram], allowing subclasses to supply a
   /// lazily loaded or shared program.
   @protected
@@ -60,7 +74,7 @@ abstract class ShaderPostProcess extends PostProcess {
   @mustCallSuper
   Future<void> onLoad() async {
     await super.onLoad();
-    final path = _assetPath;
+    final path = assetPath;
     if (_program == null && path != null) {
       _program = await ui.FragmentProgram.fromAsset(path);
     }
@@ -82,13 +96,26 @@ abstract class ShaderPostProcess extends PostProcess {
     double time,
   );
 
-  ui.FragmentShader _obtainShader(ui.FragmentProgram program) {
+  /// Returns the cached [ui.FragmentShader] for [program], recreating it only
+  /// when [program] changes or no shader is cached yet.
+  @protected
+  ui.FragmentShader obtainCachedShader(ui.FragmentProgram program) {
     if (!identical(_shaderProgram, program) || _cachedShader == null) {
       _cachedShader?.dispose();
+      uniforms.invalidate();
       _shaderProgram = program;
       _cachedShader = program.fragmentShader();
     }
     return _cachedShader!;
+  }
+
+  /// Replaces and disposes the previously held primary scene [ui.Image].
+  @protected
+  void replaceHeldSceneImage(ui.Image nextImage) {
+    if (!identical(_heldImage, nextImage)) {
+      _heldImage?.dispose();
+      _heldImage = nextImage;
+    }
   }
 
   @override
@@ -100,35 +127,18 @@ abstract class ShaderPostProcess extends PostProcess {
     }
 
     final dpr = pixelRatio.clamp(0.5, 3.0);
-    final imgW = (size.x * dpr).ceil();
-    final imgH = (size.y * dpr).ceil();
-    if (imgW <= 0 || imgH <= 0) {
-      renderSubtree(canvas);
-      return;
-    }
-
     final ui.Image frameImage;
     try {
-      final recorder = ui.PictureRecorder();
-      final inner = Canvas(recorder);
-      if (dpr != 1.0) {
-        inner.scale(dpr, dpr);
-      }
-      renderSubtree(inner);
-      final picture = recorder.endRecording();
-      try {
-        frameImage = picture.toImageSync(imgW, imgH);
-      } finally {
-        picture.dispose();
-      }
+      frameImage = rasterizePass();
     } on Object {
       renderSubtree(canvas);
       return;
     }
 
-    _heldImage?.dispose();
-    _heldImage = frameImage;
+    replaceHeldSceneImage(frameImage);
 
+    final imgW = frameImage.width;
+    final imgH = frameImage.height;
     if (imgW != _quadW || imgH != _quadH) {
       _quadW = imgW;
       _quadH = imgH;
@@ -136,7 +146,7 @@ abstract class ShaderPostProcess extends PostProcess {
     }
     _imageSizeScratch.setValues(imgW.toDouble(), imgH.toDouble());
 
-    final shader = _obtainShader(program);
+    final shader = obtainCachedShader(program);
     configureShader(shader, _imageSizeScratch, frameImage, _time);
 
     _shaderPaint.shader = shader;
@@ -163,6 +173,7 @@ abstract class ShaderPostProcess extends PostProcess {
   @mustCallSuper
   void dispose() {
     super.dispose();
+    uniforms.invalidate();
     _cachedShader?.dispose();
     _cachedShader = null;
     _shaderProgram = null;

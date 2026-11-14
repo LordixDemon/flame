@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flame/cache.dart';
 import 'package:flame/components.dart';
@@ -429,6 +430,103 @@ abstract mixin class Game() {
       _isPaused = false;
       _gameRenderBox?.gameLoop?.step(stepTime);
       _isPaused = true;
+    }
+  }
+
+  /// Optional upper framerate cap in Hz (e.g. `60` or `120`). When `null`,
+  /// frames run uncapped at the display's native vsync rate.
+  double? targetFps;
+
+  /// Optional reduced framerate in Hz (e.g. `30`, or `0` to suspend frames
+  /// completely) applied automatically after [idleTimeoutSeconds] without user
+  /// input or [notifyActivity] boosts.
+  double? idleFps;
+
+  /// Seconds of inactivity before [idleFps] throttling engages.
+  double idleTimeoutSeconds = 2.5;
+
+  double _idleElapsedSeconds = 0.0;
+  double _boostRemainingSeconds = 0.0;
+
+  /// Seconds elapsed since the last input or [notifyActivity] call.
+  double get idleElapsedSeconds => _idleElapsedSeconds;
+
+  /// Remaining duration (in seconds) of an explicit high-FPS activity boost.
+  double get activityBoostRemainingSeconds => _boostRemainingSeconds;
+
+  /// Whether the game loop is currently throttled to [idleFps].
+  bool get isIdleThrottled =>
+      idleFps != null &&
+      _boostRemainingSeconds <= 0.0 &&
+      _idleElapsedSeconds >= idleTimeoutSeconds;
+
+  /// Currently active framerate cap in Hz combining [targetFps] and [idleFps],
+  /// or `null` if running at uncapped native vsync.
+  double? get effectiveTargetFps {
+    if (isIdleThrottled) {
+      final idle = idleFps!;
+      if (idle <= 0.0) {
+        return 0.0;
+      }
+      final target = targetFps;
+      return target != null ? math.min(target, idle) : idle;
+    }
+    return targetFps;
+  }
+
+  /// Minimum frame interval in seconds used by `GameLoop`, `null` when
+  /// uncapped, or [double.infinity] when suspended in `idleFps == 0` mode.
+  @internal
+  double? get minFrameIntervalSeconds {
+    final fps = effectiveTargetFps;
+    if (fps == null) {
+      return null;
+    }
+    if (fps <= 0.0) {
+      return double.infinity;
+    }
+    return 1.0 / fps;
+  }
+
+  /// Resets the idle timer and optionally holds full framerate for at least
+  /// [boostSeconds] (for example during camera transitions, dice throws, or
+  /// programmatic animations).
+  void notifyActivity({double boostSeconds = 0.0}) {
+    _idleElapsedSeconds = 0.0;
+    if (boostSeconds > _boostRemainingSeconds) {
+      _boostRemainingSeconds = boostSeconds;
+    }
+  }
+
+  /// Whether low-overhead CPU/GPU canvas draw-call and timing telemetry is
+  /// collected into [renderTelemetry] each frame.
+  ///
+  /// Defaults to `false` (zero overhead). Automatically enabled when mixing in
+  /// `HasFrameTelemetry`.
+  bool collectRenderTelemetry = false;
+
+  /// Per-frame draw-call (`drawCalls`, `atlasCalls`, `verticesCalls`,
+  /// `saveLayerCalls`) and CPU timing (`updateMicros`, `renderMicros`)
+  /// counters populated when [collectRenderTelemetry] is `true`.
+  final RenderFrameTelemetry renderTelemetry = RenderFrameTelemetry();
+
+  final TelemetryCanvas _rootTelemetryCanvas = TelemetryCanvas();
+
+  /// Reusable root [TelemetryCanvas] wrapper owned by this game instance.
+  @internal
+  TelemetryCanvas get rootTelemetryCanvas => _rootTelemetryCanvas;
+
+  /// Advances the internal activity/idle timers by [dt] seconds.
+  @internal
+  void advanceAdaptivePacing(double dt) {
+    if (dt <= 0.0) {
+      return;
+    }
+    if (_boostRemainingSeconds > 0.0) {
+      _boostRemainingSeconds = math.max(0.0, _boostRemainingSeconds - dt);
+      _idleElapsedSeconds = 0.0;
+    } else {
+      _idleElapsedSeconds += dt;
     }
   }
 

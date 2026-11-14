@@ -33,6 +33,13 @@ class Transform2D() extends ChangeNotifier {
   bool _recalculate;
   bool _recalculateRotation;
   bool _isBatchUpdating = false;
+  int _version = 0;
+
+  /// Monotonically increasing counter incremented whenever any transform
+  /// property (`position`, `scale`, `angle`, `offset`, or `transformMatrix`)
+  /// changes. Used by spatial caches (such as `CullWhenOffscreen`) to avoid
+  /// recomputing world bounds on stationary frames.
+  int get version => _version;
   double _angle;
   double _cosAngle;
   double _sinAngle;
@@ -72,6 +79,7 @@ class Transform2D() extends ChangeNotifier {
     _offset.setFrom(other._offset);
     _isBatchUpdating = false;
     _recalculate = true;
+    _version++;
     notifyListeners();
   }
 
@@ -240,6 +248,7 @@ class Transform2D() extends ChangeNotifier {
     );
     _isBatchUpdating = false;
     _recalculate = false;
+    _version++;
     notifyListeners();
   }
 
@@ -308,6 +317,7 @@ class Transform2D() extends ChangeNotifier {
 
   void _markAsModified() {
     _recalculate = true;
+    _version++;
     if (!_isBatchUpdating) {
       notifyListeners();
     }

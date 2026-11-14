@@ -2,11 +2,13 @@ import 'dart:async';
 import 'dart:ui';
 
 import 'package:flame/components.dart';
+import 'package:flame/events.dart';
 import 'package:flame/src/components/core/component.dart';
 import 'package:flame/src/devtools/connectors/hot_reload_connector.dart';
 import 'package:flame/src/devtools/dev_tools_service.dart';
 import 'package:flame/src/effects/provider_interfaces.dart';
 import 'package:flame/src/game/game.dart';
+import 'package:flame/src/game/telemetry_canvas.dart';
 import 'package:flutter/foundation.dart';
 // TODO(spydon): Remove this import when flutter version is updated to 3.35.0
 // ignore: unnecessary_import
@@ -162,10 +164,50 @@ class FlameGame<W extends World>({
   /// Beware of that if you are rendering components without using this method;
   /// you must be careful to save and restore the canvas to avoid components
   /// interfering with each others rendering.
+  final Stopwatch _telemetryStopwatch = Stopwatch();
+
+  /// Whether desktop/macOS trackpad `PointerPanZoom` gestures bypass the
+  /// default 5% scale and pan-slop deadzones on [MultiDragScaleDispatcher],
+  /// enabling immediate zero-deadzone two-finger pan, pinch, and rotation.
+  bool get trackpadImmediateScale => _trackpadImmediateScale;
+  bool _trackpadImmediateScale = false;
+  set trackpadImmediateScale(bool value) {
+    _trackpadImmediateScale = value;
+    final dispatcher = findByKey(
+      const MultiDragScaleDispatcherKey(),
+    ) as MultiDragScaleDispatcher?;
+    if (dispatcher != null) {
+      dispatcher.zeroTrackpadDeadzone = value;
+    }
+  }
+
   @override
   @mustCallSuper
   void render(Canvas canvas) {
     if (parent == null) {
+      if (collectRenderTelemetry && TelemetryCanvas.activeTelemetry == null) {
+        renderTelemetry.beginRenderFrame();
+        TelemetryCanvas.pushActiveTelemetry(renderTelemetry);
+        final wrapped = canvas is TelemetryCanvas
+            ? canvas
+            : (rootTelemetryCanvas..bind(canvas, renderTelemetry));
+        _telemetryStopwatch
+          ..reset()
+          ..start();
+        try {
+          renderTree(wrapped);
+        } finally {
+          _telemetryStopwatch.stop();
+          if (identical(wrapped, rootTelemetryCanvas)) {
+            rootTelemetryCanvas.unbind();
+          }
+          TelemetryCanvas.popActiveTelemetry();
+          renderTelemetry.endRenderFrame(
+            renderMicros: _telemetryStopwatch.elapsedMicroseconds,
+          );
+        }
+        return;
+      }
       renderTree(canvas);
     }
   }
@@ -184,6 +226,21 @@ class FlameGame<W extends World>({
   @mustCallSuper
   void update(double dt) {
     if (parent == null) {
+      if (collectRenderTelemetry) {
+        _telemetryStopwatch
+          ..reset()
+          ..start();
+        try {
+          processLifecycleEvents();
+          updateTree(dt);
+        } finally {
+          _telemetryStopwatch.stop();
+          renderTelemetry.recordUpdateMicros(
+            _telemetryStopwatch.elapsedMicroseconds,
+          );
+        }
+        return;
+      }
       // Lifecycle events are processed before the traversal so that they
       // complete even while the traversal is paused through a time scale.
       processLifecycleEvents();
@@ -208,6 +265,34 @@ class FlameGame<W extends World>({
   /// Most recent effective delta time (in seconds) propagated to children.
   double get lastEffectiveDt => _lastEffectiveDt;
 
+  /// Optional fixed simulation timestep in seconds (e.g. `1 / 120`) used to
+  /// drive [HasFixedUpdate] components deterministically before variable
+  /// [update] ticks. When `null`, fixed updates are disabled.
+  double? fixedTimeStep;
+
+  /// Maximum number of [HasFixedUpdate.fixedUpdate] substeps executed in a
+  /// single frame to prevent spiral-of-death stalls after frame drops.
+  int maxFixedSubSteps = 8;
+
+  double _fixedAccumulator = 0.0;
+  double _renderInterpolationAlpha = 1.0;
+  int _lastFrameFixedSteps = 0;
+
+  /// Fractional remainder `(_fixedAccumulator / fixedTimeStep)` in `[0..1]`
+  /// available during [render] to smoothly interpolate between the previous
+  /// and current fixed-step states (`1.0` when [fixedTimeStep] is `null`).
+  double get renderInterpolationAlpha => _renderInterpolationAlpha;
+
+  /// Number of fixed simulation substeps executed during the most recent frame.
+  int get lastFrameFixedSteps => _lastFrameFixedSteps;
+
+  /// Clears any accumulated fractional fixed-step remainder.
+  void resetFixedUpdateAccumulator() {
+    _fixedAccumulator = 0.0;
+    _renderInterpolationAlpha = 1.0;
+    _lastFrameFixedSteps = 0;
+  }
+
   @override
   void updateSubtree(double dt) {
     final limit = maxDeltaTime;
@@ -221,8 +306,30 @@ class FlameGame<W extends World>({
     _lastEffectiveDt = effectiveDt;
     if (parent != null) {
       processLifecycleEvents();
-      update(effectiveDt);
+      if (ticksEnabled) {
+        update(effectiveDt);
+      }
     }
+
+    final step = fixedTimeStep;
+    if (step != null && step > 0.0) {
+      _fixedAccumulator += effectiveDt;
+      var subSteps = 0;
+      while (_fixedAccumulator >= step && subSteps < maxFixedSubSteps) {
+        _fixedAccumulator -= step;
+        subSteps++;
+        runFixedUpdatePass(step);
+      }
+      if (_fixedAccumulator >= step) {
+        _fixedAccumulator %= step;
+      }
+      _lastFrameFixedSteps = subSteps;
+      _renderInterpolationAlpha = (_fixedAccumulator / step).clamp(0.0, 1.0);
+    } else {
+      _lastFrameFixedSteps = 0;
+      _renderInterpolationAlpha = 1.0;
+    }
+
     updateChildrenFlat(effectiveDt);
   }
 

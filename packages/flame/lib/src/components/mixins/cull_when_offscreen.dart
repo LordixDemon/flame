@@ -10,98 +10,90 @@ import 'package:meta/meta.dart';
 
 /// Skips drawing a [PositionComponent] while it is off-screen.
 ///
-/// When the component is outside of what the camera shows, its `render` is not
-/// called, and neither is the `render` of its children. This saves time in
-/// games with many components. Only drawing is skipped: `update`, collisions
-/// and effects keep working.
-///
-/// ## The main rule
-///
-/// **Everything the component draws, including its children, must fit inside
-/// its [cullBounds] plus [cullPadding].**
-///
-/// The decision only looks at the component itself. If a child sticks out of
-/// the parent's box, it disappears as soon as the parent's box leaves the
-/// screen, even if the child is still visible. Nothing warns you about this,
-/// unless you turn on [debugVerifyCulledSubtrees].
-///
-/// ## Good to know
-///
-/// - Only components inside a [World] are culled. Components in the viewport
-///   (like a HUD) are never culled.
-/// - Each camera decides for itself. A minimap and the main camera can see
-///   different things.
-/// - Using the mixin on both a parent and its children is fine. A culled
-///   parent skips its children, and a visible parent lets each child decide.
-/// - A custom `Decorator` that moves the drawing is not taken into account.
-///   Override [cullBounds] in that case.
-/// - A culled component does not call `render`, so do not keep per-frame work
-///   in `render`. Use `update` instead.
-///
-/// ## Choosing [cullPadding]
-///
-/// Use the farthest distance, in world units, that anything reaches outside of
-/// the box. For example: a shadow's offset plus its blur, half of an outline's
-/// width, or how far a child sticks out. When unsure, use a bigger number. It
-/// only costs a few extra components drawn near the edge of the screen.
-///
-/// Prefer using this mixin on many small components, like sprites and tiles.
-/// For scenery that never changes, use a `SpriteBatchComponent` instead.
+/// Supports both uniform [cullPadding] and directional [cullBoundsOutset]
+/// (useful for tall 2.5D/3D towers extending in `-Y` or long directional
+/// shadows without wasting padding on opposite sides), and caches axis-aligned
+/// world bounds across stationary frames via `Transform2D.version`.
 mixin CullWhenOffscreen on PositionComponent {
   /// Turns culling on or off for this component only.
-  ///
-  /// When false, this component is always drawn, as long as its parent is
-  /// drawn. If the parent is culled, the parent skips its children, so this
-  /// component is skipped too.
   bool cullingEnabled = true;
 
-  /// Turns on an extra check that helps to find culling mistakes. Use it only
-  /// while developing, because it is slow.
-  ///
-  /// When a component is about to be culled, this looks at all of its children.
-  /// If one of them is on-screen, an [AssertionError] is thrown. The message
-  /// tells you which [cullPadding] fixes the problem.
-  ///
-  /// This is off by default, and it does nothing in release builds.
-  ///
-  /// ```dart
-  /// void main() {
-  ///   CullWhenOffscreen.debugVerifyCulledSubtrees = true;
-  ///   runApp(GameWidget(game: MyGame()));
-  /// }
-  /// ```
-  ///
-  /// It only checks children that are [PositionComponent]s. It cannot see what
-  /// a component draws by itself in `render` outside of its [size], like a
-  /// shadow. Use [cullPadding] for that.
+  /// Turns on an extra check that helps to find culling mistakes in debug mode.
   static bool debugVerifyCulledSubtrees = false;
 
-  /// Extra space, in world units, added around [cullBounds] before checking if
-  /// the component is on-screen.
-  ///
-  /// Use it when the component or its children draw outside of the [size] box.
+  /// Extra uniform space, in world units, added around [cullBounds] before
+  /// checking if the component is on-screen.
   double cullPadding = 0;
+
+  /// Asymmetric world-unit expansion `(left, top, right, bottom)` applied to
+  /// [cullBounds] in addition to [cullPadding].
+  ///
+  /// Positive magnitudes expand outward on each respective side (for example,
+  /// `const Rect.fromLTRB(12, 120, 48, 8)` expands 120 world units upward for a
+  /// tall 3D spire and 48 units right for an evening cast shadow).
+  Rect cullBoundsOutset = Rect.zero;
+
+  Rect? _cachedWorldBounds;
+  int _cachedTransformVersion = -1;
+  double _cachedSizeX = double.nan;
+  double _cachedSizeY = double.nan;
+  double _cachedAnchorX = double.nan;
+  double _cachedAnchorY = double.nan;
+  bool _wasCulledLastFrame = false;
+  int _cullBoundsComputeCount = 0;
+
+  /// Whether this component was skipped by frustum culling on its most recent
+  /// camera render check.
+  bool get wasCulledLastFrame => _wasCulledLastFrame;
+
+  /// Number of times the fast-path world bounds rectangle was recomputed (used
+  /// in tests to verify `Transform2D.version` caching on stationary frames).
+  @visibleForTesting
+  int get cullBoundsComputeCount => _cullBoundsComputeCount;
 
   /// The area of the world that this component takes up.
   ///
   /// By default this is the box made by the position, size, anchor, scale and
-  /// angle of the component and its parents. Override it when the [size] is not
-  /// what the component really draws, for example when the size is zero.
+  /// angle of the component and its parents, cached across frames whenever
+  /// `transform.version`, `size`, and `anchor` are unchanged for unrotated
+  /// direct children of a [World].
   Rect get cullBounds {
-    // Fast path for the common case of a direct child of the world that is not
-    // rotated, which avoids the vector allocations of `toAbsoluteRect`.
     if (angle == 0 && parent is World) {
-      final width = size.x * scale.x;
-      final height = size.y * scale.y;
-      final left = position.x - anchor.x * width;
-      final top = position.y - anchor.y * height;
-      return Rect.fromLTRB(
+      final txVersion = transform.version;
+      final sx = size.x;
+      final sy = size.y;
+      final ax = anchor.x;
+      final ay = anchor.y;
+      final cached = _cachedWorldBounds;
+      if (cached != null &&
+          _cachedTransformVersion == txVersion &&
+          _cachedSizeX == sx &&
+          _cachedSizeY == sy &&
+          _cachedAnchorX == ax &&
+          _cachedAnchorY == ay) {
+        return cached;
+      }
+      _cullBoundsComputeCount++;
+      final width = sx * scale.x;
+      final height = sy * scale.y;
+      final left = position.x - ax * width;
+      final top = position.y - ay * height;
+      final computed = Rect.fromLTRB(
         min(left, left + width),
         min(top, top + height),
         max(left, left + width),
         max(top, top + height),
       );
+      _cachedWorldBounds = computed;
+      _cachedTransformVersion = txVersion;
+      _cachedSizeX = sx;
+      _cachedSizeY = sy;
+      _cachedAnchorX = ax;
+      _cachedAnchorY = ay;
+      return computed;
     }
+    _cachedWorldBounds = null;
+    _cullBoundsComputeCount++;
     return toAbsoluteRect();
   }
 
@@ -112,12 +104,14 @@ mixin CullWhenOffscreen on PositionComponent {
   void onMount() {
     super.onMount();
     _world = findParent<World>();
+    _cachedWorldBounds = null;
   }
 
   @mustCallSuper
   @override
   void onRemove() {
     _world = null;
+    _cachedWorldBounds = null;
     super.onRemove();
   }
 
@@ -129,24 +123,41 @@ mixin CullWhenOffscreen on PositionComponent {
     super.renderTree(canvas);
   }
 
+  Rect _expandedBounds(Rect bounds) {
+    final p = cullPadding;
+    final outset = cullBoundsOutset;
+    if (p == 0.0 && outset == Rect.zero) {
+      return bounds;
+    }
+    return Rect.fromLTRB(
+      bounds.left - p - outset.left,
+      bounds.top - p - outset.top,
+      bounds.right + p + outset.right,
+      bounds.bottom + p + outset.bottom,
+    );
+  }
+
   bool _isOffscreen() {
     final world = _world;
     if (!cullingEnabled ||
         world == null ||
         CameraComponent.currentCameras.isEmpty) {
+      _wasCulledLastFrame = false;
       return false;
     }
     // The innermost camera is the one currently rendering this component.
     final camera = CameraComponent.currentCameras.last;
     if (camera.world != world) {
+      _wasCulledLastFrame = false;
       return false;
     }
     final bounds = cullBounds;
+    final expanded = _expandedBounds(bounds);
     final visibleRect = camera.visibleWorldRect;
-    final offscreen = !visibleRect.overlaps(
-      cullPadding == 0 ? bounds : bounds.inflate(cullPadding),
-    );
-    assert(_debugVerifyCulledSubtree(offscreen, visibleRect, bounds));
+    final offscreen = !visibleRect.overlaps(expanded);
+    assert(_debugVerifyCulledSubtree(offscreen, visibleRect, expanded));
+    _wasCulledLastFrame = offscreen;
+    camera.recordCullDecision(culled: offscreen);
     return offscreen;
   }
 
@@ -171,8 +182,6 @@ mixin CullWhenOffscreen on PositionComponent {
   String? _debugCulledSubtreeProblem(Rect visibleRect, Rect bounds) {
     PositionComponent? visibleDescendant;
     var requiredPadding = 0.0;
-    // A hidden `HasVisibility` component hides all of its descendants too, so
-    // its whole subtree is skipped.
     final pending = <Component>[this];
     while (pending.isNotEmpty) {
       final current = pending.removeLast();

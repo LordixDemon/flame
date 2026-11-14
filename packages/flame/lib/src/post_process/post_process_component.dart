@@ -140,7 +140,8 @@ extension PostProcessingContextFinder on Component {
       return closestContext.postProcess;
     }
     final contextInCamera =
-        findRenderContext<CameraRenderContext>()?.currentPostProcess;
+        findRenderContext<CameraRenderContext>()?.currentPostProcess ??
+        CameraComponent.currentCamera?.renderContext.currentPostProcess;
     if (contextInCamera is T) {
       return contextInCamera;
     }

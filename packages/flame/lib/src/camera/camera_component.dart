@@ -10,6 +10,8 @@ import 'package:flame/src/camera/viewfinder.dart';
 import 'package:flame/src/camera/viewport.dart';
 import 'package:flame/src/camera/viewports/fixed_resolution_viewport.dart';
 import 'package:flame/src/camera/viewports/max_viewport.dart';
+import 'package:flame/src/canvas3d/raycast_3d.dart';
+import 'package:flame/src/canvas3d/spatial_hit_testing_3d.dart';
 import 'package:flame/src/components/core/component.dart';
 import 'package:flame/src/effects/controllers/effect_controller.dart';
 import 'package:flame/src/effects/move_by_effect.dart';
@@ -21,6 +23,7 @@ import 'package:flame/src/experimental/geometry/shapes/rectangle.dart';
 import 'package:flame/src/experimental/geometry/shapes/rounded_rectangle.dart';
 import 'package:flame/src/experimental/geometry/shapes/shape.dart';
 import 'package:flame/src/game/flame_game.dart';
+import 'package:meta/meta.dart';
 
 /// [CameraComponent] is a component through which a [World] is observed.
 ///
@@ -179,6 +182,8 @@ class CameraComponent({
   /// will be rendered.
   @override
   void renderTree(Canvas canvas) {
+    _lastFrameCulledCount = 0;
+    _lastFrameVisibleCount = 0;
     canvas.save();
     canvas.translate(
       viewport.position.x - viewport.anchor.x * viewport.size.x,
@@ -221,15 +226,132 @@ class CameraComponent({
     canvas.restore();
   }
 
+  /// Optional ordered list of [RenderPass]es executed each time this camera
+  /// renders its [world]. When `null` or empty, the world is rendered in a
+  /// single standard pass.
+  List<RenderPass>? renderPasses;
+
+  /// Optional 3D ray projector enabling [SpatialHitbox3D] components inside
+  /// [world] to be picked and sorted by camera ray distance `t` during
+  /// [componentsAtLocation].
+  CameraRayProjector3D? rayProjector3D;
+
+  int _lastFrameCulledCount = 0;
+  int _lastFrameVisibleCount = 0;
+
+  /// Number of `CullWhenOffscreen` components skipped by this camera on its
+  /// most recent [renderTree] pass.
+  int get lastFrameCulledCount => _lastFrameCulledCount;
+
+  /// Number of `CullWhenOffscreen` components accepted as visible by this
+  /// camera on its most recent [renderTree] pass.
+  int get lastFrameVisibleCount => _lastFrameVisibleCount;
+
+  /// Internal telemetry hook invoked by `CullWhenOffscreen`.
+  @internal
+  void recordCullDecision({required bool culled}) {
+    if (culled) {
+      _lastFrameCulledCount++;
+    } else {
+      _lastFrameVisibleCount++;
+    }
+  }
+
+  static final List<RenderPass?> _renderPassStack = [];
+
+  /// Currently executing [RenderPass], or `null` during single-pass rendering.
+  static RenderPass? get currentRenderPass =>
+      _renderPassStack.isEmpty ? null : _renderPassStack.last;
+
+  /// Pushes a [RenderPass] onto the active pass stack (used by multi-pass
+  /// cameras and auxiliary post-process passes).
+  @internal
+  static void pushRenderPass(RenderPass? pass) => _renderPassStack.add(pass);
+
+  /// Pops the most recently pushed [RenderPass] from the active pass stack.
+  @internal
+  static void popRenderPass() => _renderPassStack.removeLast();
+
   /// Renders the world and the viewfinder elements through the camera
   /// transform. An instance method rather than a local function, so that the
   /// render pass does not allocate a closure per camera per frame.
   void _renderWorld(Canvas canvas) {
     canvas.transform2D(viewfinder.transform);
-    world!.renderFromCamera(canvas);
+    final activeWorld = world!;
+    final overridePass = currentRenderPass;
+    final passes = renderPasses;
+    if (overridePass != null) {
+      activeWorld.onBeforeRenderPass(canvas, overridePass);
+      activeWorld.beforePassCallback?.call(canvas, overridePass);
+      activeWorld.renderFromCamera(canvas);
+      activeWorld.afterPassCallback?.call(canvas, overridePass);
+      activeWorld.onAfterRenderPass(canvas, overridePass);
+    } else if (passes == null || passes.isEmpty) {
+      activeWorld.renderFromCamera(canvas);
+    } else {
+      for (final pass in passes) {
+        pushRenderPass(pass);
+        try {
+          activeWorld.onBeforeRenderPass(canvas, pass);
+          activeWorld.beforePassCallback?.call(canvas, pass);
+          activeWorld.renderFromCamera(canvas);
+          activeWorld.afterPassCallback?.call(canvas, pass);
+          activeWorld.onAfterRenderPass(canvas, pass);
+        } finally {
+          popRenderPass();
+        }
+      }
+    }
     // Render the viewfinder elements, which will be in front of the world,
     // but with the same transforms applied to them.
-    viewfinder.renderTree(canvas);
+    if (overridePass == null || !overridePass.exclusiveToMultiPass) {
+      viewfinder.renderTree(canvas);
+    }
+  }
+
+  static final Vector2 _zoomBeforeScratch = Vector2.zero();
+  static final Vector2 _zoomAfterScratch = Vector2.zero();
+
+  /// Zooms the [viewfinder] to [newZoom] (clamped to `[minZoom..maxZoom]`)
+  /// while keeping the world point currently underneath [viewportPoint]
+  /// (expressed in viewport virtual coordinates, or converted from canvas
+  /// coordinates via `viewport.globalToLocal`) anchored at the exact same
+  /// screen pixel.
+  void zoomAtViewportPoint(
+    Vector2 viewportPoint,
+    double newZoom, {
+    double minZoom = 0.05,
+    double maxZoom = 64.0,
+  }) {
+    final clampedZoom = newZoom.clamp(minZoom, maxZoom);
+    if ((viewfinder.zoom - clampedZoom).abs() < 1e-9) {
+      return;
+    }
+    viewfinder.globalToLocal(viewportPoint, output: _zoomBeforeScratch);
+    viewfinder.zoom = clampedZoom;
+    viewfinder.globalToLocal(viewportPoint, output: _zoomAfterScratch);
+    viewfinder.setPositionValues(
+      viewfinder.position.x + (_zoomBeforeScratch.x - _zoomAfterScratch.x),
+      viewfinder.position.y + (_zoomBeforeScratch.y - _zoomAfterScratch.y),
+    );
+  }
+
+  /// Convenience wrapper around [zoomAtViewportPoint] taking [canvasPoint] in
+  /// root game canvas coordinates.
+  void zoomAtCanvasPoint(
+    Vector2 canvasPoint,
+    double newZoom, {
+    double minZoom = 0.05,
+    double maxZoom = 64.0,
+  }) {
+    final vp = Vector2(
+      canvasPoint.x -
+          (viewport.position.x - viewport.anchor.x * viewport.size.x),
+      canvasPoint.y -
+          (viewport.position.y - viewport.anchor.y * viewport.size.y),
+    );
+    viewport.globalToLocal(vp, output: vp);
+    zoomAtViewportPoint(vp, newZoom, minZoom: minZoom, maxZoom: maxZoom);
   }
 
   // Not a setter: this is passed as a `ValueSetter` tear-off to
@@ -293,6 +415,34 @@ class CameraComponent({
             checkContains,
           ),
         );
+        final projector = rayProjector3D;
+        if (projector != null) {
+          Vector2? vpPt;
+          Vector2? wdPt;
+          if (viewportPoint is Vector2 && worldPoint is Vector2) {
+            vpPt = viewportPoint;
+            wdPt = worldPoint;
+          } else if (viewportPoint is ({Vector2 start, Vector2 end}) &&
+              worldPoint is ({Vector2 start, Vector2 end})) {
+            vpPt = viewportPoint.end;
+            wdPt = worldPoint.end;
+          }
+          if (vpPt != null && wdPt != null) {
+            final ray = projector(vpPt, wdPt);
+            if (ray != null) {
+              yield* _onCameraStack(
+                _worldComponentsWithSpatialRay(
+                  ray,
+                  worldPoint,
+                  nestedContexts,
+                  transformContext,
+                  checkContains,
+                ),
+              );
+              return;
+            }
+          }
+        }
         yield* _onCameraStack(
           world!.componentsAtLocation(
             worldPoint,
@@ -301,6 +451,107 @@ class CameraComponent({
             checkContains,
           ),
         );
+      }
+    }
+  }
+
+  Iterable<Component> _worldComponentsWithSpatialRay<T>(
+    Ray3D ray,
+    T worldPoint,
+    List<T>? nestedContexts,
+    T? Function(CoordinateTransform, T) transformContext,
+    bool Function(Component, T) checkContains,
+  ) sync* {
+    final activeWorld = world!;
+    final spatialHits =
+        <({SpatialHitbox3D component, double distance, int order})>[];
+    var traversalOrder = 0;
+
+    void collectSpatial(Component parent) {
+      if (parent is IgnoreEvents && parent.ignoreEvents) {
+        return;
+      }
+      if (!parent.hasChildren) {
+        return;
+      }
+      for (final child in parent.children) {
+        if (child is IgnoreEvents && child.ignoreEvents) {
+          continue;
+        }
+        if (child is SpatialHitbox3D && child.spatialHitEnabled) {
+          final hitT = child.intersectRay3D(ray);
+          if (hitT != null && hitT.isFinite && hitT >= 0.0) {
+            child.recordSpatialHit3D(ray, hitT);
+            spatialHits.add((
+              component: child,
+              distance: hitT,
+              order: traversalOrder++,
+            ));
+          }
+        }
+        collectSpatial(child);
+      }
+    }
+
+    collectSpatial(activeWorld);
+
+    final yieldedSpatial = <Component>{};
+    if (spatialHits.isNotEmpty) {
+      spatialHits.sort((a, b) {
+        final cmp = a.distance.compareTo(b.distance);
+        return cmp != 0 ? cmp : b.order.compareTo(a.order);
+      });
+
+      final chain = <Component>[];
+      for (final hit in spatialHits) {
+        chain.clear();
+        Component? cursor = hit.component;
+        while (cursor != null && !identical(cursor, activeWorld)) {
+          chain.add(cursor);
+          cursor = cursor.parent;
+        }
+        if (!identical(cursor, activeWorld)) {
+          continue;
+        }
+
+        final savedLength = nestedContexts?.length ?? 0;
+        nestedContexts?.add(worldPoint);
+        var currentCtx = worldPoint;
+        var validTransform = true;
+        for (var i = chain.length - 1; i >= 0; i--) {
+          final node = chain[i];
+          if (node is CoordinateTransform) {
+            final next = transformContext(
+              node as CoordinateTransform,
+              currentCtx,
+            );
+            if (next == null) {
+              validTransform = false;
+              break;
+            }
+            currentCtx = next;
+          }
+          nestedContexts?.add(currentCtx);
+        }
+
+        if (validTransform) {
+          yieldedSpatial.add(hit.component);
+          yield hit.component;
+        }
+        if (nestedContexts != null && nestedContexts.length > savedLength) {
+          nestedContexts.removeRange(savedLength, nestedContexts.length);
+        }
+      }
+    }
+
+    for (final comp in activeWorld.componentsAtLocation(
+      worldPoint,
+      nestedContexts,
+      transformContext,
+      checkContains,
+    )) {
+      if (!yieldedSpatial.contains(comp)) {
+        yield comp;
       }
     }
   }

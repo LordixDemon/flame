@@ -1,12 +1,13 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui';
 
 import 'package:flame/camera.dart';
 import 'package:flame/game.dart';
 
-/// Zero-allocation frame-time ring buffer & FPS tracker mixin for [FlameGame],
-/// designed for `60Hz` and `120Hz` ProMotion telemetry overlays without
-/// per-frame heap allocations.
+/// Zero-allocation frame-time ring buffer, FPS tracker, and GPU draw-call
+/// telemetry mixin for [FlameGame], designed for `60Hz` and `120Hz` ProMotion
+/// telemetry overlays without per-frame heap allocations.
 mixin HasFrameTelemetry<W extends World> on FlameGame<W> {
   static const int _ringCapacity = 60;
 
@@ -14,6 +15,16 @@ mixin HasFrameTelemetry<W extends World> on FlameGame<W> {
   int _cursor = 0;
   int _filled = 0;
   double _smoothedFrameMs = 16.67;
+  double _smoothedUpdateMs = 0.0;
+  double _smoothedRenderMs = 0.0;
+  bool _telemetryInitialized = false;
+
+  void _ensureDefaultTelemetryEnabled() {
+    if (!_telemetryInitialized) {
+      _telemetryInitialized = true;
+      collectRenderTelemetry = true;
+    }
+  }
 
   /// Number of frame-time samples stored in the ring buffer (`0..60`).
   int get telemetrySampleCount => _filled;
@@ -26,6 +37,34 @@ mixin HasFrameTelemetry<W extends World> on FlameGame<W> {
 
   /// Exponentially smoothed framerate in Hz (`FPS`).
   double get smoothedFps => 1000.0 / math.max(1.0, _smoothedFrameMs);
+
+  /// Exponentially smoothed CPU `update` duration in milliseconds.
+  double get smoothedUpdateMs => _smoothedUpdateMs;
+
+  /// Exponentially smoothed CPU `render` duration in milliseconds.
+  double get smoothedRenderMs => _smoothedRenderMs;
+
+  /// Total canvas `draw*` calls submitted during the last rendered frame.
+  int get lastDrawCalls => renderTelemetry.drawCalls;
+
+  /// `drawAtlas` / `drawRawAtlas` calls submitted during the last frame.
+  int get lastAtlasCalls => renderTelemetry.atlasCalls;
+
+  /// `drawVertices` 3D/2D mesh calls submitted during the last frame.
+  int get lastVerticesCalls => renderTelemetry.verticesCalls;
+
+  /// `saveLayer` calls submitted during the last frame.
+  int get lastSaveLayerCalls => renderTelemetry.saveLayerCalls;
+
+  /// Offscreen post-process rasterizations executed during the last frame.
+  int get lastOffscreenRasterizations =>
+      renderTelemetry.offscreenRasterizations;
+
+  /// CPU wall-clock duration (in microseconds) of the last `update` tick.
+  int get lastUpdateMicros => renderTelemetry.updateMicros;
+
+  /// CPU wall-clock duration (in microseconds) of the last `render` pass.
+  int get lastRenderMicros => renderTelemetry.renderMicros;
 
   /// Worst (largest) frame delta in milliseconds across the last 60 frames.
   double get worstFrameMs {
@@ -60,6 +99,32 @@ mixin HasFrameTelemetry<W extends World> on FlameGame<W> {
       _filled++;
     }
     _smoothedFrameMs = _smoothedFrameMs * 0.90 + ms * 0.10;
+  }
+
+  @override
+  void onMount() {
+    _ensureDefaultTelemetryEnabled();
+    super.onMount();
+  }
+
+  @override
+  void update(double dt) {
+    _ensureDefaultTelemetryEnabled();
+    super.update(dt);
+    if (collectRenderTelemetry) {
+      final upMs = renderTelemetry.updateMicros / 1000.0;
+      _smoothedUpdateMs = _smoothedUpdateMs * 0.85 + upMs * 0.15;
+    }
+  }
+
+  @override
+  void render(Canvas canvas) {
+    _ensureDefaultTelemetryEnabled();
+    super.render(canvas);
+    if (collectRenderTelemetry) {
+      final rnMs = renderTelemetry.renderMicros / 1000.0;
+      _smoothedRenderMs = _smoothedRenderMs * 0.85 + rnMs * 0.15;
+    }
   }
 
   @override

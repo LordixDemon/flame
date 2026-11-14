@@ -32,13 +32,64 @@ class ComponentList({
   final Comparator<Component>? comparator,
 }) extends Iterable<Component> {
   /// The relative order of [a] and [b]: by the custom [comparator] if one
-  /// was supplied, otherwise by [Component.priority].
+  /// was supplied, otherwise by [Component.priority] and secondary
+  /// [Component.sortKey].
   int _compareOrder(Component a, Component b) {
     final comparator = this.comparator;
     if (comparator == null) {
-      return a._priority.compareTo(b._priority);
+      final byPriority = a._priority.compareTo(b._priority);
+      return byPriority != 0 ? byPriority : a._sortKey.compareTo(b._sortKey);
     }
     return comparator(a, b);
+  }
+
+  /// Whether one or more elements changed their [Component.sortKey] since the
+  /// last render or ordered read.
+  bool _sortKeysDirty = false;
+
+  void _markSortKeysDirty() {
+    _sortKeysDirty = true;
+  }
+
+  /// Restores secondary [Component.sortKey] ordering in-place via zero-alloc
+  /// stable insertion sort (`O(N)` on nearly sorted arrays) without bumping
+  /// [_structureVersion].
+  void _ensureSortKeysOrdered() {
+    if (!_sortKeysDirty) {
+      return;
+    }
+    _sortKeysDirty = false;
+    if (_length <= 1) {
+      return;
+    }
+    _compact();
+    final elements = _elements;
+    var moved = false;
+    for (var i = 1; i < elements.length; i++) {
+      final current = elements[i]!;
+      var j = i - 1;
+      if (_compareOrder(elements[j]!, current) <= 0) {
+        continue;
+      }
+      moved = true;
+      while (j >= 0 && _compareOrder(elements[j]!, current) > 0) {
+        final prev = elements[j]!;
+        elements[j + 1] = prev;
+        prev._containerIndex = j + 1;
+        j--;
+      }
+      elements[j + 1] = current;
+      current._containerIndex = j + 1;
+    }
+    if (moved) {
+      _shiftCount++;
+      final caches = _queries?.values;
+      if (caches != null) {
+        for (final cache in caches) {
+          cache.resort();
+        }
+      }
+    }
   }
 
   /// The backing store; `null` entries are tombstones left by removals.
@@ -81,7 +132,10 @@ class ComponentList({
   bool get isNotEmpty => _length != 0;
 
   @override
-  Iterator<Component> get iterator => _ComponentListIterator(this);
+  Iterator<Component> get iterator {
+    _ensureSortKeysOrdered();
+    return _ComponentListIterator(this);
+  }
 
   /// The elements of this list in reverse order.
   ///
@@ -96,6 +150,7 @@ class ComponentList({
 
   @override
   Component get first {
+    _ensureSortKeysOrdered();
     for (final element in _elements) {
       if (element != null) {
         return element;
@@ -106,6 +161,7 @@ class ComponentList({
 
   @override
   Component get last {
+    _ensureSortKeysOrdered();
     for (final element in _elements.reversed) {
       if (element != null) {
         return element;
@@ -117,6 +173,7 @@ class ComponentList({
   @override
   Component elementAt(int index) {
     RangeError.checkNotNegative(index, 'index');
+    _ensureSortKeysOrdered();
     final elements = _elements;
     if (_tombstones == 0) {
       if (index >= elements.length) {
@@ -135,6 +192,7 @@ class ComponentList({
 
   @override
   void forEach(void Function(Component element) action) {
+    _ensureSortKeysOrdered();
     for (final element in _elements) {
       if (element != null) {
         action(element);
@@ -269,6 +327,7 @@ class ComponentList({
   /// change. The sort is stable: components with equal priority keep their
   /// relative order.
   void _rebalance() {
+    _sortKeysDirty = false;
     // Removes all tombstones, which makes the `element!` accesses safe.
     _compact();
     final elements = _elements;
@@ -353,6 +412,7 @@ class ComponentList({
   /// The type [C] must have been [register]ed beforehand, unless [strictMode]
   /// is false, in which case the registration happens on the first query.
   Iterable<C> query<C extends Component>() {
+    _ensureSortKeysOrdered();
     final cache = _queries?[C];
     if (cache == null) {
       if (strictMode) {
@@ -447,7 +507,10 @@ class _ReversedComponentListView(final ComponentList _list)
   bool get isNotEmpty => _list._length != 0;
 
   @override
-  Iterator<Component> get iterator => _ReversedComponentListIterator(_list);
+  Iterator<Component> get iterator {
+    _list._ensureSortKeysOrdered();
+    return _ReversedComponentListIterator(_list);
+  }
 }
 
 class _ReversedComponentListIterator(final ComponentList _list)

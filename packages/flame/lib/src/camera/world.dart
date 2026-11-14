@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:flame/src/camera/camera_component.dart';
+import 'package:flame/src/camera/render_pass.dart';
 import 'package:flame/src/components/core/component.dart';
 import 'package:flame/src/components/mixins/coordinate_transform.dart';
 import 'package:vector_math/vector_math.dart';
@@ -19,8 +20,25 @@ class World({
   super.priority = -0x7fffffff,
   super.key,
 }) extends Component implements CoordinateTransform {
+  /// Optional callback invoked before each [RenderPass] when observed by a
+  /// multi-pass [CameraComponent].
+  void Function(Canvas canvas, RenderPass pass)? beforePassCallback;
+
+  /// Optional callback invoked after each [RenderPass] when observed by a
+  /// multi-pass [CameraComponent] (for example to flush shared 3D or sprite
+  /// pass buffers).
+  void Function(Canvas canvas, RenderPass pass)? afterPassCallback;
+
   @override
   void renderTree(Canvas canvas) {}
+
+  /// Hook invoked immediately before [renderFromCamera] for [pass] when
+  /// [CameraComponent.renderPasses] is non-empty.
+  void onBeforeRenderPass(Canvas canvas, RenderPass pass) {}
+
+  /// Hook invoked immediately after [renderFromCamera] for [pass] when
+  /// [CameraComponent.renderPasses] is non-empty.
+  void onAfterRenderPass(Canvas canvas, RenderPass pass) {}
 
   /// The rendering method invoked by the [CameraComponent].
   ///

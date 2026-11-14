@@ -3,6 +3,7 @@ library;
 
 export 'src/anchor.dart';
 export 'src/camera/camera_component.dart' show CameraComponent;
+export 'src/camera/render_pass.dart' show MultiPassComponent, RenderPass;
 export 'src/camera/world.dart' show World;
 export 'src/collisions/has_collision_detection.dart';
 export 'src/collisions/hitboxes/screen_hitbox.dart';
@@ -29,8 +30,9 @@ export 'src/components/mixins/cull_when_offscreen.dart';
 export 'src/components/mixins/gesture_hitboxes.dart';
 export 'src/components/mixins/has_ancestor.dart';
 export 'src/components/mixins/has_auto_batched_children.dart'
-    show HasAutoBatchedChildren;
+    show HasAutoBatchedChildren, SpriteBatchEntry, SpriteBatchItemProvider;
 export 'src/components/mixins/has_decorator.dart' show HasDecorator;
+export 'src/components/mixins/has_fixed_update.dart';
 export 'src/components/mixins/has_game_ref.dart';
 export 'src/components/mixins/has_paint.dart';
 export 'src/components/mixins/has_time_scale.dart';
@@ -41,6 +43,7 @@ export 'src/components/mixins/image_retainer.dart';
 export 'src/components/mixins/keyboard_handler.dart';
 export 'src/components/mixins/notifier.dart';
 export 'src/components/mixins/parent_is_a.dart';
+export 'src/components/mixins/passive_component.dart';
 export 'src/components/mixins/renders_sprite.dart';
 export 'src/components/mixins/snapshot.dart';
 export 'src/components/nine_tile_box_component.dart';

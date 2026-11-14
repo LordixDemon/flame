@@ -72,6 +72,8 @@ part 'custom_traversal.dart';
 class Component({
   Iterable<Component>? children,
   int? priority,
+  double? sortKey,
+  bool ticksEnabled = true,
 
   /// A key that can be used to identify this component in the tree.
   ///
@@ -80,6 +82,9 @@ class Component({
 }) {
   this {
     _isTraversalBarrier = this is CustomTraversal;
+    if (!ticksEnabled || this is PassiveComponent) {
+      _ticksDisabled = true;
+    }
     if (children != null) {
       addAll(children);
     }
@@ -193,6 +198,50 @@ class Component({
   static const int _mounted = 4;
   static const int _removing = 8;
   static const int _removed = 16;
+
+  bool _ticksDisabled = false;
+
+  /// Whether this component participates in per-frame [update] (and
+  /// [HasFixedUpdate.fixedUpdate]) ticks.
+  ///
+  /// When `false`, the component remains mounted, rendered, and hit-testable,
+  /// but is excluded from the flattened update traversal list until re-enabled.
+  /// Children are unaffected unless disabled individually or via
+  /// [sleepSubtreeUpdates].
+  bool get ticksEnabled => !_ticksDisabled;
+  set ticksEnabled(bool value) {
+    if (ticksEnabled == value) {
+      return;
+    }
+    _ticksDisabled = !value;
+    if (isMounted) {
+      ComponentList._structureVersion++;
+    }
+  }
+
+  /// Excludes this component from per-frame [update] traversal while keeping
+  /// it rendered and mounted.
+  void sleepUpdates() => ticksEnabled = false;
+
+  /// Re-enables per-frame [update] traversal for this component.
+  void wakeUpdates() => ticksEnabled = true;
+
+  /// Sets [ticksEnabled] to `false` on this component and all currently
+  /// mounted or queued descendants.
+  void sleepSubtreeUpdates() {
+    ticksEnabled = false;
+    for (final child in descendants()) {
+      child.ticksEnabled = false;
+    }
+  }
+
+  /// Sets [ticksEnabled] to `true` on this component and all descendants.
+  void wakeSubtreeUpdates() {
+    ticksEnabled = true;
+    for (final child in descendants()) {
+      child.ticksEnabled = true;
+    }
+  }
 
   /// Whether the component is currently executing its [onLoad] step.
   bool get isLoading => (_state & _loading) != 0;
@@ -638,24 +687,24 @@ class Component({
   bool _isTraversalBarrier = false;
 
   /// Runs one update pass over a flattened traversal list produced by
-  /// [_updateAndFlattenInto].
+  /// [_collectFlatListsInto].
   static void _updateFlatList(List<Component> list, double dt) {
     for (final component in list) {
       if (component._isTraversalBarrier) {
         (component as CustomTraversal).updateSubtree(dt);
-      } else {
+      } else if (component.ticksEnabled) {
         component.update(dt);
       }
     }
   }
 
-  /// Combined update pass and flatten: updates this component's subtree
-  /// recursively while appending the visited components to [out], in
-  /// pre-order with children in priority order, stopping at (but including)
-  /// `CustomTraversal` barriers. Used by the root on ticks where the
-  /// structure changed, so that the flat-list rebuild does not cost a
-  /// separate pass over the tree.
-  void _updateAndFlattenInto(List<Component> out, double dt) {
+  /// Populates [out] with active ticking components (and [CustomTraversal]
+  /// barriers) and [fixedOut] with mounted [HasFixedUpdate] components in
+  /// pre-order priority order.
+  void _collectFlatListsInto(
+    List<Component> out,
+    List<HasFixedUpdate> fixedOut,
+  ) {
     final children = _children;
     if (children == null) {
       return;
@@ -665,13 +714,35 @@ class Component({
       if (child == null) {
         continue;
       }
-      out.add(child);
-      if (child._isTraversalBarrier) {
-        (child as CustomTraversal).updateSubtree(dt);
-      } else {
-        child.update(dt);
-        child._updateAndFlattenInto(out, dt);
+      if (child is HasFixedUpdate && child.ticksEnabled) {
+        fixedOut.add(child);
       }
+      if (child._isTraversalBarrier) {
+        out.add(child);
+        child._collectFixedOnlyInto(fixedOut);
+      } else {
+        if (child.ticksEnabled) {
+          out.add(child);
+        }
+        child._collectFlatListsInto(out, fixedOut);
+      }
+    }
+  }
+
+  void _collectFixedOnlyInto(List<HasFixedUpdate> fixedOut) {
+    final children = _children;
+    if (children == null) {
+      return;
+    }
+    children._compact();
+    for (final child in children._elements) {
+      if (child == null) {
+        continue;
+      }
+      if (child is HasFixedUpdate && child.ticksEnabled) {
+        fixedOut.add(child);
+      }
+      child._collectFixedOnlyInto(fixedOut);
     }
   }
 
@@ -681,7 +752,9 @@ class Component({
   /// Used for components without a [CustomTraversal], and as the default
   /// behavior of [CustomTraversal.updateSubtree].
   void _defaultUpdateSubtree(double dt) {
-    update(dt);
+    if (ticksEnabled) {
+      update(dt);
+    }
     final children = _children;
     if (children != null) {
       // The update pass doubles as the safe point where tombstones left by
@@ -735,9 +808,15 @@ class Component({
       renderContexts.add(context);
     }
 
-    render(canvas);
+    final activePass = CameraComponent.currentRenderPass;
+    if (activePass == null ||
+        !activePass.exclusiveToMultiPass ||
+        this is MultiPassComponent) {
+      render(canvas);
+    }
     final children = _children;
     if (children != null) {
+      children._ensureSortKeysOrdered();
       for (final child in children._elements) {
         if (child != null) {
           renderChild(canvas, child);
@@ -1088,6 +1167,22 @@ class Component({
       if (game != null && parent != null) {
         game._enqueuePriorityChange(parent, this);
       }
+    }
+  }
+
+  /// Continuous secondary depth sort key within the same integer [priority]
+  /// group.
+  ///
+  /// Unlike [priority], updating [sortKey] on smoothly moving isometric or
+  /// 2.5D/3D entities performs a lazy zero-allocation insertion sort before
+  /// rendering or hit-testing without enqueueing lifecycle rebalance events or
+  /// invalidating the root's flattened update list.
+  double get sortKey => _sortKey;
+  double _sortKey = sortKey ?? 0.0;
+  set sortKey(double newSortKey) {
+    if (_sortKey != newSortKey) {
+      _sortKey = newSortKey;
+      _containerList?._markSortKeysDirty();
     }
   }
 
