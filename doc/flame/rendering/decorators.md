@@ -253,6 +253,15 @@ Several decorators can be chain that way. For example, if `A` is an initial deco
 chain `A -> B -> C` will be created. In practice, it means that the entire chain can be manipulated
 from its root, which usually is `component.decorator`.
 
+### Tight `decoratorBounds` and Zero-Allocation `Shadow3DDecorator`
+
+- **`PositionComponent.decoratorBounds`**: When attaching `PaintDecorator.blur`,
+  `PaintDecorator.grayscale`, or `PaintDecorator.tint`, set a tight local `decoratorBounds` (`Rect`)
+  on the `PositionComponent` so `Canvas.saveLayer` allocates only the component's local rect instead
+  of an unbounded full-screen offscreen layer.
+- **`Shadow3DDecorator`**: Reuses a pre-allocated `Float64List(16)` affine transform buffer across
+  frames with zero per-frame `Matrix4` allocations.
+
 
 [Component]: ../components/components.md#component
 [Effect]: ../effects/effects.md

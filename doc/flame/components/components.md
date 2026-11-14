@@ -634,8 +634,17 @@ class HudWorld extends World with HasListenableSubscriptions {
 ```
 
 
-### Fixed-Timestep Simulation, Time Pulses, and Auto-Batching
+### Fixed-Timestep Simulation, Time Pulses, Passive Sleeping, `sortKey`, and Auto-Batching
 
+- **`PassiveComponent` & `ticksEnabled` (`sleepUpdates` / `wakeUpdates`)**: Static tiles, props,
+  and scenery mixing in `PassiveComponent` (or calling `sleepUpdates()` / `sleepSubtreeUpdates()`)
+  remain mounted, rendered, and hit-testable while being excluded completely from the flattened
+  per-frame `updateTree` traversal until awakened via `wakeUpdates()` / `wakeSubtreeUpdates()`.
+- **Continuous Depth Tie-Breaking (`Component.sortKey`)**: Every `Component` and
+  `PositionComponent` exposes a `double sortKey` secondary ordering key within equal integer
+  `priority`. Updating `component.sortKey = position.y` on smoothly moving isometric/3D actors
+  triggers an in-place, zero-allocation linear insertion sort (`O(N)` on nearly sorted lists)
+  instead of a full `priority` rebalance.
 - **`HasFixedUpdate`**: Runs deterministic `fixedUpdate(double fixedDt)` steps driven by
   `FlameGame.fixedTimeStep` (e.g. `1 / 120`), passing `interpolationAlpha` for smooth rendering.
 - **`HasTimeScale` & `applyTimePulse(...)`**: Scales variable and fixed `dt` on any subtree and

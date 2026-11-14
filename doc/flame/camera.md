@@ -496,6 +496,12 @@ Read more about this on [Post processing](rendering/post_processing.md).
   (`smoothing`), a camera `deadzone` (`Rect`), and velocity look-ahead (`leadFactor`,
   `maxLeadDistance`).
 
+- **`TactileCameraController` (Bounded Pan, Anchored Pinch Zoom & Spring Return)**: Reusable
+  controller for interactive tabletop/isometric cameras supporting clamped world panning
+  (`panByWorld(dx, dy)` within `[-maxPanX..maxPanX] × [-maxPanY..maxPanY]`), focal-point-anchored
+  zoom (`zoomByFactor` / `zoomByFactorAnchored`), and smooth exponential spring snap-back
+  (`returnSpringRate`) when returning to canonical framing.
+
 - **Multi-Pass World Rendering (`RenderPass` & `MultiPassComponent`)**: Set `camera.renderPasses`
   (for example `[RenderPass.groundShadow, RenderPass.mainGeometry, RenderPass.lightingOverlay]`) so
   components mixing in `MultiPassComponent` render separate passes across the scene without cloning

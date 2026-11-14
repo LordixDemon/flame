@@ -265,3 +265,11 @@ void takeSnapshot() {
   final image = root.snapshotToImage(200, 200, transform: matrix);
 }
 ```
+
+
+### Deterministic GPU Disposal (`Snapshot` and `Layer`)
+
+Both `Layer` (`dispose()`) and the `Snapshot` mixin (`clearSnapshot()`, plus automatic cleanup in
+`onRemove()`) deterministically call `.dispose()` on cached `dart:ui` `Picture` and `Image` handles
+whenever snapshots are regenerated, cleared, or unmounted, preventing native GPU texture memory
+leaks across scene reloads.

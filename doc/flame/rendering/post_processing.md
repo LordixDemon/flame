@@ -200,12 +200,17 @@ class CrystalBallGame extends FlameGame<CrystalBallGameWorld> {
 ```
 
 
-## Cached Dual-Pass Shader Pipeline (`DualPassShaderPostProcess`)
+## Single-Pass & Dual-Pass Cached Shader Pipelines (`ShaderPostProcess`, `UniformSlotBuffer`, `DualPassShaderPostProcess`)
 
-For multi-pass effects such as separable bloom + ACES tone-mapping + vignette/bokeh,
-`DualPassShaderPostProcess` caches intermediate offscreen GPU `ui.Image` targets across frames when
-resolution is unchanged and exposes `disposeResources()` for deterministic GPU texture cleanup in
-`FlameGame.onRemove()`.
+- **`ShaderPostProcess` & `UniformSlotBuffer`**: Base class for single-pass GPU `FragmentShader`
+  post-processes that caches a single `FragmentShader` instance across frames, disposes transient
+  subtree `ui.Image` textures without leaks, and pairs with `UniformSlotBuffer` — an IEEE-754
+  32-bit float dirty cache (`setFloat`, `setVec2`, `setVec3`, `setVec4`, `skippedCount`) that skips
+  redundant Dart-to-GPU FFI `shader.setFloat` calls when uniform values have not changed.
+- **`DualPassShaderPostProcess`**: For multi-pass effects such as separable bloom + ACES
+  tone-mapping + vignette/bokeh, caches intermediate offscreen GPU `ui.Image` ping-pong targets
+  across frames when resolution is unchanged and exposes `disposeResources()` for deterministic GPU
+  texture cleanup in `FlameGame.onRemove()`.
 
 Similarly, when applying `PaintDecorator.tint(...)`, `PaintDecorator.grayscale(...)`, or
 `PaintDecorator.blur(...)` to a `PositionComponent`, set `component.decoratorBounds` to a tight

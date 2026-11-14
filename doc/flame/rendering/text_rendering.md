@@ -677,3 +677,7 @@ glyphBatch.flush(canvas); // 1 Canvas.drawRawAtlas call for all labels!
 
 For retained component hierarchies, attach a `GlyphBatchLayer` parent and add
 `BatchedTextComponent` children — they automatically batch together during `renderTree`.
+
+Note also that standard `TextPaint` uses a bounded `O(1)` LRU `MemoryCache(maxEntries: ...)` so
+rapidly changing strings never leak unbounded `TextPainter` entries, and `TextComponent` /
+`TextBoxComponent` short-circuit redundant relayouts when `text` is assigned an identical value.
