@@ -184,5 +184,34 @@ void main() {
         expect(game.camera.lastFrameCulledCount, equals(2));
       },
     );
+
+    testWithFlameGame(
+      'caches world bounds across frames when nested inside plain '
+      'non-transforming Component layer containers under World',
+      (game) async {
+        game.onGameResize(Vector2(200, 200));
+        game.camera.viewfinder
+          ..position = Vector2.zero()
+          ..zoom = 1.0;
+
+        final standingLayer = Component(priority: 10);
+        await game.world.ensureAdd(standingLayer);
+
+        final layeredBuilding = _SpireCullComponent(
+          position: Vector2(0, 0),
+          size: Vector2(24, 24),
+        );
+        await standingLayer.ensureAdd(layeredBuilding);
+
+        for (var i = 0; i < 15; i++) {
+          final recorder = PictureRecorder();
+          game.render(Canvas(recorder));
+          recorder.endRecording().dispose();
+        }
+
+        expect(layeredBuilding.renderCount, equals(15));
+        expect(layeredBuilding.cullBoundsComputeCount, equals(1));
+      },
+    );
   });
 }

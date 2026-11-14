@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:flame/src/camera/camera_component.dart';
 import 'package:flame/src/camera/world.dart';
 import 'package:flame/src/components/core/component.dart';
+import 'package:flame/src/components/mixins/coordinate_transform.dart';
 import 'package:flame/src/components/mixins/has_visibility.dart';
 import 'package:flame/src/components/position_component.dart';
 import 'package:meta/meta.dart';
@@ -56,9 +57,10 @@ mixin CullWhenOffscreen on PositionComponent {
   /// By default this is the box made by the position, size, anchor, scale and
   /// angle of the component and its parents, cached across frames whenever
   /// `transform.version`, `size`, and `anchor` are unchanged for unrotated
-  /// direct children of a [World].
+  /// components in direct [World] coordinates (either direct children of a
+  /// [World] or nested under plain non-transforming [Component] layers).
   Rect get cullBounds {
-    if (angle == 0 && parent is World) {
+    if (angle == 0 && (_hasDirectWorldCoords || parent is World)) {
       final txVersion = transform.version;
       final sx = size.x;
       final sy = size.y;
@@ -98,12 +100,28 @@ mixin CullWhenOffscreen on PositionComponent {
   }
 
   World? _world;
+  bool _hasDirectWorldCoords = false;
+
+  bool _resolveDirectWorldCoords() {
+    var cursor = parent;
+    while (cursor != null) {
+      if (cursor is World) {
+        return true;
+      }
+      if (cursor is CoordinateTransform) {
+        return false;
+      }
+      cursor = cursor.parent;
+    }
+    return false;
+  }
 
   @mustCallSuper
   @override
   void onMount() {
     super.onMount();
     _world = findParent<World>();
+    _hasDirectWorldCoords = _resolveDirectWorldCoords();
     _cachedWorldBounds = null;
   }
 
@@ -111,6 +129,7 @@ mixin CullWhenOffscreen on PositionComponent {
   @override
   void onRemove() {
     _world = null;
+    _hasDirectWorldCoords = false;
     _cachedWorldBounds = null;
     super.onRemove();
   }
