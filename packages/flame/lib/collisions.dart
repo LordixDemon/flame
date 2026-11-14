@@ -17,5 +17,8 @@ export 'src/collisions/hitboxes/polygon_hitbox.dart';
 export 'src/collisions/hitboxes/rectangle_hitbox.dart';
 export 'src/collisions/hitboxes/screen_hitbox.dart';
 export 'src/collisions/hitboxes/shape_hitbox.dart';
+export 'src/collisions/kinematic_body_component.dart';
+export 'src/collisions/manifold_and_shapecast.dart';
 export 'src/collisions/standard_collision_detection.dart';
+export 'src/collisions/trigger_zone_component.dart';
 export 'src/experimental/raycast_result.dart';

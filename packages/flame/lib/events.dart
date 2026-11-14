@@ -28,8 +28,21 @@ export 'src/events/dispatchers/non_primary_tap_dispatcher.dart'
     show NonPrimaryTapDispatcher, NonPrimaryTapDispatcherKey;
 export 'src/events/dispatchers/scroll_dispatcher.dart'
     show ScrollDispatcher, ScrollDispatcherKey;
+export 'src/events/focus_navigation.dart'
+    show FocusDirection, FocusNavigationGroup, FocusableComponent;
+export 'src/events/haptic_engine.dart'
+    show
+        FlutterHapticBackend,
+        HapticBackend,
+        HapticEngine,
+        HapticPattern,
+        RecordingHapticBackend;
 export 'src/events/hardware_keyboard_detector.dart'
     show HardwareKeyboardDetector;
+export 'src/events/input_action_map.dart'
+    show ActionBinding, InputAxis2D, InputDeviceKind, InputMap;
+export 'src/events/input_context_stack.dart'
+    show InputBuffer, InputContext, InputContextStack;
 export 'src/events/messages/displacement_event.dart' show DisplacementEvent;
 export 'src/events/messages/double_tap_cancel_event.dart'
     show DoubleTapCancelEvent;

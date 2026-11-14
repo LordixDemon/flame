@@ -11,6 +11,7 @@ export 'src/camera/world.dart' show World;
 export 'src/camera/world_spatial_index.dart' show WorldSpatialIndex;
 export 'src/collisions/has_collision_detection.dart';
 export 'src/collisions/hitboxes/screen_hitbox.dart';
+export 'src/components/animation_tree_and_spring_bone.dart';
 export 'src/components/batched_text_component.dart'
     show BatchedTextComponent, GlyphBatchLayer;
 export 'src/components/clip_component.dart';
@@ -20,6 +21,10 @@ export 'src/components/core/component.dart'
     hide ComponentTreeRoot, LifecycleEvent, LifecycleEventKind;
 export 'src/components/core/component_key.dart';
 export 'src/components/core/component_render_context.dart';
+export 'src/components/core/event_bus.dart';
+export 'src/components/core/prefab_and_save.dart';
+export 'src/components/core/state_machine.dart';
+export 'src/components/core/world_query.dart';
 export 'src/components/custom_painter_component.dart';
 export 'src/components/fps_component.dart';
 export 'src/components/fps_text_component.dart';
@@ -83,5 +88,7 @@ export 'src/geometry/shape_component.dart';
 export 'src/math/block.dart';
 export 'src/sprite_warp/has_warp_grid.dart';
 export 'src/sprite_warp/warp_grid.dart' show WarpGrid, WarpInterpolation;
+export 'src/text/renderers/rich_batched_text_component.dart'
+    show RichBatchedTextComponent, RichTextIconSpan;
 export 'src/text/renderers/text_paint.dart';
 export 'src/timer.dart';

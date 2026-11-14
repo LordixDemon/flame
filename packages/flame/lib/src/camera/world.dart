@@ -4,6 +4,8 @@ import 'package:flame/src/camera/camera_component.dart';
 import 'package:flame/src/camera/render_pass.dart';
 import 'package:flame/src/camera/world_spatial_index.dart';
 import 'package:flame/src/components/core/component.dart';
+import 'package:flame/src/components/core/event_bus.dart';
+import 'package:flame/src/components/core/world_query.dart';
 import 'package:flame/src/components/mixins/coordinate_transform.dart';
 import 'package:flame/src/components/mixins/ignore_events.dart';
 import 'package:flame/src/components/position_component.dart';
@@ -26,7 +28,7 @@ class World({
   bool spatialIndexEnabled = false,
   double spatialCellSize = 256.0,
   super.key,
-}) extends Component implements CoordinateTransform {
+}) extends Component with CustomTraversal implements CoordinateTransform {
   /// Optional decorator chain applied when this world is rendered through a
   /// [CameraComponent] (also used by `WorldRoute.addRenderEffect`).
   final Decorator decorator = Decorator();
@@ -45,7 +47,26 @@ class World({
   int _lastSpatialRenderedCount = 0;
 
   WorldSpatialIndex? _spatialIndex;
+  WorldEventBus? _eventBus;
+  List<WorldQuery<Component>>? _queries;
   final List<Component> _spatialRenderScratch = <Component>[];
+
+  /// Scoped typed event bus for components inside this world. Any events queued
+  /// via [WorldEventBus.enqueue] are automatically drained at the end of
+  /// [updateTree].
+  WorldEventBus get eventBus => _eventBus ??= WorldEventBus();
+
+  /// Registers and populates a reactive [WorldQuery] maintained incrementally
+  /// whenever direct children of this world are added or removed.
+  WorldQuery<T> registerQuery<T extends Component>(WorldQuery<T> query) {
+    query.rebuild(children);
+    (_queries ??= <WorldQuery<Component>>[]).add(query);
+    return query;
+  }
+
+  /// Detaches a previously registered [WorldQuery].
+  bool unregisterQuery(WorldQuery<Component> query) =>
+      _queries?.remove(query) ?? false;
 
   /// Broadphase 2D spatial index (`SpatialGrid2D` + `Transform2D.version`
   /// tracking) for direct [PositionComponent] children of this world.
@@ -89,9 +110,24 @@ class World({
   }
 
   @override
+  void updateSubtree(double dt) {
+    super.updateSubtree(dt);
+    final bus = _eventBus;
+    if (bus != null && bus.pendingCount > 0) {
+      bus.flushQueue();
+    }
+  }
+
+  @override
   void onChildrenChanged(Component child, ChildrenChangeType type) {
     super.onChildrenChanged(child, type);
     _spatialIndex?.markMembershipDirty();
+    final queries = _queries;
+    if (queries != null) {
+      for (var i = 0; i < queries.length; i++) {
+        queries[i].handleChildChanged(child, type);
+      }
+    }
   }
 
   /// Appends all spatially indexed direct [PositionComponent] children

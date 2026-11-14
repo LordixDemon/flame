@@ -400,6 +400,42 @@ class GlyphBatchRenderer({
     }
   }
 
+  /// Appends a single baked glyph [metrics] from [atlas] at `(x, y)` with
+  /// uniform [scale], [rotation], and [color] into the active batch.
+  void addGlyph(
+    RasterFontAtlas atlas,
+    RasterGlyphMetrics metrics, {
+    required double x,
+    required double y,
+    double scale = 1.0,
+    double rotation = 0.0,
+    ui.Color color = const ui.Color(0xFFFFFFFF),
+  }) {
+    if (scale <= 0.0 || color.a <= 0.0) {
+      return;
+    }
+    final slot = _glyphCount++;
+    _ensureCapacity(_glyphCount + 1);
+    final effScale = scale / atlas.pixelRatio;
+    final cosA = rotation == 0.0 ? 1.0 : math.cos(rotation);
+    final sinA = rotation == 0.0 ? 0.0 : math.sin(rotation);
+    final gx = metrics.drawOffsetX * scale;
+    final gy = metrics.drawOffsetY * scale;
+
+    final t4 = slot * 4;
+    _transforms[t4] = effScale * cosA;
+    _transforms[t4 + 1] = effScale * sinA;
+    _transforms[t4 + 2] = x + gx * cosA - gy * sinA;
+    _transforms[t4 + 3] = y + gx * sinA + gy * cosA;
+
+    final r = metrics.atlasRect;
+    _rects[t4] = r.left;
+    _rects[t4 + 1] = r.top;
+    _rects[t4 + 2] = r.right;
+    _rects[t4 + 3] = r.bottom;
+    _colors[slot] = color.toARGB32();
+  }
+
   /// Flushes all buffered glyphs for [atlas] onto [canvas] in a single
   /// `Canvas.drawRawAtlas` call.
   void flush(

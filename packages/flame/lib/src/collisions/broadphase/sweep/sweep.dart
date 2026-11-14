@@ -46,8 +46,9 @@ class Sweep<T extends Hitbox<T>>({List<T>? items}) extends Broadphase<T> {
         final activeItem = _active[i];
         final activeBox = activeItem.aabb;
         if (activeBox.max.x >= currentMin) {
-          if (item.collisionType == CollisionType.active ||
-              activeItem.collisionType == CollisionType.active) {
+          if ((item.collisionType == CollisionType.active ||
+                  activeItem.collisionType == CollisionType.active) &&
+              item.canCollideWithMask(activeItem)) {
             _prospectPool.acquire(item, activeItem);
           }
         } else {

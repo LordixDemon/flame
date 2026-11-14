@@ -276,6 +276,7 @@ class BatchMeshRenderer3D({
     double emissive = 0.0,
     Color? rimColor,
     double rimHighlightIntensity = 0.0,
+    Rect? uvRectPx,
     bool castGroundShadow = false,
     double groundZ = 0.0,
     Color shadowColor = const Color(0xFF16131F),
@@ -309,6 +310,7 @@ class BatchMeshRenderer3D({
       emissive: emissive,
       rimColor: rimColor,
       rimHighlightIntensity: rimHighlightIntensity,
+      uvRectPx: uvRectPx,
       castGroundShadow: castGroundShadow,
       groundZ: groundZ,
       shadowColor: shadowColor,
@@ -336,6 +338,7 @@ class BatchMeshRenderer3D({
     double emissive = 0.0,
     Color? rimColor,
     double rimHighlightIntensity = 0.0,
+    Rect? uvRectPx,
     bool castGroundShadow = false,
     double groundZ = 0.0,
     Color shadowColor = const Color(0xFF16131F),
@@ -412,6 +415,7 @@ class BatchMeshRenderer3D({
 
     final positions = mesh.positions;
     final normals = mesh.normals;
+    final meshUvs = mesh.uvs;
     final aoList = mesh.ambientOcclusion;
     final vColors = mesh.vertexColors;
 
@@ -472,8 +476,16 @@ class BatchMeshRenderer3D({
       }
 
       final (vx, vy, vz) = camera.worldNormalToView(wnx, wny, wnz);
-      final u = (vx * 0.48 + 0.5).clamp(0.02, 0.98) * matCapRes;
-      final texV = (0.5 - vy * 0.48).clamp(0.02, 0.98) * matCapRes;
+      final double u;
+      final double texV;
+      if (uvRectPx != null && meshUvs != null) {
+        final uvBase = v * 2;
+        u = uvRectPx.left + meshUvs[uvBase] * uvRectPx.width;
+        texV = uvRectPx.top + meshUvs[uvBase + 1] * uvRectPx.height;
+      } else {
+        u = (vx * 0.48 + 0.5).clamp(0.02, 0.98) * matCapRes;
+        texV = (0.5 - vy * 0.48).clamp(0.02, 0.98) * matCapRes;
+      }
 
       final hemiMix = (wnz * 0.5 + 0.5).clamp(0.0, 1.0);
       final ambR = (gndR + (skyR - gndR) * hemiMix) * ambInt;
@@ -772,6 +784,7 @@ class BatchMeshRenderer3D({
     Canvas canvas, {
     MatCapShader3D? matCapShader,
     MatCapPreset3D? matCapPreset,
+    ui.Shader? textureShader,
   }) {
     _lastFlushTriangles = _triCount;
     _lastFlushShadowTriangles = _shadowTriCount;
@@ -817,9 +830,11 @@ class BatchMeshRenderer3D({
       }
 
       final useMatCap = matCapShader != null && matCapPreset != null;
-      _meshPaint.shader = useMatCap
-          ? matCapShader.shaderFor(matCapPreset)
-          : null;
+      final activeShader =
+          textureShader ??
+          (useMatCap ? matCapShader.shaderFor(matCapPreset) : null);
+      final emitUvs = activeShader != null;
+      _meshPaint.shader = activeShader;
 
       var offsetTri = 0;
       while (offsetTri < _triCount) {
@@ -838,7 +853,7 @@ class BatchMeshRenderer3D({
           _outPositions[pOut + 4] = _vertX[c];
           _outPositions[pOut + 5] = _vertY[c];
 
-          if (useMatCap) {
+          if (emitUvs) {
             _outUvs[pOut] = _vertU[a];
             _outUvs[pOut + 1] = _vertV[a];
             _outUvs[pOut + 2] = _vertU[b];
@@ -857,7 +872,7 @@ class BatchMeshRenderer3D({
         final vertices = ui.Vertices.raw(
           ui.VertexMode.triangles,
           Float32List.sublistView(_outPositions, 0, chunkTris * 6),
-          textureCoordinates: useMatCap
+          textureCoordinates: emitUvs
               ? Float32List.sublistView(_outUvs, 0, chunkTris * 6)
               : null,
           colors: Int32List.sublistView(_outColors, 0, vertLen),
@@ -865,7 +880,7 @@ class BatchMeshRenderer3D({
         );
         canvas.drawVertices(
           vertices,
-          useMatCap ? ui.BlendMode.modulate : ui.BlendMode.dst,
+          emitUvs ? ui.BlendMode.modulate : ui.BlendMode.dst,
           _meshPaint,
         );
         vertices.dispose();

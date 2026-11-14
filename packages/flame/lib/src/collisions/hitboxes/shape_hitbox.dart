@@ -27,6 +27,17 @@ mixin ShapeHitbox on ShapeComponent implements Hitbox<ShapeHitbox> {
   @override
   CollisionType get collisionType => collisionTypeNotifier.value;
 
+  @override
+  int collisionLayer = 0x00000001;
+
+  @override
+  int collisionMask = 0xFFFFFFFF;
+
+  @override
+  bool canCollideWithMask(Hitbox<dynamic> other) =>
+      (collisionMask & other.collisionLayer) != 0 &&
+      (other.collisionMask & collisionLayer) != 0;
+
   /// Whether the hitbox is allowed to collide with another hitbox that is
   /// added to the same parent.
   bool allowSiblingCollision = false;
@@ -276,7 +287,11 @@ mixin ShapeHitbox on ShapeComponent implements Hitbox<ShapeHitbox> {
   @override
   @mustCallSuper
   bool onComponentTypeCheck(PositionComponent other) {
-    final otherHitboxParent = (other as ShapeHitbox).hitboxParent;
+    final otherShape = other as ShapeHitbox;
+    if (!canCollideWithMask(otherShape)) {
+      return false;
+    }
+    final otherHitboxParent = otherShape.hitboxParent;
 
     final thisCanCollideWithOther =
         (hitboxParent is! CollisionCallbacks) ||

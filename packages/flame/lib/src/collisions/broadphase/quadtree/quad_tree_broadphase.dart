@@ -58,7 +58,8 @@ class QuadTreeBroadphase({
       final itemCenter = activeItem.aabb.center;
       final potentiallyCollide = tree.query(activeItem);
       for (final potential in potentiallyCollide.entries.first.value) {
-        if (potential.collisionType == CollisionType.inactive) {
+        if (potential.collisionType == CollisionType.inactive ||
+            !activeItem.canCollideWithMask(potential)) {
           continue;
         }
 

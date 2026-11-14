@@ -8,6 +8,7 @@ export 'src/canvas3d/camera_rig_3d.dart';
 export 'src/canvas3d/matcap_shader_3d.dart';
 export 'src/canvas3d/mesh_3d.dart';
 export 'src/canvas3d/mesh_lod_chain_3d.dart';
+export 'src/canvas3d/node_uv_decal_3d.dart';
 export 'src/canvas3d/particle_pool_3d.dart';
 export 'src/canvas3d/raycast_3d.dart';
 export 'src/canvas3d/scene_environment_3d.dart';

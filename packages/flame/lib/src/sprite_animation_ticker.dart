@@ -23,8 +23,52 @@ class SpriteAnimationTicker(final SpriteAnimation spriteAnimation) {
   /// Registered method to be triggered when the animation frame updates.
   void Function(int currentIndex)? onFrame;
 
+  /// Registered callback triggered when the animation enters a frame that has
+  /// named events registered via [registerFrameEvent].
+  void Function(int frameIndex, String eventName)? onEvent;
+
   /// Registered method to be triggered when the animation complete.
   void Function()? onComplete;
+
+  Map<int, List<String>>? _frameEvents;
+
+  /// Attaches a named [eventName] (e.g. `'footstep'`, `'hit_frame'`,
+  /// `'spawn_vfx'`) to [frameIndex], firing deterministically via [onEvent]
+  /// whenever playback enters [frameIndex].
+  void registerFrameEvent(int frameIndex, String eventName) {
+    RangeError.checkValidIndex(
+      frameIndex,
+      spriteAnimation.frames,
+      'frameIndex',
+    );
+    final map = _frameEvents ??= <int, List<String>>{};
+    final list = map.putIfAbsent(frameIndex, () => <String>[]);
+    if (!list.contains(eventName)) {
+      list.add(eventName);
+    }
+  }
+
+  /// Removes all frame events registered via [registerFrameEvent].
+  void clearFrameEvents() {
+    _frameEvents?.clear();
+  }
+
+  /// Returns an unmodifiable view of events registered on [frameIndex].
+  List<String> eventsForFrame(int frameIndex) {
+    final list = _frameEvents?[frameIndex];
+    return list == null ? const <String>[] : List<String>.unmodifiable(list);
+  }
+
+  void _emitFrame(int index) {
+    onFrame?.call(index);
+    final cb = onEvent;
+    final list = _frameEvents?[index];
+    if (cb != null && list != null) {
+      for (var i = 0; i < list.length; i++) {
+        cb(index, list[i]);
+      }
+    }
+  }
 
   @visibleForTesting
   Completer<void>? completeCompleter;
@@ -130,7 +174,7 @@ class SpriteAnimationTicker(final SpriteAnimation spriteAnimation) {
     }
     if (!_started) {
       onStart?.call();
-      onFrame?.call(currentIndex);
+      _emitFrame(currentIndex);
       _started = true;
     }
 
@@ -139,7 +183,7 @@ class SpriteAnimationTicker(final SpriteAnimation spriteAnimation) {
         if (spriteAnimation.loop) {
           clock -= currentFrame.stepTime;
           currentIndex = 0;
-          onFrame?.call(currentIndex);
+          _emitFrame(currentIndex);
         } else {
           _done = true;
           onComplete?.call();
@@ -149,7 +193,7 @@ class SpriteAnimationTicker(final SpriteAnimation spriteAnimation) {
       } else {
         clock -= currentFrame.stepTime;
         currentIndex++;
-        onFrame?.call(currentIndex);
+        _emitFrame(currentIndex);
       }
     }
   }

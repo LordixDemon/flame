@@ -32,6 +32,8 @@ export 'src/text/nodes/text_block_node.dart' show TextBlockNode;
 export 'src/text/nodes/text_node.dart' show TextNode;
 export 'src/text/renderers/raster_font_atlas.dart'
     show GlyphBatchRenderer, RasterFontAtlas, RasterGlyphMetrics;
+export 'src/text/renderers/rich_batched_text_component.dart'
+    show RichBatchedTextComponent, RichTextIconSpan;
 export 'src/text/renderers/sprite_font_renderer.dart' show SpriteFontRenderer;
 export 'src/text/renderers/text_paint.dart' show TextPaint;
 export 'src/text/renderers/text_renderer.dart' show TextRenderer;

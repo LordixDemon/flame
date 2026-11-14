@@ -202,6 +202,20 @@ class Images({AssetBundle? bundle, int? maxSizeBytes}) {
     removedAsset?.dispose();
   }
 
+  /// Disposes and removes [name] immediately **only** when its [retainCount] is
+  /// `0`, returning the estimated freed bytes (`0` when still retained or
+  /// absent).
+  int clearIfUnretained(String name) {
+    final asset = _assets[name];
+    if (asset == null || asset.refCount > 0) {
+      return 0;
+    }
+    final freed = asset.sizeBytes;
+    _assets.remove(name);
+    asset.dispose();
+    return freed;
+  }
+
   /// Removes all cached images.
   ///
   /// This calls [Image.dispose] for all images in the cache, so make sure that

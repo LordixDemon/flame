@@ -13,6 +13,21 @@ abstract class Hitbox<T extends Hitbox<T>>()
   ///   * [CollisionType.inactive] - not collide with any other hitboxes.
   CollisionType get collisionType;
 
+  /// 32-bit category bitmask describing which collision layers this hitbox
+  /// belongs to (defaults to layer `0x00000001`).
+  int get collisionLayer => 0x00000001;
+
+  /// 32-bit filter bitmask describing which `collisionLayer`s this hitbox can
+  /// interact with (defaults to `0xFFFFFFFF` = all layers).
+  int get collisionMask => 0xFFFFFFFF;
+
+  /// Symmetric `O(1)` bitwise layer/mask compatibility test: both hitboxes must
+  /// include at least one bit of the other's [collisionLayer] in their
+  /// [collisionMask].
+  bool canCollideWithMask(Hitbox<dynamic> other) =>
+      (collisionLayer & other.collisionMask) != 0 &&
+      (other.collisionLayer & collisionMask) != 0;
+
   /// The axis-aligned bounding box of the [Hitbox], this is used to make a
   /// rough estimation of whether two hitboxes can possibly collide or not.
   Aabb2 get aabb;

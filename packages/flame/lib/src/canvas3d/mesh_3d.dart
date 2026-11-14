@@ -12,6 +12,7 @@ class Mesh3D({
   required final Uint16List indices,
   final Float32List? ambientOcclusion,
   final Int32List? vertexColors,
+  final Float32List? uvs,
 }) {
   this
     : assert(
@@ -34,6 +35,10 @@ class Mesh3D({
       assert(
         vertexColors == null || vertexColors.length == positions.length ~/ 3,
         'vertexColors length must equal vertexCount',
+      ),
+      assert(
+        uvs == null || uvs.length == (positions.length ~/ 3) * 2,
+        'uvs length must equal vertexCount * 2',
       ) {
     final vCount = positions.length ~/ 3;
     if (vCount == 0) {
@@ -97,6 +102,7 @@ class Mesh3D({
     Float32List? normals,
     Float32List? ambientOcclusion,
     Int32List? vertexColors,
+    Float32List? uvs,
   }) {
     return Mesh3D(
       positions: positions,
@@ -104,6 +110,59 @@ class Mesh3D({
       indices: indices,
       ambientOcclusion: ambientOcclusion,
       vertexColors: vertexColors,
+      uvs: uvs,
+    );
+  }
+
+  /// Builds a horizontal `+Z`-facing quad centered at `(0, 0, z)` with
+  /// normalized `[0..1]` UV coordinates (4 vertices, 2 triangles).
+  factory Mesh3D.plane({
+    double sizeX = 1.0,
+    double sizeY = 1.0,
+    double z = 0.0,
+  }) {
+    final hx = sizeX * 0.5;
+    final hy = sizeY * 0.5;
+    return Mesh3D(
+      positions: Float32List.fromList(<double>[
+        -hx,
+        -hy,
+        z,
+        hx,
+        -hy,
+        z,
+        hx,
+        hy,
+        z,
+        -hx,
+        hy,
+        z,
+      ]),
+      normals: Float32List.fromList(<double>[
+        0,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        1,
+      ]),
+      uvs: Float32List.fromList(<double>[
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        1.0,
+        1.0,
+        0.0,
+        1.0,
+      ]),
+      indices: Uint16List.fromList(<int>[0, 1, 2, 0, 2, 3]),
     );
   }
 
@@ -123,6 +182,7 @@ class Mesh3D({
 
     final pos = Float32List(24 * 3);
     final nrm = Float32List(24 * 3);
+    final uv = Float32List(24 * 2);
     final ao = Float32List(24);
     final idx = Uint16List(12 * 3);
 
@@ -151,7 +211,7 @@ class Mesh3D({
       double nz,
     ) {
       final base = vCursor;
-      void put(double x, double y, double z, double vAo) {
+      void put(double x, double y, double z, double vAo, double u, double v) {
         final p = vCursor * 3;
         pos[p] = x;
         pos[p + 1] = y;
@@ -159,14 +219,17 @@ class Mesh3D({
         nrm[p] = nx;
         nrm[p + 1] = ny;
         nrm[p + 2] = nz;
+        final t = vCursor * 2;
+        uv[t] = u;
+        uv[t + 1] = v;
         ao[vCursor] = vAo;
         vCursor++;
       }
 
-      put(x0, y0, za, a0);
-      put(x1, y1, zb, a1);
-      put(x2, y2, zc, a2);
-      put(x3, y3, zd, a3);
+      put(x0, y0, za, a0, 0.0, 1.0);
+      put(x1, y1, zb, a1, 1.0, 1.0);
+      put(x2, y2, zc, a2, 1.0, 0.0);
+      put(x3, y3, zd, a3, 0.0, 0.0);
 
       idx[iCursor++] = base;
       idx[iCursor++] = base + 1;
@@ -314,6 +377,7 @@ class Mesh3D({
       normals: nrm,
       indices: idx,
       ambientOcclusion: ao,
+      uvs: uv,
     );
   }
 

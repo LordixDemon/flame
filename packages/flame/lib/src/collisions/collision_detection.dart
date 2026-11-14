@@ -40,7 +40,7 @@ abstract class CollisionDetection<
       final itemA = potential.a;
       final itemB = potential.b;
 
-      if (itemA.possiblyIntersects(itemB)) {
+      if (itemA.canCollideWithMask(itemB) && itemA.possiblyIntersects(itemB)) {
         final intersectionPoints = intersections(itemA, itemB);
         if (intersectionPoints.isNotEmpty) {
           if (!itemA.collidingWith(itemB)) {
