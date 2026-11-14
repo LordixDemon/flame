@@ -169,6 +169,46 @@ class const Raycaster3D._() {
         null;
   }
 
+  /// Fast analytical ray vs 3D bounding sphere intersection returning the
+  /// non-negative entry distance `t` (`0.0` if [ray] originates inside the
+  /// sphere), or `null` if the ray misses `[0..maxDistance]`.
+  static double? intersectSphereDistance(
+    Ray3D ray, {
+    required double cx,
+    required double cy,
+    required double cz,
+    required double radius,
+    double maxDistance = double.infinity,
+  }) {
+    if (radius < 0.0) {
+      return null;
+    }
+    final ocX = ray.ox - cx;
+    final ocY = ray.oy - cy;
+    final ocZ = ray.oz - cz;
+    final c = ocX * ocX + ocY * ocY + ocZ * ocZ - radius * radius;
+    if (c <= 0.0) {
+      return 0.0;
+    }
+    final a = ray.dx * ray.dx + ray.dy * ray.dy + ray.dz * ray.dz;
+    if (a <= 1e-12) {
+      return null;
+    }
+    final halfB = ocX * ray.dx + ocY * ray.dy + ocZ * ray.dz;
+    if (halfB >= 0.0) {
+      return null;
+    }
+    final disc = halfB * halfB - a * c;
+    if (disc < 0.0) {
+      return null;
+    }
+    final t = (-halfB - math.sqrt(disc)) / a;
+    if (t < 0.0 || t > maxDistance) {
+      return null;
+    }
+    return t;
+  }
+
   /// Intersects [worldRay] against an indexed triangle mesh positioned at
   /// `(worldX, worldY, worldZ)` with Z-axis rotation [MeshCollider3D.yawRad]
   /// and uniform [MeshCollider3D.scale], returning `(worldDistance, faceIndex)`

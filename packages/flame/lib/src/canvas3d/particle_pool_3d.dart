@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flame/src/canvas3d/camera_rig_3d.dart';
+import 'package:flame/src/game/game.dart';
 import 'package:flutter/painting.dart';
 
 /// Visual & physical archetype for particles simulated by [ParticlePool3D].
@@ -72,6 +73,9 @@ class ParticlePool3D({
 
   /// Clears all active particles immediately.
   void clear() {
+    if (_activeCount > 0) {
+      Game.notifyVisualMutation();
+    }
     _activeCount = 0;
     _cursor = 0;
   }
@@ -118,6 +122,7 @@ class ParticlePool3D({
     _spin[slot] = spin;
     _argb[slot] = color.toARGB32();
     _kind[slot] = kind.index;
+    Game.notifyVisualMutation();
   }
 
   /// Spawns a fountain of 3D tumbling gold coins that bounce on `z = 0`.
@@ -268,6 +273,7 @@ class ParticlePool3D({
     if (_activeCount == 0 || dt <= 0.0) {
       return;
     }
+    Game.notifyVisualMutation();
     final step = dt.clamp(0.0, 0.05);
 
     var idx = 0;

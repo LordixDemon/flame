@@ -1,5 +1,6 @@
 import 'package:flame/components.dart';
 import 'package:flame/events.dart';
+import 'package:flame/src/game/flame_game.dart';
 import 'package:meta/meta.dart';
 
 /// A base event that includes a location context, i.e. a position or set of
@@ -34,6 +35,10 @@ abstract class LocationContextEvent<C, R>({required super.raw})
     }
   }
 
+  /// Root game canvas coordinate associated with this event, if available.
+  @internal
+  Vector2? get eventCanvasPosition => null;
+
   @internal
   Iterable<Component> collectApplicableChildren({
     required Component rootComponent,
@@ -45,10 +50,17 @@ abstract class LocationContextEvent<C, R>({required super.raw})
     required void Function(T component) eventHandler,
     bool deliverToAll = false,
   }) {
+    final filter = rootComponent is FlameGame
+        ? rootComponent.inputHitFilter
+        : rootComponent.findRootGame()?.inputHitFilter;
+    final canvasPos = filter != null ? eventCanvasPosition : null;
     final children = collectApplicableChildren(
       rootComponent: rootComponent,
     );
     for (final child in children.whereType<T>()) {
+      if (filter != null && !filter(child, canvasPos)) {
+        continue;
+      }
       continuePropagation = deliverToAll;
       eventHandler(child);
       if (!continuePropagation) {

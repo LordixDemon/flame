@@ -107,6 +107,7 @@ class ParticleEmitterComponent({
     _completed = false;
     _lastAbsolutePosition = null;
     _emitting = autoStart;
+    Game.notifyVisualMutation();
   }
 
   @override
@@ -138,10 +139,21 @@ class ParticleEmitterComponent({
 
   /// Immediately spawns [count] particles, independently of the emission
   /// timeline. Spawns beyond the emitter's `maxParticles` are dropped.
-  void emit(int count) => _spawnMany(count);
+  void emit(int count) {
+    final before = _buffer.length;
+    _spawnMany(count);
+    if (_buffer.length != before) {
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Removes all live particles.
-  void clearParticles() => _buffer.clear();
+  void clearParticles() {
+    if (_buffer.length > 0) {
+      _buffer.clear();
+      Game.notifyVisualMutation();
+    }
+  }
 
   @override
   void update(double dt) {
@@ -155,7 +167,7 @@ class ParticleEmitterComponent({
     final hadParticles = _buffer.length > 0;
     _simulate(dt);
     if ((hadParticles || _buffer.length > 0) && dt > 0.0) {
-      findGame()?.markSceneDirty();
+      Game.notifyVisualMutation();
     }
     if (removeOnFinish && isFinished) {
       removeFromParent();

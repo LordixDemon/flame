@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flame/components.dart';
+import 'package:flame/src/game/game.dart';
 import 'package:meta/meta.dart';
 
 /// A helper class to make the [spriteAnimation] tick.
@@ -112,6 +113,7 @@ class SpriteAnimationTicker(final SpriteAnimation spriteAnimation) {
 
   /// Resets the animation, like it would just have been created.
   void reset() {
+    final prevIndex = currentIndex;
     clock = 0.0;
     elapsed = 0.0;
     currentIndex = 0;
@@ -123,6 +125,9 @@ class SpriteAnimationTicker(final SpriteAnimation spriteAnimation) {
     if (completeCompleter?.isCompleted ?? false) {
       completeCompleter = null;
     }
+    if (prevIndex != 0) {
+      Game.notifyVisualMutation();
+    }
   }
 
   /// Jumps directly to [index] (`0 <= index < spriteAnimation.frames.length`),
@@ -131,11 +136,15 @@ class SpriteAnimationTicker(final SpriteAnimation spriteAnimation) {
   /// [onEvent] hooks for [index].
   void jumpToFrame(int index, {bool emitEvents = false}) {
     RangeError.checkValidIndex(index, spriteAnimation.frames, 'index');
+    final changed = currentIndex != index;
     currentIndex = index;
     clock = 0.0;
     _done = false;
     if (completeCompleter?.isCompleted ?? false) {
       completeCompleter = null;
+    }
+    if (changed) {
+      Game.notifyVisualMutation();
     }
     if (emitEvents) {
       _emitFrame(index);
@@ -144,7 +153,11 @@ class SpriteAnimationTicker(final SpriteAnimation spriteAnimation) {
 
   /// Sets this animation to be on the last frame.
   void setToLast() {
-    currentIndex = spriteAnimation.frames.length - 1;
+    final lastIdx = spriteAnimation.frames.length - 1;
+    if (currentIndex != lastIdx) {
+      Game.notifyVisualMutation();
+    }
+    currentIndex = lastIdx;
     clock = spriteAnimation.frames[currentIndex].stepTime;
     elapsed = totalDuration();
     update(0);
@@ -199,6 +212,9 @@ class SpriteAnimationTicker(final SpriteAnimation spriteAnimation) {
       if (isLastFrame) {
         if (spriteAnimation.loop) {
           clock -= currentFrame.stepTime;
+          if (currentIndex != 0) {
+            Game.notifyVisualMutation();
+          }
           currentIndex = 0;
           _emitFrame(currentIndex);
         } else {
@@ -210,6 +226,7 @@ class SpriteAnimationTicker(final SpriteAnimation spriteAnimation) {
       } else {
         clock -= currentFrame.stepTime;
         currentIndex++;
+        Game.notifyVisualMutation();
         _emitFrame(currentIndex);
       }
     }

@@ -7,7 +7,8 @@ export 'src/particles/circle_particle_renderer.dart';
 export 'src/particles/color_ramp.dart';
 export 'src/particles/emitter_shape.dart';
 export 'src/particles/flipbook_particle_renderer.dart';
-export 'src/particles/particle_batch_group.dart';
+export 'src/particles/particle_batch_group.dart'
+    show BatchTransparentContainer, ParticleBatchGroup;
 export 'src/particles/particle_buffer.dart';
 export 'src/particles/particle_curve.dart';
 export 'src/particles/particle_emitter.dart';

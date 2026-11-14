@@ -419,60 +419,73 @@ class GameWidgetState<T extends Game>() extends State<GameWidget<T>> {
           autofocus: widget.autofocus,
           descendantsAreFocusable: true,
           onKeyEvent: _handleKeyEvent,
-          child: MouseRegion(
-            cursor: currentGame.mouseCursor,
-            opaque: widget.behavior == HitTestBehavior.opaque,
+          child: ValueListenableBuilder<MouseCursor>(
+            valueListenable: currentGame.mouseCursorListenable,
+            builder: (_, cursor, child) => MouseRegion(
+              cursor: cursor,
+              opaque: widget.behavior == HitTestBehavior.opaque,
+              child: child,
+            ),
             child: Directionality(
               textDirection: textDir,
-              child: ValueListenableBuilder<Color?>(
-                valueListenable: currentGame.backgroundColorListenable,
-                builder: (_, dynamicColor, child) => ColoredBox(
-                  color: dynamicColor ?? currentGame.backgroundColor(),
-                  child: child,
-                ),
-                child: LayoutBuilder(
-                  builder: (layoutContext, BoxConstraints constraints) {
-                    return _protectedBuild(() {
-                      final size = constraints.biggest.toVector2();
-                      if (size.isZero()) {
-                        return widget.loadingBuilder?.call(context) ??
-                            Container();
-                      }
-                      currentGame.onGameResize(size);
-                      currentGame.widgetBuildContext = layoutContext;
-                      // This should only be called if the game has already been
-                      // loaded (in the case of resizing for example), since
-                      // update otherwise should be called after onMount.
-                      if (!currentGame.isPaused && currentGame.isAttached) {
-                        currentGame.update(0);
-                      }
-                      return FutureBuilder(
-                        future: loaderFuture,
-                        builder: (_, snapshot) {
-                          if (snapshot.hasError) {
-                            final errorBuilder = widget.errorBuilder;
-                            if (errorBuilder == null) {
-                              throw Error.throwWithStackTrace(
-                                snapshot.error!,
-                                snapshot.stackTrace!,
-                              );
-                            } else {
-                              return errorBuilder(context, snapshot.error!);
-                            }
-                          }
-
-                          if (snapshot.connectionState ==
-                              ConnectionState.done) {
-                            return Stack(children: stackedWidgets);
-                          }
-
+              child: Stack(
+                fit: StackFit.passthrough,
+                children: [
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: ValueListenableBuilder<Color?>(
+                        valueListenable: currentGame.backgroundColorListenable,
+                        builder: (_, dynamicColor, _) => ColoredBox(
+                          color: dynamicColor ?? currentGame.backgroundColor(),
+                        ),
+                      ),
+                    ),
+                  ),
+                  LayoutBuilder(
+                    builder: (layoutContext, BoxConstraints constraints) {
+                      return _protectedBuild(() {
+                        final size = constraints.biggest.toVector2();
+                        if (size.isZero()) {
                           return widget.loadingBuilder?.call(context) ??
-                              const SizedBox.expand();
-                        },
-                      );
-                    });
-                  },
-                ),
+                              Container();
+                        }
+                        currentGame.onGameResize(size);
+                        currentGame.widgetBuildContext = layoutContext;
+                        // This should only be called if the game has already
+                        // been loaded (in the case of resizing for example),
+                        // since update otherwise should be called after
+                        // onMount.
+                        if (!currentGame.isPaused && currentGame.isAttached) {
+                          currentGame.update(0);
+                        }
+                        return FutureBuilder(
+                          future: loaderFuture,
+                          builder: (_, snapshot) {
+                            if (snapshot.hasError) {
+                              final errorBuilder = widget.errorBuilder;
+                              if (errorBuilder == null) {
+                                throw Error.throwWithStackTrace(
+                                  snapshot.error!,
+                                  snapshot.stackTrace!,
+                                );
+                              } else {
+                                return errorBuilder(context, snapshot.error!);
+                              }
+                            }
+
+                            if (snapshot.connectionState ==
+                                ConnectionState.done) {
+                              return Stack(children: stackedWidgets);
+                            }
+
+                            return widget.loadingBuilder?.call(context) ??
+                                const SizedBox.expand();
+                          },
+                        );
+                      });
+                    },
+                  ),
+                ],
               ),
             ),
           ),

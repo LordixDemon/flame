@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flame/components.dart';
+import 'package:flame/src/game/game.dart';
 import 'package:flutter/painting.dart';
 
 /// Zero-allocation Struct-of-Arrays 2D ribbon trail component rendered in a
@@ -69,6 +70,9 @@ class RibbonTrailComponent({
 
   /// Clears all active points immediately.
   void clear() {
+    if (_count > 0) {
+      Game.notifyVisualMutation();
+    }
     _head = 0;
     _count = 0;
   }
@@ -97,6 +101,7 @@ class RibbonTrailComponent({
       _ptAge[slot] = 0.0;
       _count++;
     }
+    Game.notifyVisualMutation();
   }
 
   /// Convenience wrapper for [addPointXY].
@@ -105,6 +110,7 @@ class RibbonTrailComponent({
 
   @override
   void update(double dt) {
+    final hadPoints = _count > 0;
     for (var i = 0; i < _count; i++) {
       final idx = (_head + i) % maxPoints;
       _ptAge[idx] += dt;
@@ -118,6 +124,9 @@ class RibbonTrailComponent({
     if (provider != null) {
       final p = provider();
       addPointXY(p.x, p.y);
+    }
+    if (hadPoints && dt > 0.0) {
+      Game.notifyVisualMutation();
     }
   }
 
@@ -478,6 +487,7 @@ class VerletRope2D({
     prevX[index] = x;
     prevY[index] = y;
     pinned[index] = isPinned ? 1 : 0;
+    Game.notifyVisualMutation();
   }
 
   /// Advances Verlet integration and distance constraints by [dt] seconds.
@@ -485,6 +495,7 @@ class VerletRope2D({
     if (dt <= 0.0) {
       return;
     }
+    Game.notifyVisualMutation();
     final clampedDt = math.min(dt, 1.0 / 20.0);
     final dt2 = clampedDt * clampedDt;
     final damp = damping.clamp(0.0, 1.0);

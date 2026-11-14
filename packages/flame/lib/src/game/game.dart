@@ -12,6 +12,7 @@ import 'package:flame/src/game/game_widget/gesture_detector_builder.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 // ignore: unnecessary_import
 import 'package:meta/meta.dart';
@@ -330,9 +331,8 @@ abstract mixin class Game() {
   /// `DeferHitTestToComponents` mixin, or override this with your own rule.
   bool containsEventHandlerAt(Vector2 position) => true;
 
-  final ValueNotifier<Color?> _backgroundColorNotifier = ValueNotifier<Color?>(
-    null,
-  );
+  final _BuildSafeValueNotifier<Color?> _backgroundColorNotifier =
+      _BuildSafeValueNotifier<Color?>(null);
 
   /// Internal listenable updating the `GameWidget`'s background `ColoredBox`
   /// in isolation without rebuilding `GameWidgetState`.
@@ -345,19 +345,19 @@ abstract mixin class Game() {
   /// Updating this property repaints the background immediately with zero
   /// `GameWidgetState` rebuilds; setting it to `null` falls back to
   /// [backgroundColor].
-  Color? get backgroundColorValue => _backgroundColorNotifier.value;
+  Color? get backgroundColorValue => _backgroundColorNotifier.currentValue;
   set backgroundColorValue(Color? value) {
-    if (_backgroundColorNotifier.value == value) {
+    if (_backgroundColorNotifier.currentValue == value) {
       return;
     }
-    _backgroundColorNotifier.value = value;
+    _backgroundColorNotifier.setBuildSafe(value);
     markSceneDirty();
     _gameRenderBox?.markNeedsPaint();
   }
 
   /// Resolved background color (`backgroundColorValue ?? backgroundColor()`).
   Color get effectiveBackgroundColor =>
-      _backgroundColorNotifier.value ?? backgroundColor();
+      _backgroundColorNotifier.currentValue ?? backgroundColor();
 
   /// Returns the default game background color when [backgroundColorValue] is
   /// `null`. To mutate the background color dynamically at runtime without
@@ -596,6 +596,20 @@ abstract mixin class Game() {
   /// Controls whether clean (visually unchanged) frames skip GPU repaints while
   /// keeping `update(dt)` simulation ticks active.
   IdleRenderMode idleRenderMode = IdleRenderMode.always;
+
+  /// Monotonic global counter incremented whenever a visual-only mutation
+  /// occurs outside `Transform2D` (such as particle simulation, sprite
+  /// animation frame advances, `HasPaint` color/opacity mutations, animated
+  /// rich text, ribbon trails, Verlet ropes, or `Node3D` 3D transforms) so
+  /// [IdleRenderMode.onDemand] and [IdleRenderMode.onDemandWhenIdle] wake up
+  /// automatically with zero per-frame allocations.
+  static int visualMutationCount = 0;
+
+  /// Notifies the engine that visual-only state changed and the next tick
+  /// should repaint even when [IdleRenderMode.onDemand] is active.
+  static void notifyVisualMutation() {
+    visualMutationCount++;
+  }
 
   bool _sceneDirty = true;
   double _renderAccumulator = 0.0;
@@ -840,15 +854,22 @@ abstract mixin class Game() {
     }
   }
 
+  final _BuildSafeValueNotifier<MouseCursor> _mouseCursorNotifier =
+      _BuildSafeValueNotifier<MouseCursor>(MouseCursor.defer);
+
+  /// Listenable updating the `GameWidget`'s `MouseRegion` cursor in isolation
+  /// without rebuilding `GameWidgetState` (`0` widget tree rebuilds).
+  ValueListenable<MouseCursor> get mouseCursorListenable =>
+      _mouseCursorNotifier;
+
   /// Used to change the mouse cursor of the GameWidget running this game.
-  /// Setting the value to null will make the GameWidget defer the choice
-  /// of the cursor to the closest region available on the tree.
-  MouseCursor get mouseCursor => _mouseCursor;
-  MouseCursor _mouseCursor = MouseCursor.defer;
+  ///
+  /// Updating this property notifies [mouseCursorListenable] in isolation
+  /// without rebuilding `GameWidgetState`.
+  MouseCursor get mouseCursor => _mouseCursorNotifier.currentValue;
 
   set mouseCursor(MouseCursor value) {
-    _mouseCursor = value;
-    refreshWidget();
+    _mouseCursorNotifier.setBuildSafe(value);
   }
 
   @visibleForTesting
@@ -874,5 +895,40 @@ abstract mixin class Game() {
   void refreshWidget({bool isInternalRefresh = true}) {
     _isInternalRefresh = isInternalRefresh;
     gameStateListeners.forEach((callback) => callback());
+  }
+}
+
+class _BuildSafeValueNotifier<T>(super._value) extends ValueNotifier<T> {
+  late T _currentValue = value;
+  bool _microtaskScheduled = false;
+
+  T get currentValue => _currentValue;
+
+  void setBuildSafe(T next) {
+    if (_currentValue == next) {
+      return;
+    }
+    _currentValue = next;
+    if (!hasListeners) {
+      super.value = next;
+      return;
+    }
+    SchedulerPhase? phase;
+    try {
+      phase = SchedulerBinding.instance.schedulerPhase;
+    } on Object {
+      phase = null;
+    }
+    if (phase == SchedulerPhase.persistentCallbacks) {
+      if (!_microtaskScheduled) {
+        _microtaskScheduled = true;
+        Future.microtask(() {
+          _microtaskScheduled = false;
+          super.value = _currentValue;
+        });
+      }
+    } else {
+      super.value = next;
+    }
   }
 }

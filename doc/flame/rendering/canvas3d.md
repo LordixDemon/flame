@@ -213,3 +213,35 @@ cloud in a single `Canvas.drawRawAtlas` call.
 - **`MeshLodChain3D`**: Selects `high` / `medium` / `low` `Mesh3D` levels by projected screen radius
   (or generates decimated chains via `MeshLodChain3D.progressive(...)`), cutting triangle counts
   automatically during zoomed-out overview framing.
+
+
+## Multi-Material Global Z-Sorting, Quaternions, Deformable Meshes, Surgical Chunks & Decoupled Shadows
+
+- **Multi-Material, Multi-Texture & Multi-BlendMode Global Z-Sorting (`Material3D`)**: Assign
+  `Material3D.matCap(...)`, `Material3D.texture(imageShader, width:, height:)`, or
+  `Material3D.unshaded(blendMode:)` per `enqueueMesh`, `Node3D`, or `StaticMeshInstance3D`.
+  `BatchMeshRenderer3D` globally depth-sorts all triangles across materials first and then emits
+  contiguous material runs (`lastFlushMaterialSwitches`), preserving exact 3D occlusion across
+  opaque, textured, translucent, and additive surfaces.
+- **Gimbal-Lock-Free `Quaternion3D`, Full `3x3` `Node3D` Composition & Zero-Alloc Deformation**:
+  - `Quaternion3D` (`normalize`, `fromAxisAngle`, `fromEuler`, `multiply`, shortest-arc `slerp`,
+    `writeMatrix3`, `multiplyMatrix3`), `rotationQuat` / `rotationMatrix3` on `enqueueMesh`, and
+    true `3x3` parent pitch/roll/quaternion matrix composition across `Node3D` hierarchies
+    (`setLocalQuaternion`, `worldPointForLocal`).
+  - `MorphTarget3D` & `MorphMeshWorkspace3D` (`enqueueMorphMesh`) for zero-GC blendshape animation
+    with automatic normal renormalization, plus `Bone3D` & `SkinnedMeshWorkspace3D`
+    (`enqueueSkinnedMesh`) for 2-bone Linear Blend Skinning.
+- **Texture UV Preservation & Surgical `O(V_slot)` Partial Updates in `StaticMeshChunk3D`**:
+  `StaticMeshChunk3D` preserves both MatCap view-normal UVs and atlas pixel/normalized texture UVs
+  (`uvRectPx`), returns a slot index from `addInstance`/`add`, and updates single instances in-place
+  via `updateInstance(slot, next)` / `setInstanceVisible(slot, visible:)` (`partialSlotRebakeCount`)
+  without rebuilding sibling geometry.
+- **Back-Face/Grazing Shadow Culling, Height Penumbra & Split Multi-Pass Flush**:
+  `BatchMeshRenderer3D(cullBackfaceShadows: true, shadowHeightFalloff: ...)` eliminates duplicate
+  back-face + zero-area grazing shadow triangles (`nDotL <= 1e-6`), attenuates shadow alpha with
+  caster height above ground, and exposes `flushShadows(canvas)` + `flushGeometry(canvas)` for
+  multi-pass ground-decal pipelines.
+- **`O(k)` `World.spatialHitboxes3D` & `boundingSphere3D` Ray Broadphase**: `World` maintains a live
+  registry of mounted `SpatialHitbox3D` components and `CameraComponent` prunes non-intersecting 3D
+  bounds via `Raycaster3D.intersectSphereDistance` (`lastSpatialRayCandidatesTested`,
+  `lastSpatialRayNarrowphaseTests`) without traversing non-3D world props.

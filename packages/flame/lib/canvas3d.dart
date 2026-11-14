@@ -1,11 +1,14 @@
 /// Impeller-native 3D camera projection, Möller–Trumbore raycasting, procedural
-/// MatCap shaders, and Struct-of-Arrays 3D particle batching on Flutter's
+/// MatCap shaders, multi-material depth-sorted mesh batching, quaternion/morph/
+/// skeletal deformation, and Struct-of-Arrays 3D particle batching on Flutter's
 /// standard `Canvas` (`drawVertices`) without requiring `--enable-flutter-gpu`.
 library;
 
 export 'src/canvas3d/batch_mesh_renderer_3d.dart';
 export 'src/canvas3d/camera_rig_3d.dart';
+export 'src/canvas3d/deformable_mesh_3d.dart';
 export 'src/canvas3d/matcap_shader_3d.dart';
+export 'src/canvas3d/material_3d.dart';
 export 'src/canvas3d/mesh_3d.dart';
 export 'src/canvas3d/mesh_lod_chain_3d.dart';
 export 'src/canvas3d/node_uv_decal_3d.dart';

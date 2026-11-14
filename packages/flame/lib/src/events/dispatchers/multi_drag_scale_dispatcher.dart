@@ -1,6 +1,7 @@
 import 'package:flame/components.dart';
 import 'package:flame/events.dart';
 import 'package:flame/game.dart';
+import 'package:flame/src/canvas3d/spatial_hit_testing_3d.dart';
 import 'package:flame/src/events/tagged_component.dart';
 import 'package:flame/src/game/game_render_box.dart';
 import 'package:flutter/gestures.dart';
@@ -25,6 +26,14 @@ class const MultiDragScaleDispatcherKey() implements ComponentKey {
 class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
   /// The record of all components currently being touched.
   final Set<TaggedComponent<DragCallbacks>> _records = {};
+
+  /// Last observed canvas coordinate per active drag pointerId.
+  final Map<int, Vector2> _lastCanvasPosByPointer = {};
+
+  /// Active hovered [DropTargetCallbacks] per dragged `(pointerId, component)`.
+  final Map<TaggedComponent<DragCallbacks>, DropTargetCallbacks>
+  _hoveredDropTargets = {};
+  final List<Vector2> _dropHitTraceScratch = <Vector2>[];
 
   // Reference counts rather than booleans so that enableDrag/enableScale can
   // be called before onMount (when _recognizer is null). onMount uses these
@@ -156,22 +165,177 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
     }
   }
 
-  /// Called when the user initiates a drag gesture, for example by touching the
-  /// screen and then moving the finger.
-  ///
-  /// The handler propagates the [event] to any component located at the point
-  /// of touch and that uses the [DragCallbacks] mixin. The event will be first
-  /// delivered to the topmost such component, and then propagated to the
-  /// components below only if explicitly requested.
-  ///
-  /// Each [event] has an `event.pointerId` to keep track of multiple touches
-  /// that may occur simultaneously.
-  ///
-  /// A component that sets [DragCallbacks.allowsMultiPointerDrag] to false is
-  /// skipped while it already has a drag in progress, and the event carries on
-  /// to the components below it.
+  static bool _isSelfOrDescendantOf(Component candidate, Component root) {
+    Component? cur = candidate;
+    while (cur != null) {
+      if (identical(cur, root)) {
+        return true;
+      }
+      cur = cur.parent;
+    }
+    return false;
+  }
+
+  (DropTargetCallbacks, DragDropEvent)? _resolveDropTarget({
+    required int pointerId,
+    required Component dragged,
+    required Vector2 canvasPos,
+    Vector2? velocity,
+  }) {
+    _dropHitTraceScratch.clear();
+    (DropTargetCallbacks, DragDropEvent)? resolved;
+    for (final candidate in gameRef.componentsAtPoint(
+      canvasPos,
+      _dropHitTraceScratch,
+    )) {
+      if (candidate is! DropTargetCallbacks || !candidate.dropTargetEnabled) {
+        continue;
+      }
+      if (_isSelfOrDescendantOf(candidate, dragged)) {
+        continue;
+      }
+      if (!gameRef.allowsInputHit(candidate, canvasPos)) {
+        continue;
+      }
+      final localPos = _dropHitTraceScratch.isNotEmpty
+          ? _dropHitTraceScratch.last.clone()
+          : canvasPos.clone();
+      final spatial = (candidate as Component) is SpatialHitbox3D
+          ? (candidate as Component) as SpatialHitbox3D
+          : null;
+      final hit3D = (spatial != null && spatial.isActiveSpatialRayHit)
+          ? spatial.lastHitPoint3D
+          : null;
+      final dist3D = (spatial != null && spatial.isActiveSpatialRayHit)
+          ? spatial.lastHitDistance3D
+          : null;
+      final dropEvent = DragDropEvent(
+        pointerId: pointerId,
+        draggedComponent: dragged,
+        canvasPosition: canvasPos.clone(),
+        localPosition: localPos,
+        hitPoint3D: hit3D,
+        hitDistance3D: dist3D,
+        velocity: velocity,
+      );
+      if (!candidate.canAcceptDrop(dragged, dropEvent)) {
+        continue;
+      }
+      resolved = (candidate, dropEvent);
+      CameraComponent.currentCameras.clear();
+      break;
+    }
+    _dropHitTraceScratch.clear();
+    return resolved;
+  }
+
+  void _updateDropTargetForRecord(
+    TaggedComponent<DragCallbacks> record,
+    Vector2 canvasPos,
+  ) {
+    final dragged = record.component;
+    final prevTarget = _hoveredDropTargets[record];
+    final hit = _resolveDropTarget(
+      pointerId: record.pointerId,
+      dragged: dragged,
+      canvasPos: canvasPos,
+    );
+    final nextTarget = hit?.$1;
+
+    if (!identical(prevTarget, nextTarget)) {
+      if (prevTarget != null) {
+        _hoveredDropTargets.remove(record);
+        if (prevTarget.isMounted && !prevTarget.isRemoving) {
+          prevTarget.onDragTargetLeave(
+            DragDropEvent(
+              pointerId: record.pointerId,
+              draggedComponent: dragged,
+              canvasPosition: canvasPos.clone(),
+              localPosition: canvasPos.clone(),
+            ),
+          );
+        }
+      }
+      if (nextTarget != null && hit != null) {
+        _hoveredDropTargets[record] = nextTarget;
+        nextTarget.onDragTargetEnter(hit.$2);
+      }
+    } else if (nextTarget != null && hit != null) {
+      nextTarget.onDragTargetMove(hit.$2);
+    }
+  }
+
+  void _completeDropForRecord(
+    TaggedComponent<DragCallbacks> record,
+    Vector2? canvasPos,
+    Vector2 velocity,
+  ) {
+    final prevTarget = _hoveredDropTargets.remove(record);
+    if (canvasPos == null) {
+      if (prevTarget != null &&
+          prevTarget.isMounted &&
+          !prevTarget.isRemoving) {
+        prevTarget.onDragTargetCancel(
+          DragDropEvent(
+            pointerId: record.pointerId,
+            draggedComponent: record.component,
+            canvasPosition: Vector2.zero(),
+            localPosition: Vector2.zero(),
+          ),
+        );
+      }
+      return;
+    }
+    final hit = _resolveDropTarget(
+      pointerId: record.pointerId,
+      dragged: record.component,
+      canvasPos: canvasPos,
+      velocity: velocity,
+    );
+    final finalTarget = hit?.$1;
+    if (prevTarget != null &&
+        !identical(prevTarget, finalTarget) &&
+        prevTarget.isMounted &&
+        !prevTarget.isRemoving) {
+      prevTarget.onDragTargetLeave(
+        DragDropEvent(
+          pointerId: record.pointerId,
+          draggedComponent: record.component,
+          canvasPosition: canvasPos.clone(),
+          localPosition: canvasPos.clone(),
+        ),
+      );
+    }
+    if (finalTarget != null && hit != null) {
+      if (!identical(prevTarget, finalTarget)) {
+        finalTarget.onDragTargetEnter(hit.$2);
+      }
+      finalTarget.onDrop(hit.$2);
+    }
+  }
+
+  void _cancelDropForRecord(
+    TaggedComponent<DragCallbacks> record,
+    Vector2? canvasPos,
+  ) {
+    final prevTarget = _hoveredDropTargets.remove(record);
+    if (prevTarget != null && prevTarget.isMounted && !prevTarget.isRemoving) {
+      final pos = canvasPos?.clone() ?? Vector2.zero();
+      prevTarget.onDragTargetCancel(
+        DragDropEvent(
+          pointerId: record.pointerId,
+          draggedComponent: record.component,
+          canvasPosition: pos,
+          localPosition: pos.clone(),
+        ),
+      );
+    }
+  }
+
   @mustCallSuper
   void onDragStart(DragStartEvent event) {
+    _lastCanvasPosByPointer[event.pointerId] = event.canvasPosition.clone();
+    final startedRecords = <TaggedComponent<DragCallbacks>>[];
     event.deliverAtPoint(
       rootComponent: gameRef,
       eventHandler: (DragCallbacks component) {
@@ -179,10 +343,18 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
           event.continuePropagation = true;
           return;
         }
-        _records.add(TaggedComponent(event.pointerId, component));
+        final record = TaggedComponent(event.pointerId, component);
+        _records.add(record);
+        startedRecords.add(record);
         component.onDragStart(event);
       },
     );
+    for (var i = 0; i < startedRecords.length; i++) {
+      final rec = startedRecords[i];
+      if (rec.component.isMounted && !rec.component.isRemoving) {
+        _updateDropTargetForRecord(rec, event.canvasPosition);
+      }
+    }
   }
 
   bool _isDragging(DragCallbacks component) {
@@ -200,8 +372,17 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
   /// with an empty rendering trace, so its local coordinates are unavailable.
   @mustCallSuper
   void onDragUpdate(DragUpdateEvent event) {
+    final prevPos = _lastCanvasPosByPointer[event.pointerId];
+    final currentCanvasPos =
+        (prevPos != null &&
+            !event.canvasDelta.isZero() &&
+            prevPos.distanceToSquared(event.canvasStartPosition) <= 1e-6)
+        ? event.canvasEndPosition
+        : event.canvasStartPosition;
+    _lastCanvasPosByPointer[event.pointerId] = currentCanvasPos.clone();
     final updated = <TaggedComponent<DragCallbacks>>{};
     final stale = <TaggedComponent<DragCallbacks>>{};
+    final activeForPointer = <TaggedComponent<DragCallbacks>>[];
     event.deliverAtPoint(
       rootComponent: gameRef,
       deliverToAll: true,
@@ -213,6 +394,7 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
           } else {
             component.onDragUpdate(event);
             updated.add(record);
+            activeForPointer.add(record);
           }
         }
       },
@@ -228,11 +410,19 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
       }
       if (!updated.contains(record)) {
         component.onDragUpdate(event);
+        activeForPointer.add(record);
+      }
+    }
+    for (var i = 0; i < activeForPointer.length; i++) {
+      final rec = activeForPointer[i];
+      if (rec.component.isMounted && !rec.component.isRemoving) {
+        _updateDropTargetForRecord(rec, currentCanvasPos);
       }
     }
     if (stale.isNotEmpty) {
       final cancelEvent = DragCancelEvent(event.pointerId);
       for (final record in stale) {
+        _cancelDropForRecord(record, currentCanvasPos);
         record.component.onDragCancel(cancelEvent);
       }
       _records.removeAll(stale);
@@ -246,24 +436,36 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
   /// [onDragUpdate]s.
   @mustCallSuper
   void onDragEnd(DragEndEvent event) {
+    final lastPos = _lastCanvasPosByPointer.remove(event.pointerId);
+    final endedRecords = <TaggedComponent<DragCallbacks>>[];
     _records.removeWhere((record) {
       if (record.pointerId == event.pointerId) {
+        endedRecords.add(record);
         record.component.onDragEnd(event);
         return true;
       }
       return false;
     });
+    for (var i = 0; i < endedRecords.length; i++) {
+      _completeDropForRecord(endedRecords[i], lastPos, event.velocity);
+    }
   }
 
   @mustCallSuper
   void onDragCancel(DragCancelEvent event) {
+    final lastPos = _lastCanvasPosByPointer.remove(event.pointerId);
+    final cancelledRecords = <TaggedComponent<DragCallbacks>>[];
     _records.removeWhere((record) {
       if (record.pointerId == event.pointerId) {
+        cancelledRecords.add(record);
         record.component.onDragCancel(event);
         return true;
       }
       return false;
     });
+    for (var i = 0; i < cancelledRecords.length; i++) {
+      _cancelDropForRecord(cancelledRecords[i], lastPos);
+    }
   }
 
   //#region MultiDragScaleGestureRecognizer drag API

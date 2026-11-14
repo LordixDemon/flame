@@ -1,6 +1,7 @@
 import 'package:flame/components.dart';
 import 'package:flame/events.dart';
 import 'package:flame/src/game/game.dart';
+import 'package:meta/meta.dart';
 
 /// Location context for the Displacement Event.
 ///
@@ -92,6 +93,10 @@ abstract class DisplacementEvent<R>(
   /// the components via [deliverAtPoint]. It is an error to try to read this
   /// property at other times.
   Vector2 get localDelta => localEndPosition - localStartPosition;
+
+  @override
+  @internal
+  Vector2? get eventCanvasPosition => canvasEndPosition;
 
   @override
   Iterable<Component> collectApplicableChildren({

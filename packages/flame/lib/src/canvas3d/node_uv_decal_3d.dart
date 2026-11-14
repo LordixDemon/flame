@@ -1,19 +1,26 @@
-import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flame/src/canvas3d/batch_mesh_renderer_3d.dart';
 import 'package:flame/src/canvas3d/camera_rig_3d.dart';
+import 'package:flame/src/canvas3d/deformable_mesh_3d.dart';
+import 'package:flame/src/canvas3d/material_3d.dart';
 import 'package:flame/src/canvas3d/mesh_3d.dart';
+import 'package:flame/src/game/game.dart';
 
-/// Hierarchical 3D scene-graph node for articulated `canvas3d` props (windmill
-/// sails, clock hands, turret barrels, vehicle wheels, hinged chests).
+/// Hierarchical 3D scene-graph node for articulated `canvas3d` props (tilting
+/// cups, character limbs, windmill sails, clock hands, turret barrels, hinged
+/// chests).
 ///
-/// Composes parent-to-child translation, Z-yaw rotation, and scale cleanly
-/// without per-frame heap allocations, and submits its entire subtree into a
-/// [BatchMeshRenderer3D] in a single traversal.
+/// Composes full 3D parent-to-child translation, `3x3` orthonormal rotation
+/// (both Euler `(yaw, pitch, roll)` and gimbal-lock-free quaternions via
+/// [setLocalQuaternion]), and scale without per-frame heap allocations, and
+/// submits its entire subtree into a [BatchMeshRenderer3D] in a single
+/// traversal.
 class Node3D({
   this.name = '',
   this.mesh,
+  this.material,
   this.localX = 0.0,
   this.localY = 0.0,
   this.localZ = 0.0,
@@ -36,6 +43,9 @@ class Node3D({
   /// Optional 3D mesh attached to this node (`null` for pure pivot nodes).
   Mesh3D? mesh;
 
+  /// Optional per-node [Material3D] override inside `BatchMeshRenderer3D`.
+  Material3D? material;
+
   /// Local X offset in parent coordinates.
   double localX;
 
@@ -45,13 +55,16 @@ class Node3D({
   /// Local Z offset in parent coordinates.
   double localZ;
 
-  /// Local yaw around `+Z` in radians.
+  /// Local yaw around `+Z` in radians (used when [hasLocalQuaternion] is
+  /// `false`).
   double localYawRad;
 
-  /// Local pitch around `+Y` in radians.
+  /// Local pitch around `+Y` in radians (used when [hasLocalQuaternion] is
+  /// `false`).
   double localPitchRad;
 
-  /// Local roll around `+X` in radians.
+  /// Local roll around `+X` in radians (used when [hasLocalQuaternion] is
+  /// `false`).
   double localRollRad;
 
   /// Local X scale multiplier.
@@ -82,6 +95,12 @@ class Node3D({
   /// Whether this node and its subtree are visible.
   bool visible;
 
+  bool _useQuaternion = false;
+  double _qx = 0.0;
+  double _qy = 0.0;
+  double _qz = 0.0;
+  double _qw = 1.0;
+
   Node3D? _parent;
   final List<Node3D> _children = <Node3D>[];
 
@@ -93,6 +112,44 @@ class Node3D({
   double _worldScaleY = 1.0;
   double _worldScaleZ = 1.0;
   double _worldOpacity = 1.0;
+  final Float32List _localRot = Float32List(9)
+    ..[0] = 1.0
+    ..[4] = 1.0
+    ..[8] = 1.0;
+  final Float32List _worldRot = Float32List(9)
+    ..[0] = 1.0
+    ..[4] = 1.0
+    ..[8] = 1.0;
+
+  /// Whether local orientation is driven by an explicit unit quaternion set via
+  /// [setLocalQuaternion] instead of `(localYawRad, localPitchRad,
+  /// localRollRad)`.
+  bool get hasLocalQuaternion => _useQuaternion;
+
+  /// Active local quaternion `(qx, qy, qz, qw)` when [hasLocalQuaternion] is
+  /// `true`.
+  (double, double, double, double) get localQuaternion => (_qx, _qy, _qz, _qw);
+
+  /// Overrides local Euler angles with a gimbal-lock-free quaternion
+  /// `(qx, qy, qz, qw)`.
+  void setLocalQuaternion(double qx, double qy, double qz, double qw) {
+    final (nx, ny, nz, nw) = Quaternion3D.normalize(qx, qy, qz, qw);
+    _qx = nx;
+    _qy = ny;
+    _qz = nz;
+    _qw = nw;
+    _useQuaternion = true;
+    Game.notifyVisualMutation();
+  }
+
+  /// Reverts local rotation mode back to `(localYawRad, localPitchRad,
+  /// localRollRad)`.
+  void clearLocalQuaternion() {
+    if (_useQuaternion) {
+      _useQuaternion = false;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Parent node in the 3D hierarchy (`null` if root).
   Node3D? get parent => _parent;
@@ -121,18 +178,40 @@ class Node3D({
   /// Computed world Z scale after [updateWorldTransforms].
   double get worldScaleZ => _worldScaleZ;
 
+  /// Row-major `3x3` world rotation matrix computed by [updateWorldTransforms].
+  Float32List get worldRotationMatrix => _worldRot;
+
+  /// Transforms a point `(lx, ly, lz)` in this node's local space into 3D world
+  /// coordinates `(wx, wy, wz)` using the latest [updateWorldTransforms].
+  (double wx, double wy, double wz) worldPointForLocal(
+    double lx,
+    double ly,
+    double lz,
+  ) {
+    final sx = lx * _worldScaleX;
+    final sy = ly * _worldScaleY;
+    final sz = lz * _worldScaleZ;
+    return (
+      _worldX + _worldRot[0] * sx + _worldRot[1] * sy + _worldRot[2] * sz,
+      _worldY + _worldRot[3] * sx + _worldRot[4] * sy + _worldRot[5] * sz,
+      _worldZ + _worldRot[6] * sx + _worldRot[7] * sy + _worldRot[8] * sz,
+    );
+  }
+
   /// Attaches [child] under this node.
   void addChild(Node3D child) {
     assert(!identical(child, this), 'Cannot parent a Node3D to itself');
     child._parent?.removeChild(child);
     child._parent = this;
     _children.add(child);
+    Game.notifyVisualMutation();
   }
 
   /// Detaches [child] from this node.
   bool removeChild(Node3D child) {
     if (_children.remove(child)) {
       child._parent = null;
+      Game.notifyVisualMutation();
       return true;
     }
     return false;
@@ -152,8 +231,20 @@ class Node3D({
     return null;
   }
 
-  /// Recursively updates world transforms down the hierarchy.
+  /// Recursively updates full 3D world transforms (translation, `3x3` rotation
+  /// including parent pitch/roll/quaternion, and scale) down the hierarchy.
   void updateWorldTransforms() {
+    if (_useQuaternion) {
+      Quaternion3D.writeMatrix3(_qx, _qy, _qz, _qw, _localRot);
+    } else {
+      Quaternion3D.writeEulerMatrix3(
+        yawRad: localYawRad,
+        pitchRad: localPitchRad,
+        rollRad: localRollRad,
+        out: _localRot,
+      );
+    }
+
     final p = _parent;
     if (p == null) {
       _worldX = localX;
@@ -164,20 +255,21 @@ class Node3D({
       _worldScaleY = localScaleY;
       _worldScaleZ = localScaleZ;
       _worldOpacity = opacity.clamp(0.0, 1.0);
+      _worldRot.setRange(0, 9, _localRot);
     } else {
       final sx = localX * p._worldScaleX;
       final sy = localY * p._worldScaleY;
       final sz = localZ * p._worldScaleZ;
-      final c = math.cos(p._worldYawRad);
-      final s = math.sin(p._worldYawRad);
-      _worldX = p._worldX + sx * c - sy * s;
-      _worldY = p._worldY + sx * s + sy * c;
-      _worldZ = p._worldZ + sz;
+      final pr = p._worldRot;
+      _worldX = p._worldX + pr[0] * sx + pr[1] * sy + pr[2] * sz;
+      _worldY = p._worldY + pr[3] * sx + pr[4] * sy + pr[5] * sz;
+      _worldZ = p._worldZ + pr[6] * sx + pr[7] * sy + pr[8] * sz;
       _worldYawRad = p._worldYawRad + localYawRad;
       _worldScaleX = p._worldScaleX * localScaleX;
       _worldScaleY = p._worldScaleY * localScaleY;
       _worldScaleZ = p._worldScaleZ * localScaleZ;
       _worldOpacity = (p._worldOpacity * opacity).clamp(0.0, 1.0);
+      Quaternion3D.multiplyMatrix3(pr, 0, _localRot, 0, _worldRot, 0);
     }
 
     for (var i = 0; i < _children.length; i++) {
@@ -225,13 +317,12 @@ class Node3D({
         scaleX: _worldScaleX,
         scaleY: _worldScaleY,
         scaleZ: _worldScaleZ,
-        yawRad: _worldYawRad,
-        pitchRad: localPitchRad,
-        rollRad: localRollRad,
+        rotationMatrix3: _worldRot,
         tint: tint,
         opacity: _worldOpacity,
         emissive: emissive,
         uvRectPx: uvRectPx,
+        material: material,
         castGroundShadow: castGroundShadow,
         groundZ: groundZ,
       );
@@ -264,6 +355,7 @@ class Decal3D({
   this.opacity = 1.0,
   this.emissive = 0.35,
   this.uvRectPx,
+  this.material,
 }) {
   static final Mesh3D _unitQuad = Mesh3D.plane();
 
@@ -306,6 +398,10 @@ class Decal3D({
   /// Optional atlas pixel UV sub-rectangle mapped onto the decal quad.
   Rect? uvRectPx;
 
+  /// Optional per-decal [Material3D] (e.g. `Material3D.texture(...,
+  /// blendMode: BlendMode.plus)` for additive runes/rings).
+  Material3D? material;
+
   /// Enqueues this decal into [renderer] without allocating a new mesh.
   void enqueue(
     BatchMeshRenderer3D renderer, {
@@ -331,6 +427,7 @@ class Decal3D({
       opacity: opacity,
       emissive: emissive,
       uvRectPx: uvRectPx,
+      material: material,
     );
   }
 }

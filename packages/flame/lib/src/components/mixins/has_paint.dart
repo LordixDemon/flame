@@ -3,6 +3,7 @@ import 'dart:ui';
 
 import 'package:flame/components.dart';
 import 'package:flame/effects.dart';
+import 'package:flame/src/game/game.dart';
 import 'package:flame/src/palette.dart';
 import 'package:flame/src/rendering/hue_decorator.dart';
 import 'package:meta/meta.dart';
@@ -47,11 +48,14 @@ mixin HasPaint<T extends Object> on Component
   /// Sets a paint on the collection.
   void setPaint(T paintId, Paint paint) {
     _paints[paintId] = paint;
+    Game.notifyVisualMutation();
   }
 
   /// Removes a paint from the collection.
   void deletePaint(T paintId) {
-    _paints.remove(paintId);
+    if (_paints.remove(paintId) != null) {
+      Game.notifyVisualMutation();
+    }
   }
 
   /// List of paints to use (in order) during render.
@@ -64,6 +68,7 @@ mixin HasPaint<T extends Object> on Component
 
   set paintLayers(List<Paint> paintLayers) {
     paintLayersInternal = paintLayers;
+    Game.notifyVisualMutation();
   }
 
   /// Whether there are any paint layers defined for the component.
@@ -112,7 +117,11 @@ mixin HasPaint<T extends Object> on Component
 
   /// Shortcut for changing the color of the paint.
   void setColor(Color color, {T? paintId}) {
-    getPaint(paintId).color = color;
+    final targetPaint = getPaint(paintId);
+    if (targetPaint.color != color) {
+      targetPaint.color = color;
+      Game.notifyVisualMutation();
+    }
     onChanged();
   }
 
@@ -121,6 +130,7 @@ mixin HasPaint<T extends Object> on Component
   /// tinted with the given color.
   void tint(Color color, {T? paintId}) {
     getPaint(paintId).colorFilter = ColorFilter.mode(color, BlendMode.srcATop);
+    Game.notifyVisualMutation();
     onChanged();
   }
 
@@ -129,9 +139,21 @@ mixin HasPaint<T extends Object> on Component
 
   @override
   set opacity(double value) {
-    paint.color = paint.color.withValues(alpha: value);
+    var changed = false;
+    final nextMain = paint.color.withValues(alpha: value);
+    if (paint.color != nextMain) {
+      paint.color = nextMain;
+      changed = true;
+    }
     for (final paint in _paints.values) {
-      paint.color = paint.color.withValues(alpha: value);
+      final next = paint.color.withValues(alpha: value);
+      if (paint.color != next) {
+        paint.color = next;
+        changed = true;
+      }
+    }
+    if (changed) {
+      Game.notifyVisualMutation();
     }
     onChanged();
   }
@@ -161,6 +183,7 @@ mixin HasPaint<T extends Object> on Component
         layerPaint.colorFilter = filter;
       }
     }
+    Game.notifyVisualMutation();
     onChanged();
   }
 

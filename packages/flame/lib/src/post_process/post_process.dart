@@ -115,6 +115,35 @@ abstract class PostProcess({double? pixelRatio}) {
   Vector2? _size;
   Object? _currentPassTag;
 
+  /// Monotonic counter incremented on every [rasterizeSubtree] or
+  /// [rasterizePass] `Picture.toImageSync` GPU texture allocation.
+  @internal
+  static int debugRasterizeCount = 0;
+
+  /// Whether this post-process currently acts as an identity pass-through
+  /// (for example `enabled == false` or `intensity == 0`) and can be bypassed
+  /// without allocating offscreen layers or textures.
+  bool get isEffectivelyNoOp => false;
+
+  /// Whether this post-process can consume an already-rasterized [ui.Image]
+  /// directly via [renderFromImage] without invoking [rasterizeSubtree].
+  bool get supportsImageInput => false;
+
+  /// Renders this post-process directly from [inputImage] onto [canvas] within
+  /// logical [size], returning `true` if handled or `false` if unsupported.
+  bool renderFromImage(ui.Image inputImage, Vector2 size, Canvas canvas) =>
+      false;
+
+  /// Invokes the underlying subtree render callback without overriding the
+  /// active post-process context.
+  @protected
+  void renderRawSubtree(Canvas canvas) => _renderTree!(canvas);
+
+  /// Forwards a post-process context update to the owning camera or component.
+  @protected
+  void updateSubtreeContext(PostProcess? postProcess) =>
+      _updateContext?.call(postProcess);
+
   /// Tag identifying the currently executing [rasterizePass] invocation, or
   /// `null` during standard [rasterizeSubtree] / [renderSubtree] passes.
   ///
@@ -170,6 +199,7 @@ abstract class PostProcess({double? pixelRatio}) {
 
     final picture = recorder.endRecording();
     try {
+      debugRasterizeCount++;
       return picture.toImageSync(
         math.max(1, (pixelRatio * _size!.x).ceil()),
         math.max(1, (pixelRatio * _size!.y).ceil()),
@@ -215,6 +245,7 @@ abstract class PostProcess({double? pixelRatio}) {
       renderSubtree(innerCanvas);
       final picture = recorder.endRecording();
       try {
+        debugRasterizeCount++;
         return picture.toImageSync(imgW, imgH);
       } finally {
         picture.dispose();
@@ -345,6 +376,8 @@ class PostProcessGroup({
 class PostProcessSequentialGroup({
   required super.postProcesses,
 }) extends PostProcessGroup {
+  final List<PostProcess> _contextStack = <PostProcess>[];
+
   @override
   void render(
     Canvas canvas,
@@ -352,15 +385,33 @@ class PostProcessSequentialGroup({
     ValueSetter<Canvas> renderTree,
     ValueSetter<PostProcess?> updateContext,
   ) {
+    _contextStack.clear();
+    void handleContext(PostProcess? next) {
+      if (next != null) {
+        _contextStack.add(next);
+        updateContext(next);
+      } else {
+        if (_contextStack.isNotEmpty) {
+          _contextStack.removeLast();
+        }
+        updateContext(_contextStack.isEmpty ? null : _contextStack.last);
+      }
+    }
+
     canvas.save();
-    _renderFrom(
-      postProcesses.length - 1,
-      canvas,
-      size,
-      renderTree,
-      updateContext,
-    );
-    canvas.restore();
+    try {
+      _renderFrom(
+        postProcesses.length - 1,
+        canvas,
+        size,
+        renderTree,
+        handleContext,
+      );
+    } finally {
+      _contextStack.clear();
+      updateContext(null);
+      canvas.restore();
+    }
   }
 
   /// Renders the post process at [index], whose subtree is the post process

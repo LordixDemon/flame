@@ -1,3 +1,4 @@
+import 'package:flame/src/camera/world.dart';
 import 'package:flame/src/canvas3d/raycast_3d.dart';
 import 'package:flame/src/components/core/component.dart';
 import 'package:flame/src/extensions/vector2.dart';
@@ -10,10 +11,10 @@ typedef CameraRayProjector3D = Ray3D? Function(
   Vector2 worldPoint,
 );
 
-/// Mixin enabling a [Component] inside a `World` to participate in 3D raycast
-/// event picking (`TapCallbacks`, `HoverCallbacks`, `DragCallbacks`) ordered
-/// by true camera ray distance `t` when `CameraComponent.rayProjector3D` is
-/// configured.
+/// Mixin enabling a [Component] inside a `World` to participate in `O(k)`
+/// indexed 3D raycast event picking (`TapCallbacks`, `HoverCallbacks`,
+/// `DragCallbacks`, `DropTargetCallbacks`) ordered by true camera ray distance
+/// `t` when `CameraComponent.rayProjector3D` is configured.
 mixin SpatialHitbox3D on Component {
   /// Whether 3D ray hit-testing is enabled on this component.
   bool spatialHitEnabled = true;
@@ -21,6 +22,13 @@ mixin SpatialHitbox3D on Component {
   double? _lastHitDistance3D;
   (double, double, double)? _lastHitPoint3D;
   bool _isActiveSpatialRayHit = false;
+  World? _registeredSpatialWorld;
+
+  /// Optional world-space `(cx, cy, cz, radius)` 3D bounding sphere checked in
+  /// `O(1)` before invoking [intersectRay3D] (for example to skip expensive
+  /// Möller–Trumbore triangle mesh raycasts on misses).
+  (double cx, double cy, double cz, double radius)? get boundingSphere3D =>
+      null;
 
   /// Distance `t` along the camera ray from the most recent successful 3D hit.
   double? get lastHitDistance3D => _lastHitDistance3D;
@@ -28,13 +36,36 @@ mixin SpatialHitbox3D on Component {
   /// World `(x, y, z)` coordinates of the most recent successful 3D hit.
   (double, double, double)? get lastHitPoint3D => _lastHitPoint3D;
 
-  /// Whether the currently dispatching pointer/hover event matched this
+  /// Whether the currently dispatching pointer/hover/drop event matched this
   /// component via a 3D ray intersection rather than 2D bounds.
   @internal
   bool get isActiveSpatialRayHit => _isActiveSpatialRayHit;
 
   @internal
   set isActiveSpatialRayHit(bool value) => _isActiveSpatialRayHit = value;
+
+  @override
+  @mustCallSuper
+  void onMount() {
+    super.onMount();
+    var cursor = parent;
+    while (cursor != null) {
+      if (cursor is World) {
+        _registeredSpatialWorld = cursor;
+        cursor.registerSpatialHitbox3D(this);
+        break;
+      }
+      cursor = cursor.parent;
+    }
+  }
+
+  @override
+  @mustCallSuper
+  void onRemove() {
+    _registeredSpatialWorld?.unregisterSpatialHitbox3D(this);
+    _registeredSpatialWorld = null;
+    super.onRemove();
+  }
 
   /// Records hit metadata when picked by `CameraComponent`.
   @internal

@@ -728,6 +728,81 @@ class CameraComponent({
     }
   }
 
+  int _lastSpatialRayCandidatesTested = 0;
+  int _lastSpatialRayNarrowphaseTests = 0;
+
+  /// Number of registered [SpatialHitbox3D] candidates inspected during the
+  /// most recent 3D camera ray pick (`O(k)` instead of walking all non-3D world
+  /// components).
+  int get lastSpatialRayCandidatesTested => _lastSpatialRayCandidatesTested;
+
+  /// Number of [SpatialHitbox3D.intersectRay3D] narrowphase calls executed
+  /// during the most recent 3D camera ray pick after bounding-sphere pruning.
+  int get lastSpatialRayNarrowphaseTests => _lastSpatialRayNarrowphaseTests;
+
+  static int _compareTreeRenderOrder(
+    Component a,
+    Component b,
+    World root,
+  ) {
+    if (identical(a, b)) {
+      return 0;
+    }
+    final chainA = <Component>[];
+    Component? curA = a;
+    while (curA != null && !identical(curA, root)) {
+      chainA.add(curA);
+      curA = curA.parent;
+    }
+    final chainB = <Component>[];
+    Component? curB = b;
+    while (curB != null && !identical(curB, root)) {
+      chainB.add(curB);
+      curB = curB.parent;
+    }
+    var idxA = chainA.length - 1;
+    var idxB = chainB.length - 1;
+    while (idxA >= 0 && idxB >= 0 && identical(chainA[idxA], chainB[idxB])) {
+      idxA--;
+      idxB--;
+    }
+    if (idxA < 0) {
+      return -1;
+    }
+    if (idxB < 0) {
+      return 1;
+    }
+    final branchA = chainA[idxA];
+    final branchB = chainB[idxB];
+    final priCmp = branchA.priority.compareTo(branchB.priority);
+    if (priCmp != 0) {
+      return priCmp;
+    }
+    final sortCmp = branchA.sortKey.compareTo(branchB.sortKey);
+    if (sortCmp != 0) {
+      return sortCmp;
+    }
+    final parent = branchA.parent;
+    if (parent != null) {
+      var posA = -1;
+      var posB = -1;
+      var k = 0;
+      for (final c in parent.children) {
+        if (identical(c, branchA)) {
+          posA = k;
+        } else if (identical(c, branchB)) {
+          posB = k;
+        }
+        if (posA >= 0 && posB >= 0) {
+          break;
+        }
+        k++;
+      }
+      return posA.compareTo(posB);
+    }
+    return 0;
+  }
+
   Iterable<Component> _worldComponentsWithSpatialRay<T>(
     Ray3D ray,
     T worldPoint,
@@ -736,43 +811,87 @@ class CameraComponent({
     bool Function(Component, T) checkContains,
   ) sync* {
     final activeWorld = world!;
+    if (activeWorld is IgnoreEvents &&
+        (activeWorld as IgnoreEvents).ignoreEvents) {
+      _lastSpatialRayCandidatesTested = 0;
+      _lastSpatialRayNarrowphaseTests = 0;
+      return;
+    }
+
     final spatialHits =
         <({SpatialHitbox3D component, double distance, int order})>[];
-    var traversalOrder = 0;
+    final registered = activeWorld.spatialHitboxes3D;
+    var candidatesTested = 0;
+    var narrowphaseTests = 0;
 
-    void collectSpatial(Component parent) {
-      if (parent is IgnoreEvents && parent.ignoreEvents) {
-        return;
+    for (var i = 0; i < registered.length; i++) {
+      final child = registered[i];
+      if (!child.spatialHitEnabled ||
+          !child.isMounted ||
+          child.isRemoving ||
+          !child.isActiveForCurrentGraphicsTier) {
+        continue;
       }
-      if (!parent.hasChildren) {
-        return;
+
+      var blockedByAncestor = false;
+      Component? cursor = child;
+      while (cursor != null && !identical(cursor, activeWorld)) {
+        if ((cursor is IgnoreEvents && cursor.ignoreEvents) ||
+            !cursor.isActiveForCurrentGraphicsTier ||
+            (cursor is HasVisibility && !cursor.isVisible)) {
+          blockedByAncestor = true;
+          break;
+        }
+        cursor = cursor.parent;
       }
-      for (final child in parent.children) {
-        if (child is IgnoreEvents && child.ignoreEvents) {
+      if (blockedByAncestor || !identical(cursor, activeWorld)) {
+        continue;
+      }
+
+      candidatesTested++;
+      final sphere = child.boundingSphere3D;
+      if (sphere != null) {
+        final (cx, cy, cz, radius) = sphere;
+        if (Raycaster3D.intersectSphereDistance(
+              ray,
+              cx: cx,
+              cy: cy,
+              cz: cz,
+              radius: radius,
+            ) ==
+            null) {
           continue;
         }
-        if (child is SpatialHitbox3D && child.spatialHitEnabled) {
-          final hitT = child.intersectRay3D(ray);
-          if (hitT != null && hitT.isFinite && hitT >= 0.0) {
-            child.recordSpatialHit3D(ray, hitT);
-            spatialHits.add((
-              component: child,
-              distance: hitT,
-              order: traversalOrder++,
-            ));
-          }
-        }
-        collectSpatial(child);
+      }
+
+      narrowphaseTests++;
+      final hitT = child.intersectRay3D(ray);
+      if (hitT != null && hitT.isFinite && hitT >= 0.0) {
+        child.recordSpatialHit3D(ray, hitT);
+        spatialHits.add((
+          component: child,
+          distance: hitT,
+          order: i,
+        ));
       }
     }
 
-    collectSpatial(activeWorld);
+    _lastSpatialRayCandidatesTested = candidatesTested;
+    _lastSpatialRayNarrowphaseTests = narrowphaseTests;
 
     final yieldedSpatial = <Component>{};
     if (spatialHits.isNotEmpty) {
       spatialHits.sort((a, b) {
         final cmp = a.distance.compareTo(b.distance);
-        return cmp != 0 ? cmp : b.order.compareTo(a.order);
+        if (cmp != 0) {
+          return cmp;
+        }
+        final treeCmp = _compareTreeRenderOrder(
+          b.component,
+          a.component,
+          activeWorld,
+        );
+        return treeCmp != 0 ? treeCmp : b.order.compareTo(a.order);
       });
 
       final chain = <Component>[];

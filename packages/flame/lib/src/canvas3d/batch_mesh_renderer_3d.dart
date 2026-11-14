@@ -3,7 +3,9 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flame/src/canvas3d/camera_rig_3d.dart';
+import 'package:flame/src/canvas3d/deformable_mesh_3d.dart';
 import 'package:flame/src/canvas3d/matcap_shader_3d.dart';
+import 'package:flame/src/canvas3d/material_3d.dart';
 import 'package:flame/src/canvas3d/mesh_3d.dart';
 import 'package:flame/src/canvas3d/mesh_lod_chain_3d.dart';
 import 'package:flame/src/canvas3d/scene_environment_3d.dart';
@@ -72,17 +74,18 @@ class DirectionalLight3D({
 /// Zero-allocation Struct-of-Arrays 3D mesh batcher onto Flutter's standard
 /// `Canvas` (`Canvas.drawVertices`).
 ///
-/// Transforms, lights, back-face culls, depth-sorts, and batches arbitrary
-/// [Mesh3D] instances across a frame or `RenderPass` into a single GPU
-/// `Vertices.raw` draw call (plus an optional single height-projected ground
-/// shadow draw call), deterministically disposing native `ui.Vertices` handles
-/// immediately after submission.
+/// Transforms, lights, back-face culls, globally depth-sorts across multiple
+/// [Material3D]s (textures, MatCap presets, and [ui.BlendMode]s), and batches
+/// arbitrary [Mesh3D], [MorphMeshWorkspace3D], [SkinnedMeshWorkspace3D], and
+/// [StaticMeshChunk3D] instances into minimal `Vertices.raw` GPU draw calls.
 class BatchMeshRenderer3D({
   DirectionalLight3D? light,
   this.environment,
   var bool backfaceCulling = true,
   this.shadowsEnabled = true,
   this.shadowOpacityMultiplier = 1.0,
+  this.cullBackfaceShadows = true,
+  this.shadowHeightFalloff = 0.0,
   this.frustumCullMeshes = true,
   this.cullScreenBounds,
   this.minTrianglePixelArea = 0.0,
@@ -103,6 +106,15 @@ class BatchMeshRenderer3D({
   /// Global multiplier applied to every mesh's `shadowOpacity`.
   double shadowOpacityMultiplier;
 
+  /// When `true` (default), only triangles facing the directional light source
+  /// project ground shadow geometry, eliminating double-darkening alpha overlap
+  /// artifacts on closed convex meshes and halving shadow triangle count.
+  bool cullBackfaceShadows;
+
+  /// Per-unit height attenuation factor (`>= 0.0`) softening shadow opacity as
+  /// `worldZ - groundZ` increases (`alpha / (1 + dz * shadowHeightFalloff)`).
+  double shadowHeightFalloff;
+
   /// Whether [enqueueMesh] and [enqueueStaticChunk] perform `O(1)` 3D bounding-
   /// sphere frustum culling against [cullScreenBounds].
   bool frustumCullMeshes;
@@ -117,6 +129,8 @@ class BatchMeshRenderer3D({
 
   final Paint _meshPaint = Paint()..isAntiAlias = true;
   final Paint _shadowPaint = Paint()..isAntiAlias = true;
+  final Float32List _rotScratch = Float32List(9);
+  final List<Material3D?> _materials = <Material3D?>[null];
 
   Float32List _vertX = Float32List(initialVertexCapacity);
   Float32List _vertY = Float32List(initialVertexCapacity);
@@ -131,6 +145,7 @@ class BatchMeshRenderer3D({
   Int32List _triV0 = Int32List(initialTriangleCapacity);
   Int32List _triV1 = Int32List(initialTriangleCapacity);
   Int32List _triV2 = Int32List(initialTriangleCapacity);
+  Uint16List _triMatSlot = Uint16List(initialTriangleCapacity);
   Float32List _triDepth = Float32List(initialTriangleCapacity);
   Int32List _triOrder = Int32List(initialTriangleCapacity);
 
@@ -154,29 +169,40 @@ class BatchMeshRenderer3D({
   int _lastFlushTriangles = 0;
   int _lastFlushShadowTriangles = 0;
   int _lastFlushDrawCalls = 0;
+  int _lastFlushMaterialSwitches = 0;
   int _lastFrustumCulledMeshes = 0;
   int _lastCulledMicroTriangles = 0;
 
-  /// Visible front-facing triangles submitted in the most recent [flushBatch].
+  /// Visible front-facing triangles submitted in the most recent flush.
   int get lastFlushTriangles => _lastFlushTriangles;
 
-  /// Ground-projected shadow triangles submitted in the most recent
-  /// [flushBatch].
+  /// Ground-projected shadow triangles submitted in the most recent shadow
+  /// flush.
   int get lastFlushShadowTriangles => _lastFlushShadowTriangles;
 
-  /// Total `Canvas.drawVertices` calls issued in the most recent [flushBatch].
+  /// Total `Canvas.drawVertices` calls issued in the most recent flush.
   int get lastFlushDrawCalls => _lastFlushDrawCalls;
 
+  /// Number of contiguous material state transitions emitted across
+  /// depth-sorted geometry in the most recent geometry flush.
+  int get lastFlushMaterialSwitches => _lastFlushMaterialSwitches;
+
   /// Meshes skipped by 3D bounding-sphere frustum culling in the most recent
-  /// [flushBatch].
+  /// flush.
   int get lastFrustumCulledMeshes => _lastFrustumCulledMeshes;
 
   /// Sub-pixel micro-triangles culled by [minTrianglePixelArea] in the most
-  /// recent [flushBatch].
+  /// recent flush.
   int get lastCulledMicroTriangles => _lastCulledMicroTriangles;
 
   /// Number of [enqueueMesh] calls accumulated in the active batch.
   int get activeEnqueuedMeshes => _enqueuedMeshes;
+
+  /// Number of ground-shadow triangles currently queued in the active batch.
+  int get pendingShadowTriangleCount => _shadowTriCount;
+
+  /// Number of lit 3D geometry triangles currently queued in the active batch.
+  int get pendingGeometryTriangleCount => _triCount;
 
   static Uint16List _buildSequentialIndices(int vertexCount) {
     final clamped = math.min(vertexCount, 65535);
@@ -185,6 +211,19 @@ class BatchMeshRenderer3D({
       out[i] = i;
     }
     return out;
+  }
+
+  int _internMaterial(Material3D? mat) {
+    if (mat == null) {
+      return 0;
+    }
+    for (var i = 1; i < _materials.length; i++) {
+      if (_materials[i] == mat) {
+        return i;
+      }
+    }
+    _materials.add(mat);
+    return _materials.length - 1;
   }
 
   void _ensureVertexCapacity(int needed) {
@@ -218,6 +257,7 @@ class BatchMeshRenderer3D({
     _triV0 = Int32List(cap)..setRange(0, _triCount, _triV0);
     _triV1 = Int32List(cap)..setRange(0, _triCount, _triV1);
     _triV2 = Int32List(cap)..setRange(0, _triCount, _triV2);
+    _triMatSlot = Uint16List(cap)..setRange(0, _triCount, _triMatSlot);
     _triDepth = Float32List(cap)..setRange(0, _triCount, _triDepth);
     _triOrder = Int32List(cap)..setRange(0, _triCount, _triOrder);
     _outPositions = Float32List(cap * 6);
@@ -251,6 +291,11 @@ class BatchMeshRenderer3D({
     _enqueuedMeshes = 0;
     _frustumCulledMeshes = 0;
     _culledMicroTriangles = 0;
+    if (_materials.length > 1) {
+      _materials
+        ..clear()
+        ..add(null);
+    }
   }
 
   /// Synchronizes shadow and anti-aliasing toggles from [profile].
@@ -277,6 +322,8 @@ class BatchMeshRenderer3D({
     double yawRad = 0.0,
     double pitchRad = 0.0,
     double rollRad = 0.0,
+    (double, double, double, double)? rotationQuat,
+    Float32List? rotationMatrix3,
     double lodBias = 0.0,
     Color tint = const Color(0xFFFFFFFF),
     double opacity = 1.0,
@@ -284,6 +331,7 @@ class BatchMeshRenderer3D({
     Color? rimColor,
     double rimHighlightIntensity = 0.0,
     Rect? uvRectPx,
+    Material3D? material,
     bool castGroundShadow = false,
     double groundZ = 0.0,
     Color shadowColor = const Color(0xFF16131F),
@@ -312,12 +360,15 @@ class BatchMeshRenderer3D({
       yawRad: yawRad,
       pitchRad: pitchRad,
       rollRad: rollRad,
+      rotationQuat: rotationQuat,
+      rotationMatrix3: rotationMatrix3,
       tint: tint,
       opacity: opacity,
       emissive: emissive,
       rimColor: rimColor,
       rimHighlightIntensity: rimHighlightIntensity,
       uvRectPx: uvRectPx,
+      material: material,
       castGroundShadow: castGroundShadow,
       groundZ: groundZ,
       shadowColor: shadowColor,
@@ -326,7 +377,147 @@ class BatchMeshRenderer3D({
     return selected;
   }
 
+  /// Evaluates [morphWorkspace] (zero heap allocations) and enqueues its
+  /// deformed vertices and normals directly into the active batch.
+  void enqueueMorphMesh(
+    MorphMeshWorkspace3D morphWorkspace, {
+    required CameraRig3D camera,
+    required double worldX,
+    required double worldY,
+    double worldZ = 0.0,
+    Offset canvasOrigin = Offset.zero,
+    double scaleX = 1.0,
+    double scaleY = 1.0,
+    double scaleZ = 1.0,
+    double yawRad = 0.0,
+    double pitchRad = 0.0,
+    double rollRad = 0.0,
+    (double, double, double, double)? rotationQuat,
+    Float32List? rotationMatrix3,
+    Color tint = const Color(0xFFFFFFFF),
+    double opacity = 1.0,
+    double emissive = 0.0,
+    Color? rimColor,
+    double rimHighlightIntensity = 0.0,
+    Rect? uvRectPx,
+    Material3D? material,
+    bool castGroundShadow = false,
+    double groundZ = 0.0,
+    Color shadowColor = const Color(0xFF16131F),
+    double shadowOpacity = 0.24,
+  }) {
+    morphWorkspace.evaluateIfDirty();
+    final base = morphWorkspace.baseMesh;
+    enqueueDeformedBuffers(
+      positions: morphWorkspace.deformedPositions,
+      normals: morphWorkspace.deformedNormals,
+      indices: base.indices,
+      boundingRadius: morphWorkspace.boundingRadius,
+      minZ: morphWorkspace.minZ,
+      maxZ: morphWorkspace.maxZ,
+      uvs: base.uvs,
+      ambientOcclusion: base.ambientOcclusion,
+      vertexColors: base.vertexColors,
+      camera: camera,
+      worldX: worldX,
+      worldY: worldY,
+      worldZ: worldZ,
+      canvasOrigin: canvasOrigin,
+      scaleX: scaleX,
+      scaleY: scaleY,
+      scaleZ: scaleZ,
+      yawRad: yawRad,
+      pitchRad: pitchRad,
+      rollRad: rollRad,
+      rotationQuat: rotationQuat,
+      rotationMatrix3: rotationMatrix3,
+      tint: tint,
+      opacity: opacity,
+      emissive: emissive,
+      rimColor: rimColor,
+      rimHighlightIntensity: rimHighlightIntensity,
+      uvRectPx: uvRectPx,
+      material: material,
+      castGroundShadow: castGroundShadow,
+      groundZ: groundZ,
+      shadowColor: shadowColor,
+      shadowOpacity: shadowOpacity,
+    );
+  }
+
+  /// Evaluates [skinnedWorkspace] (zero heap allocations) and enqueues its
+  /// bone-deformed vertices and normals directly into the active batch.
+  void enqueueSkinnedMesh(
+    SkinnedMeshWorkspace3D skinnedWorkspace, {
+    required CameraRig3D camera,
+    required double worldX,
+    required double worldY,
+    double worldZ = 0.0,
+    Offset canvasOrigin = Offset.zero,
+    double scaleX = 1.0,
+    double scaleY = 1.0,
+    double scaleZ = 1.0,
+    double yawRad = 0.0,
+    double pitchRad = 0.0,
+    double rollRad = 0.0,
+    (double, double, double, double)? rotationQuat,
+    Float32List? rotationMatrix3,
+    Color tint = const Color(0xFFFFFFFF),
+    double opacity = 1.0,
+    double emissive = 0.0,
+    Color? rimColor,
+    double rimHighlightIntensity = 0.0,
+    Rect? uvRectPx,
+    Material3D? material,
+    bool castGroundShadow = false,
+    double groundZ = 0.0,
+    Color shadowColor = const Color(0xFF16131F),
+    double shadowOpacity = 0.24,
+  }) {
+    skinnedWorkspace.evaluateIfDirty();
+    final base = skinnedWorkspace.baseMesh;
+    enqueueDeformedBuffers(
+      positions: skinnedWorkspace.skinnedPositions,
+      normals: skinnedWorkspace.skinnedNormals,
+      indices: base.indices,
+      boundingRadius: skinnedWorkspace.boundingRadius,
+      minZ: skinnedWorkspace.minZ,
+      maxZ: skinnedWorkspace.maxZ,
+      uvs: base.uvs,
+      ambientOcclusion: base.ambientOcclusion,
+      vertexColors: base.vertexColors,
+      camera: camera,
+      worldX: worldX,
+      worldY: worldY,
+      worldZ: worldZ,
+      canvasOrigin: canvasOrigin,
+      scaleX: scaleX,
+      scaleY: scaleY,
+      scaleZ: scaleZ,
+      yawRad: yawRad,
+      pitchRad: pitchRad,
+      rollRad: rollRad,
+      rotationQuat: rotationQuat,
+      rotationMatrix3: rotationMatrix3,
+      tint: tint,
+      opacity: opacity,
+      emissive: emissive,
+      rimColor: rimColor,
+      rimHighlightIntensity: rimHighlightIntensity,
+      uvRectPx: uvRectPx,
+      material: material,
+      castGroundShadow: castGroundShadow,
+      groundZ: groundZ,
+      shadowColor: shadowColor,
+      shadowOpacity: shadowOpacity,
+    );
+  }
+
   /// Transforms, shades, culls, and appends [mesh] into the active batch.
+  ///
+  /// Orientation can be supplied via gimbal-lock-free [rotationMatrix3]
+  /// (`Float32List` of length `>= 9`), unit [rotationQuat] `(qx, qy, qz, qw)`,
+  /// or Euler `(yawRad, pitchRad, rollRad)`.
   void enqueueMesh(
     Mesh3D mesh, {
     required CameraRig3D camera,
@@ -340,19 +531,98 @@ class BatchMeshRenderer3D({
     double yawRad = 0.0,
     double pitchRad = 0.0,
     double rollRad = 0.0,
+    (double, double, double, double)? rotationQuat,
+    Float32List? rotationMatrix3,
     Color tint = const Color(0xFFFFFFFF),
     double opacity = 1.0,
     double emissive = 0.0,
     Color? rimColor,
     double rimHighlightIntensity = 0.0,
     Rect? uvRectPx,
+    Material3D? material,
+    bool castGroundShadow = false,
+    double groundZ = 0.0,
+    Color shadowColor = const Color(0xFF16131F),
+    double shadowOpacity = 0.24,
+  }) {
+    enqueueDeformedBuffers(
+      positions: mesh.positions,
+      normals: mesh.normals,
+      indices: mesh.indices,
+      boundingRadius: mesh.boundingRadius,
+      minZ: mesh.minZ,
+      maxZ: mesh.maxZ,
+      uvs: mesh.uvs,
+      ambientOcclusion: mesh.ambientOcclusion,
+      vertexColors: mesh.vertexColors,
+      camera: camera,
+      worldX: worldX,
+      worldY: worldY,
+      worldZ: worldZ,
+      canvasOrigin: canvasOrigin,
+      scaleX: scaleX,
+      scaleY: scaleY,
+      scaleZ: scaleZ,
+      yawRad: yawRad,
+      pitchRad: pitchRad,
+      rollRad: rollRad,
+      rotationQuat: rotationQuat,
+      rotationMatrix3: rotationMatrix3,
+      tint: tint,
+      opacity: opacity,
+      emissive: emissive,
+      rimColor: rimColor,
+      rimHighlightIntensity: rimHighlightIntensity,
+      uvRectPx: uvRectPx,
+      material: material,
+      castGroundShadow: castGroundShadow,
+      groundZ: groundZ,
+      shadowColor: shadowColor,
+      shadowOpacity: shadowOpacity,
+    );
+  }
+
+  /// Low-level zero-allocation entry point streaming pre-allocated vertex
+  /// [positions], [normals], and [indices] directly into the internal SoA
+  /// lighting & depth-sorting buffers without constructing a [Mesh3D].
+  void enqueueDeformedBuffers({
+    required Float32List positions,
+    required Float32List normals,
+    required Uint16List indices,
+    required double boundingRadius,
+    required double minZ,
+    required double maxZ,
+    required CameraRig3D camera,
+    required double worldX,
+    required double worldY,
+    Float32List? uvs,
+    Float32List? ambientOcclusion,
+    Int32List? vertexColors,
+    double worldZ = 0.0,
+    Offset canvasOrigin = Offset.zero,
+    double scaleX = 1.0,
+    double scaleY = 1.0,
+    double scaleZ = 1.0,
+    double yawRad = 0.0,
+    double pitchRad = 0.0,
+    double rollRad = 0.0,
+    (double, double, double, double)? rotationQuat,
+    Float32List? rotationMatrix3,
+    Color tint = const Color(0xFFFFFFFF),
+    double opacity = 1.0,
+    double emissive = 0.0,
+    Color? rimColor,
+    double rimHighlightIntensity = 0.0,
+    Rect? uvRectPx,
+    Material3D? material,
     bool castGroundShadow = false,
     double groundZ = 0.0,
     Color shadowColor = const Color(0xFF16131F),
     double shadowOpacity = 0.24,
   }) {
     final clampedOpacity = opacity.clamp(0.0, 1.0);
-    if (clampedOpacity <= 0.0 || mesh.triangleCount == 0) {
+    final mTriCount = indices.length ~/ 3;
+    if (clampedOpacity <= 0.0 || mTriCount == 0) {
       return;
     }
 
@@ -367,7 +637,7 @@ class BatchMeshRenderer3D({
         scaleX.abs(),
         math.max(scaleY.abs(), scaleZ.abs()),
       );
-      final midLocalZ = (mesh.minZ + mesh.maxZ) * 0.5 * scaleZ;
+      final midLocalZ = (minZ + maxZ) * 0.5 * scaleZ;
       final (cx, cy) = camera.projectAnchored(
         anchorWorld: anchorWorld,
         canvasOrigin: canvasOrigin,
@@ -375,11 +645,11 @@ class BatchMeshRenderer3D({
         ry: 0.0,
         rz: worldZ + midLocalZ,
       );
-      var radPx = mesh.boundingRadius * maxScale * camera.focalScalePx * 1.35;
+      var radPx = boundingRadius * maxScale * camera.focalScalePx * 1.35;
       if (effShadowOpacity > 0.0 && light.dirZ > 0.08) {
         final maxH = math.max(
           0.0,
-          worldZ + mesh.maxZ * scaleZ.abs() - groundZ,
+          worldZ + maxZ.abs() * scaleZ.abs() - groundZ,
         );
         radPx += (maxH / light.dirZ) * camera.focalScalePx;
       }
@@ -394,37 +664,64 @@ class BatchMeshRenderer3D({
 
     _enqueuedMeshes++;
 
-    final vCount = mesh.vertexCount;
+    final vCount = positions.length ~/ 3;
     final baseVertex = _vertCount;
     _ensureVertexCapacity(baseVertex + vCount);
 
-    // Rotation matrix R = Rz(yaw) * Ry(pitch) * Rx(roll)
-    final cy = math.cos(yawRad);
-    final sy = math.sin(yawRad);
-    final cp = math.cos(pitchRad);
-    final sp = math.sin(pitchRad);
-    final cr = math.cos(rollRad);
-    final sr = math.sin(rollRad);
+    final double r00;
+    final double r01;
+    final double r02;
+    final double r10;
+    final double r11;
+    final double r12;
+    final double r20;
+    final double r21;
+    final double r22;
 
-    final r00 = cy * cp;
-    final r01 = cy * sp * sr - sy * cr;
-    final r02 = cy * sp * cr + sy * sr;
-    final r10 = sy * cp;
-    final r11 = sy * sp * sr + cy * cr;
-    final r12 = sy * sp * cr - cy * sr;
-    final r20 = -sp;
-    final r21 = cp * sr;
-    final r22 = cp * cr;
+    if (rotationMatrix3 != null && rotationMatrix3.length >= 9) {
+      r00 = rotationMatrix3[0];
+      r01 = rotationMatrix3[1];
+      r02 = rotationMatrix3[2];
+      r10 = rotationMatrix3[3];
+      r11 = rotationMatrix3[4];
+      r12 = rotationMatrix3[5];
+      r20 = rotationMatrix3[6];
+      r21 = rotationMatrix3[7];
+      r22 = rotationMatrix3[8];
+    } else if (rotationQuat != null) {
+      final (qx, qy, qz, qw) = rotationQuat;
+      Quaternion3D.writeMatrix3(qx, qy, qz, qw, _rotScratch);
+      r00 = _rotScratch[0];
+      r01 = _rotScratch[1];
+      r02 = _rotScratch[2];
+      r10 = _rotScratch[3];
+      r11 = _rotScratch[4];
+      r12 = _rotScratch[5];
+      r20 = _rotScratch[6];
+      r21 = _rotScratch[7];
+      r22 = _rotScratch[8];
+    } else {
+      final cy = math.cos(yawRad);
+      final sy = math.sin(yawRad);
+      final cp = math.cos(pitchRad);
+      final sp = math.sin(pitchRad);
+      final cr = math.cos(rollRad);
+      final sr = math.sin(rollRad);
+
+      r00 = cy * cp;
+      r01 = cy * sp * sr - sy * cr;
+      r02 = cy * sp * cr + sy * sr;
+      r10 = sy * cp;
+      r11 = sy * sp * sr + cy * cr;
+      r12 = sy * sp * cr - cy * sr;
+      r20 = -sp;
+      r21 = cp * sr;
+      r22 = cp * cr;
+    }
 
     final invSx = scaleX.abs() > 1e-6 ? 1.0 / scaleX : 1.0;
     final invSy = scaleY.abs() > 1e-6 ? 1.0 / scaleY : 1.0;
     final invSz = scaleZ.abs() > 1e-6 ? 1.0 / scaleZ : 1.0;
-
-    final positions = mesh.positions;
-    final normals = mesh.normals;
-    final meshUvs = mesh.uvs;
-    final aoList = mesh.ambientOcclusion;
-    final vColors = mesh.vertexColors;
 
     final tintR = tint.r;
     final tintG = tint.g;
@@ -488,15 +785,15 @@ class BatchMeshRenderer3D({
       final double meshTexU;
       final double meshTexV;
       final int texPixelSpace;
-      if (meshUvs != null) {
+      if (uvs != null) {
         final uvBase = v * 2;
         if (uvRectPx != null) {
-          meshTexU = uvRectPx.left + meshUvs[uvBase] * uvRectPx.width;
-          meshTexV = uvRectPx.top + meshUvs[uvBase + 1] * uvRectPx.height;
+          meshTexU = uvRectPx.left + uvs[uvBase] * uvRectPx.width;
+          meshTexV = uvRectPx.top + uvs[uvBase + 1] * uvRectPx.height;
           texPixelSpace = 1;
         } else {
-          meshTexU = meshUvs[uvBase];
-          meshTexV = meshUvs[uvBase + 1];
+          meshTexU = uvs[uvBase];
+          meshTexV = uvs[uvBase + 1];
           texPixelSpace = 0;
         }
       } else {
@@ -516,14 +813,14 @@ class BatchMeshRenderer3D({
       final fresnel = (rimColor != null && rimHighlightIntensity > 0.0)
           ? (1.0 - clampedVz) * (1.0 - clampedVz) * rimHighlightIntensity
           : 0.0;
-      final ao = aoList != null ? aoList[v] : 1.0;
+      final ao = ambientOcclusion != null ? ambientOcclusion[v] : 1.0;
 
       var baseR = tintR;
       var baseG = tintG;
       var baseB = tintB;
       var baseA = tintA;
-      if (vColors != null) {
-        final vc = vColors[v];
+      if (vertexColors != null) {
+        final vc = vertexColors[v];
         baseA *= ((vc >>> 24) & 0xFF) / 255.0;
         baseR *= ((vc >>> 16) & 0xFF) / 255.0;
         baseG *= ((vc >>> 8) & 0xFF) / 0xFF;
@@ -592,8 +889,7 @@ class BatchMeshRenderer3D({
     }
     _vertCount += vCount;
 
-    final indices = mesh.indices;
-    final mTriCount = indices.length ~/ 3;
+    final matSlot = _internMaterial(material);
     _ensureTriangleCapacity(_triCount + mTriCount);
 
     final minArea = minTrianglePixelArea;
@@ -620,19 +916,28 @@ class BatchMeshRenderer3D({
       _triV0[slot] = a;
       _triV1[slot] = b;
       _triV2[slot] = c;
+      _triMatSlot[slot] = matSlot;
       _triDepth[slot] = (_vertDepth[a] + _vertDepth[b] + _vertDepth[c]) / 3.0;
       _triOrder[slot] = slot;
     }
 
     if (effShadowOpacity > 0.0 && lz > 0.08) {
       _ensureShadowCapacity(_shadowTriCount + mTriCount);
-      final shadowAlpha = (effShadowOpacity * clampedOpacity * 255.0)
-          .round()
-          .clamp(0, 255);
-      final shadowArgb =
-          (shadowAlpha << 24) | (shadowColor.toARGB32() & 0x00FFFFFF);
+      final baseShadowAlpha = effShadowOpacity * clampedOpacity * 255.0;
+      final shadowRgb = shadowColor.toARGB32() & 0x00FFFFFF;
       final slopeX = -lx / lz;
       final slopeY = -ly / lz;
+
+      (double, double, double) worldRelPos(int pIdx) {
+        final lxPos = positions[pIdx] * scaleX;
+        final lyPos = positions[pIdx + 1] * scaleY;
+        final lzPos = positions[pIdx + 2] * scaleZ;
+        return (
+          r00 * lxPos + r01 * lyPos + r02 * lzPos,
+          r10 * lxPos + r11 * lyPos + r12 * lzPos,
+          r20 * lxPos + r21 * lyPos + r22 * lzPos + worldZ,
+        );
+      }
 
       for (var t = 0; t < mTriCount; t++) {
         final idxBase = t * 3;
@@ -640,26 +945,58 @@ class BatchMeshRenderer3D({
         final i1 = indices[idxBase + 1] * 3;
         final i2 = indices[idxBase + 2] * 3;
 
-        (double, double) projectShadowVertex(int pIdx) {
-          final lxPos = positions[pIdx] * scaleX;
-          final lyPos = positions[pIdx + 1] * scaleY;
-          final lzPos = positions[pIdx + 2] * scaleZ;
-          final rx = r00 * lxPos + r01 * lyPos + r02 * lzPos;
-          final ry = r10 * lxPos + r11 * lyPos + r12 * lzPos;
-          final rz = r20 * lxPos + r21 * lyPos + r22 * lzPos + worldZ;
-          final dz = math.max(0.0, rz - groundZ);
-          return camera.projectAnchored(
-            anchorWorld: anchorWorld,
-            canvasOrigin: canvasOrigin,
-            rx: rx + slopeX * dz,
-            ry: ry + slopeY * dz,
-            rz: groundZ,
-          );
+        final (rx0, ry0, rz0) = worldRelPos(i0);
+        final (rx1, ry1, rz1) = worldRelPos(i1);
+        final (rx2, ry2, rz2) = worldRelPos(i2);
+
+        if (cullBackfaceShadows) {
+          final e1x = rx1 - rx0;
+          final e1y = ry1 - ry0;
+          final e1z = rz1 - rz0;
+          final e2x = rx2 - rx0;
+          final e2y = ry2 - ry0;
+          final e2z = rz2 - rz0;
+          final fnx = e1y * e2z - e1z * e2y;
+          final fny = e1z * e2x - e1x * e2z;
+          final fnz = e1x * e2y - e1y * e2x;
+          if (fnx * lx + fny * ly + fnz * lz <= 1e-6) {
+            continue;
+          }
         }
 
-        final (sx0, sy0) = projectShadowVertex(i0);
-        final (sx1, sy1) = projectShadowVertex(i1);
-        final (sx2, sy2) = projectShadowVertex(i2);
+        final dz0 = math.max(0.0, rz0 - groundZ);
+        final dz1 = math.max(0.0, rz1 - groundZ);
+        final dz2 = math.max(0.0, rz2 - groundZ);
+
+        final (sx0, sy0) = camera.projectAnchored(
+          anchorWorld: anchorWorld,
+          canvasOrigin: canvasOrigin,
+          rx: rx0 + slopeX * dz0,
+          ry: ry0 + slopeY * dz0,
+          rz: groundZ,
+        );
+        final (sx1, sy1) = camera.projectAnchored(
+          anchorWorld: anchorWorld,
+          canvasOrigin: canvasOrigin,
+          rx: rx1 + slopeX * dz1,
+          ry: ry1 + slopeY * dz1,
+          rz: groundZ,
+        );
+        final (sx2, sy2) = camera.projectAnchored(
+          anchorWorld: anchorWorld,
+          canvasOrigin: canvasOrigin,
+          rx: rx2 + slopeX * dz2,
+          ry: ry2 + slopeY * dz2,
+          rz: groundZ,
+        );
+
+        int shadowArgbForHeight(double dz) {
+          final atten = shadowHeightFalloff > 0.0
+              ? 1.0 / (1.0 + dz * shadowHeightFalloff)
+              : 1.0;
+          final a = (baseShadowAlpha * atten).round().clamp(0, 255);
+          return (a << 24) | shadowRgb;
+        }
 
         final pOut = _shadowTriCount * 6;
         final cOut = _shadowTriCount * 3;
@@ -669,25 +1006,30 @@ class BatchMeshRenderer3D({
         _shadowPositions[pOut + 3] = sy1;
         _shadowPositions[pOut + 4] = sx2;
         _shadowPositions[pOut + 5] = sy2;
-        _shadowColors[cOut] = shadowArgb;
-        _shadowColors[cOut + 1] = shadowArgb;
-        _shadowColors[cOut + 2] = shadowArgb;
+        _shadowColors[cOut] = shadowArgbForHeight(dz0);
+        _shadowColors[cOut + 1] = shadowArgbForHeight(dz1);
+        _shadowColors[cOut + 2] = shadowArgbForHeight(dz2);
         _shadowTriCount++;
       }
     }
   }
 
   /// Appends a pre-baked [StaticMeshChunk3D] into the active batch using fast
-  /// typed-array range copies, participating seamlessly in global depth sorting
-  /// alongside dynamic [enqueueMesh] calls.
+  /// typed-array range copies, preserving both texture UVs (`mesh.uvs` /
+  /// `uvRectPx`) and per-instance [Material3D] assignments, and participating
+  /// seamlessly in global depth sorting alongside dynamic [enqueueMesh] calls.
   void enqueueStaticChunk(
     StaticMeshChunk3D chunk, {
     required CameraRig3D camera,
     Offset canvasOrigin = Offset.zero,
+    Material3D? materialOverride,
   }) {
     final cullRect = cullScreenBounds;
     if (frustumCullMeshes && cullRect != null && chunk.instanceCount > 0) {
       final (cx3, cy3, cz3, rad3) = chunk.worldBoundingSphere;
+      if (rad3 <= 0.0) {
+        return;
+      }
       final (sx, sy) = camera.projectAnchored(
         anchorWorld: camera.gridToScreen(cx3, cy3),
         canvasOrigin: canvasOrigin,
@@ -711,6 +1053,8 @@ class BatchMeshRenderer3D({
       environment: environment,
       shadowsEnabled: shadowsEnabled,
       shadowOpacityMultiplier: shadowOpacityMultiplier,
+      cullBackfaceShadows: cullBackfaceShadows,
+      shadowHeightFalloff: shadowHeightFalloff,
       minTrianglePixelArea: minTrianglePixelArea,
       canvasOrigin: canvasOrigin,
       backfaceCulling: backfaceCulling,
@@ -718,45 +1062,63 @@ class BatchMeshRenderer3D({
     _culledMicroTriangles += chunk.lastCulledMicroTriangles;
     final vCount = chunk.vertexCount;
     final tCount = chunk.visibleTriCount;
-    if (vCount == 0 || tCount == 0) {
+    final (uBuf, vBuf, texUBuf, texVBuf, texPxBuf, colBuf, shTris) = chunk
+        .internalBuffers();
+    if (vCount == 0 || (tCount == 0 && shTris == 0)) {
       return;
     }
     _enqueuedMeshes += chunk.instanceCount;
 
-    final baseVertex = _vertCount;
-    _ensureVertexCapacity(baseVertex + vCount);
-    final (uBuf, vBuf, colBuf, shTris) = chunk.internalBuffers();
+    if (tCount > 0) {
+      final baseVertex = _vertCount;
+      _ensureVertexCapacity(baseVertex + vCount);
 
-    _vertX.setRange(baseVertex, baseVertex + vCount, chunk.projectedVertX);
-    _vertY.setRange(baseVertex, baseVertex + vCount, chunk.projectedVertY);
-    _vertDepth.setRange(
-      baseVertex,
-      baseVertex + vCount,
-      chunk.projectedVertDepth,
-    );
-    _vertU.setRange(baseVertex, baseVertex + vCount, uBuf);
-    _vertV.setRange(baseVertex, baseVertex + vCount, vBuf);
-    _vertTexU.setRange(baseVertex, baseVertex + vCount, uBuf);
-    _vertTexV.setRange(baseVertex, baseVertex + vCount, vBuf);
-    _vertTexPixelSpace.fillRange(baseVertex, baseVertex + vCount, 1);
-    _vertColor.setRange(baseVertex, baseVertex + vCount, colBuf);
-    _vertCount += vCount;
+      _vertX.setRange(baseVertex, baseVertex + vCount, chunk.projectedVertX);
+      _vertY.setRange(baseVertex, baseVertex + vCount, chunk.projectedVertY);
+      _vertDepth.setRange(
+        baseVertex,
+        baseVertex + vCount,
+        chunk.projectedVertDepth,
+      );
+      _vertU.setRange(baseVertex, baseVertex + vCount, uBuf);
+      _vertV.setRange(baseVertex, baseVertex + vCount, vBuf);
+      _vertTexU.setRange(baseVertex, baseVertex + vCount, texUBuf);
+      _vertTexV.setRange(baseVertex, baseVertex + vCount, texVBuf);
+      _vertTexPixelSpace.setRange(baseVertex, baseVertex + vCount, texPxBuf);
+      _vertColor.setRange(baseVertex, baseVertex + vCount, colBuf);
+      _vertCount += vCount;
 
-    final baseTri = _triCount;
-    _ensureTriangleCapacity(baseTri + tCount);
-    final visA = chunk.visibleTriA;
-    final visB = chunk.visibleTriB;
-    final visC = chunk.visibleTriC;
-    final visD = chunk.visibleTriDepth;
-    for (var t = 0; t < tCount; t++) {
-      final slot = baseTri + t;
-      _triV0[slot] = baseVertex + visA[t];
-      _triV1[slot] = baseVertex + visB[t];
-      _triV2[slot] = baseVertex + visC[t];
-      _triDepth[slot] = visD[t];
-      _triOrder[slot] = slot;
+      final overrideSlot = materialOverride != null
+          ? _internMaterial(materialOverride)
+          : -1;
+      final chunkMats = chunk.materials;
+      final remappedSlots = Uint16List(chunkMats.length);
+      if (overrideSlot < 0) {
+        for (var m = 1; m < chunkMats.length; m++) {
+          remappedSlots[m] = _internMaterial(chunkMats[m]);
+        }
+      }
+
+      final baseTri = _triCount;
+      _ensureTriangleCapacity(baseTri + tCount);
+      final visA = chunk.visibleTriA;
+      final visB = chunk.visibleTriB;
+      final visC = chunk.visibleTriC;
+      final visD = chunk.visibleTriDepth;
+      final visM = chunk.visibleTriMatIdx;
+      for (var t = 0; t < tCount; t++) {
+        final slot = baseTri + t;
+        _triV0[slot] = baseVertex + visA[t];
+        _triV1[slot] = baseVertex + visB[t];
+        _triV2[slot] = baseVertex + visC[t];
+        _triMatSlot[slot] = overrideSlot >= 0
+            ? overrideSlot
+            : remappedSlots[visM[t]];
+        _triDepth[slot] = visD[t];
+        _triOrder[slot] = slot;
+      }
+      _triCount += tCount;
     }
-    _triCount += tCount;
 
     if (shTris > 0) {
       _ensureShadowCapacity(_shadowTriCount + shTris);
@@ -775,8 +1137,6 @@ class BatchMeshRenderer3D({
   }
 
   void _sortTrianglesBackToFront(int count) {
-    // Ciura gap Shell-sort on _triOrder (zero heap allocations, O(N log N)
-    // practical performance, optimal for mostly-ordered 3D scene batches).
     const gaps = <int>[701, 301, 132, 57, 23, 10, 4, 1];
     for (var g = 0; g < gaps.length; g++) {
       final gap = gaps[g];
@@ -801,24 +1161,14 @@ class BatchMeshRenderer3D({
     }
   }
 
-  /// Submits all accumulated shadow and 3D mesh triangles onto [canvas],
-  /// chunking automatically if vertex counts exceed `65535` and disposing all
-  /// native `ui.Vertices` handles immediately.
-  void flushBatch(
-    Canvas canvas, {
-    MatCapShader3D? matCapShader,
-    MatCapPreset3D? matCapPreset,
-    ui.Shader? textureShader,
-    double textureWidth = 1.0,
-    double textureHeight = 1.0,
-  }) {
-    _lastFlushTriangles = _triCount;
+  /// Flushes ONLY the accumulated ground-projected shadow triangles onto
+  /// [canvas] (ideal for `RenderPass.shadows` in a multi-pass camera while
+  /// keeping lit 3D geometry queued for `RenderPass.opaque` via
+  /// [flushGeometry]).
+  int flushShadows(Canvas canvas, {bool clear = true}) {
     _lastFlushShadowTriangles = _shadowTriCount;
-    _lastFlushDrawCalls = 0;
-    _lastFrustumCulledMeshes = _frustumCulledMeshes;
-    _lastCulledMicroTriangles = _culledMicroTriangles;
-
-    const maxTrisPerChunk = 21840; // 21840 * 3 = 65520 <= 65535 Uint16 limit
+    var draws = 0;
+    const maxTrisPerChunk = 21840;
 
     if (_shadowTriCount > 0) {
       _shadowPaint.shader = null;
@@ -845,30 +1195,132 @@ class BatchMeshRenderer3D({
         );
         canvas.drawVertices(vertices, ui.BlendMode.dst, _shadowPaint);
         vertices.dispose();
-        _lastFlushDrawCalls++;
+        draws++;
         offsetTri += chunkTris;
       }
     }
+
+    if (clear) {
+      _shadowTriCount = 0;
+    }
+    _lastFlushDrawCalls = draws;
+    return draws;
+  }
+
+  /// Flushes ONLY the accumulated lit 3D geometry onto [canvas], globally
+  /// sorting triangles back-to-front across all [Material3D]s and coalescing
+  /// contiguous material runs into minimal `Canvas.drawVertices` calls.
+  int flushGeometry(
+    Canvas canvas, {
+    MatCapShader3D? matCapShader,
+    MatCapPreset3D? matCapPreset,
+    ui.Shader? textureShader,
+    double textureWidth = 1.0,
+    double textureHeight = 1.0,
+    bool clear = true,
+  }) {
+    _lastFlushTriangles = _triCount;
+    _lastFlushMaterialSwitches = 0;
+    _lastFrustumCulledMeshes = _frustumCulledMeshes;
+    _lastCulledMicroTriangles = _culledMicroTriangles;
+    var draws = 0;
+
+    const maxTrisPerChunk = 21840;
 
     if (_triCount > 0) {
       if (_triCount > 1) {
         _sortTrianglesBackToFront(_triCount);
       }
 
-      final useTexture = textureShader != null;
-      final useMatCap =
-          !useTexture && matCapShader != null && matCapPreset != null;
-      final activeShader = useTexture
-          ? textureShader
-          : (useMatCap ? matCapShader.shaderFor(matCapPreset) : null);
-      final emitUvs = activeShader != null;
-      _meshPaint.shader = activeShader;
+      var cursor = 0;
+      var prevMatSlot = -1;
+      while (cursor < _triCount) {
+        final matSlot = _triMatSlot[_triOrder[cursor]];
+        if (matSlot != prevMatSlot) {
+          if (prevMatSlot != -1) {
+            _lastFlushMaterialSwitches++;
+          }
+          prevMatSlot = matSlot;
+        }
 
-      var offsetTri = 0;
-      while (offsetTri < _triCount) {
-        final chunkTris = math.min(maxTrisPerChunk, _triCount - offsetTri);
-        for (var k = 0; k < chunkTris; k++) {
-          final tri = _triOrder[offsetTri + k];
+        // Measure contiguous run sharing the same material slot (capped at
+        // Uint16 index limit of 21,840 triangles = 65,520 vertices).
+        var runLen = 1;
+        final maxRun = math.min(maxTrisPerChunk, _triCount - cursor);
+        while (runLen < maxRun &&
+            _triMatSlot[_triOrder[cursor + runLen]] == matSlot) {
+          runLen++;
+        }
+
+        final mat = _materials[matSlot];
+        final ui.Shader? activeShader;
+        final bool useTextureUvs;
+        final double texW;
+        final double texH;
+        final ui.BlendMode vertexBlend;
+        final ui.BlendMode paintBlend;
+
+        if (mat == null) {
+          final hasDefaultTex = textureShader != null;
+          final hasDefaultMatCap =
+              !hasDefaultTex && matCapShader != null && matCapPreset != null;
+          activeShader = hasDefaultTex
+              ? textureShader
+              : (hasDefaultMatCap
+                    ? matCapShader.shaderFor(matCapPreset)
+                    : null);
+          useTextureUvs = hasDefaultTex;
+          texW = textureWidth;
+          texH = textureHeight;
+          vertexBlend = activeShader != null
+              ? ui.BlendMode.modulate
+              : ui.BlendMode.dst;
+          paintBlend = ui.BlendMode.srcOver;
+        } else {
+          switch (mat.shading) {
+            case MaterialShading3D.unshaded:
+              activeShader = null;
+              useTextureUvs = false;
+              texW = 1.0;
+              texH = 1.0;
+              vertexBlend = ui.BlendMode.dst;
+              paintBlend = mat.blendMode == ui.BlendMode.dst
+                  ? ui.BlendMode.srcOver
+                  : mat.blendMode;
+            case MaterialShading3D.matCap:
+              activeShader = matCapShader != null && mat.matCapPreset != null
+                  ? matCapShader.shaderFor(mat.matCapPreset!)
+                  : null;
+              useTextureUvs = false;
+              texW = 1.0;
+              texH = 1.0;
+              vertexBlend = activeShader != null
+                  ? ui.BlendMode.modulate
+                  : ui.BlendMode.dst;
+              paintBlend = mat.blendMode == ui.BlendMode.modulate
+                  ? ui.BlendMode.srcOver
+                  : mat.blendMode;
+            case MaterialShading3D.texture:
+              activeShader = mat.textureShader;
+              useTextureUvs = activeShader != null;
+              texW = mat.textureWidth;
+              texH = mat.textureHeight;
+              vertexBlend = activeShader != null
+                  ? ui.BlendMode.modulate
+                  : ui.BlendMode.dst;
+              paintBlend = mat.blendMode == ui.BlendMode.modulate
+                  ? ui.BlendMode.srcOver
+                  : mat.blendMode;
+          }
+        }
+
+        final emitUvs = activeShader != null;
+        _meshPaint
+          ..shader = activeShader
+          ..blendMode = paintBlend;
+
+        for (var k = 0; k < runLen; k++) {
+          final tri = _triOrder[cursor + k];
           final a = _triV0[tri];
           final b = _triV1[tri];
           final c = _triV2[tri];
@@ -882,25 +1334,25 @@ class BatchMeshRenderer3D({
           _outPositions[pOut + 5] = _vertY[c];
 
           if (emitUvs) {
-            if (useTexture) {
+            if (useTextureUvs) {
               _outUvs[pOut] = _vertTexPixelSpace[a] != 0
                   ? _vertTexU[a]
-                  : _vertTexU[a] * textureWidth;
+                  : _vertTexU[a] * texW;
               _outUvs[pOut + 1] = _vertTexPixelSpace[a] != 0
                   ? _vertTexV[a]
-                  : _vertTexV[a] * textureHeight;
+                  : _vertTexV[a] * texH;
               _outUvs[pOut + 2] = _vertTexPixelSpace[b] != 0
                   ? _vertTexU[b]
-                  : _vertTexU[b] * textureWidth;
+                  : _vertTexU[b] * texW;
               _outUvs[pOut + 3] = _vertTexPixelSpace[b] != 0
                   ? _vertTexV[b]
-                  : _vertTexV[b] * textureHeight;
+                  : _vertTexV[b] * texH;
               _outUvs[pOut + 4] = _vertTexPixelSpace[c] != 0
                   ? _vertTexU[c]
-                  : _vertTexU[c] * textureWidth;
+                  : _vertTexU[c] * texW;
               _outUvs[pOut + 5] = _vertTexPixelSpace[c] != 0
                   ? _vertTexV[c]
-                  : _vertTexV[c] * textureHeight;
+                  : _vertTexV[c] * texH;
             } else {
               _outUvs[pOut] = _vertU[a];
               _outUvs[pOut + 1] = _vertV[a];
@@ -917,33 +1369,62 @@ class BatchMeshRenderer3D({
           _outColors[cOut + 2] = _vertColor[c];
         }
 
-        final vertLen = chunkTris * 3;
+        final vertLen = runLen * 3;
         final vertices = ui.Vertices.raw(
           ui.VertexMode.triangles,
-          Float32List.sublistView(_outPositions, 0, chunkTris * 6),
+          Float32List.sublistView(_outPositions, 0, runLen * 6),
           textureCoordinates: emitUvs
-              ? Float32List.sublistView(_outUvs, 0, chunkTris * 6)
+              ? Float32List.sublistView(_outUvs, 0, runLen * 6)
               : null,
           colors: Int32List.sublistView(_outColors, 0, vertLen),
           indices: Uint16List.sublistView(_outIndices, 0, vertLen),
         );
-        canvas.drawVertices(
-          vertices,
-          emitUvs ? ui.BlendMode.modulate : ui.BlendMode.dst,
-          _meshPaint,
-        );
+        canvas.drawVertices(vertices, vertexBlend, _meshPaint);
         vertices.dispose();
-        _lastFlushDrawCalls++;
-        offsetTri += chunkTris;
+        draws++;
+        cursor += runLen;
       }
-      _meshPaint.shader = null;
+      _meshPaint
+        ..shader = null
+        ..blendMode = ui.BlendMode.srcOver;
     }
 
-    _vertCount = 0;
-    _triCount = 0;
-    _shadowTriCount = 0;
-    _enqueuedMeshes = 0;
-    _frustumCulledMeshes = 0;
-    _culledMicroTriangles = 0;
+    if (clear) {
+      _vertCount = 0;
+      _triCount = 0;
+      _enqueuedMeshes = 0;
+      _frustumCulledMeshes = 0;
+      _culledMicroTriangles = 0;
+      if (_materials.length > 1) {
+        _materials
+          ..clear()
+          ..add(null);
+      }
+    }
+    _lastFlushDrawCalls = draws;
+    return draws;
+  }
+
+  /// Submits all accumulated shadow and 3D mesh triangles onto [canvas],
+  /// chunking automatically if vertex counts exceed `65535` and disposing all
+  /// native `ui.Vertices` handles immediately.
+  void flushBatch(
+    Canvas canvas, {
+    MatCapShader3D? matCapShader,
+    MatCapPreset3D? matCapPreset,
+    ui.Shader? textureShader,
+    double textureWidth = 1.0,
+    double textureHeight = 1.0,
+  }) {
+    final shDraws = flushShadows(canvas);
+    final geoDraws = flushGeometry(
+      canvas,
+      matCapShader: matCapShader,
+      matCapPreset: matCapPreset,
+      textureShader: textureShader,
+      textureWidth: textureWidth,
+      textureHeight: textureHeight,
+    );
+    _lastFlushDrawCalls = shDraws + geoDraws;
   }
 }

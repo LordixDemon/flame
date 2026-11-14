@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:flame/src/camera/camera_component.dart';
 import 'package:flame/src/camera/render_pass.dart';
 import 'package:flame/src/camera/world_spatial_index.dart';
+import 'package:flame/src/canvas3d/spatial_hit_testing_3d.dart';
 import 'package:flame/src/components/core/component.dart';
 import 'package:flame/src/components/core/event_bus.dart';
 import 'package:flame/src/components/core/world_query.dart';
@@ -50,6 +51,29 @@ class World({
   WorldEventBus? _eventBus;
   List<WorldQuery<Component>>? _queries;
   final List<Component> _spatialRenderScratch = <Component>[];
+  final List<SpatialHitbox3D> _spatialHitboxes3D = <SpatialHitbox3D>[];
+
+  /// Live registry of mounted [SpatialHitbox3D] descendants inside this world,
+  /// queried in `O(k)` by [CameraComponent] instead of walking all non-3D world
+  /// components.
+  @internal
+  List<SpatialHitbox3D> get spatialHitboxes3D => _spatialHitboxes3D;
+
+  /// Number of mounted [SpatialHitbox3D] components currently registered in
+  /// this world.
+  int get registeredSpatialHitbox3DCount => _spatialHitboxes3D.length;
+
+  @internal
+  void registerSpatialHitbox3D(SpatialHitbox3D hitbox) {
+    if (!_spatialHitboxes3D.contains(hitbox)) {
+      _spatialHitboxes3D.add(hitbox);
+    }
+  }
+
+  @internal
+  void unregisterSpatialHitbox3D(SpatialHitbox3D hitbox) {
+    _spatialHitboxes3D.remove(hitbox);
+  }
 
   /// Scoped typed event bus for components inside this world. Any events queued
   /// via [WorldEventBus.enqueue] are automatically drained at the end of

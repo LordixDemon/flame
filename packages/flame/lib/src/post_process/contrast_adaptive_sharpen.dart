@@ -140,6 +140,34 @@ class ContrastAdaptiveSharpenPostProcess({
   }
 
   @override
+  bool get isEffectivelyNoOp => !enabled || strength.clamp(0.0, 1.0) <= 1e-3;
+
+  @override
+  bool get supportsImageInput => true;
+
+  @override
+  bool renderFromImage(ui.Image inputImage, Vector2 size, Canvas canvas) {
+    final srcRect = Rect.fromLTWH(
+      0,
+      0,
+      inputImage.width.toDouble(),
+      inputImage.height.toDouble(),
+    );
+    final dstRect = Rect.fromLTWH(0, 0, size.x, size.y);
+    final clampedStrength = enabled ? strength.clamp(0.0, 1.0) : 0.0;
+    ContrastAdaptiveSharpenHelper.drawSharpenedImageRect(
+      canvas,
+      inputImage,
+      srcRect,
+      dstRect,
+      strength: clampedStrength,
+      filterQuality: filterQuality,
+      radiusLogicalPx: radiusPx,
+    );
+    return true;
+  }
+
+  @override
   void postProcess(Vector2 size, Canvas canvas) {
     final clampedStrength = strength.clamp(0.0, 1.0);
     if (!enabled || clampedStrength <= 1e-3 || size.x < 2 || size.y < 2) {
@@ -155,23 +183,7 @@ class ContrastAdaptiveSharpenPostProcess({
       return;
     }
     _replaceHeldImage(frameImage);
-
-    final srcRect = Rect.fromLTWH(
-      0,
-      0,
-      frameImage.width.toDouble(),
-      frameImage.height.toDouble(),
-    );
-    final dstRect = Rect.fromLTWH(0, 0, size.x, size.y);
-    ContrastAdaptiveSharpenHelper.drawSharpenedImageRect(
-      canvas,
-      frameImage,
-      srcRect,
-      dstRect,
-      strength: clampedStrength,
-      filterQuality: filterQuality,
-      radiusLogicalPx: radiusPx,
-    );
+    renderFromImage(frameImage, size, canvas);
   }
 
   @override

@@ -224,7 +224,9 @@ void main() {
           );
           rec1.endRecording().dispose();
           expect(renderer.lastFlushTriangles, greaterThan(0));
-          expect(renderer.lastFlushShadowTriangles, 12);
+          // With default cullBackfaceShadows: true, only the 6 light-facing
+          // triangles of the closed 12-triangle box project ground shadows.
+          expect(renderer.lastFlushShadowTriangles, 6);
 
           // Pass 2: flush same UV-bearing box with textureShader (both full
           // normalized UV scaled by textureWidth/Height and explicit uvRectPx).

@@ -184,6 +184,7 @@ class FlameGame<W extends World>({
   int _lastRenderedGlobalTxCount = -1;
   int _lastRenderedStructureCount = -1;
   int _lastRenderedSortKeyCount = -1;
+  int _lastRenderedVisualMutationCount = -1;
   World? _lastRenderedWorld;
 
   @override
@@ -200,7 +201,8 @@ class FlameGame<W extends World>({
         graphics.version != _lastRenderedGraphicsVersion ||
         Transform2D.globalMutationCount != _lastRenderedGlobalTxCount ||
         Component.structureMutationCount != _lastRenderedStructureCount ||
-        Component.sortKeyMutationCount != _lastRenderedSortKeyCount) {
+        Component.sortKeyMutationCount != _lastRenderedSortKeyCount ||
+        Game.visualMutationCount != _lastRenderedVisualMutationCount) {
       return true;
     }
     return false;
@@ -215,6 +217,7 @@ class FlameGame<W extends World>({
     _lastRenderedGlobalTxCount = Transform2D.globalMutationCount;
     _lastRenderedStructureCount = Component.structureMutationCount;
     _lastRenderedSortKeyCount = Component.sortKeyMutationCount;
+    _lastRenderedVisualMutationCount = Game.visualMutationCount;
     _lastRenderedWorld = _world;
   }
 
@@ -324,6 +327,60 @@ class FlameGame<W extends World>({
   /// raycast per frame at the start of [update] instead of running
   /// synchronously per OS pointer packet.
   bool coalesceMouseHover = false;
+
+  InputHitFilter? _baseInputHitFilter;
+  final List<InputHitFilter> _inputHitFilterStack = <InputHitFilter>[];
+
+  /// Active pointer/hover/drop hit-test filter: returns the top of the modal
+  /// filter stack pushed via [pushInputHitFilter], or the base [inputHitFilter]
+  /// when the stack is empty (`null` when unfiltered).
+  InputHitFilter? get inputHitFilter => _inputHitFilterStack.isNotEmpty
+      ? _inputHitFilterStack.last
+      : _baseInputHitFilter;
+
+  /// Sets or clears the base (bottom-most) [InputHitFilter].
+  set inputHitFilter(InputHitFilter? value) {
+    _baseInputHitFilter = value;
+  }
+
+  /// Current depth of modal filters pushed via [pushInputHitFilter].
+  int get inputHitFilterStackDepth => _inputHitFilterStack.length;
+
+  /// Pushes a modal [filter] onto the top of the input hit-filter stack.
+  void pushInputHitFilter(InputHitFilter filter) {
+    _inputHitFilterStack.add(filter);
+  }
+
+  /// Pops the topmost modal [InputHitFilter] (or removes the most recent
+  /// occurrence of [expected] when provided), returning the removed filter or
+  /// `null` if none matched.
+  InputHitFilter? popInputHitFilter([InputHitFilter? expected]) {
+    if (_inputHitFilterStack.isEmpty) {
+      return null;
+    }
+    if (expected == null) {
+      return _inputHitFilterStack.removeLast();
+    }
+    for (var i = _inputHitFilterStack.length - 1; i >= 0; i--) {
+      if (_inputHitFilterStack[i] == expected) {
+        return _inputHitFilterStack.removeAt(i);
+      }
+    }
+    return null;
+  }
+
+  /// Clears both the base [inputHitFilter] and all stacked modal filters.
+  void clearInputHitFilters() {
+    _baseInputHitFilter = null;
+    _inputHitFilterStack.clear();
+  }
+
+  /// Evaluates whether [candidate] is permitted to receive pointer/hover/drop
+  /// events at [canvasPosition] under the active [inputHitFilter].
+  bool allowsInputHit(Component candidate, [Vector2? canvasPosition]) {
+    final filter = inputHitFilter;
+    return filter == null || filter(candidate, canvasPosition);
+  }
 
   /// Immediately dispatches any coalesced mouse hover event queued since the
   /// previous tick.

@@ -137,3 +137,34 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
 - **`EngineDebugOverlay` & `SceneBenchmarkRunner`**: Live in-engine FPS / frame-time sparkline /
   draw-call / VRAM / spatial-picker HUD (`EngineDebugOverlay`) and deterministic headless benchmark
   runner (`SceneBenchmarkRunner.run` + `SceneBenchmarkBudget`) for automated CI performance gates.
+
+---
+
+## 9. Core Pipeline Unlocks: Multi-Material 3D, Image-Chained Post-FX, Modal Hit Filters & Auto-Dirty (`canvas3d.dart`, `post_process.dart`, `particles.dart`, `events.dart`, `game.dart`)
+
+- **`Material3D`, `Quaternion3D`, `MorphMeshWorkspace3D`, `SkinnedMeshWorkspace3D` & Surgical
+  `StaticMeshChunk3D`**: Global back-to-front Z-sorting across mixed `Material3D` shaders and blend
+  modes (`lastFlushMaterialSwitches`), gimbal-lock-free quaternion transforms + full `3x3` `Node3D`
+  parent composition, zero-GC morph/skeletal mesh workspaces, per-slot `StaticMeshChunk3D` UV
+  preservation + `O(V_slot)` `updateInstance`/`setInstanceVisible`, and split `flushShadows` /
+  `flushGeometry` with back-face shadow deduplication and `shadowHeightFalloff`.
+- **`PostProcessPipeline` `ui.Image` Chaining, `4x5` Matrix Folding & Context Propagation**:
+  Propagates inner stage `PostProcess` context + `currentPassTag` (`findPostProcessFromContext()`),
+  folds consecutive `ColorGradingPostProcess` stages via `concatColorMatrices`
+  (`lastFoldedColorGradingCount`), skips zero-intensity no-op stages (`isEffectivelyNoOp`,
+  `lastSkippedNoOpStageCount`), and chains GPU `ui.Image` inputs via `renderFromImage`
+  (`lastRasterizedImageCount`).
+- **Modal `InputHitFilter` Stack, `O(k)` `SpatialHitbox3D` Broadphase & `DropTargetCallbacks`**:
+  `FlameGame.pushInputHitFilter` / `popInputHitFilter` gates taps, drags, hovers, and
+  `DeferHitTestToComponents` passthrough for spotlight tutorials and modals; `World.spatialHitboxes3D`
+  + `boundingSphere3D` accelerates 3D ray picking to `O(k)`; `DropTargetCallbacks` + `DragDropEvent`
+  delivers cross-layer HUD-to-3D-world drag-and-drop (`canAcceptDrop`, `onDragTargetEnter/Move/Leave`,
+  `onDrop`, `onDragTargetCancel`).
+- **Universal `ParticleBatchGroup` Coalescing, Zero-Rebuild `mouseCursorListenable` &
+  `Game.visualMutationCount`**: `ParticleBatchGroup` coalesces arbitrary `Anchor`, `angle`, positive
+  uniform `scale`, and `BatchTransparentContainer` hierarchies into `1` `Canvas.drawRawAtlas` call
+  and batches `velocityStretch` / non-uniform / mirrored emitters into `1` shared `Vertices.raw` quad
+  draw (`lastQuadBatchDrawCalls`); `Game.mouseCursorListenable` updates `MouseRegion` with `0`
+  `GameWidgetState` rebuilds; `Game.visualMutationCount` automatically wakes
+  `IdleRenderMode.onDemand` across 2D/3D particles, sprite tickers, `HasPaint`, animated rich text,
+  ribbons, ropes, chunks, and 3D nodes/deformers.

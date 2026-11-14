@@ -101,8 +101,41 @@ abstract class TextureParticleRenderer({BlendMode? blendMode, Paint? paint})
       paint.imageFilter == null &&
       paint.shader == null;
 
-  /// Appends [particles] transformed by `(offsetX, offsetY, cosA, sinA)` into
-  /// the caller's shared `drawRawAtlas` buffers starting at particle slot
+  /// Whether this renderer can merge its particles (including stretched or
+  /// non-uniformly scaled/flipped particles) into a shared
+  /// `ParticleBatchGroup` `Canvas.drawVertices` quad call.
+  @internal
+  bool canBatchAsQuads(ParticleBuffer particles) =>
+      texture != null &&
+      paint.colorFilter == null &&
+      paint.imageFilter == null &&
+      paint.shader == null;
+
+  /// Returns a cached [ImageShader] bound to the current [texture] with zero
+  /// per-frame allocations.
+  @internal
+  ImageShader ensureCachedImageShader(Image tex) {
+    if (!identical(_cachedShaderTexture, tex) || _cachedImageShader == null) {
+      _cachedImageShader?.dispose();
+      _cachedShaderTexture = tex;
+      _cachedImageShader = ImageShader(
+        tex,
+        TileMode.clamp,
+        TileMode.clamp,
+        Float64List.fromList(const <double>[
+          1, 0, 0, 0, //
+          0, 1, 0, 0, //
+          0, 0, 1, 0, //
+          0, 0, 0, 1, //
+        ]),
+      );
+    }
+    return _cachedImageShader!;
+  }
+
+  /// Appends [particles] transformed by similarity matrix
+  /// `(m00 = s*cosA, m01 = s*sinA, tx = offsetX, ty = offsetY)` into the
+  /// caller's shared `drawRawAtlas` buffers starting at particle slot
   /// [startSlot], returning the updated slot count.
   @internal
   int appendToSharedAtlas({
@@ -121,6 +154,8 @@ abstract class TextureParticleRenderer({BlendMode? blendMode, Paint? paint})
     if (count == 0) {
       return startSlot;
     }
+    final m00 = cosA * uniformScale;
+    final m01 = sinA * uniformScale;
     final perParticle = hasPerParticleRects;
     final defaultSrc = srcRect;
     final defaultAnchorX = defaultSrc.width * 0.5;
@@ -148,16 +183,15 @@ abstract class TextureParticleRenderer({BlendMode? blendMode, Paint? paint})
 
       final lx = particles.posX[i];
       final ly = particles.posY[i];
-      final wx = offsetX + (lx * cosA - ly * sinA) * uniformScale;
-      final wy = offsetY + (lx * sinA + ly * cosA) * uniformScale;
+      final wx = offsetX + lx * m00 - ly * m01;
+      final wy = offsetY + lx * m01 + ly * m00;
 
-      final scale = particles.size[i] * uniformScale * invW;
+      final localScale = particles.size[i] * invW;
       final rot = particles.rotation[i];
       final cR = cos(rot);
       final sR = sin(rot);
-      // Combined rotation: emitter angle + particle rotation
-      final scos = (cR * cosA - sR * sinA) * scale;
-      final ssin = (sR * cosA + cR * sinA) * scale;
+      final scos = (cR * m00 - sR * m01) * localScale;
+      final ssin = (sR * m00 + cR * m01) * localScale;
 
       outTransforms[j] = scos;
       outTransforms[j + 1] = ssin;
@@ -171,6 +205,89 @@ abstract class TextureParticleRenderer({BlendMode? blendMode, Paint? paint})
       outColors[slot] = particles.color[i];
     }
     return startSlot + count;
+  }
+
+  /// Appends `[startParticle .. startParticle + particleCount)` as 2D textured
+  /// quads transformed by the general `2x3` affine matrix
+  /// `(m00, m01, m10, m11, tx, ty)` into shared `Vertices.raw` buffers starting
+  /// at quad slot [startQuadSlot], returning the updated quad slot count.
+  @internal
+  int appendToSharedQuads({
+    required ParticleBuffer particles,
+    required int startParticle,
+    required int particleCount,
+    required Float32List outPositions,
+    required Float32List outUvs,
+    required Int32List outColors,
+    required int startQuadSlot,
+    required double m00,
+    required double m01,
+    required double m10,
+    required double m11,
+    required double tx,
+    required double ty,
+  }) {
+    if (particleCount <= 0) {
+      return startQuadSlot;
+    }
+    final perParticle = hasPerParticleRects;
+    final defaultSrc = srcRect;
+
+    for (var k = 0; k < particleCount; k++) {
+      final i = startParticle + k;
+      final qSlot = startQuadSlot + k;
+      final src = perParticle ? frameRectForParticle(particles, i) : defaultSrc;
+      final halfH = particles.size[i] * 0.5;
+      final stretch = max(1.0, particles.stretch[i]);
+      final halfW =
+          halfH * (src.height > 0 ? src.width / src.height : 1.0) * stretch;
+      final rot = particles.rotation[i];
+      final c = cos(rot);
+      final s = sin(rot);
+      final px = particles.posX[i];
+      final py = particles.posY[i];
+
+      final ux = c * halfW;
+      final uy = s * halfW;
+      final vx = -s * halfH;
+      final vy = c * halfH;
+
+      final lx0 = px - ux - vx;
+      final ly0 = py - uy - vy;
+      final lx1 = px + ux - vx;
+      final ly1 = py + uy - vy;
+      final lx2 = px + ux + vx;
+      final ly2 = py + uy + vy;
+      final lx3 = px - ux + vx;
+      final ly3 = py - uy + vy;
+
+      final pBase = qSlot * 8;
+      outPositions[pBase] = tx + m00 * lx0 + m10 * ly0;
+      outPositions[pBase + 1] = ty + m01 * lx0 + m11 * ly0;
+      outPositions[pBase + 2] = tx + m00 * lx1 + m10 * ly1;
+      outPositions[pBase + 3] = ty + m01 * lx1 + m11 * ly1;
+      outPositions[pBase + 4] = tx + m00 * lx2 + m10 * ly2;
+      outPositions[pBase + 5] = ty + m01 * lx2 + m11 * ly2;
+      outPositions[pBase + 6] = tx + m00 * lx3 + m10 * ly3;
+      outPositions[pBase + 7] = ty + m01 * lx3 + m11 * ly3;
+
+      outUvs[pBase] = src.left;
+      outUvs[pBase + 1] = src.top;
+      outUvs[pBase + 2] = src.right;
+      outUvs[pBase + 3] = src.top;
+      outUvs[pBase + 4] = src.right;
+      outUvs[pBase + 5] = src.bottom;
+      outUvs[pBase + 6] = src.left;
+      outUvs[pBase + 7] = src.bottom;
+
+      final col = particles.color[i];
+      final cBase = qSlot * 4;
+      outColors[cBase] = col;
+      outColors[cBase + 1] = col;
+      outColors[cBase + 2] = col;
+      outColors[cBase + 3] = col;
+    }
+    return startQuadSlot + particleCount;
   }
 
   @override
@@ -308,25 +425,8 @@ abstract class TextureParticleRenderer({BlendMode? blendMode, Paint? paint})
       _quadColors[cBase + 3] = col;
     }
 
-    if (!identical(_cachedShaderTexture, texture) ||
-        _cachedImageShader == null) {
-      _cachedImageShader?.dispose();
-      _cachedShaderTexture = texture;
-      _cachedImageShader = ImageShader(
-        texture,
-        TileMode.clamp,
-        TileMode.clamp,
-        Float64List.fromList(const <double>[
-          1, 0, 0, 0, //
-          0, 1, 0, 0, //
-          0, 0, 1, 0, //
-          0, 0, 0, 1, //
-        ]),
-      );
-    }
-
     final savedShader = paint.shader;
-    paint.shader = _cachedImageShader;
+    paint.shader = ensureCachedImageShader(texture);
     final vertices = Vertices.raw(
       VertexMode.triangles,
       Float32List.sublistView(_quadPositions, 0, safeCount * 8),

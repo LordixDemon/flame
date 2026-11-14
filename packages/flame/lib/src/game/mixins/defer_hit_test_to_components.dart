@@ -12,7 +12,8 @@ mixin DeferHitTestToComponents on FlameGame {
   @override
   bool containsEventHandlerAt(Vector2 position) {
     for (final component in componentsAtPoint(position)) {
-      if (component is PointerInputCallbacks) {
+      if (component is PointerInputCallbacks &&
+          allowsInputHit(component, position)) {
         return true;
       }
     }

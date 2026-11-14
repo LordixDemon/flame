@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flame/components.dart';
+import 'package:flame/src/game/game.dart';
 import 'package:flame/src/text/renderers/raster_font_atlas.dart';
 
 /// Inline sprite icon descriptor for `[icon:key]` tags inside
@@ -80,6 +81,7 @@ class RichBatchedTextComponent({
   double _revealAccumulator = 0.0;
   double _elapsed = 0.0;
   int _lineCount = 1;
+  bool _hasAnimatedTokens = false;
 
   final List<_ParsedRichToken> _tokens = <_ParsedRichToken>[];
   final GlyphBatchRenderer _glyphBatch = GlyphBatchRenderer(
@@ -97,6 +99,7 @@ class RichBatchedTextComponent({
     if (_markup != value) {
       _markup = value;
       _reparse();
+      Game.notifyVisualMutation();
     }
   }
 
@@ -111,10 +114,12 @@ class RichBatchedTextComponent({
     revealTokensPerSecond = tokensPerSecond;
     visibleTokenLimit = 0;
     _revealAccumulator = 0.0;
+    Game.notifyVisualMutation();
   }
 
   void _reparse() {
     _tokens.clear();
+    _hasAnimatedTokens = false;
     final colorStack = <ui.Color>[defaultColor];
     final scaleStack = <double>[1.0];
     var waveDepth = 0;
@@ -223,6 +228,12 @@ class RichBatchedTextComponent({
     }
 
     _recomputeMeasuredSize();
+    for (var k = 0; k < _tokens.length; k++) {
+      if (_tokens[k].wave || _tokens[k].shake) {
+        _hasAnimatedTokens = true;
+        break;
+      }
+    }
   }
 
   static ui.Color? _parseHexColor(String raw) {
@@ -314,6 +325,7 @@ class RichBatchedTextComponent({
   @override
   void update(double dt) {
     _elapsed += dt;
+    var advancedTypewriter = false;
     if (revealTokensPerSecond > 0.0 && visibleTokenLimit != null) {
       if (visibleTokenLimit! < _tokens.length) {
         _revealAccumulator += dt * revealTokensPerSecond;
@@ -324,8 +336,12 @@ class RichBatchedTextComponent({
             _tokens.length,
             visibleTokenLimit! + steps,
           );
+          advancedTypewriter = true;
         }
       }
+    }
+    if (dt > 0.0 && isVisible && (_hasAnimatedTokens || advancedTypewriter)) {
+      Game.notifyVisualMutation();
     }
   }
 

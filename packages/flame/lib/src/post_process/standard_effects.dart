@@ -100,6 +100,36 @@ class BloomPostProcess({
   }
 
   @override
+  bool get isEffectivelyNoOp => !enabled || intensity.clamp(0.0, 3.0) <= 1e-3;
+
+  @override
+  bool get supportsImageInput => true;
+
+  @override
+  bool renderFromImage(ui.Image inputImage, Vector2 size, Canvas canvas) {
+    final dst = Rect.fromLTWH(0, 0, size.x, size.y);
+    final src = Rect.fromLTWH(
+      0,
+      0,
+      inputImage.width.toDouble(),
+      inputImage.height.toDouble(),
+    );
+    final clampedGain = intensity.clamp(0.0, 3.0);
+    if (!enabled || clampedGain <= 1e-3 || size.x < 2 || size.y < 2) {
+      canvas.drawImageRect(inputImage, src, dst, _basePaint);
+      return true;
+    }
+    _syncFilters(
+      threshold.clamp(0.0, 0.95),
+      clampedGain,
+      sigma.clamp(0.5, 48.0),
+    );
+    canvas.drawImageRect(inputImage, src, dst, _basePaint);
+    canvas.drawImageRect(inputImage, src, dst, _bloomPaint);
+    return true;
+  }
+
+  @override
   void postProcess(Vector2 size, Canvas canvas) {
     final clampedGain = intensity.clamp(0.0, 3.0);
     if (!enabled || clampedGain <= 1e-3 || size.x < 2 || size.y < 2) {
@@ -115,22 +145,7 @@ class BloomPostProcess({
       return;
     }
     _replaceHeldImage(frameImage);
-
-    final src = Rect.fromLTWH(
-      0,
-      0,
-      frameImage.width.toDouble(),
-      frameImage.height.toDouble(),
-    );
-    final dst = Rect.fromLTWH(0, 0, size.x, size.y);
-    _syncFilters(
-      threshold.clamp(0.0, 0.95),
-      clampedGain,
-      sigma.clamp(0.5, 48.0),
-    );
-
-    canvas.drawImageRect(frameImage, src, dst, _basePaint);
-    canvas.drawImageRect(frameImage, src, dst, _bloomPaint);
+    renderFromImage(frameImage, size, canvas);
   }
 
   @override
@@ -150,6 +165,8 @@ class VignettePostProcess({
   super.pixelRatio,
 }) extends PostProcess {
   final Paint _vignettePaint = Paint();
+  static final Paint _imageCopyPaint = Paint()
+    ..filterQuality = FilterQuality.medium;
   Vector2 _cachedSize = Vector2.zero();
   double _cachedIntensity = -1.0;
   double _cachedInner = -1.0;
@@ -157,8 +174,12 @@ class VignettePostProcess({
   int _cachedArgb = -1;
 
   @override
-  void postProcess(Vector2 size, Canvas canvas) {
-    renderSubtree(canvas);
+  bool get isEffectivelyNoOp => !enabled || intensity.clamp(0.0, 1.0) <= 1e-3;
+
+  @override
+  bool get supportsImageInput => true;
+
+  void _drawVignetteOverlay(Vector2 size, Canvas canvas) {
     final clamped = intensity.clamp(0.0, 1.0);
     if (!enabled || clamped <= 1e-3 || size.x < 2 || size.y < 2) {
       return;
@@ -192,6 +213,29 @@ class VignettePostProcess({
     }
 
     canvas.drawRect(Rect.fromLTWH(0, 0, size.x, size.y), _vignettePaint);
+  }
+
+  @override
+  bool renderFromImage(ui.Image inputImage, Vector2 size, Canvas canvas) {
+    canvas.drawImageRect(
+      inputImage,
+      Rect.fromLTWH(
+        0,
+        0,
+        inputImage.width.toDouble(),
+        inputImage.height.toDouble(),
+      ),
+      Rect.fromLTWH(0, 0, size.x, size.y),
+      _imageCopyPaint,
+    );
+    _drawVignetteOverlay(size, canvas);
+    return true;
+  }
+
+  @override
+  void postProcess(Vector2 size, Canvas canvas) {
+    renderSubtree(canvas);
+    _drawVignetteOverlay(size, canvas);
   }
 }
 
@@ -244,6 +288,46 @@ class ChromaticAberrationPostProcess({
   }
 
   @override
+  bool get isEffectivelyNoOp => !enabled || offsetPx.abs() <= 1e-2;
+
+  @override
+  bool get supportsImageInput => true;
+
+  @override
+  bool renderFromImage(ui.Image inputImage, Vector2 size, Canvas canvas) {
+    final src = Rect.fromLTWH(
+      0,
+      0,
+      inputImage.width.toDouble(),
+      inputImage.height.toDouble(),
+    );
+    final bounds = Rect.fromLTWH(0, 0, size.x, size.y);
+    if (!enabled || offsetPx.abs() <= 1e-2 || size.x < 2 || size.y < 2) {
+      canvas.drawImageRect(inputImage, src, bounds, _layerPaint);
+      return true;
+    }
+    final dx = math.cos(angleRad) * offsetPx;
+    final dy = math.sin(angleRad) * offsetPx;
+
+    canvas.saveLayer(bounds, _layerPaint);
+    canvas.drawImageRect(
+      inputImage,
+      src,
+      Rect.fromLTWH(-dx, -dy, size.x, size.y),
+      _redPaint,
+    );
+    canvas.drawImageRect(inputImage, src, bounds, _greenPaint);
+    canvas.drawImageRect(
+      inputImage,
+      src,
+      Rect.fromLTWH(dx, dy, size.x, size.y),
+      _bluePaint,
+    );
+    canvas.restore();
+    return true;
+  }
+
+  @override
   void postProcess(Vector2 size, Canvas canvas) {
     if (!enabled || offsetPx.abs() <= 1e-2 || size.x < 2 || size.y < 2) {
       renderSubtree(canvas);
@@ -258,32 +342,7 @@ class ChromaticAberrationPostProcess({
       return;
     }
     _replaceHeldImage(frameImage);
-
-    final src = Rect.fromLTWH(
-      0,
-      0,
-      frameImage.width.toDouble(),
-      frameImage.height.toDouble(),
-    );
-    final dx = math.cos(angleRad) * offsetPx;
-    final dy = math.sin(angleRad) * offsetPx;
-    final bounds = Rect.fromLTWH(0, 0, size.x, size.y);
-
-    canvas.saveLayer(bounds, _layerPaint);
-    canvas.drawImageRect(
-      frameImage,
-      src,
-      Rect.fromLTWH(-dx, -dy, size.x, size.y),
-      _redPaint,
-    );
-    canvas.drawImageRect(frameImage, src, bounds, _greenPaint);
-    canvas.drawImageRect(
-      frameImage,
-      src,
-      Rect.fromLTWH(dx, dy, size.x, size.y),
-      _bluePaint,
-    );
-    canvas.restore();
+    renderFromImage(frameImage, size, canvas);
   }
 
   @override
@@ -304,8 +363,52 @@ class ColorGradingPostProcess({
   var bool enabled = true,
   super.pixelRatio,
 }) extends PostProcess {
-  final Paint _gradePaint = Paint();
+  final Paint _gradePaint = Paint()..filterQuality = FilterQuality.medium;
   int _cachedHash = 0;
+
+  /// Concatenates two `4x5` Flutter `ColorFilter.matrix` arrays (`outer`
+  /// applied after `inner`, i.e. `outer(inner(color))`).
+  static List<double> concatColorMatrices(
+    List<double> outer,
+    List<double> inner,
+  ) {
+    final out = List<double>.filled(20, 0.0);
+    for (var r = 0; r < 4; r++) {
+      final ro = r * 5;
+      final o0 = outer[ro];
+      final o1 = outer[ro + 1];
+      final o2 = outer[ro + 2];
+      final o3 = outer[ro + 3];
+      for (var c = 0; c < 4; c++) {
+        out[ro + c] =
+            o0 * inner[c] +
+            o1 * inner[5 + c] +
+            o2 * inner[10 + c] +
+            o3 * inner[15 + c];
+      }
+      out[ro + 4] =
+          o0 * inner[4] +
+          o1 * inner[9] +
+          o2 * inner[14] +
+          o3 * inner[19] +
+          outer[ro + 4];
+    }
+    return out;
+  }
+
+  /// Whether the current grading parameters represent the identity matrix.
+  bool get isIdentityGrading =>
+      preset == ColorGradingPreset.neutral &&
+      exposure.abs() < 1e-4 &&
+      (contrast - 1.0).abs() < 1e-4 &&
+      (saturation - 1.0).abs() < 1e-4 &&
+      temperature.abs() < 1e-4;
+
+  @override
+  bool get isEffectivelyNoOp => !enabled || isIdentityGrading;
+
+  @override
+  bool get supportsImageInput => true;
 
   /// Computes the 20-element Flutter `ColorFilter.matrix` for the current
   /// grading parameters.
@@ -419,13 +522,28 @@ class ColorGradingPostProcess({
   }
 
   @override
+  bool renderFromImage(ui.Image inputImage, Vector2 size, Canvas canvas) {
+    final src = Rect.fromLTWH(
+      0,
+      0,
+      inputImage.width.toDouble(),
+      inputImage.height.toDouble(),
+    );
+    final dst = Rect.fromLTWH(0, 0, size.x, size.y);
+    if (isEffectivelyNoOp) {
+      _gradePaint.colorFilter = null;
+      _cachedHash = 0;
+      canvas.drawImageRect(inputImage, src, dst, _gradePaint);
+      return true;
+    }
+    _syncPaint();
+    canvas.drawImageRect(inputImage, src, dst, _gradePaint);
+    return true;
+  }
+
+  @override
   void postProcess(Vector2 size, Canvas canvas) {
-    if (!enabled ||
-        (preset == ColorGradingPreset.neutral &&
-            exposure.abs() < 1e-4 &&
-            (contrast - 1.0).abs() < 1e-4 &&
-            (saturation - 1.0).abs() < 1e-4 &&
-            temperature.abs() < 1e-4)) {
+    if (isEffectivelyNoOp) {
       renderSubtree(canvas);
       return;
     }

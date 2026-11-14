@@ -1,6 +1,7 @@
 import 'package:flame/components.dart';
 import 'package:flame/events.dart';
 import 'package:flame/game.dart';
+import 'package:meta/meta.dart';
 
 /// Base class for events that originate at some point on the screen. These
 /// include: tap events, scale events, etc.
@@ -33,6 +34,10 @@ abstract class PositionEvent<R>(
   /// the components via [deliverAtPoint]. It is an error to try to read this
   /// property at other times.
   Vector2 get localPosition => renderingTrace.last;
+
+  @override
+  @internal
+  Vector2? get eventCanvasPosition => canvasPosition;
 
   @override
   Iterable<Component> collectApplicableChildren({
