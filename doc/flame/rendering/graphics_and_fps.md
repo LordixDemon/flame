@@ -72,13 +72,15 @@ camera.postProcess = ContrastAdaptiveSharpenPostProcess(
 | Field | `low` | `medium` | `high` | `ultra` |
 | --- | --- | --- | --- | --- |
 | `renderScale` | `0.65` | `0.85` | `1.0` | `1.25` |
-| `maxDevicePixelRatio` | `1.5` | `2.0` | `3.0` | `4.0` |
+| `maxDevicePixelRatio` | `1.5` | `2.0` | `2.5` | `3.5` |
 | `shadowsEnabled` | `false` | `true` | `true` | `true` |
+| `shadowOpacityScale` | `0.0` | `0.75` | `1.0` | `1.0` |
 | `postProcessEnabled` | `false` | `true` | `true` | `true` |
-| `bloomEnabled` | `false` | `false` | `true` | `true` |
-| `particleDensity` | `0.35` | `0.65` | `1.0` | `1.25` |
-| `msaaSamples` | `1` | `1` | `4` | `4` |
-| `lodBias` | `0.65` | `0.85` | `1.0` | `1.35` |
+| `auxiliaryPassScale` | `0.25` | `0.5` | `0.75` | `1.0` |
+| `particleDensity` | `0.35` | `0.65` | `1.0` | `1.35` |
+| `lodBias` | `-0.45` | `-0.15` | `0.0` | `0.35` |
+| `ambientMotionEnabled` | `false` | `true` | `true` | `true` |
+| `antiAliasing` | `false` | `true` | `true` | `true` |
 
 ```dart
 // Switch preset or customize individual parameters:
