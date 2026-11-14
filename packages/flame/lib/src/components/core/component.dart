@@ -878,7 +878,14 @@ class Component({
         child?.updateTree(dt);
       }
     }
+    postDefaultUpdateSubtree();
   }
+
+  /// Internal post-subtree hook (overridden by `World` to drain queued
+  /// `WorldEventBus` events when `world.updateTree(dt)` is called standalone
+  /// without turning `World` into a `CustomTraversal` flat-list barrier).
+  @internal
+  void postDefaultUpdateSubtree() {}
 
   /// This method will be invoked from lifecycle if [child] has been added
   /// to or removed from its parent children list.

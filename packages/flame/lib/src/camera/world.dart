@@ -28,7 +28,7 @@ class World({
   bool spatialIndexEnabled = false,
   double spatialCellSize = 256.0,
   super.key,
-}) extends Component with CustomTraversal implements CoordinateTransform {
+}) extends Component implements CoordinateTransform {
   /// Optional decorator chain applied when this world is rendered through a
   /// [CameraComponent] (also used by `WorldRoute.addRenderEffect`).
   final Decorator decorator = Decorator();
@@ -109,14 +109,19 @@ class World({
     }
   }
 
-  @override
-  void updateSubtree(double dt) {
-    super.updateSubtree(dt);
+  /// Drains any deferred events queued on [eventBus] without allocating an
+  /// [eventBus] instance when unused.
+  @internal
+  void flushEventBusIfPending() {
     final bus = _eventBus;
     if (bus != null && bus.pendingCount > 0) {
       bus.flushQueue();
     }
   }
+
+  @override
+  @internal
+  void postDefaultUpdateSubtree() => flushEventBusIfPending();
 
   @override
   void onChildrenChanged(Component child, ChildrenChangeType type) {

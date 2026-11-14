@@ -490,6 +490,7 @@ class FlameGame<W extends World>({
     }
 
     updateChildrenFlat(effectiveDt);
+    _world.flushEventBusIfPending();
   }
 
   /// This passes the new size along to every component in the tree via their
