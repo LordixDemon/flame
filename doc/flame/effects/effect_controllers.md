@@ -292,4 +292,24 @@ by the standard alternating `EffectController`).
 final controller = ZigzagEffectController(period: 2);
 ```
 
+
+## `SpringEffectController`
+
+`SpringEffectController` drives any `Effect` (`ScaleEffect`, `MoveEffect`, `RotateEffect`) using an
+analytical damped harmonic oscillator (`stiffness`, `dampingRatio`, `initialVelocity`), naturally
+producing tactile overshoot and settle (`dampingRatio < 1.0`) or critically damped snap
+(`dampingRatio == 1.0`) without hand-authored keyframes:
+
+```dart
+button.add(
+  ScaleEffect.to(
+    Vector2.all(1.12),
+    SpringEffectController(
+      stiffness: 380.0,
+      dampingRatio: 0.58,
+    ),
+  ),
+);
+```
+
 [Lissajous curve]: https://en.wikipedia.org/wiki/Lissajous_curve

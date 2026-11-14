@@ -238,3 +238,32 @@ Clearing only affects components currently in the pool. Components that are in u
 
 6. **Pool behavior is LIFO**: The pool uses a stack (Last In, First Out) internally, meaning
    the most recently returned component will be the next one acquired.
+
+7. **`RecyclableComponent` hook**: Implement `RecyclableComponent` (`reset()`) on pooled components
+   (such as `ParticleEmitterComponent`) to automatically clean internal buffers on release, and
+   inspect `pool.inUseCount` / `pool.availableCount` in telemetry.
+
+
+## Uniform Spatial Hash Grid (`SpatialGrid2D<T>`)
+
+When querying nearby tiles, props, buildings, or targets around a pointer or shockwave radius,
+iterating all $N$ entities costs $O(N)$ per query. `SpatialGrid2D<T>` (`package:flame/geometry.dart`)
+indexes 2D points or `Rect` bounds into uniform cells of `cellSize` with stamp-based multi-cell
+deduplication — performing `queryPoint`, `queryRect`, and `queryRadius` into a caller-supplied
+`List<T>` with **zero heap allocations**:
+
+```dart
+import 'package:flame/geometry.dart';
+
+final grid = SpatialGrid2D<int>(cellSize: 96.0);
+for (final tile in tiles) {
+  grid.insertRect(tile.id, tile.worldRect);
+}
+
+final scratchIds = <int>[];
+// Inside pointer / ripple handler (zero allocations):
+grid.queryRadius(impactX, impactY, 140.0, scratchIds);
+for (final tileId in scratchIds) {
+  triggerRipple(tileId);
+}
+```

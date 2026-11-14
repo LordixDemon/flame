@@ -344,3 +344,31 @@ class MyGame extends FlameGame with HasPerformanceTracker {
   // access `updateTime` and `renderTime` getters.
 }
 ```
+
+
+## Adaptive Idle Pacing, Delta Spike Clamping, Telemetry, and GPU Warmup
+
+- **Adaptive Idle Frame Pacing (`idleFps` & `notifyActivity`)**: Set `idleFps` (e.g. `30.0`) and
+  `idleTimeoutSeconds` (e.g. `3.0`) on `FlameGame` to automatically throttle calm board/menu scenes
+  while snapping back to native 60/120 Hz immediately on pointer/keyboard input or
+  `notifyActivity(boostSeconds: 1.5)`.
+- **Background Spike Clamping (`maxDeltaTime` & `clampedSpikeDt`)**: Pass `maxDeltaTime` and
+  `clampedSpikeDt` to `FlameGame(...)` so large frame hitches after tab switches or OS backgrounding
+  are clamped (`clampedDeltaSpikes`) instead of tunneling physics or skipping animations.
+- **Draw-Call & CPU Telemetry (`HasFrameTelemetry`)**: Mix `HasFrameTelemetry` into `FlameGame` (or
+  enable `collectRenderTelemetry = true`) to inspect `renderTelemetry` (`drawCalls`, `atlasCalls`,
+  `verticesCalls`, `saveLayerCalls`, `updateMicros`, `renderMicros`) with zero per-frame wrapper
+  allocations.
+- **GPU Shader & Pipeline Pre-Warming (`RenderWarmupQueue`)**: Eliminate first-frame shader/PSO
+  compilation hitches by registering `FragmentShader`s, `Image` atlases, and `Vertices` blend modes
+  into a `RenderWarmupQueue` and awaiting `warmupRenderPipelines(queue)` during `onLoad`
+  (automatically skipped on hot-reload shadow instances via `isHotReloadShadow`):
+
+```dart
+final queue = RenderWarmupQueue()
+  ..addShader(oceanShader)
+  ..addTexture(particleAtlas, blendMode: BlendMode.plus)
+  ..addVertices(blendMode: BlendMode.modulate, shader: matCapShader);
+
+await warmupRenderPipelines(queue, tasksPerYield: 8);
+```

@@ -224,3 +224,17 @@ In order to use `ValueRoute`s, two steps are required:
      }
    }
    ```
+
+
+## `WorldRoute` Scene Transitions and Decorators
+
+`WorldRoute` supports declarative `transition` (`SceneTransition`, such as
+`CrossFadeSceneTransition` or `CircularRevealSceneTransition`) and optional `decorators` applied to
+the routed `World` when pushing or popping worlds on `RouterComponent`:
+
+```dart
+final route = WorldRoute(
+  BattleWorld.new,
+  transition: const CrossFadeSceneTransition(duration: 0.35),
+);
+```

@@ -582,6 +582,68 @@ tree. If multiple components add the contexts matching the selected type `T`, th
 will be returned (though typically you would create a unique context type for each component).
 
 
+### `TimelineComponent` (Declarative Choreographies & Cutscenes)
+
+`TimelineComponent` sequences synchronous actions, delays, async beats, component `Effect`s,
+`parallel` branches, and `stagger`ed cascades *without* spawning transient `TimerComponent` nodes:
+
+- `playbackRate` (`1.0`, `2.0`, etc.) dynamically scales both inline waits and active child timelines.
+- `skipToEnd()` deterministically fast-forwards all remaining beats and synchronous callbacks.
+- `cancel()` increments an internal generation token so stale async continuations never fire.
+
+```dart
+final timeline = TimelineComponent();
+world.add(timeline);
+
+timeline.play((t) {
+  t
+    ..doSync(() => banner.show('Round Start'))
+    ..wait(0.25)
+    ..parallel([
+      (b) => b.animate(heroA, MoveByEffect(Vector2(0, -24), EffectController(duration: 0.2))),
+      (b) => b.animate(heroB, MoveByEffect(Vector2(0, -24), EffectController(duration: 0.2))),
+    ])
+    ..doSync(banner.hide);
+});
+```
+
+
+### `HasListenableSubscriptions` (Lifecycle-Safe Reactive Bindings)
+
+Mix `HasListenableSubscriptions` into any `Component` or `World` to subscribe to Flutter
+`Listenable` / `ValueListenable<T>` stores (`ChangeNotifier`, `ValueNotifier`) with:
+
+- Automatic attachment in `onMount()` and guaranteed listener removal in `onRemove()` (zero leaks
+  across mount/remove cycles).
+- Optional per-frame coalescing (`coalescePerFrame: true` by default) so multiple store mutations
+  in one tick invoke the callback once at the start of `update(dt)`.
+- Automatic `game.notifyActivity()` wakeups when idle frame pacing is enabled.
+
+```dart
+class HudWorld extends World with HasListenableSubscriptions {
+  HudWorld(this.sessionStore, this.scoreNotifier);
+  final ChangeNotifier sessionStore;
+  final ValueListenable<int> scoreNotifier;
+
+  @override
+  Future<void> onLoad() async {
+    listenToListenable(sessionStore, _syncScene);
+    listenTo<int>(scoreNotifier, (score) => _updateScoreBanner(score));
+  }
+}
+```
+
+
+### Fixed-Timestep Simulation, Time Pulses, and Auto-Batching
+
+- **`HasFixedUpdate`**: Runs deterministic `fixedUpdate(double fixedDt)` steps driven by
+  `FlameGame.fixedTimeStep` (e.g. `1 / 120`), passing `interpolationAlpha` for smooth rendering.
+- **`HasTimeScale` & `applyTimePulse(...)`**: Scales variable and fixed `dt` on any subtree and
+  supports hit-stop / slow-motion pulses (`applyTimePulse(scale: 0.15, realDuration: 0.06, rampBackDuration: 0.08)`).
+- **`HasAutoBatchedChildren`**: Automatically coalesces static/semi-static `SpriteComponent`
+  children sharing the same atlas `Image` into a single `Canvas.drawRawAtlas` call.
+
+
 ## Effects
 
 Flame provides a set of effects that can be applied to a certain type of components. These effects

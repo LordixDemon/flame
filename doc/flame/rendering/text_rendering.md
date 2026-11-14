@@ -631,3 +631,49 @@ When in doubt, the following guidelines can help you picking the best path for y
   - use the Text Node & Style system to create your pre-laid-out Elements, and render them with
     `TextElementComponent`.
 - finally, in order to have formatted (or rich) text, you must use Text Nodes & Styles.
+
+
+## GPU-Batched Dynamic Text (`RasterFontAtlas` & `GlyphBatchRenderer`)
+
+When rendering dozens or hundreds of dynamic world-space labels, damage numbers, prices, or
+multipliers every frame, calling `TextPainter.paint` per label issues separate glyph draws.
+`RasterFontAtlas` bakes any Flutter `TextStyle` (including custom outline strokes and drop shadows)
+once into a single `ui.Image` atlas, and `GlyphBatchRenderer` (or `BatchedTextComponent` /
+`GlyphBatchLayer`) draws **all strings in a single `Canvas.drawRawAtlas` call**:
+
+```dart
+import 'package:flame/text.dart';
+
+final fontAtlas = RasterFontAtlas.bake(
+  style: const TextStyle(
+    fontSize: 18,
+    fontWeight: FontWeight.w800,
+    color: Color(0xFFFFFFFF),
+  ),
+  charset: RasterFontAtlas.asciiPrintableCharset,
+  outlineColor: const Color(0xDD120B06),
+  outlineWidth: 2.5,
+);
+
+final glyphBatch = GlyphBatchRenderer(fontAtlas);
+
+// Inside render(Canvas canvas):
+glyphBatch.clear();
+for (final cell in ownedCells) {
+  glyphBatch.addText(
+    cell.priceLabel,
+    x: cell.labelX,
+    y: cell.labelY,
+    scale: 0.65,
+    color: cell.tintColor,
+    anchor: Anchor.center,
+  );
+}
+glyphBatch.flush(canvas); // 1 Canvas.drawRawAtlas call for all labels!
+
+// Dispose the GPU atlas image in onRemove():
+// fontAtlas.dispose();
+```
+
+For retained component hierarchies, attach a `GlyphBatchLayer` parent and add
+`BatchedTextComponent` children — they automatically batch together during `renderTree`.

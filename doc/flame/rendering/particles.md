@@ -198,6 +198,115 @@ Particles are drawn centered, rotated by their rotation, and scaled so the
 sprite's width matches the particle's current size.
 
 
+### FlipbookParticleRenderer and VariantSpriteParticleRenderer
+
+For animated sprite-sheet particles (fire, smoke puffs, sparkles) or random
+per-particle sprite variants (leaves, petals, debris, coins) drawn in **a
+single `Canvas.drawRawAtlas` call**:
+
+- `FlipbookParticleRenderer` steps each particle through a `columns × rows`
+  grid over its normalized lifetime (or loops at `loops` cycles).
+- `VariantSpriteParticleRenderer` assigns each spawned particle a deterministic
+  or random `Rect` from `frames` (stored in `ParticleBuffer.variant`) with zero
+  per-frame allocations.
+
+```dart
+final flipbook = FlipbookParticleRenderer(
+  atlasImage,
+  columns: 4,
+  rows: 2,
+  blendMode: BlendMode.plus,
+);
+
+final variants = VariantSpriteParticleRenderer(
+  atlasImage,
+  frames: const [
+    Rect.fromLTWH(0, 0, 32, 32),
+    Rect.fromLTWH(32, 0, 32, 32),
+    Rect.fromLTWH(64, 0, 32, 32),
+  ],
+);
+```
+
+
+### Force fields, attractors, floor bounce, and velocity stretch
+
+`ParticleEmitter` supports zero-allocation physical modifiers and force fields:
+
+- `ParticleAttractor`: pulls particles toward a static `Vector2` or dynamic
+  `targetProvider` (e.g. a moving player token or HUD counter), absorbing
+  particles within `arrivalRadius` and reporting arrivals per step via
+  `onParticlesArrived(int count)`.
+- `ParticleVortex`: applies tangential swirl + radial inward/outward pull.
+- `floorY` & `floorRestitution`: bounces falling sparks/debris off a horizontal
+  ground plane.
+- `velocityStretch` & `maxStretch`: elongates fast-moving particles along their
+  instantaneous velocity vector inside `TextureParticleRenderer`.
+
+```dart
+final coinStream = ParticleEmitter(
+  maxParticles: 48,
+  bursts: const [ParticleBurst(count: 24)],
+  lifetime: const Range(0.6, 0.9),
+  speed: const Range(80, 160),
+  velocityStretch: 0.012,
+  maxStretch: 2.6,
+  floorY: 42.0,
+  floorRestitution: 0.45,
+  forceFields: [
+    ParticleAttractor(
+      targetProvider: () => playerToken.position,
+      strength: 950.0,
+      arrivalRadius: 14.0,
+      consumeOnArrival: true,
+      onParticlesArrived: (arrived) => hudCounter.increment(arrived),
+    ),
+  ],
+);
+```
+
+
+### Cross-emitter batching (`ParticleBatchGroup`) and pooling
+
+When dozens of short-lived `ParticleEmitterComponent` bursts are active at the
+same time, `ParticleBatchGroup` coalesces every child emitter that shares the
+same `(Image, BlendMode)` texture key into **one combined `Canvas.drawRawAtlas`
+call** (`lastDrawCallCount`, `lastBatchedEmitterCount`,
+`lastBatchedParticleCount`).
+
+`ParticleEmitterComponent` also mixes in `RecyclableComponent` and provides
+`reconfigure(...)` / `reset()`, so burst components can be acquired from a
+`ComponentPool<ParticleEmitterComponent>` with zero buffer reallocations:
+
+```dart
+final batchGroup = ParticleBatchGroup();
+world.add(batchGroup);
+
+final burstPool = ComponentPool<ParticleEmitterComponent>(
+  factory: () => ParticleEmitterComponent(
+    emitter: sparkEmitter,
+    renderer: sharedCircleRenderer,
+  ),
+  maxSize: 32,
+);
+
+void spawnSparks(Vector2 worldPos) {
+  final comp = burstPool.acquire()
+    ..reconfigure(
+      emitter: sparkEmitter,
+      renderer: sharedCircleRenderer,
+      position: worldPos,
+    );
+  batchGroup.add(comp);
+}
+```
+
+`CircleParticleRenderer` also shares a static synchronous GPU texture cache
+keyed by `(resolution, quantizedSoftness)` (`CircleParticleRenderer.cachedTextureCount`,
+`CircleParticleRenderer.clearTextureCache()`), eliminating duplicate raster
+uploads and blank first frames.
+
+
 ### Custom rendering
 
 For full control, use `CallbackParticleRenderer` (or extend

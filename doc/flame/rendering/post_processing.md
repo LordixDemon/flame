@@ -199,6 +199,19 @@ class CrystalBallGame extends FlameGame<CrystalBallGameWorld> {
 }
 ```
 
+
+## Cached Dual-Pass Shader Pipeline (`DualPassShaderPostProcess`)
+
+For multi-pass effects such as separable bloom + ACES tone-mapping + vignette/bokeh,
+`DualPassShaderPostProcess` caches intermediate offscreen GPU `ui.Image` targets across frames when
+resolution is unchanged and exposes `disposeResources()` for deterministic GPU texture cleanup in
+`FlameGame.onRemove()`.
+
+Similarly, when applying `PaintDecorator.tint(...)`, `PaintDecorator.grayscale(...)`, or
+`PaintDecorator.blur(...)` to a `PositionComponent`, set `component.decoratorBounds` to a tight
+local `Rect` so `Canvas.saveLayer` allocates only the component's bounding box rather than a
+full-screen target.
+
 In this code:
 
 - The camera applies a `PostProcessGroup` containing multiple effects.

@@ -84,3 +84,56 @@ curve drawn on the canvas.
 Another flag `oriented: true` instructs the target not only move along the curve, but also rotate
 itself in the direction the curve is facing at each point. With this flag the effect becomes both
 the move- and the rotate- effect at the same time.
+
+`MoveAlongPathEffect` pre-samples its `PathMetric` into a dense lookup table once on creation, so
+evaluating points and tangents during `apply(progress)` performs zero per-frame `Tangent`
+allocations.
+
+
+## `ArcMoveEffect` and `ElevationTarget`
+
+`ArcMoveEffect` moves a component linearly along its ground trajectory (`position`) while computing
+a parabolic jump height $4h \cdot t(1 - t)$ at zero per-frame allocation cost:
+
+- If the target implements `ElevationTarget` (`setElevation(double elevation)`), its base `position`
+  stays strictly on the ground plane (keeping ground shadows planted!) while its visual body rises by
+  `elevation`.
+- Otherwise, `ArcMoveEffect` offsets `position` along `upVector` (default `Vector2(0, -1)`).
+
+```dart
+class HeroPawn extends PositionComponent implements ElevationTarget {
+  final PositionComponent body = PositionComponent();
+
+  @override
+  void setElevation(double elevation) {
+    body.position.y = -elevation;
+  }
+}
+
+pawn.add(
+  ArcMoveEffect(
+    destinationCell,
+    EffectController(duration: 0.22, curve: Curves.easeInOut),
+    arcHeight: 20.0,
+  ),
+);
+```
+
+
+## `WaypointPathEffect` (Catmull-Rom Spline Traversal)
+
+`WaypointPathEffect` smoothly interpolates a component across a sequence of `Vector2` waypoints
+using a configurable Catmull-Rom spline (`tension` in `[0.0 .. 1.0]`), parameterized by uniform arc
+length (`samplesPerSegment`), with optional `oriented: true` tangent rotation and deterministic
+`onWaypointReached(int index)` callbacks as each waypoint is crossed:
+
+```dart
+pawn.add(
+  WaypointPathEffect(
+    [cellA, bridgeMid, cellB, cellC],
+    EffectController(duration: 0.65, curve: Curves.easeInOutCubic),
+    tension: 0.25,
+    onWaypointReached: (index) => playStepSound(index),
+  ),
+);
+```

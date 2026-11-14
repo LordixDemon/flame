@@ -67,6 +67,16 @@ class MyComponent extends PositionComponent with HoverCallbacks {
 Note that you can still listen to the "raw" onMouseMove methods for additional functionality, just
 make sure to call the `super` version to enable the `HoverCallbacks` behavior.
 
+### High-Frequency Hover Coalescing and Occlusion (`coalesceMouseHover` & `stopHoverPropagation`)
+
+Desktop gaming mice emit 500–1000 Hz `PointerHoverEvent` packets. Set
+`coalesceMouseHover = true` on `FlameGame` to coalesce raw OS hover packets into **at most one
+scene/3D raycast per rendered frame** at the start of `update(dt)`.
+
+Override `bool get stopHoverPropagation => true` on foreground/occluding `HoverCallbacks`
+components so overlapping background tiles or 3D meshes behind the topmost hit do not simultaneously
+enter `isHovered`.
+
 
 ### Hover Demo
 

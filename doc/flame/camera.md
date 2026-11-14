@@ -476,3 +476,69 @@ camera.postProcess = PostProcessGroup(
 ```
 
 Read more about this on [Post processing](rendering/post_processing.md).
+
+
+### Non-destructive Trauma Shake, Smooth Follow v2, and Multi-Pass Rendering
+
+- **Trauma Shake (`Viewfinder.addTrauma`)**: Adds quadratic/cubic Perlin-like translational and
+  rotational camera shake inside the viewfinder transform *without* mutating `viewfinder.position`
+  or `viewfinder.angle`, so gameplay and culling rects stay deterministic:
+
+  ```dart
+  camera.viewfinder
+    ..maxShakeOffset = 10.0
+    ..maxShakeRoll = 0.015
+    ..traumaDecay = 1.6;
+  camera.viewfinder.addTrauma(0.65);
+  ```
+
+- **Framerate-Independent `FollowBehavior` v2**: `camera.follow(...)` supports exponential damping
+  (`smoothing`), a camera `deadzone` (`Rect`), and velocity look-ahead (`leadFactor`,
+  `maxLeadDistance`).
+
+- **Multi-Pass World Rendering (`RenderPass` & `MultiPassComponent`)**: Set `camera.renderPasses`
+  (for example `[RenderPass.groundShadow, RenderPass.mainGeometry, RenderPass.lightingOverlay]`) so
+  components mixing in `MultiPassComponent` render separate passes across the scene without cloning
+  shadow/glow components.
+
+- **`SpatialCullGroup`**: Groups static or sectorized children under a single bounding box so an
+  offscreen sector skips its entire subtree in `O(1)`.
+
+
+### Offscreen Snapshots and GPU `SceneTransition`s
+
+- **`renderToImageSync` / `renderToImage`**: Captures the camera's live view (with optional
+  backdrop, post-processing, or custom `passes`) into a `dart:ui` `Image` without disturbing the
+  on-screen canvas.
+- **`SceneTransition` (`startSceneTransition` / `transitionToWorld`)**: Captures the outgoing frame
+  once into a GPU texture and composites `CrossFadeSceneTransition`,
+  `CircularRevealSceneTransition`, or a custom fragment `ShaderSceneTransition` over the live
+  incoming scene with zero per-frame `saveLayer` overhead, deterministically disposing the snapshot
+  when finished or cancelled:
+
+  ```dart
+  camera.startSceneTransition(
+    CircularRevealSceneTransition(duration: 0.45),
+  );
+  applyNewBiome();
+  ```
+
+
+### `CameraBillboard` and `ViewportClampedPin`
+
+World-space labels, price chips, and rooftop callouts can mix in `CameraBillboard` (to counteract
+camera zoom/rotation within `[minScale .. maxScale]` via `zoomExponent`) and `ViewportClampedPin`
+(to keep world-anchored tooltips clamped inside safe viewport margins during render without mutating
+their logical `position`):
+
+```dart
+class WorldCalloutChip extends PositionComponent
+    with CameraBillboard, ViewportClampedPin {
+  WorldCalloutChip() {
+    zoomExponent = 0.7;
+    minBillboardScale = 0.65;
+    maxBillboardScale = 1.35;
+    viewportPadding = const EdgeInsets.all(16);
+  }
+}
+```

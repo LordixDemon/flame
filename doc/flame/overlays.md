@@ -66,3 +66,22 @@ The order of rendering for an overlay is determined by the order of the keys in 
 `overlayBuilderMap`.
 
 See an [example of the Overlays feature](https://github.com/flame-engine/flame/blob/main/examples/lib/stories/system/overlays_example.dart).
+
+
+## Isolated `OverlayHost` and Animated Overlays (`addAnimatedEntry`)
+
+`GameWidget` hosts active overlays inside an isolated `OverlayHost` subtree driven by
+`OverlayManager`, so `overlays.add(...)` and `overlays.remove(...)` **never rebuild
+`GameWidgetState` or recreate the `RenderBox` hosting the game canvas**.
+
+To register declarative fade/slide enter and exit animations (keeping the overlay widget mounted
+until its reverse transition completes), use `overlays.addAnimatedEntry`:
+
+```dart
+game.overlays.addAnimatedEntry(
+  'Banner',
+  (context, game) => const BannerCard(),
+  duration: const Duration(milliseconds: 220),
+  reverseDuration: const Duration(milliseconds: 180),
+);
+```

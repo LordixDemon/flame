@@ -117,7 +117,11 @@ gesture.
 
 Scale events are not fired immediately when two fingers touch the screen. Instead, a small movement
 threshold must be crossed first. By default, the fingers must spread or pinch by at least 5% (a
-scale factor of 1.05) before `onScaleStart` is called. This prevents accidental scale gestures when
+scale factor of 1.05) before `onScaleStart` is called.
+
+On desktop/macOS trackpads (`PointerPanZoom`), set `trackpadImmediateScale = true` on `FlameGame`
+to bypass the 5% pinch and pan-slop deadzones for instant, zero-latency two-finger trackpad pan,
+pinch, and rotation while keeping touch deadzones active for finger inputs. This prevents accidental scale gestures when
 the user simply places two fingers without intending to scale.
 
 The threshold can be changed by accessing the `MultiDragScaleDispatcher` from your game and setting
