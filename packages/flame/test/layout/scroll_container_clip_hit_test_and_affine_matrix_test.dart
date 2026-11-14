@@ -44,10 +44,10 @@ class _TappableItemComponent({
 }
 
 void main() {
-  group('Wave 7 — Subsystems 5–7: Deep WorldSpatialIndex & WorldQuery, '
-      'Clipped Hit-Testing / ScrollContainerComponent & AffineMatrix2D', () {
+  group('Deep WorldSpatialIndex, Clipped Hit-Testing, '
+      'ScrollContainerComponent & AffineMatrix2D', () {
     test(
-      'Subsystem 5: Deep World(spatialIndexEnabled: true) indexes nested '
+      'Deep World(spatialIndexEnabled: true) indexes nested '
       'SceneLayerComponent subtrees in O(visible) and updates deep WorldQuery',
       () async {
         final world = World(spatialIndexEnabled: true, spatialCellSize: 128);
@@ -126,7 +126,7 @@ void main() {
     );
 
     test(
-      'Subsystem 6: ClipComponent clips pointer hit-testing and '
+      'ClipComponent clips pointer hit-testing and '
       'ScrollContainerComponent handles wheel, inertia, clamping & culling',
       () async {
         final world = World();
@@ -261,7 +261,7 @@ void main() {
     );
 
     test(
-      'Subsystem 7: AffineMatrix2D and versioned PositionComponent '
+      'AffineMatrix2D and versioned PositionComponent '
       'worldTransformMatrix cache across 5-level hierarchy',
       () async {
         final game = FlameGame();

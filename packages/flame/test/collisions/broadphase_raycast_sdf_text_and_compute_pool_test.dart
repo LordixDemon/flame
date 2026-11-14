@@ -36,10 +36,10 @@ TransferableTypedData _doubleFloat32InIsolate(TransferableTypedData packed) {
 class _QuadTreeTestGame() extends FlameGame with HasQuadTreeCollisionDetection;
 
 void main() {
-  group('Wave 7 — Subsystems 14–15: Static-Sleeping Sweep & Broadphase '
+  group('Static-Sleeping Sweep & Broadphase '
       'Raycasting, SdfFontAtlas / SdfTextComponent & EngineComputePool', () {
     test(
-      'Subsystem 14: Static-sleeping Sweep skips passive re-sorts on calm '
+      'Static-sleeping Sweep skips passive re-sorts on calm '
       'frames and accelerates 2D raycast / raycastAll / raytrace with '
       'collisionMask in both Sweep and QuadTreeBroadphase',
       () async {
@@ -186,7 +186,7 @@ void main() {
     );
 
     test(
-      'Subsystem 15A: SdfFontAtlas Felzenszwalb-Huttenlocher 2D EDT distance '
+      'SdfFontAtlas Felzenszwalb-Huttenlocher 2D EDT distance '
       'accuracy, async GPU atlas bake & SdfTextComponent multi-pass rendering',
       () async {
         // 1. Exact mathematical verification of 2D Euclidean Distance Transform
@@ -266,7 +266,7 @@ void main() {
     );
 
     test(
-      'Subsystem 15B: EngineComputePool multi-isolate execution, priority '
+      'EngineComputePool multi-isolate execution, priority '
       'scheduling, cancellation, inline fallback & TransferableTypedData',
       () async {
         // 1. Multi-worker background Isolate pool (workerCount: 2) + zero-copy

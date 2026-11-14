@@ -76,10 +76,10 @@ Future<ByteData> _rasterizeRgba(
 }
 
 void main() {
-  group('Wave 6 — Canvas3D Multi-Material Z-Sort, Quaternions, Deformables, '
+  group('Canvas3D Multi-Material Z-Sort, Quaternions, Deformables, '
       'Partial Chunks & Decoupled Shadows', () {
     test(
-      'Unlock #1: Multi-Material, Multi-Texture & Multi-BlendMode global '
+      'Multi-Material, Multi-Texture & Multi-BlendMode global '
       'Z-sort preserves 3D occlusion and coalesces contiguous runs',
       () async {
         final cyanImg = await _makeSolidImage(
@@ -317,7 +317,7 @@ void main() {
     );
 
     test(
-      'Unlock #2: Quaternion3D math, 3-level pitch/roll/quat Node3D composition, '
+      'Quaternion3D math, 3-level pitch/roll/quat Node3D composition, '
       'MorphMeshWorkspace3D & SkinnedMeshWorkspace3D',
       () {
         // 1. Quaternion3D degenerate & orthonormal invariants
@@ -562,7 +562,7 @@ void main() {
     );
 
     test(
-      'Unlock #3: StaticMeshChunk3D preserves per-instance texture uvRectPx '
+      'StaticMeshChunk3D preserves per-instance texture uvRectPx '
       'alongside MatCap instances and performs O(V_slot) partial slot rebakes',
       () async {
         final atlas = await _makeSplitRedGreenAtlas();
@@ -747,7 +747,7 @@ void main() {
     );
 
     test(
-      'Unlock #4: cullBackfaceShadows halves shadow tris & prevents '
+      'cullBackfaceShadows halves shadow tris & prevents '
       'double-alpha darkening, shadowHeightFalloff softens high-Z shadows, '
       'and flushShadows/flushGeometry decouple multi-pass rendering',
       () async {

@@ -77,10 +77,10 @@ class _StylusCanvasComponent({
 }
 
 void main() {
-  group('Wave 7 — Subsystems 8–9: SemanticsComponent Accessibility Bridge & '
+  group('SemanticsComponent Accessibility Bridge & '
       'Pointer Hardware Telemetry / OS Blur Cancel', () {
     testWidgets(
-      'Subsystem 8: SemanticsComponent projects HUD and World nodes into '
+      'SemanticsComponent projects HUD and World nodes into '
       'Flutter SemanticsNode tree, dispatches actions, and culls offscreen',
       (tester) async {
         final world = World();
@@ -158,7 +158,7 @@ void main() {
     );
 
     testWidgets(
-      'Subsystem 9: Stylus pressure/tilt/orientation/buttons propagate into '
+      'Stylus pressure/tilt/orientation/buttons propagate into '
       'TapDownEvent & DragUpdateEvent, and OS blur cancels active gestures',
       (tester) async {
         final game = FlameGame();

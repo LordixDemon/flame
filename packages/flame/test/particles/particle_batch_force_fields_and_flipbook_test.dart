@@ -24,7 +24,7 @@ Image _makeTestAtlas(int width, int height) {
 }
 
 void main() {
-  group('Wave-3 Particles (#1, #2, #3)', () {
+  group('Particle Batching, Force Fields & Flipbook Renderers', () {
     tearDown(CircleParticleRenderer.clearTextureCache);
 
     test(

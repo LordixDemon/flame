@@ -80,10 +80,10 @@ Future<ByteData> _rasterizeRgba(
 }
 
 void main() {
-  group('Wave 6 — PostProcessPipeline Chaining/Folding, Universal '
+  group('PostProcessPipeline Chaining/Folding, Universal '
       'ParticleBatchGroup & Zero-Rebuild Cursor / Dirty Auto-Wakeup', () {
     test(
-      'Unlock #5a: PostProcessPipeline & PostProcessSequentialGroup propagate '
+      'PostProcessPipeline & PostProcessSequentialGroup propagate '
       'inner PostProcess context and currentPassTag to world components',
       () async {
         final spy = _ContextSpyComponent();
@@ -144,7 +144,7 @@ void main() {
     );
 
     test(
-      'Unlock #5b: PostProcessPipeline chains ui.Image inputs, folds '
+      'PostProcessPipeline chains ui.Image inputs, folds '
       'consecutive ColorGradingPostProcess 4x5 matrices, and auto-bypasses '
       'zero-intensity no-op stages',
       () async {
@@ -298,7 +298,7 @@ void main() {
     );
 
     test(
-      'Unlock #7: ParticleBatchGroup coalesces arbitrary Anchor, angle, '
+      'ParticleBatchGroup coalesces arbitrary Anchor, angle, '
       'nested containers into 1 drawRawAtlas with pixel parity, and batches '
       'velocityStretch / non-uniform scale into 1 quad drawVertices call',
       () async {
@@ -498,7 +498,7 @@ void main() {
     );
 
     testWidgets(
-      'Unlock #8a: Game.mouseCursorListenable updates MouseRegion with 0 '
+      'Game.mouseCursorListenable updates MouseRegion with 0 '
       'GameWidgetState rebuilds and handles resize-phase mutations safely',
       (tester) async {
         final game = FlameGame();
@@ -543,7 +543,7 @@ void main() {
     );
 
     test(
-      'Unlock #8b: Game.visualMutationCount wakes IdleRenderMode.onDemand '
+      'Game.visualMutationCount wakes IdleRenderMode.onDemand '
       'automatically across particles, 3D particles, sprite ticker, HasPaint, '
       'animated RichBatchedTextComponent, RibbonTrail, VerletRope2D & Node3D',
       () async {

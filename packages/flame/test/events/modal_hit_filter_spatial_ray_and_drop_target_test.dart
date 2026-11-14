@@ -137,10 +137,10 @@ class _DraggableHudCard({
 }
 
 void main() {
-  group('Wave 6 — Modal InputHitFilter Stack, O(k) SpatialHitbox3D Ray '
+  group('Modal InputHitFilter Stack, O(k) SpatialHitbox3D Ray '
       'Broadphase & Cross-Layer DropTargetCallbacks', () {
     testWidgets(
-      'Unlock #6a: Modal pushInputHitFilter / popInputHitFilter stack gates '
+      'Modal pushInputHitFilter / popInputHitFilter stack gates '
       'taps, hovers, drags, and DeferHitTestToComponents passthrough',
       (tester) async {
         var backgroundWidgetTaps = 0;
@@ -255,7 +255,7 @@ void main() {
     );
 
     testWidgets(
-      'Unlock #6b: O(k) World.spatialHitboxes3D registry & boundingSphere3D '
+      'O(k) World.spatialHitboxes3D registry & boundingSphere3D '
       'broadphase prune 500 non-3D props and non-intersecting 3D meshes',
       (tester) async {
         final world = World();
@@ -329,7 +329,7 @@ void main() {
     );
 
     testWidgets(
-      'Unlock #6c: Cross-layer DropTargetCallbacks delivers enter, move, '
+      'Cross-layer DropTargetCallbacks delivers enter, move, '
       'leave, drop & cancel from HUD DragCallbacks onto 3D SpatialHitbox3D '
       'board tiles with self-exclusion and canAcceptDrop passthrough',
       (tester) async {

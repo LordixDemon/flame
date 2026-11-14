@@ -6,10 +6,10 @@ import 'package:flame/canvas3d.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  group('Wave 7 — Subsystems 10–13: Canvas3D Sort/65k Buffers, Pinhole '
+  group('Canvas3D Sort/65k Buffers, Pinhole '
       'Perspective + Near-Plane Clip, 4-Bone Skinning / AnimationMixer3D & BVH', () {
     test(
-      'Subsystem 10: BatchMeshRenderer3D sortOrder, depthBias, '
+      'BatchMeshRenderer3D sortOrder, depthBias, '
       'TriangleDepthMode3D, Mesh3D.partitionByVertexLimit & 70k-vertex '
       'enqueueLargeBuffers32',
       () {
@@ -110,7 +110,7 @@ void main() {
     );
 
     test(
-      'Subsystem 11: True pinhole CameraProjectionMode3D.perspective '
+      'True pinhole CameraProjectionMode3D.perspective '
       'foreshortening, exact unprojectWorldRay inverse & near-plane clipping',
       () {
         final rig = CameraRig3D(
@@ -202,7 +202,7 @@ void main() {
     );
 
     test(
-      'Subsystem 12: 4-bone SkinnedMeshWorkspace3D LBS + DA3D binary '
+      '4-bone SkinnedMeshWorkspace3D LBS + DA3D binary '
       'AnimationClip3D roundtrip + AnimationMixer3D crossFadeTo & bone masks',
       () {
         final baseBox = Mesh3D.box(sizeZ: 2);
@@ -324,7 +324,7 @@ void main() {
     );
 
     test(
-      'Subsystem 13: Flat zero-alloc MeshBvh3D matches brute-force raycast '
+      'Flat zero-alloc MeshBvh3D matches brute-force raycast '
       'with O(log T) triangle tests & full 3x3 transform / Node3D hierarchy',
       () {
         final highPolySphere = Mesh3D.uvSphere(

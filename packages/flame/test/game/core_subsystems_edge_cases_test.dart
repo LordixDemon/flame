@@ -91,9 +91,9 @@ void _renderOnce(FlameGame game, [double w = 400, double h = 300]) {
 }
 
 void main() {
-  group('Wave 7 — Exhaustive Architectural & Mathematical Edge Cases', () {
+  group('Core Subsystems — Architectural & Mathematical Edge Cases', () {
     test(
-      'Edge 1: splitRetained invalidates on viewport resize, mode switch, and '
+      'splitRetained invalidates on viewport resize, mode switch, and '
       'deep HUD grandchild mount/remove',
       () async {
         final world = World();
@@ -143,7 +143,7 @@ void main() {
     );
 
     test(
-      'Edge 2: HasVisibility, RichBatchedTextComponent, PaintDecorator, and '
+      'HasVisibility, RichBatchedTextComponent, PaintDecorator, and '
       'idempotent registerDirtyVersionSource wake IdleRenderMode.onDemand',
       () async {
         final game = FlameGame()..idleRenderMode = IdleRenderMode.onDemand;
@@ -204,7 +204,7 @@ void main() {
     );
 
     test(
-      'Edge 3: FixedTransformInterpolation scale interpolation, '
+      'FixedTransformInterpolation scale interpolation, '
       'interpolationEnabled toggle & clean remount priming',
       () async {
         final world = World();
@@ -275,7 +275,7 @@ void main() {
     );
 
     test(
-      'Edge 4: In-world RenderTextureComponent self-capture recursion guard & '
+      'In-world RenderTextureComponent self-capture recursion guard & '
       'live runtime cameraMask switching',
       () async {
         final world = World();
@@ -315,7 +315,7 @@ void main() {
     );
 
     test(
-      'Edge 5: WorldSpatialIndex parallax exclusion, subtree removal cleanup, '
+      'WorldSpatialIndex parallax exclusion, subtree removal cleanup, '
       'and WorldQuery(includeSubtree: false) isolation',
       () async {
         final world = World(spatialIndexEnabled: true, spatialCellSize: 128);
@@ -378,7 +378,7 @@ void main() {
     );
 
     test(
-      'Edge 6: ClipComponent.circle clips corner pointer hits & bidirectional '
+      'ClipComponent.circle clips corner pointer hits & bidirectional '
       'ScrollContainerComponent handles 2D bounds and onDragCancel',
       () async {
         final world = World();
@@ -443,7 +443,7 @@ void main() {
     );
 
     test(
-      'Edge 7: AffineMatrix2D singular zero-determinant safety & self-aliased '
+      'AffineMatrix2D singular zero-determinant safety & self-aliased '
       'setMultiplyTransform2D',
       () {
         final singular = AffineMatrix2D()
@@ -485,7 +485,7 @@ void main() {
     );
 
     testWidgets(
-      'Edge 8 & 9: SemanticsComponent decrease/checked/disabled states & '
+      'SemanticsComponent decrease/checked/disabled states & '
       'PointerHardwareSample normalizedPressure clamping',
       (tester) async {
         // PointerHardwareSample normalization & degenerate range guard:
@@ -564,7 +564,7 @@ void main() {
     );
 
     test(
-      'Edge 10–13: 70k-vertex Mesh3D.partitionByVertexLimit, all-behind-near '
+      '70k-vertex Mesh3D.partitionByVertexLimit, all-behind-near '
       'perspective reject, antipodal slerp & negative-scale mirrored BVH ray',
       () {
         // 10. Partition a 70,200-vertex 32-bit mesh into <= 30,000-vertex parts
@@ -708,7 +708,7 @@ void main() {
     );
 
     test(
-      'Edge 14 & 15: QuadTree negative-coordinate raycast parity, '
+      'QuadTree negative-coordinate raycast parity, '
       'EngineComputePool RemoteError recovery & SdfTextComponent dynamic style',
       () async {
         // 14. Out-of-bounds negative-coordinate hitbox in QuadTree is STILL hit

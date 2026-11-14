@@ -130,10 +130,10 @@ void _pumpRender(FlameGame game, [double w = 800, double h = 600]) {
 }
 
 void main() {
-  group('Wave 7 — Subsystems 1–4: Retained Layer Caching, Dirty Sources, '
-      'Fixed Transform Interpolation & Multi-Camera Masks', () {
+  group('Retained Layer Caching, Dirty Sources, Fixed Interpolation & '
+      'RenderTextureComponent', () {
     test(
-      'Subsystem 1: CameraLayerCacheMode.splitRetained isolates backdrop, '
+      'CameraLayerCacheMode.splitRetained isolates backdrop, '
       'world, and viewport HUD re-recording via subtreeVersion',
       () async {
         final world = World();
@@ -215,7 +215,7 @@ void main() {
     );
 
     test(
-      'Subsystem 2: DirtyVersionSource, @protected pollSceneDirtyForRender, '
+      'DirtyVersionSource, @protected pollSceneDirtyForRender, '
       'and BatchedTextComponent / HasPaint visual dirty wakeups',
       () async {
         final game = _CustomDirtyHookGame()
@@ -284,7 +284,7 @@ void main() {
     );
 
     test(
-      'Subsystem 3: FixedTransformInterpolation renders exact alpha midpoint, '
+      'FixedTransformInterpolation renders exact alpha midpoint, '
       'wraps shortest-arc angle across +-pi, and supports teleportFixedState',
       () async {
         final world = World();
@@ -341,7 +341,7 @@ void main() {
     );
 
     test(
-      'Subsystem 4: Component.cameraMask 2D/3D isolation, nested '
+      'Component.cameraMask 2D/3D isolation, nested '
       'CameraComponent.currentCamera, and RenderTextureComponent lifecycle',
       () async {
         const maskMain = 0x01;
