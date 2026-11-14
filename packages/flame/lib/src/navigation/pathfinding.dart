@@ -60,12 +60,24 @@ class AStarGridPathfinder({
   /// Computes a shortest path from [start] to [goal] (including both endpoints)
   /// into [outPath] with **zero** internal heap allocations, returning `true`
   /// when a path exists.
-  bool findPath(GridCell start, GridCell goal, List<GridCell> outPath) {
+  ///
+  /// When [allowBlockedStart] is `false` (default), a blocked [start] cell
+  /// returns `false`; set [allowBlockedStart] to `true` when an agent needs to
+  /// step off a cell that just became blocked.
+  bool findPath(
+    GridCell start,
+    GridCell goal,
+    List<GridCell> outPath, {
+    bool allowBlockedStart = false,
+  }) {
     outPath.clear();
     if (!inBounds(start.col, start.row) || !inBounds(goal.col, goal.row)) {
       return false;
     }
     if (isBlocked(goal.col, goal.row)) {
+      return false;
+    }
+    if (!allowBlockedStart && isBlocked(start.col, start.row)) {
       return false;
     }
     if (start.col == goal.col && start.row == goal.row) {

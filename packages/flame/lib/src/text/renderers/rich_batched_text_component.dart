@@ -79,6 +79,7 @@ class RichBatchedTextComponent({
   String _markup = markup;
   double _revealAccumulator = 0.0;
   double _elapsed = 0.0;
+  int _lineCount = 1;
 
   final List<_ParsedRichToken> _tokens = <_ParsedRichToken>[];
   final GlyphBatchRenderer _glyphBatch = GlyphBatchRenderer(
@@ -101,6 +102,9 @@ class RichBatchedTextComponent({
 
   /// Plain-text + icon token count parsed from [markup].
   int get tokenCount => _tokens.length;
+
+  /// Number of vertical text lines parsed from [markup] (`>= 1`).
+  int get lineCount => _lineCount;
 
   /// Starts a typewriter reveal from `0` tokens up to [tokenCount].
   void startTypewriter({double tokensPerSecond = 30.0}) {
@@ -190,6 +194,12 @@ class RichBatchedTextComponent({
         }
       }
 
+      if (cu == 0x0D) {
+        // Ignore CR in CRLF sequences.
+        i++;
+        continue;
+      }
+
       // Decode UTF-16 code point cleanly (including surrogate pairs).
       var rune = cu;
       var step = 1;
@@ -233,36 +243,59 @@ class RichBatchedTextComponent({
 
   void _recomputeMeasuredSize() {
     if (_tokens.isEmpty) {
+      _lineCount = 1;
       size.setValues(0.0, atlas.lineHeight);
       return;
     }
-    var w = 0.0;
-    var maxH = atlas.lineHeight;
+    var maxW = 0.0;
+    var lineW = 0.0;
+    var lineMaxH = atlas.lineHeight;
+    var totalH = 0.0;
+    var lines = 1;
+    var hasPrevOnLine = false;
+
     for (var i = 0; i < _tokens.length; i++) {
       final tok = _tokens[i];
+      if (tok.iconKey == null && tok.rune == 0x0A) {
+        if (lineW > maxW) {
+          maxW = lineW;
+        }
+        totalH += lineMaxH;
+        lineW = 0.0;
+        lineMaxH = atlas.lineHeight;
+        hasPrevOnLine = false;
+        lines++;
+        continue;
+      }
+      if (hasPrevOnLine) {
+        lineW += letterSpacing;
+      }
+      hasPrevOnLine = true;
       if (tok.iconKey != null) {
         final ic = icons[tok.iconKey];
         final iw = (ic?.logicalWidth ?? atlas.lineHeight) * tok.scale;
         final ih = (ic?.logicalHeight ?? atlas.lineHeight) * tok.scale;
-        w += iw;
-        if (ih > maxH) {
-          maxH = ih;
+        lineW += iw;
+        if (ih > lineMaxH) {
+          lineMaxH = ih;
         }
       } else if (tok.rune == 0x20) {
-        w += atlas.spaceAdvance * tok.scale;
+        lineW += atlas.spaceAdvance * tok.scale;
       } else {
         final m = atlas.metricsForRune(tok.rune);
-        w += (m?.advance ?? atlas.spaceAdvance) * tok.scale;
+        lineW += (m?.advance ?? atlas.spaceAdvance) * tok.scale;
         final gh = atlas.lineHeight * tok.scale;
-        if (gh > maxH) {
-          maxH = gh;
+        if (gh > lineMaxH) {
+          lineMaxH = gh;
         }
       }
-      if (i + 1 < _tokens.length) {
-        w += letterSpacing;
-      }
     }
-    size.setValues(w, maxH);
+    if (lineW > maxW) {
+      maxW = lineW;
+    }
+    totalH += lineMaxH;
+    _lineCount = lines;
+    size.setValues(maxW, totalH);
   }
 
   void _ensureIconCapacity(int needed) {
@@ -310,11 +343,17 @@ class RichBatchedTextComponent({
 
     _glyphBatch.begin();
     var penX = 0.0;
+    var lineY = 0.0;
     ui.Image? sharedIconAtlas;
     var iconCount = 0;
 
     for (var i = 0; i < limit; i++) {
       final tok = _tokens[i];
+      if (tok.iconKey == null && tok.rune == 0x0A) {
+        penX = 0.0;
+        lineY += atlas.lineHeight;
+        continue;
+      }
       var dx = 0.0;
       var dy = 0.0;
       if (tok.wave) {
@@ -356,7 +395,7 @@ class RichBatchedTextComponent({
           _iconTransforms[t4] = sx;
           _iconTransforms[t4 + 1] = 0.0;
           _iconTransforms[t4 + 2] = penX + dx;
-          _iconTransforms[t4 + 3] = icon.baselineOffsetY + dy;
+          _iconTransforms[t4 + 3] = lineY + icon.baselineOffsetY + dy;
           _iconRects[t4] = icon.srcRect.left;
           _iconRects[t4 + 1] = icon.srcRect.top;
           _iconRects[t4 + 2] = icon.srcRect.right;
@@ -385,7 +424,7 @@ class RichBatchedTextComponent({
         atlas,
         m,
         x: penX + dx,
-        y: yAlign + dy,
+        y: lineY + yAlign + dy,
         scale: tok.scale,
         color: tok.color,
       );

@@ -1,3 +1,4 @@
+import 'package:flame/src/camera/world.dart';
 import 'package:flame/src/components/core/component.dart';
 
 /// Lightweight semantic tag mixin for [Component]s queried by [WorldQuery].
@@ -8,15 +9,49 @@ mixin HasTags on Component {
   Set<String> get tags =>
       _tags == null ? const <String>{} : Set<String>.unmodifiable(_tags!);
 
+  void _notifyTagMutation() {
+    final p = parent;
+    if (p is World) {
+      p.revalidateQueriesFor(this);
+    }
+  }
+
   /// Attaches [tag] to this component (`true` if newly added).
-  bool addTag(String tag) => (_tags ??= <String>{}).add(tag);
+  bool addTag(String tag) {
+    final changed = (_tags ??= <String>{}).add(tag);
+    if (changed) {
+      _notifyTagMutation();
+    }
+    return changed;
+  }
 
   /// Attaches all [newTags] to this component.
-  void addTags(Iterable<String> newTags) =>
-      (_tags ??= <String>{}).addAll(newTags);
+  void addTags(Iterable<String> newTags) {
+    final set = _tags ??= <String>{};
+    final before = set.length;
+    set.addAll(newTags);
+    if (set.length != before) {
+      _notifyTagMutation();
+    }
+  }
 
   /// Removes [tag] from this component (`true` if present).
-  bool removeTag(String tag) => _tags?.remove(tag) ?? false;
+  bool removeTag(String tag) {
+    final changed = _tags?.remove(tag) ?? false;
+    if (changed) {
+      _notifyTagMutation();
+    }
+    return changed;
+  }
+
+  /// Removes all semantic tags from this component.
+  void clearTags() {
+    final set = _tags;
+    if (set != null && set.isNotEmpty) {
+      set.clear();
+      _notifyTagMutation();
+    }
+  }
 
   /// Returns `true` when this component carries [tag].
   bool hasTag(String tag) => _tags?.contains(tag) ?? false;
@@ -107,6 +142,22 @@ class WorldQuery<T extends Component>({
           onMatched?.call(typed);
         }
       }
+    }
+  }
+
+  /// Re-evaluates a single mounted [candidate] in `O(1)` when its tags or
+  /// filter-relevant state change in place.
+  void revalidate(Component candidate) {
+    final nowMatches = candidate.parent != null && matches(candidate);
+    if (nowMatches) {
+      final typed = candidate as T;
+      if (_matchedSet.add(typed)) {
+        _matched.add(typed);
+        onMatched?.call(typed);
+      }
+    } else if (candidate is T && _matchedSet.remove(candidate)) {
+      _matched.remove(candidate);
+      onUnmatched?.call(candidate);
     }
   }
 

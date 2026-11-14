@@ -36,6 +36,7 @@ class SoundCue({
   final double volumeVariance = 0.06,
   final double basePitch = 1.0,
   final double pitchVariance = 0.05,
+  final bool avoidImmediateRepeat = true,
 }) {
   this
     : assert(clips.isNotEmpty, 'SoundCue requires at least 1 SoundClipEntry');
@@ -44,6 +45,8 @@ class SoundCue({
 extension SoundCueMixerPlayer on AudioMixer {
   static final Expando<Map<String, double>> _lastCueTriggerTimes =
       Expando<Map<String, double>>('SoundCueLastTrigger');
+  static final Expando<Map<String, int>> _lastCueClipIndices =
+      Expando<Map<String, int>>('SoundCueLastClipIndex');
   static final SeededRng _fallbackRng = SeededRng(0x51A7E2D3);
 
   /// Plays [cue] through this [AudioMixer], enforcing `cooldownSeconds`,
@@ -98,7 +101,11 @@ extension SoundCueMixerPlayer on AudioMixer {
     }
 
     final random = rng ?? _fallbackRng;
-    final selectedClip = _pickClip(cue.clips, random);
+    final lastIdxMap = _lastCueClipIndices[this] ??= <String, int>{};
+    final prevIdx = cue.avoidImmediateRepeat ? lastIdxMap[cue.id] : null;
+    final pickedIdx = _pickClipIndex(cue.clips, random, avoidIndex: prevIdx);
+    lastIdxMap[cue.id] = pickedIdx;
+    final selectedClip = cue.clips[pickedIdx];
     final volJitter = cue.volumeVariance > 0.0
         ? (random.nextDouble() * 2.0 - 1.0) * cue.volumeVariance
         : 0.0;
@@ -124,25 +131,48 @@ extension SoundCueMixerPlayer on AudioMixer {
     );
   }
 
-  SoundClipEntry _pickClip(List<SoundClipEntry> clips, SeededRng rng) {
+  int _pickClipIndex(
+    List<SoundClipEntry> clips,
+    SeededRng rng, {
+    int? avoidIndex,
+  }) {
     if (clips.length == 1) {
-      return clips.first;
+      return 0;
     }
+    var eligiblePositive = 0;
+    for (var i = 0; i < clips.length; i++) {
+      if (clips[i].weight > 0.0) {
+        eligiblePositive++;
+      }
+    }
+    final canAvoid = avoidIndex != null && eligiblePositive >= 2;
     var totalWeight = 0.0;
     for (var i = 0; i < clips.length; i++) {
+      if (canAvoid && i == avoidIndex) {
+        continue;
+      }
       totalWeight += math.max(0.0, clips[i].weight);
     }
     if (totalWeight <= 0.0) {
-      return clips[rng.nextInt(clips.length)];
+      var idx = rng.nextInt(clips.length);
+      if (avoidIndex != null && clips.length >= 2 && idx == avoidIndex) {
+        idx = (idx + 1) % clips.length;
+      }
+      return idx;
     }
     var roll = rng.nextDouble() * totalWeight;
     for (var i = 0; i < clips.length; i++) {
+      if (canAvoid && i == avoidIndex) {
+        continue;
+      }
       roll -= math.max(0.0, clips[i].weight);
       if (roll <= 0.0) {
-        return clips[i];
+        return i;
       }
     }
-    return clips.last;
+    return canAvoid && avoidIndex == clips.length - 1
+        ? clips.length - 2
+        : clips.length - 1;
   }
 }
 

@@ -96,11 +96,22 @@ class TriggerZoneComponent({
       final otherCy =
           candidate.position.y + (0.5 - candidate.anchor.y) * candidate.size.y;
       _otherCenterScratch.setValues(otherCx, otherCy);
+      final halfW = candidate.size.x * 0.5;
+      final halfH = candidate.size.y * 0.5;
 
       final bool overlaps;
       if (zoneShape == TriggerZoneShape.circle) {
-        overlaps =
-            _centerScratch.distanceToSquared(_otherCenterScratch) <= radSq;
+        final clampedX = _centerScratch.x.clamp(
+          otherCx - halfW,
+          otherCx + halfW,
+        );
+        final clampedY = _centerScratch.y.clamp(
+          otherCy - halfH,
+          otherCy + halfH,
+        );
+        final dx = _centerScratch.x - clampedX;
+        final dy = _centerScratch.y - clampedY;
+        overlaps = (dx * dx + dy * dy) <= radSq;
       } else {
         final otherRect = Rect.fromCenter(
           center: Offset(otherCx, otherCy),
@@ -144,5 +155,13 @@ class TriggerZoneComponent({
     } else {
       evaluateCandidates(world.children.whereType<PositionComponent>(), dt);
     }
+  }
+
+  @override
+  void onRemove() {
+    _insidePrev.clear();
+    _insideCurr.clear();
+    _queryScratch.clear();
+    super.onRemove();
   }
 }

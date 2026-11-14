@@ -446,6 +446,32 @@ class DynamicSpriteAtlasBuilder({
       Rect.fromLTWH(ix + w, iy, pad, h),
       _copyPaint,
     );
+    // 4 corner 1x1 texels replicated into `pad x pad` corner gutters so
+    // diagonal bilinear samples at sprite corners never bleed transparent zero!
+    canvas.drawImageRect(
+      img,
+      const Rect.fromLTWH(0, 0, 1, 1),
+      Rect.fromLTWH(ix - pad, iy - pad, pad, pad),
+      _copyPaint,
+    );
+    canvas.drawImageRect(
+      img,
+      Rect.fromLTWH(w - 1, 0, 1, 1),
+      Rect.fromLTWH(ix + w, iy - pad, pad, pad),
+      _copyPaint,
+    );
+    canvas.drawImageRect(
+      img,
+      Rect.fromLTWH(0, h - 1, 1, 1),
+      Rect.fromLTWH(ix - pad, iy + h, pad, pad),
+      _copyPaint,
+    );
+    canvas.drawImageRect(
+      img,
+      Rect.fromLTWH(w - 1, h - 1, 1, 1),
+      Rect.fromLTWH(ix + w, iy + h, pad, pad),
+      _copyPaint,
+    );
   }
 
   static int _nextPow2(int v) {

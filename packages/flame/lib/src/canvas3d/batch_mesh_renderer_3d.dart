@@ -123,6 +123,9 @@ class BatchMeshRenderer3D({
   Float32List _vertDepth = Float32List(initialVertexCapacity);
   Float32List _vertU = Float32List(initialVertexCapacity);
   Float32List _vertV = Float32List(initialVertexCapacity);
+  Float32List _vertTexU = Float32List(initialVertexCapacity);
+  Float32List _vertTexV = Float32List(initialVertexCapacity);
+  Uint8List _vertTexPixelSpace = Uint8List(initialVertexCapacity);
   Int32List _vertColor = Int32List(initialVertexCapacity);
 
   Int32List _triV0 = Int32List(initialTriangleCapacity);
@@ -197,6 +200,10 @@ class BatchMeshRenderer3D({
     _vertDepth = Float32List(cap)..setRange(0, _vertCount, _vertDepth);
     _vertU = Float32List(cap)..setRange(0, _vertCount, _vertU);
     _vertV = Float32List(cap)..setRange(0, _vertCount, _vertV);
+    _vertTexU = Float32List(cap)..setRange(0, _vertCount, _vertTexU);
+    _vertTexV = Float32List(cap)..setRange(0, _vertCount, _vertTexV);
+    _vertTexPixelSpace = Uint8List(cap)
+      ..setRange(0, _vertCount, _vertTexPixelSpace);
     _vertColor = Int32List(cap)..setRange(0, _vertCount, _vertColor);
   }
 
@@ -476,15 +483,26 @@ class BatchMeshRenderer3D({
       }
 
       final (vx, vy, vz) = camera.worldNormalToView(wnx, wny, wnz);
-      final double u;
-      final double texV;
-      if (uvRectPx != null && meshUvs != null) {
+      final u = (vx * 0.48 + 0.5).clamp(0.02, 0.98) * matCapRes;
+      final texV = (0.5 - vy * 0.48).clamp(0.02, 0.98) * matCapRes;
+      final double meshTexU;
+      final double meshTexV;
+      final int texPixelSpace;
+      if (meshUvs != null) {
         final uvBase = v * 2;
-        u = uvRectPx.left + meshUvs[uvBase] * uvRectPx.width;
-        texV = uvRectPx.top + meshUvs[uvBase + 1] * uvRectPx.height;
+        if (uvRectPx != null) {
+          meshTexU = uvRectPx.left + meshUvs[uvBase] * uvRectPx.width;
+          meshTexV = uvRectPx.top + meshUvs[uvBase + 1] * uvRectPx.height;
+          texPixelSpace = 1;
+        } else {
+          meshTexU = meshUvs[uvBase];
+          meshTexV = meshUvs[uvBase + 1];
+          texPixelSpace = 0;
+        }
       } else {
-        u = (vx * 0.48 + 0.5).clamp(0.02, 0.98) * matCapRes;
-        texV = (0.5 - vy * 0.48).clamp(0.02, 0.98) * matCapRes;
+        meshTexU = u;
+        meshTexV = texV;
+        texPixelSpace = 1;
       }
 
       final hemiMix = (wnz * 0.5 + 0.5).clamp(0.0, 1.0);
@@ -563,6 +581,9 @@ class BatchMeshRenderer3D({
       _vertDepth[outSlot] = vDepth;
       _vertU[outSlot] = u;
       _vertV[outSlot] = texV;
+      _vertTexU[outSlot] = meshTexU;
+      _vertTexV[outSlot] = meshTexV;
+      _vertTexPixelSpace[outSlot] = texPixelSpace;
       _vertColor[outSlot] =
           ((baseA * 255.0).round().clamp(0, 255) << 24) |
           ((lr * 255.0).round().clamp(0, 255) << 16) |
@@ -715,6 +736,9 @@ class BatchMeshRenderer3D({
     );
     _vertU.setRange(baseVertex, baseVertex + vCount, uBuf);
     _vertV.setRange(baseVertex, baseVertex + vCount, vBuf);
+    _vertTexU.setRange(baseVertex, baseVertex + vCount, uBuf);
+    _vertTexV.setRange(baseVertex, baseVertex + vCount, vBuf);
+    _vertTexPixelSpace.fillRange(baseVertex, baseVertex + vCount, 1);
     _vertColor.setRange(baseVertex, baseVertex + vCount, colBuf);
     _vertCount += vCount;
 
@@ -785,6 +809,8 @@ class BatchMeshRenderer3D({
     MatCapShader3D? matCapShader,
     MatCapPreset3D? matCapPreset,
     ui.Shader? textureShader,
+    double textureWidth = 1.0,
+    double textureHeight = 1.0,
   }) {
     _lastFlushTriangles = _triCount;
     _lastFlushShadowTriangles = _shadowTriCount;
@@ -829,10 +855,12 @@ class BatchMeshRenderer3D({
         _sortTrianglesBackToFront(_triCount);
       }
 
-      final useMatCap = matCapShader != null && matCapPreset != null;
-      final activeShader =
-          textureShader ??
-          (useMatCap ? matCapShader.shaderFor(matCapPreset) : null);
+      final useTexture = textureShader != null;
+      final useMatCap =
+          !useTexture && matCapShader != null && matCapPreset != null;
+      final activeShader = useTexture
+          ? textureShader
+          : (useMatCap ? matCapShader.shaderFor(matCapPreset) : null);
       final emitUvs = activeShader != null;
       _meshPaint.shader = activeShader;
 
@@ -854,12 +882,33 @@ class BatchMeshRenderer3D({
           _outPositions[pOut + 5] = _vertY[c];
 
           if (emitUvs) {
-            _outUvs[pOut] = _vertU[a];
-            _outUvs[pOut + 1] = _vertV[a];
-            _outUvs[pOut + 2] = _vertU[b];
-            _outUvs[pOut + 3] = _vertV[b];
-            _outUvs[pOut + 4] = _vertU[c];
-            _outUvs[pOut + 5] = _vertV[c];
+            if (useTexture) {
+              _outUvs[pOut] = _vertTexPixelSpace[a] != 0
+                  ? _vertTexU[a]
+                  : _vertTexU[a] * textureWidth;
+              _outUvs[pOut + 1] = _vertTexPixelSpace[a] != 0
+                  ? _vertTexV[a]
+                  : _vertTexV[a] * textureHeight;
+              _outUvs[pOut + 2] = _vertTexPixelSpace[b] != 0
+                  ? _vertTexU[b]
+                  : _vertTexU[b] * textureWidth;
+              _outUvs[pOut + 3] = _vertTexPixelSpace[b] != 0
+                  ? _vertTexV[b]
+                  : _vertTexV[b] * textureHeight;
+              _outUvs[pOut + 4] = _vertTexPixelSpace[c] != 0
+                  ? _vertTexU[c]
+                  : _vertTexU[c] * textureWidth;
+              _outUvs[pOut + 5] = _vertTexPixelSpace[c] != 0
+                  ? _vertTexV[c]
+                  : _vertTexV[c] * textureHeight;
+            } else {
+              _outUvs[pOut] = _vertU[a];
+              _outUvs[pOut + 1] = _vertV[a];
+              _outUvs[pOut + 2] = _vertU[b];
+              _outUvs[pOut + 3] = _vertV[b];
+              _outUvs[pOut + 4] = _vertU[c];
+              _outUvs[pOut + 5] = _vertV[c];
+            }
           }
 
           final cOut = k * 3;

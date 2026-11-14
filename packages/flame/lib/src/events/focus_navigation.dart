@@ -127,7 +127,14 @@ class FocusNavigationGroup({
       return null;
     }
 
-    if (_focused == null || !eligible.contains(_focused)) {
+    if (_focused != null && !eligible.contains(_focused)) {
+      final stale = _focused!;
+      stale._isFocused = false;
+      stale.onFocusLost();
+      _focused = null;
+    }
+
+    if (_focused == null) {
       eligible.sort(_compareFocusOrder);
       final initial = direction == FocusDirection.previous
           ? eligible.last
@@ -202,8 +209,8 @@ class FocusNavigationGroup({
       out.setFrom(c.absoluteCenter);
     } else {
       out.setValues(
-        c.position.x + c.size.x * 0.5,
-        c.position.y + c.size.y * 0.5,
+        c.position.x + (0.5 - c.anchor.x) * c.size.x,
+        c.position.y + (0.5 - c.anchor.y) * c.size.y,
       );
     }
   }

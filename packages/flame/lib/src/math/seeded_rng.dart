@@ -65,7 +65,8 @@ class SeededRng([int seed = 0x5EED1234]) implements math.Random {
       _s[i] = view.getUint32(i * 4, Endian.little);
     }
     if (_s[0] == 0 && _s[1] == 0 && _s[2] == 0 && _s[3] == 0) {
-      _s[0] = 1;
+      _s[0] = 0x9E3779B9;
+      _s[1] = 0x6D2B79F5;
     }
   }
 

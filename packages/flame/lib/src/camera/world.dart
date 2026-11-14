@@ -68,6 +68,17 @@ class World({
   bool unregisterQuery(WorldQuery<Component> query) =>
       _queries?.remove(query) ?? false;
 
+  /// Re-evaluates all registered [WorldQuery] instances for [child] after an
+  /// in-place tag or property mutation.
+  void revalidateQueriesFor(Component child) {
+    final queries = _queries;
+    if (queries != null) {
+      for (var i = 0; i < queries.length; i++) {
+        queries[i].revalidate(child);
+      }
+    }
+  }
+
   /// Broadphase 2D spatial index (`SpatialGrid2D` + `Transform2D.version`
   /// tracking) for direct [PositionComponent] children of this world.
   WorldSpatialIndex get spatialIndex =>

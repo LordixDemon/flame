@@ -12,8 +12,8 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
   weighted loading progress (`0.0..1.0`) and deterministic GPU `ui.Image` eviction on `dispose()`
   that preserves textures still retained by other active scopes.
 - **`MaxRectsBinPacker`, `DynamicSpriteAtlas` & `DynamicSpriteAtlasBuilder`**: Runtime MaxRects
-  (Best-Short-Side-Fit) bin packing with a **1 px extruded border gutter** around every packed
-  sprite to eliminate bilinear/scale bleeding across tiles and sprites.
+  (Best-Short-Side-Fit) bin packing with extruded edge + 4-corner border gutters (`extrudePadding`)
+  around every packed sprite to eliminate bilinear/scale bleeding across tiles and sprites.
 - **`MipChainImage` & `ResolutionVariantResolver`**: Box-filtered GPU mipmap pyramids (`levelCount`,
   `imageForScale(effectiveScale)`) that prevent shimmering when zoomed out, plus automatic `@3x` /
   `@2x` / `1x` asset path candidate resolution for HiDPI displays.
@@ -26,9 +26,9 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
 ## 2. Unified Input, Context Stack, Focus & Haptics (`package:flame/input.dart`)
 
 - **`InputMap`, `ActionBinding` & `InputAxis2D`**: Semantic action bindings (`isPressed`,
-  `justPressed`, `justReleased`, `actionValue`, `axis2D`) unifying keyboard keys, mouse buttons, and
-  virtual/gamepad axes with radial deadzones and runtime JSON key-rebinding (`toJson` /
-  `applyBindingsJson`).
+  `justPressed`, `justReleased`, `releaseAllInputs`, `readAxis2D`) unifying keyboard keys, mouse
+  buttons, virtual touch actions, and gamepad buttons/axes with radial deadzones and runtime JSON
+  key-rebinding (`exportBindingsJson` / `importBindingsJson`).
 - **`InputContext`, `InputContextStack` & `InputBuffer`**: Modal input routing (`gameplay` ->
   `hudPopup` -> `cutscene` with `blocksLowerContexts`) plus frame-accurate **coyote time** and
   pre-landing action buffering (`recordAction`, `consumeBuffered`, `isCoyoteActive`).
@@ -45,16 +45,18 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
 
 - **`Signal<T>`, `WorldEventBus` & `HasEventBusSubscriptions`**: Typed zero-string synchronous
   signals (`connect`, `connectOnce`) and `World.eventBus` (`emit` immediate + `enqueue` deferred
-  end-of-`World.updateTree` flush) with automatic subscription cleanup on component removal.
+  end-of-`World.updateTree` flush, `listenEvent` / `listenEventOnce`) with automatic subscription
+  cleanup on component removal and remounting.
 - **`StateMachine<S, E>` & `StateMachineComponent<S, E>`**: Hierarchical Finite State Machine
-  (HFSM) with Lowest Common Ancestor (LCA) `onExit`/`onEnter` traversal, guarded event transitions,
-  `elapsedInState`, and pushdown state stack (`pushState` / `popState`).
+  (HFSM) with re-entrancy-safe Lowest Common Ancestor (LCA) `onExit`/`onEnter` traversal, guarded
+  event transitions, `elapsedInState`, and pushdown state stack (`pushState` / `popState`).
 - **`SeededRng` & `CommandRecorder<C>`**: Deterministic 32-bit safe Xoshiro128** PRNG
   (`saveState` / `restoreState`, non-mutating `fork(label)`, weighted choice, Fisher-Yates shuffle,
   unit-circle/annulus sampling) plus tick-indexed deterministic command recording and replay.
 - **`HasTags` & `WorldQuery<T>`**: Incremental `O(1)` cached component queries registered on
   `World.registerQuery` filtering by component type `T`, `withTags`, `withoutTags`, and predicate
-  callbacks.
+  callbacks, with live auto-revalidation on `addTag` / `removeTag` / `clearTags` and
+  `World.revalidateQueriesFor`.
 - **`PrefabRegistry`, `SaveMigrationChain` & `StateSnapshotStore`**: Data-driven component
   blueprints with parameter overrides and versioned JSON save envelopes protected by IEEE 802.3
   CRC32 checksums and sequential `v1 -> v2 -> vN` schema migrations.
@@ -129,9 +131,9 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
 - **`RowLayoutComponent`, `ColumnLayoutComponent`, `GridLayoutComponent` &
   `NineSlicePanelComponent`**: Lightweight zero-Widget Flex/Grid layout containers and GPU 9-slice
   scalable UI panels (`Canvas.drawImageNine` with procedural fallback).
-- **`RichBatchedTextComponent` & `RichTextIconSpan`**: Inline markup (`<color=#HEX>`, `<scale=x>`,
-  `<wave>`, `<shake>`, `[icon:key]`) + `startTypewriter` reveal rendered via `RasterFontAtlas` into
-  batched `Canvas.drawRawAtlas` calls per texture.
+- **`RichBatchedTextComponent` & `RichTextIconSpan`**: Multiline (`\n`) inline markup
+  (`<color=#HEX>`, `<scale=x>`, `<wave>`, `<shake>`, `[icon:key]`) + `startTypewriter` reveal
+  rendered via `RasterFontAtlas` into batched `Canvas.drawRawAtlas` calls per texture.
 - **`EngineDebugOverlay` & `SceneBenchmarkRunner`**: Live in-engine FPS / frame-time sparkline /
   draw-call / VRAM / spatial-picker HUD (`EngineDebugOverlay`) and deterministic headless benchmark
   runner (`SceneBenchmarkRunner.run` + `SceneBenchmarkBudget`) for automated CI performance gates.

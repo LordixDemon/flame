@@ -308,6 +308,26 @@ class HexGridTopology({
     }
   }
 
+  /// Appends all `1 + 3 * maxRadius * (maxRadius + 1)` hex cells from [center]
+  /// outward through concentric rings `0 .. maxRadius` into [out].
+  void hexSpiral(GridCell center, int maxRadius, List<GridCell> out) {
+    out
+      ..clear()
+      ..add(center);
+    for (var radius = 1; radius <= maxRadius; radius++) {
+      var q = center.col + _axialDirs[4].$1 * radius;
+      var r = center.row + _axialDirs[4].$2 * radius;
+      for (var side = 0; side < 6; side++) {
+        final (dq, dr) = _axialDirs[side];
+        for (var step = 0; step < radius; step++) {
+          out.add(GridCell(q, r, center.elevation));
+          q += dq;
+          r += dr;
+        }
+      }
+    }
+  }
+
   static GridCell _cubeRound(double fq, double fr, int elevation) {
     final fs = -fq - fr;
     var rq = fq.round();

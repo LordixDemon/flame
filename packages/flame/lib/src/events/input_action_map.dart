@@ -262,6 +262,18 @@ class InputMap({
     _refreshCurrentStates();
   }
 
+  /// Releases all currently held keys, mouse buttons, gamepad controls, and
+  /// virtual touch actions (essential when an OS window/app loses focus so
+  /// inputs never stick held down, firing `justReleased` for active actions).
+  void releaseAllInputs() {
+    _heldKeys.clear();
+    _heldMouseMask = 0;
+    _heldGamepadButtons.clear();
+    _gamepadAxes.clear();
+    _virtualHeldActions.clear();
+    _refreshCurrentStates();
+  }
+
   /// Advances edge-triggered `justPressed` / `justReleased` flags at the end of
   /// each simulation frame.
   void endFrame() {
@@ -294,16 +306,18 @@ class InputMap({
 
     var dx = 0.0;
     var dy = 0.0;
-    if (isPressed(cfg.rightAction)) {
+    final ax = cfg.analogAxisX;
+    final ay = cfg.analogAxisY;
+    if (_evaluateAction(cfg.rightAction, ignoreAxisA: ax, ignoreAxisB: ay)) {
       dx += 1.0;
     }
-    if (isPressed(cfg.leftAction)) {
+    if (_evaluateAction(cfg.leftAction, ignoreAxisA: ax, ignoreAxisB: ay)) {
       dx -= 1.0;
     }
-    if (isPressed(cfg.downAction)) {
+    if (_evaluateAction(cfg.downAction, ignoreAxisA: ax, ignoreAxisB: ay)) {
       dy += 1.0;
     }
-    if (isPressed(cfg.upAction)) {
+    if (_evaluateAction(cfg.upAction, ignoreAxisA: ax, ignoreAxisB: ay)) {
       dy -= 1.0;
     }
 
@@ -391,7 +405,11 @@ class InputMap({
     }
   }
 
-  bool _evaluateAction(String action) {
+  bool _evaluateAction(
+    String action, {
+    String? ignoreAxisA,
+    String? ignoreAxisB,
+  }) {
     if (_virtualHeldActions.contains(action)) {
       return true;
     }
@@ -400,7 +418,13 @@ class InputMap({
       return false;
     }
     for (var i = 0; i < list.length; i++) {
-      if (_isBindingActive(list[i])) {
+      final b = list[i];
+      if (b._source == _BindingSource.gamepadAxis &&
+          (b.gamepadControl == ignoreAxisA ||
+              b.gamepadControl == ignoreAxisB)) {
+        continue;
+      }
+      if (_isBindingActive(b)) {
         return true;
       }
     }

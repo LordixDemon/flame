@@ -125,6 +125,23 @@ class SpriteAnimationTicker(final SpriteAnimation spriteAnimation) {
     }
   }
 
+  /// Jumps directly to [index] (`0 <= index < spriteAnimation.frames.length`),
+  /// resetting the intra-frame `clock` to `0` and clearing completion state.
+  /// When [emitEvents] is `true`, invokes `onFrame` and any registered
+  /// [onEvent] hooks for [index].
+  void jumpToFrame(int index, {bool emitEvents = false}) {
+    RangeError.checkValidIndex(index, spriteAnimation.frames, 'index');
+    currentIndex = index;
+    clock = 0.0;
+    _done = false;
+    if (completeCompleter?.isCompleted ?? false) {
+      completeCompleter = null;
+    }
+    if (emitEvents) {
+      _emitFrame(index);
+    }
+  }
+
   /// Sets this animation to be on the last frame.
   void setToLast() {
     currentIndex = spriteAnimation.frames.length - 1;

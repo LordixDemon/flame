@@ -206,9 +206,11 @@ class WorldEventBus({final int maxFlushIterations = 8}) {
 
 class _DeferredBusBinding<T extends Object>(
   final WorldEventBus? explicitBus,
-  final void Function(T event) listener,
-) {
-  SignalSubscription attach(WorldEventBus resolved) => resolved.on<T>(listener);
+  final void Function(T event) listener, {
+  final bool once = false,
+}) {
+  SignalSubscription attach(WorldEventBus resolved) =>
+      once ? resolved.once<T>(listener) : resolved.on<T>(listener);
 }
 
 /// Lifecycle-safe mixin attaching [Signal] and [WorldEventBus] listeners in
@@ -226,18 +228,36 @@ mixin HasEventBusSubscriptions on Component {
   }
 
   /// Subscribes to `T` on [bus] (or the enclosing `World.eventBus` when [bus]
-  /// is omitted). Safe to call in `onLoad` or `onMount`.
+  /// is omitted). Safe to call in constructors, `onLoad`, or `onMount`.
   void listenEvent<T extends Object>(
     void Function(T event) listener, {
     WorldEventBus? bus,
   }) {
     final binding = _DeferredBusBinding<T>(bus, listener);
-    _deferredBindings.add(binding);
-    if (isMounted) {
+    if (isMounted || isMounting) {
       final resolved = bus ?? _resolveEnclosingBus();
       if (resolved != null) {
         _activeSubs.add(binding.attach(resolved));
       }
+    } else {
+      _deferredBindings.add(binding);
+    }
+  }
+
+  /// Subscribes to the next single event of `T` on [bus] (or the enclosing
+  /// `World.eventBus`), automatically detaching on delivery or `onRemove`.
+  void listenEventOnce<T extends Object>(
+    void Function(T event) listener, {
+    WorldEventBus? bus,
+  }) {
+    final binding = _DeferredBusBinding<T>(bus, listener, once: true);
+    if (isMounted || isMounting) {
+      final resolved = bus ?? _resolveEnclosingBus();
+      if (resolved != null) {
+        _activeSubs.add(binding.attach(resolved));
+      }
+    } else {
+      _deferredBindings.add(binding);
     }
   }
 
@@ -249,7 +269,7 @@ mixin HasEventBusSubscriptions on Component {
   @override
   void onMount() {
     super.onMount();
-    if (_activeSubs.isEmpty && _deferredBindings.isNotEmpty) {
+    if (_deferredBindings.isNotEmpty) {
       final worldBus = _resolveEnclosingBus();
       for (var i = 0; i < _deferredBindings.length; i++) {
         final b = _deferredBindings[i];

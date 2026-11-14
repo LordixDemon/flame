@@ -62,6 +62,8 @@ class StateMachine<S, E>({
   final List<S> _historyStack = <S>[];
   final List<S> _currAncestorsScratch = <S>[];
   final List<S> _nextAncestorsScratch = <S>[];
+  final List<S> _startAncestorsScratch = <S>[];
+  final List<S> _updateAncestorsScratch = <S>[];
 
   /// Optional observer invoked after every completed state change.
   final void Function(S previous, S current)? onStateChanged;
@@ -108,10 +110,15 @@ class StateMachine<S, E>({
     }
     _started = true;
     _stateElapsed = 0.0;
-    _collectAncestors(_current, _currAncestorsScratch);
-    // Enter from root ancestor down to leaf.
-    for (var i = _currAncestorsScratch.length - 1; i >= 0; i--) {
-      _states[_currAncestorsScratch[i]]?.onEnter?.call(null);
+    final bootState = _current;
+    _collectAncestors(bootState, _startAncestorsScratch);
+    // Enter from root ancestor down to leaf (aborting chain if an onEnter
+    // hook immediately triggers a nested transition).
+    for (var i = _startAncestorsScratch.length - 1; i >= 0; i--) {
+      if (_current != bootState) {
+        break;
+      }
+      _states[_startAncestorsScratch[i]]?.onEnter?.call(null);
     }
   }
 
@@ -231,15 +238,21 @@ class StateMachine<S, E>({
   }
 
   /// Advances `stateElapsed` and invokes `onUpdate` from active root ancestor
-  /// down to [currentState].
+  /// down to [currentState] (re-entrancy safe if an `onUpdate` hook calls
+  /// [transitionTo], [dispatch], [pushState], or [popState]).
   void update(double dt) {
     if (!_started) {
       start();
     }
     _stateElapsed += dt;
-    _collectAncestors(_current, _currAncestorsScratch);
-    for (var i = _currAncestorsScratch.length - 1; i >= 0; i--) {
-      _states[_currAncestorsScratch[i]]?.onUpdate?.call(dt, _stateElapsed);
+    final stateAtTickStart = _current;
+    final elapsedSnap = _stateElapsed;
+    _collectAncestors(stateAtTickStart, _updateAncestorsScratch);
+    for (var i = _updateAncestorsScratch.length - 1; i >= 0; i--) {
+      if (_current != stateAtTickStart) {
+        break;
+      }
+      _states[_updateAncestorsScratch[i]]?.onUpdate?.call(dt, elapsedSnap);
     }
   }
 
