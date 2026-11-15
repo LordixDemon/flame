@@ -467,14 +467,16 @@ class const Raycaster3D._() {
     final maxLocalT = maxDistance.isFinite
         ? maxDistance * localDirLen
         : double.infinity;
-    final flipWinding = (scaleX * scaleY * scaleZ) < 0.0;
+    // Note: Transforming worldRay by S^-1 already reflects localRay when
+    // det(S) = scaleX * scaleY * scaleZ < 0, so outward faces of a mirrored
+    // mesh (which keep outward winding in the renderer per glTF §3.7.4) still
+    // have det_local > 0 in mesh-local space.
 
     if (useBvh) {
       final hit = mesh.bvh.raycastLocal(
         localRay,
         maxLocalDistance: maxLocalT,
         cullBackfaces: cullBackfaces,
-        flipWinding: flipWinding,
       );
       if (hit == null) {
         return null;
@@ -528,7 +530,7 @@ class const Raycaster3D._() {
 
       final det = e1x * px + e1y * py + e1z * pz;
       if (cullBackfaces) {
-        if (flipWinding ? det > -1e-7 : det < 1e-7) {
+        if (det < 1e-7) {
           continue;
         }
       } else if (det.abs() < 1e-7) {

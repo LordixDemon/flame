@@ -837,12 +837,18 @@ class StaticMeshChunk3D() {
     final matIdx = _internChunkMaterial(inst.material);
     final indices = mesh.indices;
     final mTriCount = indices.length ~/ 3;
+    final reverseWinding = (inst.scaleX * inst.scaleY * inst.scaleZ) < 0.0;
     for (var t = 0; t < mTriCount; t++) {
       final idxBase = t * 3;
       final tSlot = baseTri + t;
       _rawTriA[tSlot] = baseVert + indices[idxBase];
-      _rawTriB[tSlot] = baseVert + indices[idxBase + 1];
-      _rawTriC[tSlot] = baseVert + indices[idxBase + 2];
+      if (reverseWinding) {
+        _rawTriB[tSlot] = baseVert + indices[idxBase + 2];
+        _rawTriC[tSlot] = baseVert + indices[idxBase + 1];
+      } else {
+        _rawTriB[tSlot] = baseVert + indices[idxBase + 1];
+        _rawTriC[tSlot] = baseVert + indices[idxBase + 2];
+      }
       _rawTriOwnerSlot[tSlot] = slot;
       _rawTriMatIdx[tSlot] = matIdx;
     }
@@ -861,8 +867,8 @@ class StaticMeshChunk3D() {
       for (var t = 0; t < mTriCount; t++) {
         final idxBase = t * 3;
         final v0 = baseVert + indices[idxBase];
-        final v1 = baseVert + indices[idxBase + 1];
-        final v2 = baseVert + indices[idxBase + 2];
+        final v1 = baseVert + indices[idxBase + (reverseWinding ? 2 : 1)];
+        final v2 = baseVert + indices[idxBase + (reverseWinding ? 1 : 2)];
 
         if (cullBackfaceShadows) {
           final e1x = _rx[v1] - _rx[v0];

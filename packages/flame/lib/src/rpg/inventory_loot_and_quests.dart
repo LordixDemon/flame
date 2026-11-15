@@ -918,7 +918,12 @@ class QuestJournalMachine() {
     if (amount <= 0) {
       return;
     }
-    for (final rt in _runtime.values) {
+    // Snapshot active entries so `onQuestUpdated` listeners can safely call
+    // `startQuest` (e.g. unlocking the next quest in a chain) without throwing
+    // `ConcurrentModificationError`!
+    final snapshot = List<_QuestRuntimeState>.of(_runtime.values);
+    for (var idx = 0; idx < snapshot.length; idx++) {
+      final rt = snapshot[idx];
       if (rt.state != QuestState.active || rt.currentStageId == null) {
         continue;
       }

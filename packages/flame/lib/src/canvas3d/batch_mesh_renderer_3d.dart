@@ -1146,6 +1146,7 @@ class BatchMeshRenderer3D({
     _ensureTriangleCapacity(_triCount + mTriCount);
 
     final minArea = minTrianglePixelArea;
+    final reverseWinding = (scaleX * scaleY * scaleZ) < 0.0;
     for (var t = 0; t < mTriCount; t++) {
       final idxBase = t * 3;
       final int a;
@@ -1153,12 +1154,22 @@ class BatchMeshRenderer3D({
       final int c;
       if (indices16 != null) {
         a = baseVertex + indices16[idxBase];
-        b = baseVertex + indices16[idxBase + 1];
-        c = baseVertex + indices16[idxBase + 2];
+        if (reverseWinding) {
+          b = baseVertex + indices16[idxBase + 2];
+          c = baseVertex + indices16[idxBase + 1];
+        } else {
+          b = baseVertex + indices16[idxBase + 1];
+          c = baseVertex + indices16[idxBase + 2];
+        }
       } else {
         a = baseVertex + indices32![idxBase];
-        b = baseVertex + indices32[idxBase + 1];
-        c = baseVertex + indices32[idxBase + 2];
+        if (reverseWinding) {
+          b = baseVertex + indices32[idxBase + 2];
+          c = baseVertex + indices32[idxBase + 1];
+        } else {
+          b = baseVertex + indices32[idxBase + 1];
+          c = baseVertex + indices32[idxBase + 2];
+        }
       }
 
       if (isPerspective) {
@@ -1221,12 +1232,22 @@ class BatchMeshRenderer3D({
         final int i2;
         if (indices16 != null) {
           i0 = indices16[idxBase] * 3;
-          i1 = indices16[idxBase + 1] * 3;
-          i2 = indices16[idxBase + 2] * 3;
+          if (reverseWinding) {
+            i1 = indices16[idxBase + 2] * 3;
+            i2 = indices16[idxBase + 1] * 3;
+          } else {
+            i1 = indices16[idxBase + 1] * 3;
+            i2 = indices16[idxBase + 2] * 3;
+          }
         } else {
           i0 = indices32![idxBase] * 3;
-          i1 = indices32[idxBase + 1] * 3;
-          i2 = indices32[idxBase + 2] * 3;
+          if (reverseWinding) {
+            i1 = indices32[idxBase + 2] * 3;
+            i2 = indices32[idxBase + 1] * 3;
+          } else {
+            i1 = indices32[idxBase + 1] * 3;
+            i2 = indices32[idxBase + 2] * 3;
+          }
         }
 
         final (rx0, ry0, rz0) = worldRelPos(i0);

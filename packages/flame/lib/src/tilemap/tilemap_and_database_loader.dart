@@ -367,6 +367,21 @@ class TileMapDocument({
     final layerCount = bd.getUint32(off, Endian.little);
     off += 4;
 
+    if (width == 0 ||
+        height == 0 ||
+        width > 65536 ||
+        height > 65536 ||
+        layerCount > 1024 ||
+        !tileW.isFinite ||
+        !tileH.isFinite ||
+        tileW <= 0 ||
+        tileH <= 0) {
+      throw FormatException(
+        'Invalid DTMP header dimensions: ${width}x$height '
+        '(layers=$layerCount, tile=${tileW}x$tileH)',
+      );
+    }
+
     final totalCells = width * height;
     final needed = 28 + (2 + layerCount) * totalCells * 4 + 4;
     if (bytes.length < needed) {
@@ -391,11 +406,18 @@ class TileMapDocument({
     if (bytes.length < off + metaLen) {
       throw const FormatException('DTMP metadata footer truncated');
     }
-    final meta = jsonDecode(
+    final decodedMeta = jsonDecode(
       utf8.decode(Uint8List.sublistView(bytes, off, off + metaLen)),
-    ) as Map<String, Object?>;
+    );
+    if (decodedMeta is! Map<String, Object?>) {
+      throw const FormatException('DTMP metadata footer must be a JSON object');
+    }
+    final meta = decodedMeta;
 
-    final layerMetas = meta['layerMeta']! as List<Object?>;
+    final layerMetas = meta['layerMeta'];
+    if (layerMetas is! List<Object?> || layerMetas.length < layerCount) {
+      throw const FormatException('DTMP layerMeta count mismatch');
+    }
     final layers = <TileMapLayerData>[];
     for (var i = 0; i < layerCount; i++) {
       final m = layerMetas[i]! as Map<String, Object?>;

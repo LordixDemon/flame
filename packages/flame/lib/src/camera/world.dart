@@ -97,8 +97,17 @@ class World({
   void revalidateQueriesFor(Component child) {
     final queries = _queries;
     if (queries != null) {
+      final isDirect = identical(child.parent, this);
+      final isActiveInWorld = isMounted
+          ? child.isMounted
+          : (child.parent?.contains(child) ?? false);
       for (var i = 0; i < queries.length; i++) {
-        queries[i].revalidate(child);
+        final q = queries[i];
+        if (!isActiveInWorld || (!q.includeSubtree && !isDirect)) {
+          q.handleChildChanged(child, ChildrenChangeType.removed);
+        } else {
+          q.revalidate(child);
+        }
       }
     }
   }
@@ -315,6 +324,7 @@ class World({
       return;
     }
 
+    nestedContexts?.add(locationContext);
     final idx = spatialIndex..syncWithChildren(children);
     final candidates = <Component>[];
     final activeCam = CameraComponent.currentCamera;
@@ -326,16 +336,30 @@ class World({
     );
 
     for (var i = 0; i < candidates.length; i++) {
-      yield* candidates[i].componentsAtLocation(
-        locationContext,
-        nestedContexts,
-        transformContext,
-        checkContains,
-      );
+      final child = candidates[i];
+      if (child is IgnoreEvents && child.ignoreEvents) {
+        continue;
+      }
+      T? childPoint = locationContext;
+      if (child is CoordinateTransform) {
+        childPoint = transformContext(
+          child as CoordinateTransform,
+          locationContext,
+        );
+      }
+      if (childPoint != null) {
+        yield* child.componentsAtLocation(
+          childPoint,
+          nestedContexts,
+          transformContext,
+          checkContains,
+        );
+      }
     }
     if (checkContains(this, locationContext)) {
       yield this;
     }
+    nestedContexts?.removeLast();
   }
 
   @override

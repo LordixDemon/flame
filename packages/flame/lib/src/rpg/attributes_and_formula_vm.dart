@@ -273,7 +273,9 @@ class AttributeSet() {
             pctMulProd *= m.value;
           case StatModifierOp.finalOverride:
             if (winningOverride == null ||
-                m.priority >= winningOverride.priority) {
+                m.priority > winningOverride.priority ||
+                (m.priority == winningOverride.priority &&
+                    m.id.compareTo(winningOverride.id) >= 0)) {
               winningOverride = m;
             }
         }

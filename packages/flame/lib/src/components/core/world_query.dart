@@ -1,3 +1,5 @@
+import 'dart:collection';
+
 import 'package:flame/src/camera/world.dart';
 import 'package:flame/src/components/core/component.dart';
 
@@ -81,7 +83,7 @@ class WorldQuery<T extends Component>({
 
   final List<T> _matched = <T>[];
   final Set<T> _matchedSet = <T>{};
-  late final List<T> _unmodifiableView = List<T>.unmodifiable(_matched);
+  late final List<T> _unmodifiableView = UnmodifiableListView<T>(_matched);
 
   /// Optional callback fired when a component enters this query's result set.
   final void Function(T component)? onMatched;
