@@ -1,12 +1,14 @@
 /// A data-oriented particle system: declarative `ParticleEmitter` presets,
-/// struct-of-arrays simulation, force fields, flipbooks, and batched
-/// single-draw-call rendering.
+/// struct-of-arrays simulation, force fields, flipbooks, procedural cloud
+/// puffs, elemental presets, and batched single-draw-call rendering.
 library;
 
 export 'src/particles/circle_particle_renderer.dart';
 export 'src/particles/color_ramp.dart';
+export 'src/particles/elemental_particle_presets.dart';
 export 'src/particles/emitter_shape.dart';
 export 'src/particles/flipbook_particle_renderer.dart';
+export 'src/particles/noise_cloud_particle_renderer.dart';
 export 'src/particles/particle_batch_group.dart'
     show BatchTransparentContainer, ParticleBatchGroup;
 export 'src/particles/particle_buffer.dart';

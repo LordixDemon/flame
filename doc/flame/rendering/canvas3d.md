@@ -289,3 +289,18 @@ cloud in a single `Canvas.drawRawAtlas` call.
   - `BatchMeshRenderer3D.enqueueDeformedBuffers(..., doubleSidedShadow: true)` (enabled by default on
     `SpriteBillboard3D`) projects planar ground shadows regardless of whether the directional sun is in
     front of or behind single-sided sprite quads.
+
+
+## 3D Volumetric Billowing Fog (`VolumetricFogVolume3D`, `VolumetricFogComponent3D`) & Elemental `ParticlePool3D`
+
+- **`VolumetricFogVolume3D` & `VolumetricFogComponent3D`**: Zero-allocation SoA 3D cloud-parcel
+  simulator (`populateCorridor`, `spawnApproachingWavefront`, `setApproachSpeedTowardCamera`) with
+  3D Simplex curl-like billowing turbulence, ground-hugging roll vorticity, pinhole perspective `1 / camZ`
+  swelling, smooth Beer–Lambert near-lens transmittance fade (`[nearFadeStart .. nearFadeEnd]`, zero
+  popping through `nearClip`), directional crest scattering, internal `PointLight3D` torch illumination
+  from `SceneEnvironment3D`, and Ciura Shell back-to-front depth sorting drawn in **1
+  `Canvas.drawRawAtlas` call**.
+- **Elemental `ParticlePool3D` (`flame`, `smoke`, `waterDrop`, `fogWisp`)**: Adds thermal buoyancy,
+  3D wind + Simplex turbulence (`windX/Y/Z`, `turbulenceStrength`), ground-impact callbacks
+  (`onGroundImpact`), pinhole perspective projection, and helper spawners (`spawnFlamePlume`,
+  `spawnWaterSplash3D`).

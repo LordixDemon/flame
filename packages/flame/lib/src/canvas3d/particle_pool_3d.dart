@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:flame/src/canvas3d/camera_rig_3d.dart';
 import 'package:flame/src/game/game.dart';
+import 'package:flame/src/math/simplex_noise_2d.dart';
 import 'package:flutter/painting.dart';
 
 /// Visual & physical archetype for particles simulated by [ParticlePool3D].
@@ -19,18 +20,54 @@ enum ParticleKind3D() {
 
   /// Soft rising dust puff on footsteps and impacts.
   dust,
+
+  /// Additive rising thermal flame tongue that cools from yellow-white to red.
+  flame,
+
+  /// Expanding dark/grey smoke puff drifting upward above fire or impacts.
+  smoke,
+
+  /// Gravity-stretched specular water droplet that splashes on `z = 0`.
+  waterDrop,
+
+  /// Soft drifting 3D mist/fog wisp.
+  fogWisp,
 }
 
 /// Zero-allocation Struct-of-Arrays (SoA) 3D particle engine simulating up to
 /// [capacity] particles in `(x, y, z)` world coordinates with gravity, air
-/// drag, elastic ground bounce on `z = 0`, contact micro-shadows, and batched
-/// `Canvas.drawVertices` rendering.
+/// drag, wind, 3D curl-like Simplex turbulence, elastic ground bounce on
+/// `z = 0`, contact micro-shadows, and batched `Canvas.drawVertices` rendering.
 class ParticlePool3D({
   this.capacity = 384,
   int randomSeed = 90210,
+  this.windX = 0.0,
+  this.windY = 0.0,
+  this.windZ = 0.0,
+  this.turbulenceStrength = 0.0,
+  this.turbulenceScale = 0.85,
+  this.onGroundImpact,
 }) {
   /// Maximum number of simultaneous live 3D particles.
   final int capacity;
+
+  /// Ambient 3D wind acceleration along world X.
+  double windX;
+
+  /// Ambient 3D wind acceleration along world Y.
+  double windY;
+
+  /// Ambient 3D wind acceleration along world Z.
+  double windZ;
+
+  /// Strength of 3D Simplex turbulence acceleration (`0.0` = disabled).
+  double turbulenceStrength;
+
+  /// Spatial frequency of 3D Simplex turbulence.
+  double turbulenceScale;
+
+  /// Optional deferred callback invoked when a particle impacts `z = 0`.
+  void Function(double x, double y, double impactSpeed)? onGroundImpact;
 
   late final Float32List _wx = Float32List(capacity);
   late final Float32List _wy = Float32List(capacity);
@@ -55,13 +92,16 @@ class ParticlePool3D({
   late final Int32List _alphaCol = Int32List(capacity * 6);
   late final Float32List _addPos = Float32List(capacity * 12);
   late final Int32List _addCol = Int32List(capacity * 6);
+  Float32List _impactScratch = Float32List(0);
 
   final Paint _alphaPaint = Paint()..isAntiAlias = true;
   final Paint _addPaint = Paint()
     ..isAntiAlias = true
     ..blendMode = BlendMode.plus;
   final math.Random _rng = math.Random(randomSeed);
+  final SimplexNoise2D _noise = SimplexNoise2D(seed: randomSeed ^ 0x55aa);
 
+  double _simTime = 0.0;
   int _activeCount = 0;
   int _cursor = 0;
 
@@ -123,6 +163,77 @@ class ParticlePool3D({
     _argb[slot] = color.toARGB32();
     _kind[slot] = kind.index;
     Game.notifyVisualMutation();
+  }
+
+  /// Spawns a buoyant 3D flame + smoke + spark plume at `(x, y, z)`.
+  void spawnFlamePlume(
+    double x,
+    double y, {
+    double z = 0.12,
+    int count = 8,
+    double intensity = 1.0,
+  }) {
+    final s = intensity.clamp(0.25, 3.0);
+    for (var k = 0; k < count; k++) {
+      final a = _rng.nextDouble() * math.pi * 2.0;
+      final rad = _rng.nextDouble() * 0.16 * s;
+      final isSmoke = k % 4 == 3;
+      spawn(
+        x: x + math.cos(a) * rad,
+        y: y + math.sin(a) * rad,
+        z: z + (isSmoke ? 0.25 * s : 0.0),
+        vx: (_rng.nextDouble() - 0.5) * 0.45 * s,
+        vy: (_rng.nextDouble() - 0.5) * 0.45 * s,
+        vz: (isSmoke ? 1.15 : 2.1) * s + _rng.nextDouble() * 0.9 * s,
+        gravity: isSmoke ? -0.35 : -1.25,
+        bounce: 0.0,
+        drag: isSmoke ? 1.6 : 1.9,
+        size: (isSmoke ? 5.6 : 4.2) * s + _rng.nextDouble() * 1.8,
+        life: isSmoke
+            ? 1.15 + _rng.nextDouble() * 0.45
+            : 0.48 + _rng.nextDouble() * 0.28,
+        angle: a,
+        spin: (_rng.nextDouble() - 0.5) * 3.5,
+        color: isSmoke
+            ? const Color(0x99373B44)
+            : (k.isEven ? const Color(0xFFFFD54F) : const Color(0xFFFF6D00)),
+        kind: isSmoke ? ParticleKind3D.smoke : ParticleKind3D.flame,
+      );
+    }
+  }
+
+  /// Spawns a 3D crown of specular water droplets that arc upward and splash
+  /// onto `z = 0`.
+  void spawnWaterSplash3D(
+    double x,
+    double y, {
+    double z = 0.03,
+    int count = 12,
+    Color color = const Color(0xDDCCF0FF),
+  }) {
+    for (var k = 0; k < count; k++) {
+      final a =
+          (k / math.max(1, count)) * math.pi * 2.0 +
+          (_rng.nextDouble() - 0.5) * 0.35;
+      final spd = 0.55 + _rng.nextDouble() * 1.15;
+      spawn(
+        x: x + math.cos(a) * 0.08,
+        y: y + math.sin(a) * 0.08,
+        z: z,
+        vx: math.cos(a) * spd,
+        vy: math.sin(a) * spd,
+        vz: 1.85 + _rng.nextDouble() * 1.45,
+        gravity: 8.4,
+        bounce: 0.24,
+        drag: 0.75,
+        size: 2.4 + _rng.nextDouble() * 1.2,
+        life: 0.52 + _rng.nextDouble() * 0.28,
+        angle: a,
+        spin: 2.0,
+        color: color,
+        kind: ParticleKind3D.waterDrop,
+      );
+    }
   }
 
   /// Spawns a fountain of 3D tumbling gold coins that bounce on `z = 0`.
@@ -268,13 +379,23 @@ class ParticlePool3D({
     }
   }
 
-  /// Advances 3D particle trajectories, drag, and `z = 0` ground collisions.
+  /// Advances 3D particle trajectories, wind, turbulence, drag, and `z = 0`
+  /// ground collisions.
   void update(double dt) {
     if (_activeCount == 0 || dt <= 0.0) {
       return;
     }
     Game.notifyVisualMutation();
     final step = dt.clamp(0.0, 0.05);
+    _simTime += step;
+
+    final hasTurb = turbulenceStrength.abs() > 1e-5;
+    final tScale = turbulenceScale;
+    final impactCb = onGroundImpact;
+    var impactCount = 0;
+    if (impactCb != null && _impactScratch.length < 192) {
+      _impactScratch = Float32List(192);
+    }
 
     var idx = 0;
     while (idx < _activeCount) {
@@ -288,21 +409,49 @@ class ParticlePool3D({
       }
 
       _age[idx] = nextAge;
-      final damp = math.max(0.0, 1.0 - _drag[idx] * step);
-      var vx = _vx[idx] * damp;
-      var vy = _vy[idx] * damp;
-      var vz = _vz[idx] - _gravity[idx] * step;
+      final px = _wx[idx];
+      final py = _wy[idx];
+      final pz = _wz[idx];
 
-      final wx = _wx[idx] + vx * step;
-      final wy = _wy[idx] + vy * step;
-      var wz = _wz[idx] + vz * step;
+      var ax = windX;
+      var ay = windY;
+      final az = windZ - _gravity[idx];
+      if (hasTurb) {
+        final nx = _noise.sample(
+          px * tScale + _simTime * 0.7,
+          py * tScale - pz * tScale,
+        );
+        final ny = _noise.sample(
+          py * tScale - _simTime * 0.65,
+          pz * tScale + px * tScale + 4.3,
+        );
+        ax += nx * turbulenceStrength;
+        ay += ny * turbulenceStrength;
+      }
+
+      final damp = math.max(0.0, 1.0 - _drag[idx] * step);
+      var vx = (_vx[idx] + ax * step) * damp;
+      var vy = (_vy[idx] + ay * step) * damp;
+      var vz = _vz[idx] + az * step;
+
+      final wx = px + vx * step;
+      final wy = py + vy * step;
+      var wz = pz + vz * step;
 
       if (wz < 0.0) {
+        final impactSpd = -vz;
         wz = 0.0;
         if (vz < -0.18) {
           vz = -vz * _bounce[idx];
           vx *= 0.74;
           vy *= 0.74;
+          if (impactCb != null && impactCount * 3 + 2 < _impactScratch.length) {
+            final base = impactCount * 3;
+            _impactScratch[base] = wx;
+            _impactScratch[base + 1] = wy;
+            _impactScratch[base + 2] = impactSpd;
+            impactCount++;
+          }
         } else {
           vz = 0.0;
           vx *= 0.86;
@@ -318,6 +467,17 @@ class ParticlePool3D({
       _vz[idx] = vz;
       _angle[idx] = _angle[idx] + _spin[idx] * step;
       idx++;
+    }
+
+    if (impactCb != null && impactCount > 0) {
+      for (var i = 0; i < impactCount; i++) {
+        final base = i * 3;
+        impactCb(
+          _impactScratch[base],
+          _impactScratch[base + 1],
+          _impactScratch[base + 2],
+        );
+      }
     }
   }
 
@@ -352,6 +512,10 @@ class ParticlePool3D({
       return;
     }
 
+    final isPerspective =
+        camera.projectionMode == CameraProjectionMode3D.perspective;
+    final perspFocal = camera.perspectiveFocalLengthPx;
+    final nearClip = camera.nearClip;
     final focal = camera.focalScalePx;
     final centerY = camera.groundOriginY;
     final perspStrength = camera.perspectiveStrength;
@@ -374,13 +538,35 @@ class ParticlePool3D({
       final wy = _wy[k];
       final wz = _wz[k];
       final kind = _kind[k];
-      final baseSize = _size[k];
+      var baseSize = _size[k];
       final ang = _angle[k];
 
-      final gsx = (camera.rightX * wx + camera.rightY * wy) * focal;
-      final gsy = centerY - (camera.upX * wx + camera.upY * wy) * focal;
+      double gsx;
+      double gsy;
+      double sx;
+      double sy;
+      if (isPerspective) {
+        final (cx3, cy3, cz3) = camera.worldToCameraSpace(wx, wy, wz);
+        if (cz3 <= nearClip) {
+          continue;
+        }
+        final (psx, psy) = camera.projectCameraSpace(cx3, cy3, cz3);
+        sx = psx;
+        sy = psy;
+        baseSize *= (perspFocal / (cz3 * focal)).clamp(0.25, 8.0);
+        final (gcx, gcy, gcz) = camera.worldToCameraSpace(wx, wy, 0.0);
+        final (gpsx, gpsy) = camera.projectCameraSpace(gcx, gcy, gcz);
+        gsx = gpsx;
+        gsy = gpsy;
+      } else {
+        gsx = (camera.rightX * wx + camera.rightY * wy) * focal;
+        gsy = centerY - (camera.upX * wx + camera.upY * wy) * focal;
+        final persp = wz * perspStrength;
+        sx = gsx + (gsx - camX) * persp;
+        sy = gsy - zPx * wz + (gsy - camY) * persp * 0.55;
+      }
 
-      if ((kind == 1 || kind == 2) && wz < 1.8) {
+      if ((kind == 1 || kind == 2 || kind == 6) && wz < 1.8) {
         final shFade = (1.0 - wz * 0.55).clamp(0.15, 1.0) * fade;
         final shAlpha = (shFade * 88.0).round().clamp(0, 120);
         if (shAlpha > 4) {
@@ -402,18 +588,28 @@ class ParticlePool3D({
         }
       }
 
-      final persp = wz * perspStrength;
-      final sx = gsx + (gsx - camX) * persp;
-      final sy = gsy - zPx * wz + (gsy - camY) * persp * 0.55;
-
       final rawCol = _argb[k];
       final baseA = (rawCol >>> 24) & 0xFF;
       var r = (rawCol >>> 16) & 0xFF;
       var g = (rawCol >>> 8) & 0xFF;
       var b = rawCol & 0xFF;
 
-      if (kind == 0) {
-        final rad = baseSize * (0.45 + 0.55 * fade);
+      // Additive kinds: spark (0) and flame (4).
+      if (kind == 0 || kind == 4) {
+        final double rx;
+        final double ry;
+        if (kind == 4) {
+          // Flame cools toward deep orange/crimson and tapers as it rises.
+          final taper = (1.0 - 0.65 * progress).clamp(0.2, 1.0);
+          rx = baseSize * 0.78 * taper;
+          ry = baseSize * 1.45 * taper;
+          g = (g * (1.0 - 0.55 * progress)).round().clamp(0, 255);
+          b = (b * (1.0 - 0.85 * progress)).round().clamp(0, 255);
+        } else {
+          final rad = baseSize * (0.45 + 0.55 * fade);
+          rx = rad * 1.35;
+          ry = rad * 0.68;
+        }
         final aByte = (baseA * fade).round().clamp(0, 255);
         final col = (aByte << 24) | (r << 16) | (g << 8) | b;
         _writeDiamondQuad(
@@ -422,9 +618,9 @@ class ParticlePool3D({
           addVerts,
           sx,
           sy,
-          rad * 1.35,
-          rad * 0.68,
-          ang,
+          rx,
+          ry,
+          kind == 4 ? math.pi * 0.5 + math.sin(ang) * 0.2 : ang,
           col,
         );
         addVerts += 6;
@@ -445,6 +641,17 @@ class ParticlePool3D({
           final flutter = 0.35 + 0.65 * math.sin(ang * 1.4).abs();
           rx = baseSize * 1.15;
           ry = baseSize * 0.55 * flutter;
+        } else if (kind == 5 || kind == 7) {
+          // Smoke (5) and fogWisp (7) expand smoothly over life.
+          final grow = 0.70 + 1.45 * progress;
+          rx = baseSize * grow;
+          ry = baseSize * grow * 0.82;
+        } else if (kind == 6) {
+          // WaterDrop (6) elongates vertically with vertical velocity.
+          final stretch = (1.0 + _vz[k].abs() * 0.22).clamp(1.0, 2.2);
+          rx = baseSize * 0.62;
+          ry = baseSize * stretch;
+          quadAngle = math.pi * 0.5;
         } else {
           final grow = 0.75 + 0.85 * progress;
           rx = baseSize * grow;

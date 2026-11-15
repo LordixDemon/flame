@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flame/components.dart';
 import 'package:flame/extensions.dart';
@@ -54,6 +55,7 @@ class ParticleEmitterComponent({
   final Vector2 _sampledPosition = Vector2.zero();
   final Vector2 _fieldScratch = Vector2.zero();
   List<int> _arrivedScratch = const [];
+  Float32List _bounceScratch = Float32List(0);
   Vector2? _lastAbsolutePosition;
 
   /// Set to `true` by an ancestor `ParticleBatchGroup` while rendering so the
@@ -63,6 +65,7 @@ class ParticleEmitterComponent({
 
   bool _completed = false;
   double _clock = 0;
+  double _simTime = 0;
   double _emitDebt = 0;
 
   /// The live particles. Exposed for custom renderers, custom behaviors,
@@ -102,6 +105,7 @@ class ParticleEmitterComponent({
     }
     _buffer.clear();
     _clock = 0;
+    _simTime = 0;
     _emitDebt = 0;
     _burstFired.fillRange(0, _burstFired.length, false);
     _completed = false;
@@ -161,6 +165,7 @@ class ParticleEmitterComponent({
   @override
   void update(double dt) {
     super.update(dt);
+    _simTime += dt;
     if (worldSpace) {
       _compensateMovement();
     }
@@ -328,9 +333,25 @@ class ParticleEmitterComponent({
     final floorY = emitter.floorY;
     final restitution = emitter.floorRestitution;
     final friction = emitter.floorFriction;
+    final onFloorBounce = emitter.onFloorBounce;
+    var bounceCount = 0;
+    if (onFloorBounce != null && _bounceScratch.length < 192) {
+      _bounceScratch = Float32List(192);
+    }
     final vStretch = emitter.velocityStretch;
     final orientToVel = emitter.rotateToVelocity || vStretch > 0;
     var anyStretch = false;
+    var hasPostColliders = false;
+    if (hasFields) {
+      for (var f = 0; f < fields.length; f++) {
+        final fld = fields[f];
+        if (fld is ParticlePlaneCollider ||
+            (fld is ParticleRepulsor && fld.hardBoundary)) {
+          hasPostColliders = true;
+          break;
+        }
+      }
+    }
 
     var i = 0;
     particleLoop:
@@ -383,7 +404,6 @@ class ParticleEmitterComponent({
                 final falloff = 1.0 - dist / maxR;
                 final nx = dx / dist;
                 final ny = dy / dist;
-                // Tangential (-ny, nx) + inward (-nx, -ny)
                 ax +=
                     (-ny * field.angularAcceleration - nx * field.radialPull) *
                     falloff;
@@ -391,23 +411,120 @@ class ParticleEmitterComponent({
                     (nx * field.angularAcceleration - ny * field.radialPull) *
                     falloff;
               }
+            case ParticleCurlNoiseField():
+              final (cx, cy) = field.sampleAcceleration(
+                px,
+                py,
+                _simTime,
+                progress,
+              );
+              ax += cx;
+              ay += cy;
+            case ParticleBuoyancyField():
+              final phase = (buffer.variant[i] & 0xff) * 0.02454369;
+              final (bx, by) = field.sampleAcceleration(
+                progress,
+                _simTime,
+                phase,
+              );
+              ax += bx;
+              ay += by;
+            case ParticleWindField():
+              final (wx, wy) = field.sampleAcceleration(px, py, _simTime);
+              ax += wx;
+              ay += wy;
+            case ParticleRepulsor():
+              field.resolveCenter(_fieldScratch);
+              final dx = px - _fieldScratch.x;
+              final dy = py - _fieldScratch.y;
+              final distSq = dx * dx + dy * dy;
+              final maxR = field.radius;
+              if (distSq < maxR * maxR) {
+                if (distSq > 1e-8) {
+                  final dist = sqrt(distSq);
+                  final falloff = 1.0 - dist / maxR;
+                  ax += (dx / dist) * field.strength * falloff;
+                  ay += (dy / dist) * field.strength * falloff;
+                } else {
+                  ay -= field.strength;
+                }
+              }
+            case ParticlePlaneCollider():
+              // Evaluated as position/velocity projection after integration.
+              break;
           }
         }
       }
 
-      final velX = (buffer.velX[i] + ax * dt) * damping;
+      var finalVelX = (buffer.velX[i] + ax * dt) * damping;
       var velY = (buffer.velY[i] + ay * dt) * damping;
-      final nextX = px + velX * dt;
+      var nextX = px + finalVelX * dt;
       var nextY = py + velY * dt;
 
-      var finalVelX = velX;
       if (floorY != null && nextY >= floorY && velY > 0) {
+        final impactSpeed = velY;
         nextY = floorY - (nextY - floorY) * restitution;
         velY = -velY * restitution;
-        finalVelX = velX * friction;
+        finalVelX = finalVelX * friction;
         if (velY.abs() < 4.0) {
           velY = 0;
           nextY = floorY;
+        } else if (onFloorBounce != null &&
+            bounceCount * 3 + 2 < _bounceScratch.length) {
+          final base = bounceCount * 3;
+          _bounceScratch[base] = nextX;
+          _bounceScratch[base + 1] = floorY;
+          _bounceScratch[base + 2] = impactSpeed;
+          bounceCount++;
+        }
+      }
+
+      if (hasPostColliders) {
+        for (var f = 0; f < fields.length; f++) {
+          final field = fields[f];
+          if (field is ParticleRepulsor && field.hardBoundary) {
+            field.resolveCenter(_fieldScratch);
+            final dx = nextX - _fieldScratch.x;
+            final dy = nextY - _fieldScratch.y;
+            final distSq = dx * dx + dy * dy;
+            final r = field.radius;
+            if (distSq < r * r) {
+              double nx;
+              double ny;
+              if (distSq > 1e-8) {
+                final invD = 1.0 / sqrt(distSq);
+                nx = dx * invD;
+                ny = dy * invD;
+              } else {
+                nx = 0.0;
+                ny = -1.0;
+              }
+              nextX = _fieldScratch.x + nx * r;
+              nextY = _fieldScratch.y + ny * r;
+              final vn = finalVelX * nx + velY * ny;
+              if (vn < 0) {
+                final impulse = -(1.0 + field.restitution) * vn;
+                finalVelX += impulse * nx;
+                velY += impulse * ny;
+              }
+            }
+          } else if (field is ParticlePlaneCollider) {
+            final nx = field.normalX;
+            final ny = field.normalY;
+            final signedDist = nextX * nx + nextY * ny - field.offset;
+            if (signedDist < 0) {
+              nextX -= signedDist * nx;
+              nextY -= signedDist * ny;
+              final vn = finalVelX * nx + velY * ny;
+              if (vn < 0) {
+                final vxTan = finalVelX - vn * nx;
+                final vyTan = velY - vn * ny;
+                final bounceVn = -vn * field.restitution;
+                finalVelX = vxTan * field.friction + bounceVn * nx;
+                velY = vyTan * field.friction + bounceVn * ny;
+              }
+            }
+          }
         }
       }
 
@@ -455,6 +572,17 @@ class ParticleEmitterComponent({
             field.onParticlesArrived?.call(count);
           }
         }
+      }
+    }
+
+    if (onFloorBounce != null && bounceCount > 0) {
+      for (var b = 0; b < bounceCount; b++) {
+        final base = b * 3;
+        onFloorBounce(
+          _bounceScratch[base],
+          _bounceScratch[base + 1],
+          _bounceScratch[base + 2],
+        );
       }
     }
   }

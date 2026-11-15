@@ -112,6 +112,11 @@ class ParticleEmitter({
   /// Horizontal velocity multiplier (`0..1`) applied on each [floorY] bounce.
   final double floorFriction = 0.82,
 
+  /// Optional callback invoked after the simulation step for each particle that
+  /// bounced off [floorY] (ideal for triggering water ripples or secondary
+  /// micro-splashes without mutating the particle buffer mid-loop).
+  final void Function(double x, double y, double impactSpeed)? onFloorBounce,
+
   /// Anisotropic elongation factor (`>= 0`) stretching particles along their
   /// velocity vector (`stretch = 1 + speed * velocityStretch`).
   final double velocityStretch = 0,

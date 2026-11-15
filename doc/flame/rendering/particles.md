@@ -410,3 +410,28 @@ be rotated or scaled while `worldSpace` is enabled.
 - Storage is allocated once, at `maxParticles`; a running effect performs
   no allocations. Reuse a paused component and call `emit()` instead of
   spawning new components when an effect fires very frequently.
+
+
+## Fluid & Elemental Physics (`ParticleCurlNoiseField`, `ElementalParticles`, Interactive Water & Storm Parallax)
+
+- **Divergence-Free Curl, Thermal Buoyancy, Wind & Colliders**:
+  - `ParticleCurlNoiseField`: Streamfunction curl turbulence (`∇ × ψ`) over `SimplexNoise2D` so fire,
+    smoke, mist, and snow swirl organically without clumping.
+  - `ParticleBuoyancyField`: Convective lift that cools over normalized particle life (`1 - progress`)
+    with gentle horizontal sway.
+  - `ParticleWindField`, `ParticleRepulsor` (`hardBoundary` elastic dome reflection),
+    `ParticlePlaneCollider` (slanted roof/wall half-plane reflection), and `ParticleEmitter.onFloorBounce`
+    impact callbacks.
+- **`NoiseCloudParticleRenderer` & `ElementalParticles`**:
+  - `NoiseCloudParticleRenderer`: Synchronously rasterized, cached 8-variant `256x128` multi-lobe
+    `SimplexNoise2D` fBm cloud/smoke/flame atlas compatible with `ParticleBatchGroup` single-call
+    coalescing.
+  - `ElementalParticles`: Ready-to-tune presets (`fireCore`, `fireSmoke`, `risingEmbers`, `steamJet`,
+    `waterSplash`, `groundMist`).
+- **Interactive Shallow-Water Waves (`WaterSurface2DComponent` v2), `WaterRipplePoolComponent` &
+  3-Band `WeatherPrecipitationLayer` v2**:
+  - `WaterSurface2DComponent` adds 1D coupled Hooke–Verlet wave columns (`splash`, `sampleSurfaceY`,
+    `sampleSlope`, `waveMechanicalEnergy`) with crest-reactive shoreline foam and caustics, paired with
+    `WaterRipplePoolComponent` (`1` `Canvas.drawVertices` call for concentric isometric water rings).
+  - `WeatherPrecipitationLayer` v2 adds 3 depth-parallax speed/size bands, `WeatherKind.hail` and
+    `WeatherKind.ash`, coherent wind gusts, and `onDropImpact` splash coupling into water surfaces.

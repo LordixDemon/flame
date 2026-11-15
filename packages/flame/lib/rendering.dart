@@ -13,5 +13,7 @@ export 'src/rendering/shadow3d_decorator.dart' show Shadow3DDecorator;
 export 'src/rendering/spline_strip_mesh_2d.dart' show SplineStripMesh2D;
 export 'src/rendering/transform2d_decorator.dart' show Transform2DDecorator;
 export 'src/rendering/verlet_rope_2d.dart' show VerletRope2D;
+export 'src/rendering/water_ripple_pool_component.dart'
+    show WaterRipplePoolComponent;
 export 'src/rendering/water_surface_2d_component.dart'
     show WaterSurface2DComponent;
