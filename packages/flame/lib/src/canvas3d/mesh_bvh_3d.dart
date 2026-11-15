@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:flame/src/canvas3d/raycast_3d.dart';
+import 'package:flame/src/canvas3d/primitives_3d.dart';
 
 /// Flat, zero-heap-node Struct-of-Arrays Bounding Volume Hierarchy (BVH) for
 /// `O(log T)` Möller–Trumbore raycasting against 3D triangle meshes.
@@ -329,7 +329,7 @@ class MeshBvh3D._({
       return null;
     }
 
-    final rootDist = Raycaster3D.intersectAabbDistance(
+    final rootDist = Aabb3D.intersectRayDistance(
       localRay,
       minX: nodeBounds[0],
       minY: nodeBounds[1],
@@ -437,7 +437,7 @@ class MeshBvh3D._({
         final right = -rc;
         final lb = left * 6;
         final rb = right * 6;
-        final dLeft = Raycaster3D.intersectAabbDistance(
+        final dLeft = Aabb3D.intersectRayDistance(
           localRay,
           minX: nodeBounds[lb],
           minY: nodeBounds[lb + 1],
@@ -447,7 +447,7 @@ class MeshBvh3D._({
           maxZ: nodeBounds[lb + 5],
           maxDistance: bestT,
         );
-        final dRight = Raycaster3D.intersectAabbDistance(
+        final dRight = Aabb3D.intersectRayDistance(
           localRay,
           minX: nodeBounds[rb],
           minY: nodeBounds[rb + 1],

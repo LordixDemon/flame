@@ -1,7 +1,8 @@
 import 'dart:ui' as ui;
 
 import 'package:flame/components.dart';
-import 'package:flame/post_process.dart';
+import 'package:flame/src/post_process/post_process.dart';
+import 'package:flame/src/post_process/shader_post_process.dart';
 import 'package:flutter/painting.dart';
 import 'package:meta/meta.dart';
 

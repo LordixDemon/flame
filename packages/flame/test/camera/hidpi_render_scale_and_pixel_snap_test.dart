@@ -49,7 +49,7 @@ class _SnapshotBox({super.size}) extends PositionComponent with Snapshot {
 
 void main() {
   group('HiDPI DisplayMetrics, worldRenderScale, Snapshot & PixelSnap', () {
-    test('DisplayMetrics & Game DPR cap and override hooks (#1)', () {
+    test('DisplayMetrics & Game DPR cap and override hooks', () {
       const m1 = DisplayMetrics(
         devicePixelRatio: 2.0,
         physicalSize: ui.Size(2560, 1600),
@@ -71,7 +71,7 @@ void main() {
     });
 
     testWidgets(
-      'GameRenderBox syncs live FlutterView DPR on didChangeMetrics (#1)',
+      'GameRenderBox syncs live FlutterView DPR on didChangeMetrics',
       (tester) async {
         tester.view.devicePixelRatio = 2.0;
         addTearDown(tester.view.resetDevicePixelRatio);
@@ -96,8 +96,7 @@ void main() {
     );
 
     test(
-      'CameraComponent.worldRenderScale scales world while keeping HUD 1:1 '
-      '(#2)',
+      'CameraComponent.worldRenderScale scales world while keeping HUD 1:1',
       () async {
         final game = FlameGame()..onGameResize(Vector2(400, 300));
         game.overrideDisplayMetrics(devicePixelRatio: 2.0);
@@ -136,7 +135,7 @@ void main() {
 
     test(
       'SnapshotResolutionPolicy autoHiDpiAndZoom quantizes zoom with '
-      'hysteresis and max dimension cap (#3)',
+      'hysteresis and max dimension cap',
       () async {
         final game = FlameGame()..onGameResize(Vector2(400, 300));
         game.overrideDisplayMetrics(devicePixelRatio: 2.0);
@@ -190,7 +189,7 @@ void main() {
 
     test(
       'PixelSnapMode snaps rendered translation without mutating '
-      'viewfinder.position (#4)',
+      'viewfinder.position',
       () async {
         final game = FlameGame()..onGameResize(Vector2(400, 300));
         game.overrideDisplayMetrics(devicePixelRatio: 2.0);
@@ -229,7 +228,7 @@ void main() {
     );
 
     test(
-      'ContrastAdaptiveSharpenPostProcess & tiled renderHighResImageSync (#5)',
+      'ContrastAdaptiveSharpenPostProcess & tiled renderHighResImageSync',
       () async {
         final game = FlameGame()..onGameResize(Vector2(320, 180));
         game.world.add(

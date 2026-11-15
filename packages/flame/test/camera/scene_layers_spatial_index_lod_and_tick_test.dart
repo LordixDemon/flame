@@ -58,7 +58,7 @@ void main() {
   group('SceneLayer, WorldSpatialIndex, HasSceneLod & OffscreenTick', () {
     test(
       'SceneLayerComponent filters by CameraComponent.layerMask, applies '
-      'parallax, and caches Picture (#16)',
+      'parallax, and caches Picture',
       () async {
         final game = FlameGame()..onGameResize(Vector2(400, 300));
         const bitSky = 1 << 0;
@@ -124,8 +124,7 @@ void main() {
     );
 
     test(
-      'WorldSpatialIndex matches exact render & hit-test order in O(visible) '
-      '(#17)',
+      'WorldSpatialIndex matches exact render & hit-test order in O(visible)',
       () async {
         final world = World(spatialIndexEnabled: true, spatialCellSize: 128);
         final game = FlameGame(world: world)..onGameResize(Vector2(200, 200));
@@ -201,7 +200,7 @@ void main() {
     );
 
     test(
-      'HasSceneLod selects tiers with hysteresis, lodBias, and auto-cull (#18)',
+      'HasSceneLod selects tiers with hysteresis, lodBias, and auto-cull',
       () async {
         final game = FlameGame()..onGameResize(Vector2(400, 300));
         final prop = _LodActor(size: Vector2.all(50))
@@ -244,7 +243,7 @@ void main() {
 
     test(
       'OffscreenTickPolicy decimates everyNFrames with exact accumulated dt '
-      'and sleeps off-screen actors (#19)',
+      'and sleeps off-screen actors',
       () async {
         final game = FlameGame()..onGameResize(Vector2(200, 200));
         final decimated = _SpatialActor(

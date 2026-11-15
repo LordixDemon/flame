@@ -60,7 +60,7 @@ void main() {
     fallbackVertices.dispose();
   });
 
-  group('Enhanced HasAutoBatchedChildren v2 (#3)', () {
+  group('Enhanced HasAutoBatchedChildren v2', () {
     testWithFlameGame(
       'batches SpriteBatchItemProvider alongside SpriteComponent and separates '
       'BlendMode.plus batches cleanly',
@@ -136,7 +136,7 @@ void main() {
     );
   });
 
-  group('Cached 2.5D/3D Frustum Culling (#4)', () {
+  group('Cached 2.5D/3D Frustum Culling', () {
     testWithFlameGame(
       'caches world bounds via Transform2D.version and respects directional '
       'cullBoundsOutset for tall 3D spires',

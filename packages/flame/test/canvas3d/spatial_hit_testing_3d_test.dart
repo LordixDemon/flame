@@ -46,7 +46,7 @@ class _Flat2DFallbackTile(
 }
 
 void main() {
-  group('Native 3D Raycast Hit-Testing (#8)', () {
+  group('Native 3D Raycast Hit-Testing', () {
     testWidgets(
       'CameraComponent.rayProjector3D picks closer tall 3D tower in front of '
       'rear tile even when 2D ground footprints do not overlap',

@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 import 'dart:ui' show Offset, Rect;
 
-import 'package:flame/src/collisions/manifold_and_shapecast.dart';
+import 'package:flame/src/collisions/shape_cast_2d.dart';
 import 'package:flame/src/components/position_component.dart';
 import 'package:vector_math/vector_math.dart';
 

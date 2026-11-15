@@ -10,7 +10,7 @@ void main() {
   group('FpsPolicy, decoupled renderTargetFps, dirty render & FrameBudget', () {
     test(
       'FpsPolicy resolves exact harmonic VSync divisors across 60/120/144/240 '
-      'Hz (#11)',
+      'Hz',
       () {
         const locked60 = FpsPolicy.locked60();
         expect(locked60.resolveVsyncDivisor(60.0), 1);
@@ -33,7 +33,7 @@ void main() {
     );
 
     testWidgets(
-      'GameLoop integer VSync divisor fires exact 1/2 beats on 120 Hz (#11)',
+      'GameLoop integer VSync divisor fires exact 1/2 beats on 120 Hz',
       (tester) async {
         final dts = <double>[];
         final loop = GameLoop(
@@ -60,8 +60,7 @@ void main() {
     );
 
     test(
-      'Decoupled renderTargetFps & fixedTimeStep renderInterpolationAlpha '
-      '(#12)',
+      'Decoupled renderTargetFps & fixedTimeStep renderInterpolationAlpha',
       () async {
         final game = FlameGame()
           ..fixedTimeStep = 0.01
@@ -89,8 +88,7 @@ void main() {
     );
 
     test(
-      'IdleRenderMode.onDemand skips clean paints and wakes on scene mutations '
-      '(#13)',
+      'IdleRenderMode.onDemand skips clean paints and wakes on scene mutations',
       () async {
         final game = FlameGame()
           ..idleRenderMode = IdleRenderMode.onDemand
@@ -132,7 +130,7 @@ void main() {
     );
 
     test(
-      'Hardware FrameTiming ring-buffer percentiles, jank & isGpuBound (#14)',
+      'Hardware FrameTiming ring-buffer percentiles, jank & isGpuBound',
       () {
         final game = _TelemetryProbeGame()..onGameResize(Vector2(320, 240));
         for (var i = 0; i < 19; i++) {
@@ -159,8 +157,7 @@ void main() {
     );
 
     test(
-      'FrameBudgetScheduler orders by priority and enforces anti-starvation '
-      '(#15)',
+      'FrameBudgetScheduler orders by priority and enforces anti-starvation',
       () async {
         final order = <String>[];
         final scheduler = FrameBudgetScheduler(

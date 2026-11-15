@@ -40,7 +40,7 @@ class _PassiveTileComponent() extends Component with PassiveComponent {
 }
 
 void main() {
-  group('Continuous double sortKey (#2)', () {
+  group('Continuous double sortKey', () {
     testWithFlameGame(
       'orders siblings by priority first, then continuous sortKey',
       (game) async {
@@ -131,7 +131,7 @@ void main() {
     );
   });
 
-  group('Sleeping & PassiveComponent update exclusion (#6)', () {
+  group('Sleeping & PassiveComponent update exclusion', () {
     testWithFlameGame(
       'PassiveComponent and sleepUpdates exclude components from '
       'flatUpdateList while keeping rendering active',

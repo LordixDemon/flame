@@ -1,59 +1,10 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:flame/src/canvas3d/deformable_mesh_3d.dart';
 import 'package:flame/src/canvas3d/mesh_3d.dart';
-import 'package:flame/src/canvas3d/node_uv_decal_3d.dart';
-import 'package:meta/meta.dart';
-
-/// Immutable 3D ray in world coordinates `(x, y, z)` with unit direction
-/// `(dx, dy, dz)`.
-@immutable
-class const Ray3D({
-  required final double ox,
-  required final double oy,
-  required final double oz,
-  required final double dx,
-  required final double dy,
-  required final double dz,
-}) {
-  /// Evaluates `origin + direction * t` along this ray.
-  (double, double, double) pointAt(double t) => (
-    ox + dx * t,
-    oy + dy * t,
-    oz + dz * t,
-  );
-}
-
-/// Exact 3D triangle intersection result returned by [Raycaster3D].
-@immutable
-class const RaycastHit3D({
-  required final int id,
-  required final double distance,
-  required final double worldX,
-  required final double worldY,
-  required final double worldZ,
-  required final int faceIndex,
-});
-
-/// World-positioned 3D triangle mesh collider tested by [Raycaster3D].
-@immutable
-class const MeshCollider3D({
-  required final int id,
-  required final Float32List positions,
-  required final Uint16List indices,
-  required final double minX,
-  required final double minY,
-  required final double minZ,
-  required final double maxX,
-  required final double maxY,
-  required final double maxZ,
-  required final double worldX,
-  required final double worldY,
-  final double worldZ = 0.0,
-  final double yawRad = 0.0,
-  final double scale = 1.0,
-});
+import 'package:flame/src/canvas3d/node_3d.dart';
+import 'package:flame/src/canvas3d/primitives_3d.dart';
+import 'package:flame/src/canvas3d/quaternion_3d.dart';
 
 /// Zero-allocation 3D slab AABB + Möller–Trumbore triangle raycaster.
 class const Raycaster3D._() {
@@ -69,84 +20,16 @@ class const Raycaster3D._() {
     required double maxY,
     required double maxZ,
     double maxDistance = double.infinity,
-  }) {
-    var tMin = 0.0;
-    var tMax = maxDistance;
-
-    if (ray.dx.abs() < 1e-8) {
-      if (ray.ox < minX || ray.ox > maxX) {
-        return null;
-      }
-    } else {
-      final inv = 1.0 / ray.dx;
-      var t1 = (minX - ray.ox) * inv;
-      var t2 = (maxX - ray.ox) * inv;
-      if (t1 > t2) {
-        final tmp = t1;
-        t1 = t2;
-        t2 = tmp;
-      }
-      if (t1 > tMin) {
-        tMin = t1;
-      }
-      if (t2 < tMax) {
-        tMax = t2;
-      }
-      if (tMin > tMax) {
-        return null;
-      }
-    }
-
-    if (ray.dy.abs() < 1e-8) {
-      if (ray.oy < minY || ray.oy > maxY) {
-        return null;
-      }
-    } else {
-      final inv = 1.0 / ray.dy;
-      var t1 = (minY - ray.oy) * inv;
-      var t2 = (maxY - ray.oy) * inv;
-      if (t1 > t2) {
-        final tmp = t1;
-        t1 = t2;
-        t2 = tmp;
-      }
-      if (t1 > tMin) {
-        tMin = t1;
-      }
-      if (t2 < tMax) {
-        tMax = t2;
-      }
-      if (tMin > tMax) {
-        return null;
-      }
-    }
-
-    if (ray.dz.abs() < 1e-8) {
-      if (ray.oz < minZ || ray.oz > maxZ) {
-        return null;
-      }
-    } else {
-      final inv = 1.0 / ray.dz;
-      var t1 = (minZ - ray.oz) * inv;
-      var t2 = (maxZ - ray.oz) * inv;
-      if (t1 > t2) {
-        final tmp = t1;
-        t1 = t2;
-        t2 = tmp;
-      }
-      if (t1 > tMin) {
-        tMin = t1;
-      }
-      if (t2 < tMax) {
-        tMax = t2;
-      }
-      if (tMin > tMax) {
-        return null;
-      }
-    }
-
-    return tMax >= 0.0 ? tMin : null;
-  }
+  }) => Aabb3D.intersectRayDistance(
+    ray,
+    minX: minX,
+    minY: minY,
+    minZ: minZ,
+    maxX: maxX,
+    maxY: maxY,
+    maxZ: maxZ,
+    maxDistance: maxDistance,
+  );
 
   /// Fast slab-method ray vs axis-aligned bounding box boolean test.
   static bool intersectAabb(
@@ -159,7 +42,7 @@ class const Raycaster3D._() {
     required double maxZ,
     double maxDistance = double.infinity,
   }) {
-    return intersectAabbDistance(
+    return Aabb3D.intersectRayDistance(
           ray,
           minX: minX,
           minY: minY,
@@ -182,35 +65,14 @@ class const Raycaster3D._() {
     required double cz,
     required double radius,
     double maxDistance = double.infinity,
-  }) {
-    if (radius < 0.0) {
-      return null;
-    }
-    final ocX = ray.ox - cx;
-    final ocY = ray.oy - cy;
-    final ocZ = ray.oz - cz;
-    final c = ocX * ocX + ocY * ocY + ocZ * ocZ - radius * radius;
-    if (c <= 0.0) {
-      return 0.0;
-    }
-    final a = ray.dx * ray.dx + ray.dy * ray.dy + ray.dz * ray.dz;
-    if (a <= 1e-12) {
-      return null;
-    }
-    final halfB = ocX * ray.dx + ocY * ray.dy + ocZ * ray.dz;
-    if (halfB >= 0.0) {
-      return null;
-    }
-    final disc = halfB * halfB - a * c;
-    if (disc < 0.0) {
-      return null;
-    }
-    final t = (-halfB - math.sqrt(disc)) / a;
-    if (t < 0.0 || t > maxDistance) {
-      return null;
-    }
-    return t;
-  }
+  }) => Aabb3D.intersectSphereDistance(
+    ray,
+    cx: cx,
+    cy: cy,
+    cz: cz,
+    radius: radius,
+    maxDistance: maxDistance,
+  );
 
   /// Intersects [worldRay] against an indexed triangle mesh positioned at
   /// `(worldX, worldY, worldZ)` with Z-axis rotation [MeshCollider3D.yawRad]

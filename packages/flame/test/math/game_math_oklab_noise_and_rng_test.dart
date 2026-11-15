@@ -6,7 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('GameMath, OklabColor, SimplexNoise2D & SeededRng (#11, #30)', () {
-    test('GameMath angle wrapping, remap, pingPong, and splines (#30)', () {
+    test('GameMath angle wrapping, remap, pingPong, and splines', () {
       expect(
         GameMath.deltaAngle(0.1, math.pi * 2 - 0.1),
         closeTo(-0.2, 1e-6),
@@ -40,7 +40,7 @@ void main() {
 
     test(
       'GameMath.smoothDamp, smoothDampAngle & smoothDampVector2 converge '
-      'without overshoot (#30)',
+      'without overshoot',
       () {
         final state = SmoothDampState();
         var pos = 0.0;
@@ -83,7 +83,7 @@ void main() {
       },
     );
 
-    test('OklabColor roundtrips sRGB and interpolates cleanly (#30)', () {
+    test('OklabColor roundtrips sRGB and interpolates cleanly', () {
       const sample = Color(0xFFE53935);
       final roundtripped = OklabColor.fromColor(sample).toColor();
       expect((roundtripped.r - sample.r).abs(), lessThan(0.01));
@@ -100,7 +100,7 @@ void main() {
     });
 
     test(
-      'SimplexNoise2D is seed-deterministic and bounded in [-1, 1] (#30)',
+      'SimplexNoise2D is seed-deterministic and bounded in [-1, 1]',
       () {
         final noiseA = SimplexNoise2D(seed: 42);
         final noiseB = SimplexNoise2D(seed: 42);
@@ -129,7 +129,7 @@ void main() {
 
     test(
       'SeededRng determinism, saveState/restoreState, non-mutating fork, and '
-      'spatial sampling (#11)',
+      'spatial sampling',
       () {
         final rng1 = SeededRng(2026);
         final rng2 = SeededRng(2026);
@@ -183,7 +183,7 @@ void main() {
     );
 
     test(
-      'CommandRecorder serializes and replays tick-stamped commands (#11)',
+      'CommandRecorder serializes and replays tick-stamped commands',
       () {
         final recorder = CommandRecorder<String>(initialSeed: 9001)
           ..record(0, 'spawn_hero')

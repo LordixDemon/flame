@@ -4,7 +4,6 @@ import 'dart:ui';
 import 'package:flame/src/camera/camera_component.dart';
 import 'package:flame/src/camera/world.dart';
 import 'package:flame/src/components/core/component.dart';
-import 'package:flame/src/components/mixins/coordinate_transform.dart';
 import 'package:flame/src/components/mixins/cull_when_offscreen.dart';
 import 'package:flame/src/components/mixins/passive_component.dart';
 import 'package:flame/src/components/position_component.dart';
@@ -70,26 +69,12 @@ class SpatialCullGroup({
     _boundsDirty = true;
   }
 
-  bool _resolveDirectWorldCoords() {
-    var cursor = parent;
-    while (cursor != null) {
-      if (cursor is World) {
-        return true;
-      }
-      if (cursor is CoordinateTransform) {
-        return false;
-      }
-      cursor = cursor.parent;
-    }
-    return false;
-  }
-
   @mustCallSuper
   @override
   void onMount() {
     super.onMount();
-    _world = findParent<World>();
-    _hasDirectWorldCoords = _resolveDirectWorldCoords();
+    _world = enclosingWorld();
+    _hasDirectWorldCoords = hasDirectWorldCoordinates();
     _boundsDirty = true;
   }
 

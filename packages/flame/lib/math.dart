@@ -1,6 +1,9 @@
 export 'src/math/block.dart';
+export 'src/math/command_recorder.dart';
 export 'src/math/game_math.dart';
+export 'src/math/oklab_color.dart';
 export 'src/math/random_fallback.dart';
 export 'src/math/seeded_rng.dart';
+export 'src/math/simplex_noise_2d.dart';
 export 'src/math/solve_cubic.dart';
 export 'src/math/solve_quadratic.dart';

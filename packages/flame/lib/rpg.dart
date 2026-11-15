@@ -13,10 +13,19 @@
 ///   `previewEquipStatDiff`, and DAG `QuestJournalMachine`.
 library;
 
-export 'src/rpg/attributes_and_formula_vm.dart';
-export 'src/rpg/event_interpreter.dart';
-export 'src/rpg/grid_character_and_caterpillar.dart';
-export 'src/rpg/inventory_loot_and_quests.dart';
-export 'src/rpg/paper_doll_and_sheet.dart';
+export 'src/rpg/attribute_set.dart';
+export 'src/rpg/character_sprite_sheet.dart';
+export 'src/rpg/equipment_loadout.dart';
+export 'src/rpg/event_fiber.dart';
+export 'src/rpg/event_page_component.dart';
+export 'src/rpg/event_script.dart' hide EventInstruction, EventOpKind;
+export 'src/rpg/formula_vm.dart';
+export 'src/rpg/grid_character_motor.dart';
+export 'src/rpg/inventory_container.dart';
+export 'src/rpg/loot_table.dart';
+export 'src/rpg/paper_doll_compositor.dart';
+export 'src/rpg/party_caterpillar_chain.dart';
+export 'src/rpg/quest_journal_machine.dart';
+export 'src/rpg/status_effect_container.dart';
 export 'src/rpg/turn_timeline_scheduler.dart';
 export 'src/rpg/world_state_blackboard.dart';

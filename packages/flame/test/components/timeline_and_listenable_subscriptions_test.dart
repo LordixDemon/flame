@@ -12,7 +12,7 @@ class _ReactiveProbe() extends Component with HasListenableSubscriptions {
 }
 
 void main() {
-  group('TimelineComponent (#4)', () {
+  group('TimelineComponent', () {
     test(
       'executes sequential, parallel, stagger, and effect steps precisely',
       () {
@@ -133,7 +133,7 @@ void main() {
     );
   });
 
-  group('HasListenableSubscriptions (#8)', () {
+  group('HasListenableSubscriptions', () {
     testWidgets(
       'attaches on mount, coalesces mutations, and detaches on remove',
       (tester) async {

@@ -5,7 +5,7 @@ import 'package:flame/geometry.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  group('RenderWarmupQueue (#11)', () {
+  group('RenderWarmupQueue', () {
     test(
       'warms textures, vertices, and custom pipelines with progress',
       () async {
@@ -46,7 +46,7 @@ void main() {
     );
   });
 
-  group('SpatialGrid2D (#12)', () {
+  group('SpatialGrid2D', () {
     test(
       'queries points, rects, and radii without duplicate entries',
       () {

@@ -2,8 +2,10 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:flame/src/canvas3d/deformable_mesh_3d.dart';
-import 'package:flame/src/canvas3d/node_uv_decal_3d.dart';
+import 'package:flame/src/canvas3d/morph_mesh_3d.dart';
+import 'package:flame/src/canvas3d/node_3d.dart';
+import 'package:flame/src/canvas3d/quaternion_3d.dart';
+import 'package:flame/src/canvas3d/skinned_mesh_3d.dart';
 import 'package:meta/meta.dart';
 
 /// Frame-synchronized marker fired by [AnimationMixer3D] when playback crosses

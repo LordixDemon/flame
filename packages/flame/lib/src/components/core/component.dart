@@ -682,6 +682,39 @@ class Component({
     return game;
   }
 
+  /// Fetches the nearest [World] ancestor to this component in `O(depth)` with
+  /// zero iterator allocations.
+  ///
+  /// When [includeSelf] is `true`, returns `this` if this component is itself
+  /// a [World].
+  World? enclosingWorld({bool includeSelf = false}) {
+    var cursor = includeSelf ? this : _parent;
+    while (cursor != null) {
+      if (cursor is World) {
+        return cursor;
+      }
+      cursor = cursor._parent;
+    }
+    return null;
+  }
+
+  /// Returns `true` when this component is nested inside a [World] with zero
+  /// intermediate [CoordinateTransform] ancestors.
+  @internal
+  bool hasDirectWorldCoordinates() {
+    var cursor = _parent;
+    while (cursor != null) {
+      if (cursor is World) {
+        return true;
+      }
+      if (cursor is CoordinateTransform) {
+        return false;
+      }
+      cursor = cursor._parent;
+    }
+    return false;
+  }
+
   /// Whether the children list contains the given component.
   ///
   /// This method uses reference equality.
@@ -1645,14 +1678,7 @@ class Component({
     _parent!.markSubtreeDirty();
     _clearMountingBit();
 
-    var worldCursor = _parent;
-    while (worldCursor != null) {
-      if (worldCursor is World) {
-        worldCursor.handleDescendantMounted(this);
-        break;
-      }
-      worldCursor = worldCursor._parent;
-    }
+    enclosingWorld()?.handleDescendantMounted(this);
 
     if (key != null) {
       final currentGame = findGame();
@@ -1718,15 +1744,7 @@ class Component({
   }
 
   void _remove(Component parent, {bool notifyPool = true}) {
-    World? enclosingWorld;
-    Component? worldCursor = parent;
-    while (worldCursor != null) {
-      if (worldCursor is World) {
-        enclosingWorld = worldCursor;
-        break;
-      }
-      worldCursor = worldCursor._parent;
-    }
+    final parentWorld = parent.enclosingWorld(includeSelf: true);
     parent.children._remove(this);
     parent.markSubtreeDirty();
     final removedSubtree = _collectDescendants();
@@ -1740,7 +1758,7 @@ class Component({
         .._removeCompleter?.complete()
         .._removeCompleter = null
         .._parent!.onChildrenChanged(component, ChildrenChangeType.removed);
-      enclosingWorld?.handleDescendantRemoved(component);
+      parentWorld?.handleDescendantRemoved(component);
     }
     _parent = null;
     if (notifyPool) {

@@ -48,7 +48,7 @@ void main() {
   group('32-bit Masks, MTV Manifold, ShapeCast2D, KinematicBody & Trigger', () {
     test(
       '32-bit collisionLayer & collisionMask filter pairs in both Sweep and '
-      'QuadTree broadphases (#14)',
+      'QuadTree broadphases',
       () async {
         const layerPlayer = 1 << 0;
         const layerEnemy = 1 << 1;
@@ -112,7 +112,7 @@ void main() {
 
     test(
       'CollisionManifold2D computes exact MTV push-out & ShapeCast2D prevents '
-      'thin-wall tunneling (#15)',
+      'thin-wall tunneling',
       () {
         final manifold = CollisionManifold2D();
         expect(
@@ -160,8 +160,7 @@ void main() {
     );
 
     test(
-      'KinematicBodyComponent slides along walls, detects floors, and bounces '
-      '(#16)',
+      'KinematicBodyComponent slides along walls, detects floors, and bounces',
       () {
         final obstacles = <Rect>[
           const Rect.fromLTWH(0, 100, 300, 20), // floor at y=100
@@ -196,7 +195,7 @@ void main() {
     );
 
     test(
-      'TriggerZoneComponent fires Enter -> Stay -> Exit lifecycle hooks (#17)',
+      'TriggerZoneComponent fires Enter -> Stay -> Exit lifecycle hooks',
       () async {
         final events = <String>[];
         final world = World(spatialIndexEnabled: true);

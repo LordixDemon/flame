@@ -29,7 +29,7 @@ void main() {
     () {
       test(
         'RowLayoutComponent, ColumnLayoutComponent, GridLayoutComponent & '
-        'NineSlicePanelComponent layout and render cleanly (#28)',
+        'NineSlicePanelComponent layout and render cleanly',
         () {
           final a = PositionComponent(size: Vector2(30, 20));
           final b = PositionComponent(size: Vector2(40, 10));
@@ -93,7 +93,7 @@ void main() {
 
       test(
         'RichBatchedTextComponent parses color/wave/shake/scale/icon tags and '
-        'runs typewriter reveal (#29)',
+        'runs typewriter reveal',
         () {
           final fontAtlas = RasterFontAtlas.bake(
             style: const TextStyle(fontSize: 14, color: Color(0xFFFFFFFF)),

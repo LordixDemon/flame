@@ -39,12 +39,9 @@ export 'src/text/renderers/dialogue_box_component.dart'
         DialoguePositionedGlyph,
         VoiceBlipConfig;
 export 'src/text/renderers/dynamic_font_atlas.dart'
-    show
-        DynamicFontAtlas,
-        DynamicGlyphEntry,
-        LocalizationTable,
-        PluralCategory,
-        PluralRuleResolver;
+    show DynamicFontAtlas, DynamicGlyphEntry;
+export 'src/text/renderers/localization_table.dart'
+    show LocalizationTable, PluralCategory, PluralRuleResolver;
 export 'src/text/renderers/raster_font_atlas.dart'
     show GlyphBatchRenderer, RasterFontAtlas, RasterGlyphMetrics;
 export 'src/text/renderers/rich_batched_text_component.dart'

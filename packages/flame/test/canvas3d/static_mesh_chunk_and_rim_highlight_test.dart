@@ -4,7 +4,7 @@ import 'package:flame/canvas3d.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  group('StaticMeshChunk3D & Fresnel rim highlight (#10)', () {
+  group('StaticMeshChunk3D & Fresnel rim highlight', () {
     test(
       'StaticMeshChunk3D caches lighting across stationary and panned frames',
       () {

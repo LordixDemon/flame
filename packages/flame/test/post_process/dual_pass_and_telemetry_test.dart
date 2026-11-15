@@ -98,7 +98,7 @@ class _VerticesAndLayerComponent(final ui.Image atlas) extends Component {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  group('Multi-Texture PostProcess.rasterizePass (#10)', () {
+  group('Multi-Texture PostProcess.rasterizePass', () {
     testWithFlameGame(
       'rasterizes 0.25x downscaled emissiveMask auxiliary pass and isolates '
       'MultiPassComponent draws',
@@ -129,7 +129,7 @@ void main() {
     );
   });
 
-  group('UniformSlotBuffer & GPU Render Telemetry (#12)', () {
+  group('UniformSlotBuffer & GPU Render Telemetry', () {
     test(
       'UniformSlotBuffer skips redundant FFI setFloat calls and re-uploads '
       'only mutated slots or rebound shaders',

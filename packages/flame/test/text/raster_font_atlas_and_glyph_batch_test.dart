@@ -7,7 +7,7 @@ import 'package:flutter/painting.dart' show FontWeight, TextStyle;
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  group('RasterFontAtlas & GlyphBatchLayer (#9)', () {
+  group('RasterFontAtlas & GlyphBatchLayer', () {
     test('RasterFontAtlas bakes glyphs synchronously and measures widths', () {
       final atlas = RasterFontAtlas.bake(
         style: const TextStyle(

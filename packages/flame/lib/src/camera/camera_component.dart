@@ -13,6 +13,7 @@ import 'package:flame/src/camera/viewfinder.dart';
 import 'package:flame/src/camera/viewport.dart';
 import 'package:flame/src/camera/viewports/fixed_resolution_viewport.dart';
 import 'package:flame/src/camera/viewports/max_viewport.dart';
+import 'package:flame/src/canvas3d/primitives_3d.dart';
 import 'package:flame/src/canvas3d/raycast_3d.dart';
 import 'package:flame/src/canvas3d/spatial_hit_testing_3d.dart';
 import 'package:flame/src/components/core/component.dart';

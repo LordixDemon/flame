@@ -30,7 +30,7 @@ class _TaggedActor({
 void main() {
   group('Signal, WorldEventBus, StateMachine, WorldQuery & Prefab/Save', () {
     test(
-      'Signal supports re-entrant disconnect and connectOnce (#9)',
+      'Signal supports re-entrant disconnect and connectOnce',
       () {
         final sig = Signal<int>();
         final log = <String>[];
@@ -53,7 +53,7 @@ void main() {
 
     test(
       'WorldEventBus flushes queued events at end of World.updateTree and '
-      'detaches HasEventBusSubscriptions on remove (#9)',
+      'detaches HasEventBusSubscriptions on remove',
       () async {
         final game = FlameGame()..onGameResize(Vector2(400, 300));
         await game.start();
@@ -93,7 +93,7 @@ void main() {
 
     test(
       'Hierarchical StateMachine (HFSM) LCA enter/exit, guarded dispatch & '
-      'pushState/popState (#10)',
+      'pushState/popState',
       () {
         final trace = <String>[];
         var stamina = 0;
@@ -184,8 +184,7 @@ void main() {
     );
 
     test(
-      'WorldQuery maintains incremental O(1) result sets on World add/remove '
-      '(#12)',
+      'WorldQuery maintains incremental O(1) result sets on World add/remove',
       () async {
         final world = World();
         final game = FlameGame(world: world)..onGameResize(Vector2(300, 300));
@@ -226,7 +225,7 @@ void main() {
 
     test(
       'PrefabRegistry instantiates merged overrides and StateSnapshotStore '
-      'validates CRC32 + runs SaveMigrationChain (#13)',
+      'validates CRC32 + runs SaveMigrationChain',
       () {
         final prefabs = PrefabRegistry()
           ..register<_TaggedActor>(

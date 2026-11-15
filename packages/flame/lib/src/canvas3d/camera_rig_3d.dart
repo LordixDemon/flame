@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 import 'dart:ui';
 
-import 'package:flame/src/canvas3d/raycast_3d.dart';
+import 'package:flame/src/canvas3d/primitives_3d.dart';
 
 /// 3D projection mode for [CameraRig3D].
 enum CameraProjectionMode3D() {

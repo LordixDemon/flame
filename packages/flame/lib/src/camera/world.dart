@@ -5,7 +5,7 @@ import 'package:flame/src/camera/render_pass.dart';
 import 'package:flame/src/camera/world_spatial_index.dart';
 import 'package:flame/src/canvas3d/spatial_hit_testing_3d.dart';
 import 'package:flame/src/components/core/component.dart';
-import 'package:flame/src/components/core/event_bus.dart';
+import 'package:flame/src/components/core/world_event_bus.dart';
 import 'package:flame/src/components/core/world_query.dart';
 import 'package:flame/src/components/mixins/coordinate_transform.dart';
 import 'package:flame/src/components/mixins/ignore_events.dart';

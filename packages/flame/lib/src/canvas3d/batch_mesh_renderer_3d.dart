@@ -3,86 +3,18 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flame/src/canvas3d/camera_rig_3d.dart';
-import 'package:flame/src/canvas3d/deformable_mesh_3d.dart';
+import 'package:flame/src/canvas3d/lighting_kernel_3d.dart';
 import 'package:flame/src/canvas3d/matcap_shader_3d.dart';
 import 'package:flame/src/canvas3d/material_3d.dart';
 import 'package:flame/src/canvas3d/mesh_3d.dart';
 import 'package:flame/src/canvas3d/mesh_lod_chain_3d.dart';
+import 'package:flame/src/canvas3d/morph_mesh_3d.dart';
+import 'package:flame/src/canvas3d/primitives_3d.dart';
 import 'package:flame/src/canvas3d/scene_environment_3d.dart';
+import 'package:flame/src/canvas3d/skinned_mesh_3d.dart';
 import 'package:flame/src/canvas3d/static_mesh_chunk_3d.dart';
 import 'package:flame/src/game/graphics_settings.dart';
 import 'package:flutter/painting.dart';
-
-/// Hemisphere + directional sun lighting configuration for
-/// [BatchMeshRenderer3D].
-class DirectionalLight3D({
-  double sunDirX = -0.45,
-  double sunDirY = -0.35,
-  double sunDirZ = 0.82,
-  var Color sunColor = const Color(0xFFFFF4DC),
-  var Color skyColor = const Color(0xFFD6ECFF),
-  var Color groundColor = const Color(0xFF6D5D53),
-  var double ambientIntensity = 0.44,
-  var double diffuseIntensity = 0.66,
-  var double rimIntensity = 0.16,
-}) {
-  this {
-    setDirection(sunDirX, sunDirY, sunDirZ);
-  }
-
-  double _lx = -0.45;
-  double _ly = -0.35;
-  double _lz = 0.82;
-
-  /// Unit vector X pointing towards the directional light source.
-  double get dirX => _lx;
-
-  /// Unit vector Y pointing towards the directional light source.
-  double get dirY => _ly;
-
-  /// Unit vector Z pointing towards the directional light source.
-  double get dirZ => _lz;
-
-  /// Normalizes and updates the directional light vector `(x, y, z)`.
-  void setDirection(double x, double y, double z) {
-    final len = math.sqrt(x * x + y * y + z * z);
-    if (len > 1e-7) {
-      _lx = x / len;
-      _ly = y / len;
-      _lz = z / len;
-    }
-  }
-
-  /// Computes a fast 31-bit state signature across light direction, colors, and
-  /// intensities so [StaticMeshChunk3D] automatically invalidates on lighting
-  /// changes.
-  int computeSignature() {
-    var h = 17;
-    h = 0x1fffffff & (h * 31 + (_lx * 10000).round());
-    h = 0x1fffffff & (h * 31 + (_ly * 10000).round());
-    h = 0x1fffffff & (h * 31 + (_lz * 10000).round());
-    h = 0x1fffffff & (h * 31 + sunColor.toARGB32());
-    h = 0x1fffffff & (h * 31 + skyColor.toARGB32());
-    h = 0x1fffffff & (h * 31 + groundColor.toARGB32());
-    h = 0x1fffffff & (h * 31 + (ambientIntensity * 1000).round());
-    h = 0x1fffffff & (h * 31 + (diffuseIntensity * 1000).round());
-    h = 0x1fffffff & (h * 31 + (rimIntensity * 1000).round());
-    return h;
-  }
-}
-
-/// Triangle depth representative mode used by [BatchMeshRenderer3D] when
-/// sorting triangles back-to-front.
-enum TriangleDepthMode3D() {
-  /// Mean depth of the three vertices (`(d0 + d1 + d2) / 3`).
-  centroid,
-
-  /// Closest vertex to the camera (`max(d0, d1, d2)`).
-  nearestVertex,
-
-  /// Farthest vertex from the camera (`min(d0, d1, d2)`).
-  farthestVertex,
-}
 
 /// Zero-allocation Struct-of-Arrays 3D mesh batcher onto Flutter's standard
 /// `Canvas` (`Canvas.drawVertices`).
@@ -239,18 +171,8 @@ class BatchMeshRenderer3D({
     return out;
   }
 
-  int _internMaterial(Material3D? mat) {
-    if (mat == null) {
-      return 0;
-    }
-    for (var i = 1; i < _materials.length; i++) {
-      if (_materials[i] == mat) {
-        return i;
-      }
-    }
-    _materials.add(mat);
-    return _materials.length - 1;
-  }
+  int _internMaterial(Material3D? mat) =>
+      LightingKernel3D.internMaterial(_materials, mat);
 
   void _ensureVertexCapacity(int needed) {
     if (needed <= _vertX.length) {
@@ -889,56 +811,23 @@ class BatchMeshRenderer3D({
     final baseVertex = _vertCount;
     _ensureVertexCapacity(baseVertex + vCount);
 
-    final double r00;
-    final double r01;
-    final double r02;
-    final double r10;
-    final double r11;
-    final double r12;
-    final double r20;
-    final double r21;
-    final double r22;
-
-    if (rotationMatrix3 != null && rotationMatrix3.length >= 9) {
-      r00 = rotationMatrix3[0];
-      r01 = rotationMatrix3[1];
-      r02 = rotationMatrix3[2];
-      r10 = rotationMatrix3[3];
-      r11 = rotationMatrix3[4];
-      r12 = rotationMatrix3[5];
-      r20 = rotationMatrix3[6];
-      r21 = rotationMatrix3[7];
-      r22 = rotationMatrix3[8];
-    } else if (rotationQuat != null) {
-      final (qx, qy, qz, qw) = rotationQuat;
-      Quaternion3D.writeMatrix3(qx, qy, qz, qw, _rotScratch);
-      r00 = _rotScratch[0];
-      r01 = _rotScratch[1];
-      r02 = _rotScratch[2];
-      r10 = _rotScratch[3];
-      r11 = _rotScratch[4];
-      r12 = _rotScratch[5];
-      r20 = _rotScratch[6];
-      r21 = _rotScratch[7];
-      r22 = _rotScratch[8];
-    } else {
-      final cy = math.cos(yawRad);
-      final sy = math.sin(yawRad);
-      final cp = math.cos(pitchRad);
-      final sp = math.sin(pitchRad);
-      final cr = math.cos(rollRad);
-      final sr = math.sin(rollRad);
-
-      r00 = cy * cp;
-      r01 = cy * sp * sr - sy * cr;
-      r02 = cy * sp * cr + sy * sr;
-      r10 = sy * cp;
-      r11 = sy * sp * sr + cy * cr;
-      r12 = sy * sp * cr - cy * sr;
-      r20 = -sp;
-      r21 = cp * sr;
-      r22 = cp * cr;
-    }
+    LightingKernel3D.resolveRotationMatrix3(
+      out: _rotScratch,
+      rotationMatrix3: rotationMatrix3,
+      rotationQuat: rotationQuat,
+      yawRad: yawRad,
+      pitchRad: pitchRad,
+      rollRad: rollRad,
+    );
+    final r00 = _rotScratch[0];
+    final r01 = _rotScratch[1];
+    final r02 = _rotScratch[2];
+    final r10 = _rotScratch[3];
+    final r11 = _rotScratch[4];
+    final r12 = _rotScratch[5];
+    final r20 = _rotScratch[6];
+    final r21 = _rotScratch[7];
+    final r22 = _rotScratch[8];
 
     final invSx = scaleX.abs() > 1e-6 ? 1.0 / scaleX : 1.0;
     final invSy = scaleY.abs() > 1e-6 ? 1.0 / scaleY : 1.0;
@@ -948,25 +837,10 @@ class BatchMeshRenderer3D({
     final tintG = tint.g;
     final tintB = tint.b;
     final tintA = tint.a * clampedOpacity;
-
-    final sunR = light.sunColor.r;
-    final sunG = light.sunColor.g;
-    final sunB = light.sunColor.b;
-    final skyR = light.skyColor.r;
-    final skyG = light.skyColor.g;
-    final skyB = light.skyColor.b;
-    final gndR = light.groundColor.r;
-    final gndG = light.groundColor.g;
-    final gndB = light.groundColor.b;
-
-    final ambInt = light.ambientIntensity;
-    final difInt = light.diffuseIntensity;
-    final rimInt = light.rimIntensity;
     final lx = light.dirX;
     final ly = light.dirY;
     final lz = light.dirZ;
 
-    const matCapRes = MatCapShader3D.resolution;
     final isPerspective =
         camera.projectionMode == CameraProjectionMode3D.perspective;
     final nearClip = camera.nearClip;
@@ -980,6 +854,8 @@ class BatchMeshRenderer3D({
       final rx = r00 * lxPos + r01 * lyPos + r02 * lzPos;
       final ry = r10 * lxPos + r11 * lyPos + r12 * lzPos;
       final rz = r20 * lxPos + r21 * lyPos + r22 * lzPos + worldZ;
+      final wx = worldX + rx;
+      final wy = worldY + ry;
 
       final double sx;
       final double sy;
@@ -987,11 +863,7 @@ class BatchMeshRenderer3D({
       var camY = 0.0;
       var camZ = nearClip;
       if (isPerspective) {
-        (camX, camY, camZ) = camera.worldToCameraSpace(
-          worldX + rx,
-          worldY + ry,
-          rz,
-        );
+        (camX, camY, camZ) = camera.worldToCameraSpace(wx, wy, rz);
         if (camZ >= nearClip) {
           (sx, sy) = camera.projectCameraSpace(
             camX,
@@ -1013,113 +885,7 @@ class BatchMeshRenderer3D({
         );
       }
 
-      final snx = normals[pIdx] * invSx;
-      final sny = normals[pIdx + 1] * invSy;
-      final snz = normals[pIdx + 2] * invSz;
-      var wnx = r00 * snx + r01 * sny + r02 * snz;
-      var wny = r10 * snx + r11 * sny + r12 * snz;
-      var wnz = r20 * snx + r21 * sny + r22 * snz;
-      final nLen = math.sqrt(wnx * wnx + wny * wny + wnz * wnz);
-      if (nLen > 1e-7) {
-        final invN = 1.0 / nLen;
-        wnx *= invN;
-        wny *= invN;
-        wnz *= invN;
-      }
-
-      final (vx, vy, vz) = camera.worldNormalToView(wnx, wny, wnz);
-      final u = (vx * 0.48 + 0.5).clamp(0.02, 0.98) * matCapRes;
-      final texV = (0.5 - vy * 0.48).clamp(0.02, 0.98) * matCapRes;
-      final double meshTexU;
-      final double meshTexV;
-      final int texPixelSpace;
-      if (uvs != null) {
-        final uvBase = v * 2;
-        if (uvRectPx != null) {
-          meshTexU = uvRectPx.left + uvs[uvBase] * uvRectPx.width;
-          meshTexV = uvRectPx.top + uvs[uvBase + 1] * uvRectPx.height;
-          texPixelSpace = 1;
-        } else {
-          meshTexU = uvs[uvBase];
-          meshTexV = uvs[uvBase + 1];
-          texPixelSpace = 0;
-        }
-      } else {
-        meshTexU = u;
-        meshTexV = texV;
-        texPixelSpace = 1;
-      }
-
-      final hemiMix = (wnz * 0.5 + 0.5).clamp(0.0, 1.0);
-      final ambR = (gndR + (skyR - gndR) * hemiMix) * ambInt;
-      final ambG = (gndG + (skyG - gndG) * hemiMix) * ambInt;
-      final ambB = (gndB + (skyB - gndB) * hemiMix) * ambInt;
-
-      final nDotL = math.max(0.0, wnx * lx + wny * ly + wnz * lz);
-      final clampedVz = vz.clamp(0.0, 1.0);
-      final rim = math.pow(1.0 - clampedVz, 2.2) * rimInt;
-      final fresnel = (rimColor != null && rimHighlightIntensity > 0.0)
-          ? (1.0 - clampedVz) * (1.0 - clampedVz) * rimHighlightIntensity
-          : 0.0;
-      final ao = ambientOcclusion != null ? ambientOcclusion[v] : 1.0;
-
-      var baseR = tintR;
-      var baseG = tintG;
-      var baseB = tintB;
-      var baseA = tintA;
-      if (vertexColors != null) {
-        final vc = vertexColors[v];
-        baseA *= ((vc >>> 24) & 0xFF) / 255.0;
-        baseR *= ((vc >>> 16) & 0xFF) / 255.0;
-        baseG *= ((vc >>> 8) & 0xFF) / 0xFF;
-        baseB *= (vc & 0xFF) / 255.0;
-      }
-
-      final addRimR = fresnel > 0.0 ? rimColor!.r * fresnel : 0.0;
-      final addRimG = fresnel > 0.0 ? rimColor!.g * fresnel : 0.0;
-      final addRimB = fresnel > 0.0 ? rimColor!.b * fresnel : 0.0;
-
-      final env = environment;
-      var ptR = 0.0;
-      var ptG = 0.0;
-      var ptB = 0.0;
-      if (env != null && env.pointLightCount > 0) {
-        (ptR, ptG, ptB) = env.samplePointLights(
-          wx: worldX + rx,
-          wy: worldY + ry,
-          wz: rz,
-          nx: wnx,
-          ny: wny,
-          nz: wnz,
-        );
-      }
-
-      var lr =
-          (baseR * (ambR * ao + sunR * nDotL * difInt + ptR + emissive) +
-                  rim * skyR +
-                  addRimR)
-              .clamp(0.0, 1.0);
-      var lg =
-          (baseG * (ambG * ao + sunG * nDotL * difInt + ptG + emissive) +
-                  rim * skyG +
-                  addRimG)
-              .clamp(0.0, 1.0);
-      var lb =
-          (baseB * (ambB * ao + sunB * nDotL * difInt + ptB + emissive) +
-                  rim * skyB +
-                  addRimB)
-              .clamp(0.0, 1.0);
-
-      final vDepth = camera.viewDepth(worldX + rx, worldY + ry, rz);
-      if (env != null && env.fogEnabled) {
-        final fog = env.computeFogFactor(viewDepth: vDepth, worldZ: rz);
-        if (fog > 0.0) {
-          lr += (env.fogColor.r - lr) * fog;
-          lg += (env.fogColor.g - lg) * fog;
-          lb += (env.fogColor.b - lb) * fog;
-        }
-      }
-
+      final vDepth = camera.viewDepth(wx, wy, rz);
       final outSlot = baseVertex + v;
       _vertX[outSlot] = sx;
       _vertY[outSlot] = sy;
@@ -1129,16 +895,40 @@ class BatchMeshRenderer3D({
         _vertCamY[outSlot] = camY;
         _vertCamZ[outSlot] = camZ;
       }
-      _vertU[outSlot] = u;
-      _vertV[outSlot] = texV;
-      _vertTexU[outSlot] = meshTexU;
-      _vertTexV[outSlot] = meshTexV;
-      _vertTexPixelSpace[outSlot] = texPixelSpace;
-      _vertColor[outSlot] =
-          ((baseA * 255.0).round().clamp(0, 255) << 24) |
-          ((lr * 255.0).round().clamp(0, 255) << 16) |
-          ((lg * 255.0).round().clamp(0, 255) << 8) |
-          (lb * 255.0).round().clamp(0, 255);
+
+      LightingKernel3D.shadeVertexInto(
+        vertexIndex: v,
+        outSlot: outSlot,
+        normals: normals,
+        rot: _rotScratch,
+        invSx: invSx,
+        invSy: invSy,
+        invSz: invSz,
+        worldPosX: wx,
+        worldPosY: wy,
+        worldPosZ: rz,
+        viewDepth: vDepth,
+        camera: camera,
+        light: light,
+        environment: environment,
+        tintR: tintR,
+        tintG: tintG,
+        tintB: tintB,
+        tintA: tintA,
+        emissive: emissive,
+        outVertU: _vertU,
+        outVertV: _vertV,
+        outVertTexU: _vertTexU,
+        outVertTexV: _vertTexV,
+        outVertTexPixelSpace: _vertTexPixelSpace,
+        outVertColor: _vertColor,
+        uvs: uvs,
+        uvRectPx: uvRectPx,
+        ambientOcclusion: ambientOcclusion,
+        vertexColors: vertexColors,
+        rimColor: rimColor,
+        rimHighlightIntensity: rimHighlightIntensity,
+      );
     }
     _vertCount += vCount;
 

@@ -129,7 +129,7 @@ void main() {
 
     test(
       'PostProcessPipeline bypasses with 0 toImageSync when stages inactive '
-      'and auto-syncs DPR (#8)',
+      'and auto-syncs DPR',
       () async {
         final game = FlameGame()
           ..collectRenderTelemetry = true
@@ -189,7 +189,7 @@ void main() {
 
     test(
       'Component.minQualityTier, HasGraphicsAdaptation, particle density & '
-      'Shadow3DDecorator gating (#9)',
+      'Shadow3DDecorator gating',
       () async {
         final game = FlameGame()
           ..collectRenderTelemetry = true
@@ -248,7 +248,7 @@ void main() {
 
     testWidgets(
       'Game.backgroundColorValue updates ColoredBox with 0 GameWidget rebuilds '
-      'and SceneResourceBudget evicts LRU surfaces (#10)',
+      'and SceneResourceBudget evicts LRU surfaces',
       (tester) async {
         final game = FlameGame();
         await tester.pumpWidget(GameWidget(game: game));

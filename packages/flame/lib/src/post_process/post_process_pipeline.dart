@@ -4,7 +4,9 @@ import 'dart:ui' hide Image;
 
 import 'package:flame/components.dart';
 import 'package:flame/game.dart';
-import 'package:flame/post_process.dart';
+import 'package:flame/src/post_process/post_process.dart';
+import 'package:flame/src/post_process/post_process_component.dart';
+import 'package:flame/src/post_process/standard_effects.dart';
 
 /// A single named, quality-gated stage inside a [PostProcessPipeline].
 class PostProcessStage({

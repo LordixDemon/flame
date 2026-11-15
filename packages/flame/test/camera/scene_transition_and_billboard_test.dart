@@ -73,7 +73,7 @@ Future<Uint8List> _readCenterPixel(
 }
 
 void main() {
-  group('SceneTransition, WorldRoute & Layer dispose (#5)', () {
+  group('SceneTransition, WorldRoute & Layer dispose', () {
     test('PreRenderedLayer reRender and dispose release retained Picture', () {
       final layer = _TestPreRenderedLayer();
       expect(layer.drawCount, 1);
@@ -187,7 +187,7 @@ void main() {
     );
   });
 
-  group('CameraBillboard & ViewportClampedPin (#6)', () {
+  group('CameraBillboard & ViewportClampedPin', () {
     testWidgets(
       'stabilizes pixel width across zoom and clamps into safe viewport',
       (tester) async {

@@ -25,7 +25,7 @@ void main() {
   group('AssetScope, DynamicSpriteAtlas, MipChainImage & AsyncStreamer', () {
     test(
       'AssetScope tracks progress and preserves shared textures until last '
-      'retaining scope disposes (#1)',
+      'retaining scope disposes',
       () async {
         final images = Images();
         final loadOrder = <String>[];
@@ -89,7 +89,7 @@ void main() {
 
     test(
       'MaxRectsBinPacker & DynamicSpriteAtlas pack images and procedural '
-      'icons with border extrusion (#2)',
+      'icons with border extrusion',
       () {
         final srcA = _makeTestImageSync(24, 24, const Color(0xFFE91E63));
         final srcB = _makeTestImageSync(32, 16, const Color(0xFF2196F3));
@@ -132,7 +132,7 @@ void main() {
 
     test(
       'MipChainImage selects crisp downsampled LOD levels & '
-      'ResolutionVariantResolver maps quality tiers (#3)',
+      'ResolutionVariantResolver maps quality tiers',
       () {
         final base = _makeTestImageSync(128, 128, const Color(0xFF8BC34A));
         final mip = MipChainImage.generateSync(
@@ -177,7 +177,7 @@ void main() {
 
     test(
       'AsyncAssetStreamer parses large JSON on background isolate and honors '
-      'FrameBudgetScheduler + StreamCancellationToken (#4)',
+      'FrameBudgetScheduler + StreamCancellationToken',
       () async {
         final scheduler = FrameBudgetScheduler();
         final streamer = AsyncAssetStreamer(scheduler: scheduler);

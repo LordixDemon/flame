@@ -1,7 +1,7 @@
 import 'dart:ui' as ui;
 
 import 'package:flame/components.dart';
-import 'package:flame/post_process.dart';
+import 'package:flame/src/post_process/post_process.dart';
 import 'package:flutter/painting.dart';
 
 /// Zero-asset GPU Contrast-Adaptive Sharpening (CAS) helper and [PostProcess].

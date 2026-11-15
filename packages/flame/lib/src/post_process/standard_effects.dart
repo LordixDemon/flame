@@ -2,7 +2,7 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flame/components.dart';
-import 'package:flame/post_process.dart';
+import 'package:flame/src/post_process/post_process.dart';
 import 'package:flame/src/rendering/decorator.dart';
 import 'package:flutter/painting.dart';
 

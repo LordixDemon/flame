@@ -6,6 +6,11 @@ library;
 
 export 'src/tilemap/autotile_composer.dart';
 export 'src/tilemap/chunked_tilemap_component.dart';
+export 'src/tilemap/connected_world_streamer.dart';
+export 'src/tilemap/data_table_registry.dart';
+export 'src/tilemap/roof_cutaway_controller.dart';
+export 'src/tilemap/room_camera_bounds.dart';
+export 'src/tilemap/tile_map_document.dart';
 export 'src/tilemap/tile_passage_grid.dart';
-export 'src/tilemap/tilemap_and_database_loader.dart';
-export 'src/tilemap/world_portal_streamer.dart';
+export 'src/tilemap/tileset_atlas.dart';
+export 'src/tilemap/y_sort_layer_component.dart';

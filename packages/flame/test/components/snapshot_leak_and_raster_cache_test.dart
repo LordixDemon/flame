@@ -36,7 +36,7 @@ void main() {
     registerFallbackValue(Rect.zero);
   });
 
-  group('Snapshot GPU leak fixes & SnapshotCacheMode.rasterImage (#11)', () {
+  group('Snapshot GPU leak fixes & SnapshotCacheMode.rasterImage', () {
     testWithFlameGame(
       'deterministically disposes Picture and Image across clearSnapshot, '
       'retake, transform snapshotAsImage, and onRemove',

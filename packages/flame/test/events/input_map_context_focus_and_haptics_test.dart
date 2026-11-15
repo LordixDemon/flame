@@ -24,7 +24,7 @@ void main() {
   group('InputMap, InputContextStack, FocusNavigationGroup & HapticEngine', () {
     test(
       'InputMap tracks key chords, gamepad axes, edge transitions & JSON '
-      'persistence (#5)',
+      'persistence',
       () {
         final map = InputMap()
           ..bind(
@@ -115,7 +115,7 @@ void main() {
 
     test(
       'InputContextStack blocks lower modal actions & spotlights tutorial '
-      'targets, plus InputBuffer grace window (#6)',
+      'targets, plus InputBuffer grace window',
       () {
         final allowedTile = PositionComponent();
         final blockedTile = PositionComponent();
@@ -158,7 +158,7 @@ void main() {
 
     test(
       'FocusNavigationGroup navigates 2D spatial cones and wraps sequential '
-      'Tab order (#7)',
+      'Tab order',
       () {
         final topLeft = _NavButton(
           label: 'tl',
@@ -198,7 +198,7 @@ void main() {
 
     test(
       'HapticEngine coalesces same-frame patterns to highest rank and enforces '
-      'cooldown (#8)',
+      'cooldown',
       () {
         final backend = RecordingHapticBackend();
         final haptics = HapticEngine(

@@ -42,8 +42,9 @@ export 'src/events/hardware_keyboard_detector.dart'
     show HardwareKeyboardDetector;
 export 'src/events/input_action_map.dart'
     show ActionBinding, InputAxis2D, InputDeviceKind, InputMap;
+export 'src/events/input_buffer.dart' show InputBuffer;
 export 'src/events/input_context_stack.dart'
-    show InputBuffer, InputContext, InputContextStack;
+    show InputContext, InputContextStack;
 export 'src/events/input_hit_filter.dart'
     show DragDropEvent, DropTargetCallbacks, InputHitFilter;
 export 'src/events/messages/displacement_event.dart' show DisplacementEvent;

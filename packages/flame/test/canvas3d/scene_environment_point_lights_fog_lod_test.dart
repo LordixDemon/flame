@@ -8,7 +8,7 @@ void main() {
   group('SceneEnvironment3D, PointLight3D, Fog & 3D LOD (#18,#20)', () {
     test(
       'MeshLodChain3D selects progressive tiers and BatchMeshRenderer3D culls '
-      'micro-triangles (#18)',
+      'micro-triangles',
       () {
         final camera = CameraRig3D();
         final high = Mesh3D.uvSphere(radius: 0.6);
@@ -65,7 +65,7 @@ void main() {
 
     test(
       'SceneEnvironment3D SoA PointLight3D, atmospheric fog, 3D frustum cull '
-      'and StaticMeshChunk3D spatial light invalidation (#20)',
+      'and StaticMeshChunk3D spatial light invalidation',
       () {
         final camera = CameraRig3D();
         final env = SceneEnvironment3D(

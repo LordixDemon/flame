@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flame/src/camera/world.dart';
 import 'package:flame/src/canvas3d/mesh_3d.dart';
+import 'package:flame/src/canvas3d/primitives_3d.dart';
 import 'package:flame/src/canvas3d/raycast_3d.dart';
 import 'package:flame/src/components/core/component.dart';
 import 'package:flame/src/extensions/vector2.dart';
@@ -51,14 +52,10 @@ mixin SpatialHitbox3D on Component {
   @mustCallSuper
   void onMount() {
     super.onMount();
-    var cursor = parent;
-    while (cursor != null) {
-      if (cursor is World) {
-        _registeredSpatialWorld = cursor;
-        cursor.registerSpatialHitbox3D(this);
-        break;
-      }
-      cursor = cursor.parent;
+    final world = enclosingWorld();
+    if (world != null) {
+      _registeredSpatialWorld = world;
+      world.registerSpatialHitbox3D(this);
     }
   }
 

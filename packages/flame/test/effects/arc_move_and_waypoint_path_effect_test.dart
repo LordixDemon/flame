@@ -21,7 +21,7 @@ class _ElevatedToken({super.position})
 }
 
 void main() {
-  group('ArcMoveEffect & WaypointPathEffect (#7)', () {
+  group('ArcMoveEffect & WaypointPathEffect', () {
     test(
       'ArcMoveEffect separates ground position and elevation on target',
       () {

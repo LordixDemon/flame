@@ -6,7 +6,7 @@ void main() {
   group('AudioMixer, DuckingRule, AdaptiveMusic, SoundCue & SpatialAudio', () {
     test(
       'AudioMixer routes hierarchical buses, ducks music under voice, and '
-      'persists JSON settings (#26)',
+      'persists JSON settings',
       () {
         final backend = InMemoryAudioBackend();
         final mixer = AudioMixer(backend: backend);
@@ -48,7 +48,7 @@ void main() {
 
     test(
       'AdaptiveMusicController crossfades tracks & blends vertical intensity '
-      'stems (#26)',
+      'stems',
       () {
         final backend = InMemoryAudioBackend();
         final mixer = AudioMixer(
@@ -94,7 +94,7 @@ void main() {
 
     test(
       'SoundCue enforces cooldown & voice stealing, and SpatialAudioListener2D '
-      'computes stereo pan & distance rolloff (#27)',
+      'computes stereo pan & distance rolloff',
       () {
         final mixer = AudioMixer(installDefaultVoiceDucking: false);
         final rng = SeededRng(12345);

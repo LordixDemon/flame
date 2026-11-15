@@ -28,7 +28,7 @@ class _SpringBodyComponent() extends Component with HasFixedUpdate {
 class _TimeScaledFixedGame() extends FlameGame with HasTimeScale;
 
 void main() {
-  group('Adaptive Frame Pacing (#5)', () {
+  group('Adaptive Frame Pacing', () {
     testWidgets(
       'GameLoop throttles ticks according to minFrameIntervalGetter',
       (tester) async {
@@ -110,7 +110,7 @@ void main() {
     );
   });
 
-  group('Deterministic Fixed-Substep Simulation (#7)', () {
+  group('Deterministic Fixed-Substep Simulation', () {
     test(
       '60Hz and 120Hz frame rates produce identical fixedUpdate physics state',
       () async {

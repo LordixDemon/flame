@@ -1,8 +1,8 @@
 import 'package:flame/components.dart';
 import 'package:flame/extensions.dart';
-import 'package:flame/post_process.dart';
 import 'package:flame/src/camera/camera_component.dart';
 import 'package:flame/src/game/notifying_vector2.dart';
+import 'package:flame/src/post_process/post_process.dart';
 import 'package:meta/meta.dart';
 
 /// A [PositionComponent] that applies a post-processing effect to its children.

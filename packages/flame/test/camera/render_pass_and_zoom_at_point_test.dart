@@ -28,7 +28,7 @@ class _PlainFloorComponent(final List<String> log) extends Component {
 }
 
 void main() {
-  group('Multi-Pass World Rendering (#1)', () {
+  group('Multi-Pass World Rendering', () {
     testWithFlameGame(
       'groups MultiPassComponent draws by pass across components and invokes '
       'World hooks',

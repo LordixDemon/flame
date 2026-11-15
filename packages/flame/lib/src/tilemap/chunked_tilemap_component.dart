@@ -2,98 +2,12 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:flame/components.dart';
+import 'package:flame/src/camera/camera_component.dart';
+import 'package:flame/src/components/mixins/has_visibility.dart';
+import 'package:flame/src/components/position_component.dart';
 import 'package:flame/src/game/game.dart';
 import 'package:flame/src/tilemap/autotile_composer.dart';
-
-/// Tileset texture atlas mapping 1-based `TileGid.tileId` values to source
-/// pixel rectangles and optional RPG Maker `A1–A4` [AutotileDefinition] blocks.
-class TilesetAtlas({
-  required this.image,
-  required this.tilePxWidth,
-  required this.tilePxHeight,
-  this.firstGid = 1,
-  int? explicitColumns,
-  this.marginPx = 0,
-  this.spacingPx = 0,
-  Map<int, AutotileDefinition>? autotiles,
-}) {
-  final ui.Image image;
-  final int tilePxWidth;
-  final int tilePxHeight;
-  final int firstGid;
-  final int marginPx;
-  final int spacingPx;
-
-  final int columns =
-      explicitColumns ??
-      math.max(
-        1,
-        (image.width - marginPx * 2 + spacingPx) ~/ (tilePxWidth + spacingPx),
-      );
-
-  final Map<int, AutotileDefinition> _autotiles = autotiles != null
-      ? Map<int, AutotileDefinition>.of(autotiles)
-      : <int, AutotileDefinition>{};
-
-  late final ui.ImageShader _shader = ui.ImageShader(
-    image,
-    ui.TileMode.clamp,
-    ui.TileMode.clamp,
-    Float64List.fromList(const <double>[
-      1,
-      0,
-      0,
-      0,
-      0,
-      1,
-      0,
-      0,
-      0,
-      0,
-      1,
-      0,
-      0,
-      0,
-      0,
-      1,
-    ]),
-  );
-
-  /// Registers or replaces an [AutotileDefinition] for `def.tileId`.
-  void registerAutotile(AutotileDefinition def) {
-    _autotiles[def.tileId] = def;
-  }
-
-  /// Looks up an [AutotileDefinition] by `tileId`, or `null` for plain tiles.
-  AutotileDefinition? autotileFor(int tileId) => _autotiles[tileId];
-
-  /// Computes the source atlas [ui.Rect] in pixels for a plain non-autotile
-  /// [tileId].
-  ui.Rect sourceRectForTileId(int tileId) {
-    final local = math.max(0, tileId - firstGid);
-    final col = local % columns;
-    final row = local ~/ columns;
-    final x = marginPx + col * (tilePxWidth + spacingPx);
-    final y = marginPx + row * (tilePxHeight + spacingPx);
-    return ui.Rect.fromLTWH(
-      x.toDouble(),
-      y.toDouble(),
-      tilePxWidth.toDouble(),
-      tilePxHeight.toDouble(),
-    );
-  }
-
-  /// Shared clamped `ImageShader` used when a chunk contains mirrored (`flipH`
-  /// xor `flipV`) tiles rendered via `Vertices.raw`.
-  ui.ImageShader get shader => _shader;
-
-  /// Disposes the cached shader (does not dispose [image], which is owned by
-  /// `Images` / `AssetScope`).
-  void disposeShader() {
-    _shader.dispose();
-  }
-}
+import 'package:flame/src/tilemap/tileset_atlas.dart';
 
 class _TileChunk() {
   bool dirty = true;
@@ -399,8 +313,6 @@ class ChunkedTilemapComponent({
 
   bool _matchesAutotile(AutotileDefinition def, int col, int row) {
     if (!inBounds(col, row)) {
-      // Out-of-bounds edges seamlessly connect so map borders don't draw ugly
-      // shore outlines along the edge of the screen (standard RPG Maker rule!).
       return true;
     }
     final otherId = TileGid(_cells[row * mapWidth + col]).tileId;
@@ -515,12 +427,10 @@ class ChunkedTilemapComponent({
           continue;
         }
 
-        // Standard single tile (with optional flipH / flipV / quarterTurns):
         final src = tileset.sourceRectForTileId(gid.tileId);
         final isReflected = gid.flipH != gid.flipV;
 
         if (!isReflected && uniformScale) {
-          // Pure rotation (including flipH && flipV == +2 quarterTurns!):
           final turns = (gid.quarterTurns + (gid.flipH ? 2 : 0)) & 0x3;
           final (
             double scos,
@@ -668,7 +578,6 @@ class ChunkedTilemapComponent({
     final v0 = flipV ? src.bottom : src.top;
     final v1 = flipV ? src.top : src.bottom;
 
-    // Corner UVs [TL, TR, BR, BL] before clockwise rotation:
     final corners = <(double, double)>[
       (u0, v0),
       (u1, v0),
@@ -705,61 +614,4 @@ class ChunkedTilemapComponent({
   }
 
   static int _lcm(int a, int b) => (a ~/ _gcd(a, b)) * b;
-}
-
-/// Container that renders its [PositionComponent] children sorted dynamically
-/// by foot baseline (`position.y + ySortBaselineOffset`), breaking ties stably
-/// by `position.x`, so actors walk seamlessly in front of and behind trees,
-/// pillars, fences, and NPCs without mutating `Component.priority` every frame.
-class YSortLayerComponent({
-  super.position,
-  super.size,
-  super.scale,
-  super.angle,
-  super.anchor,
-  super.priority,
-  super.sortKey,
-  super.cameraMask,
-  super.key,
-}) extends PositionComponent with HasVisibility {
-  final List<Component> _drawOrder = <Component>[];
-
-  /// Optional baseline offset map for children whose visual foot is offset from
-  /// `position.y`.
-  final Map<Component, double> baselineOffsets = <Component, double>{};
-
-  double _sortY(Component c) {
-    if (c is PositionComponent) {
-      return c.position.y + (baselineOffsets[c] ?? 0.0);
-    }
-    return baselineOffsets[c] ?? 0.0;
-  }
-
-  double _sortX(Component c) => c is PositionComponent ? c.position.x : 0.0;
-
-  @override
-  void renderTree(ui.Canvas canvas) {
-    if (!isVisible) {
-      return;
-    }
-    decorator.applyChain(
-      (c) {
-        render(c);
-        _drawOrder
-          ..clear()
-          ..addAll(children);
-        _drawOrder.sort((a, b) {
-          final dy = _sortY(a).compareTo(_sortY(b));
-          if (dy != 0) {
-            return dy;
-          }
-          return _sortX(a).compareTo(_sortX(b));
-        });
-        for (var i = 0; i < _drawOrder.length; i++) {
-          _drawOrder[i].renderTree(c);
-        }
-      },
-      canvas,
-    );
-  }
 }

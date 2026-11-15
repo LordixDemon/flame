@@ -2,12 +2,11 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
 
-import 'package:flame/src/canvas3d/batch_mesh_renderer_3d.dart';
 import 'package:flame/src/canvas3d/camera_rig_3d.dart';
-import 'package:flame/src/canvas3d/deformable_mesh_3d.dart';
-import 'package:flame/src/canvas3d/matcap_shader_3d.dart';
+import 'package:flame/src/canvas3d/lighting_kernel_3d.dart';
 import 'package:flame/src/canvas3d/material_3d.dart';
 import 'package:flame/src/canvas3d/mesh_3d.dart';
+import 'package:flame/src/canvas3d/primitives_3d.dart';
 import 'package:flame/src/canvas3d/scene_environment_3d.dart';
 import 'package:flame/src/game/game.dart';
 
@@ -215,18 +214,8 @@ class StaticMeshChunk3D() {
   /// Reads the instance descriptor currently stored at [slot].
   StaticMeshInstance3D instanceAt(int slot) => _instances[slot];
 
-  int _internChunkMaterial(Material3D? mat) {
-    if (mat == null) {
-      return 0;
-    }
-    for (var i = 1; i < _chunkMaterials.length; i++) {
-      if (_chunkMaterials[i] == mat) {
-        return i;
-      }
-    }
-    _chunkMaterials.add(mat);
-    return _chunkMaterials.length - 1;
-  }
+  int _internChunkMaterial(Material3D? mat) =>
+      LightingKernel3D.internMaterial(_chunkMaterials, mat);
 
   /// Deduplicated chunk material table (`index 0` is `null` default material).
   List<Material3D?> get materials => _chunkMaterials;
@@ -646,18 +635,13 @@ class StaticMeshChunk3D() {
     _slotTriActive[slot] = 1;
 
     final mesh = inst.mesh;
-    final quat = inst.rotationQuat;
-    if (quat != null) {
-      final (qx, qy, qz, qw) = quat;
-      Quaternion3D.writeMatrix3(qx, qy, qz, qw, _rotScratch);
-    } else {
-      Quaternion3D.writeEulerMatrix3(
-        yawRad: inst.yawRad,
-        pitchRad: inst.pitchRad,
-        rollRad: inst.rollRad,
-        out: _rotScratch,
-      );
-    }
+    LightingKernel3D.resolveRotationMatrix3(
+      out: _rotScratch,
+      rotationQuat: inst.rotationQuat,
+      yawRad: inst.yawRad,
+      pitchRad: inst.pitchRad,
+      rollRad: inst.rollRad,
+    );
     final r00 = _rotScratch[0];
     final r01 = _rotScratch[1];
     final r02 = _rotScratch[2];
@@ -672,22 +656,9 @@ class StaticMeshChunk3D() {
     final invSy = inst.scaleY.abs() > 1e-6 ? 1.0 / inst.scaleY : 1.0;
     final invSz = inst.scaleZ.abs() > 1e-6 ? 1.0 / inst.scaleZ : 1.0;
 
-    final sunR = light.sunColor.r;
-    final sunG = light.sunColor.g;
-    final sunB = light.sunColor.b;
-    final skyR = light.skyColor.r;
-    final skyG = light.skyColor.g;
-    final skyB = light.skyColor.b;
-    final gndR = light.groundColor.r;
-    final gndG = light.groundColor.g;
-    final gndB = light.groundColor.b;
-    final ambInt = light.ambientIntensity;
-    final difInt = light.diffuseIntensity;
-    final rimInt = light.rimIntensity;
     final lx = light.dirX;
     final ly = light.dirY;
     final lz = light.dirZ;
-    const matCapRes = MatCapShader3D.resolution;
 
     final anchor = camera.gridToScreen(inst.worldX, inst.worldY);
     final positions = mesh.positions;
@@ -701,6 +672,7 @@ class StaticMeshChunk3D() {
     final tintG = inst.tint.g;
     final tintB = inst.tint.b;
     final tintA = inst.tint.a * clampedOpacity;
+    final hasFog = environment != null && environment.fogEnabled;
 
     final vCount = mesh.vertexCount;
     for (var v = 0; v < vCount; v++) {
@@ -714,105 +686,7 @@ class StaticMeshChunk3D() {
       final rz = r20 * lxPos + r21 * lyPos + r22 * lzPos + inst.worldZ;
       final wx = inst.worldX + rx;
       final wy = inst.worldY + ry;
-
-      final snx = normals[pIdx] * invSx;
-      final sny = normals[pIdx + 1] * invSy;
-      final snz = normals[pIdx + 2] * invSz;
-      var wnx = r00 * snx + r01 * sny + r02 * snz;
-      var wny = r10 * snx + r11 * sny + r12 * snz;
-      var wnz = r20 * snx + r21 * sny + r22 * snz;
-      final nLen = math.sqrt(wnx * wnx + wny * wny + wnz * wnz);
-      if (nLen > 1e-7) {
-        final invN = 1.0 / nLen;
-        wnx *= invN;
-        wny *= invN;
-        wnz *= invN;
-      }
-
-      final (vx, vy, vz) = camera.worldNormalToView(wnx, wny, wnz);
-      final u = (vx * 0.48 + 0.5).clamp(0.02, 0.98) * matCapRes;
-      final texV = (0.5 - vy * 0.48).clamp(0.02, 0.98) * matCapRes;
-
-      final double meshTexU;
-      final double meshTexV;
-      final int texPixelSpace;
-      if (meshUvs != null) {
-        final uvBase = v * 2;
-        if (uvRect != null) {
-          meshTexU = uvRect.left + meshUvs[uvBase] * uvRect.width;
-          meshTexV = uvRect.top + meshUvs[uvBase + 1] * uvRect.height;
-          texPixelSpace = 1;
-        } else {
-          meshTexU = meshUvs[uvBase];
-          meshTexV = meshUvs[uvBase + 1];
-          texPixelSpace = 0;
-        }
-      } else {
-        meshTexU = u;
-        meshTexV = texV;
-        texPixelSpace = 1;
-      }
-
-      final hemiMix = (wnz * 0.5 + 0.5).clamp(0.0, 1.0);
-      final ambR = (gndR + (skyR - gndR) * hemiMix) * ambInt;
-      final ambG = (gndG + (skyG - gndG) * hemiMix) * ambInt;
-      final ambB = (gndB + (skyB - gndB) * hemiMix) * ambInt;
-
-      final nDotL = math.max(0.0, wnx * lx + wny * ly + wnz * lz);
-      final rim = math.pow(1.0 - vz.clamp(0.0, 1.0), 2.2) * rimInt;
-      final ao = aoList != null ? aoList[v] : 1.0;
-
-      var baseR = tintR;
-      var baseG = tintG;
-      var baseB = tintB;
-      var baseA = tintA;
-      if (vColors != null) {
-        final vc = vColors[v];
-        baseA *= ((vc >>> 24) & 0xFF) / 255.0;
-        baseR *= ((vc >>> 16) & 0xFF) / 255.0;
-        baseG *= ((vc >>> 8) & 0xFF) / 255.0;
-        baseB *= (vc & 0xFF) / 255.0;
-      }
-
-      var ptR = 0.0;
-      var ptG = 0.0;
-      var ptB = 0.0;
-      if (environment != null && environment.pointLightCount > 0) {
-        (ptR, ptG, ptB) = environment.samplePointLights(
-          wx: wx,
-          wy: wy,
-          wz: rz,
-          nx: wnx,
-          ny: wny,
-          nz: wnz,
-        );
-      }
-
-      var lr =
-          (baseR * (ambR * ao + sunR * nDotL * difInt + ptR + inst.emissive) +
-                  rim * skyR)
-              .clamp(0.0, 1.0);
-      var lg =
-          (baseG * (ambG * ao + sunG * nDotL * difInt + ptG + inst.emissive) +
-                  rim * skyG)
-              .clamp(0.0, 1.0);
-      var lb =
-          (baseB * (ambB * ao + sunB * nDotL * difInt + ptB + inst.emissive) +
-                  rim * skyB)
-              .clamp(0.0, 1.0);
-
-      if (environment != null && environment.fogEnabled) {
-        final vDepth = camera.viewDepth(wx, wy, rz);
-        final fog = environment.computeFogFactor(
-          viewDepth: vDepth,
-          worldZ: rz,
-        );
-        if (fog > 0.0) {
-          lr += (environment.fogColor.r - lr) * fog;
-          lg += (environment.fogColor.g - lg) * fog;
-          lb += (environment.fogColor.b - lb) * fog;
-        }
-      }
+      final vDepth = hasFog ? camera.viewDepth(wx, wy, rz) : 0.0;
 
       final vSlot = baseVert + v;
       _anchorX[vSlot] = anchor.dx;
@@ -822,16 +696,38 @@ class StaticMeshChunk3D() {
       _rz[vSlot] = rz;
       _worldPosX[vSlot] = wx;
       _worldPosY[vSlot] = wy;
-      _vertU[vSlot] = u;
-      _vertV[vSlot] = texV;
-      _vertTexU[vSlot] = meshTexU;
-      _vertTexV[vSlot] = meshTexV;
-      _vertTexPixelSpace[vSlot] = texPixelSpace;
-      _vertColor[vSlot] =
-          ((baseA * 255.0).round().clamp(0, 255) << 24) |
-          ((lr * 255.0).round().clamp(0, 255) << 16) |
-          ((lg * 255.0).round().clamp(0, 255) << 8) |
-          (lb * 255.0).round().clamp(0, 255);
+
+      LightingKernel3D.shadeVertexInto(
+        vertexIndex: v,
+        outSlot: vSlot,
+        normals: normals,
+        rot: _rotScratch,
+        invSx: invSx,
+        invSy: invSy,
+        invSz: invSz,
+        worldPosX: wx,
+        worldPosY: wy,
+        worldPosZ: rz,
+        viewDepth: vDepth,
+        camera: camera,
+        light: light,
+        environment: environment,
+        tintR: tintR,
+        tintG: tintG,
+        tintB: tintB,
+        tintA: tintA,
+        emissive: inst.emissive,
+        outVertU: _vertU,
+        outVertV: _vertV,
+        outVertTexU: _vertTexU,
+        outVertTexV: _vertTexV,
+        outVertTexPixelSpace: _vertTexPixelSpace,
+        outVertColor: _vertColor,
+        uvs: meshUvs,
+        uvRectPx: uvRect,
+        ambientOcclusion: aoList,
+        vertexColors: vColors,
+      );
     }
 
     final matIdx = _internChunkMaterial(inst.material);
@@ -1012,7 +908,7 @@ class StaticMeshChunk3D() {
   }
 
   /// Internal accessor exposing cached UVs/colors/shadow count to
-  /// [BatchMeshRenderer3D].
+  /// `BatchMeshRenderer3D`.
   (
     Float32List u,
     Float32List v,

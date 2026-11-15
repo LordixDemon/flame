@@ -7,7 +7,7 @@ void main() {
   group('Grid Topologies, AutoTileBitmask, Pathfinding & Avoidance', () {
     test(
       'Square, Isometric (with elevation) & HexGridTopology roundtrip '
-      'coordinates and line-of-sight (#18)',
+      'coordinates and line-of-sight',
       () {
         final los = <GridCell>[];
         expect(
@@ -73,7 +73,7 @@ void main() {
 
     test(
       'AStarGridPathfinder routes around walls & respects anti-corner-cutting '
-      'and weights (#19)',
+      'and weights',
       () {
         final astar = AStarGridPathfinder(
           width: 8,
@@ -115,7 +115,7 @@ void main() {
 
     test(
       'GraphPathfinder computes branching exact-step reachability & '
-      'FlowField2D steers around obstacles (#19)',
+      'FlowField2D steers around obstacles',
       () {
         final board = GraphPathfinder<String>()
           ..addDirectedEdge('start', 'fork')
@@ -154,7 +154,7 @@ void main() {
 
     test(
       'FormationSlots & SeparationSteering2D arrange co-located tokens and '
-      'repel overlapping agents (#20)',
+      'repel overlapping agents',
       () {
         final slotA = Vector2.zero();
         final slotB = Vector2.zero();

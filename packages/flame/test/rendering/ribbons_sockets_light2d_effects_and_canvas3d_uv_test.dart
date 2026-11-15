@@ -30,7 +30,7 @@ void main() {
     () {
       test(
         'RibbonTrailComponent, SplineStripMesh2D & VerletRope2D simulate and '
-        'render cleanly (#21)',
+        'render cleanly',
         () {
           final trail =
               RibbonTrailComponent(
@@ -86,7 +86,7 @@ void main() {
 
       test(
         'SpriteAnimationTicker frame events, AttachmentSocket2D, SpringBone2D '
-        '& SpringBone3D + AnimationStateTree one-shot return (#22)',
+        '& SpringBone3D + AnimationStateTree one-shot return',
         () {
           final img = _makeTinyImageSync(16, 16, const Color(0xFFFFFFFF));
           try {
@@ -155,7 +155,7 @@ void main() {
 
       test(
         'Light2DLayer renders PointLight2D, SpotLight2D & extruded '
-        'ShadowOccluder2D quads (#23)',
+        'ShadowOccluder2D quads',
         () {
           final layer = Light2DLayer(
             bounds: const Rect.fromLTWH(0, 0, 400, 300),
@@ -183,7 +183,7 @@ void main() {
 
       test(
         'Standard GPU PostProcess effects & OutlineDecorator execute cleanly '
-        'without external .frag assets (#24)',
+        'without external .frag assets',
         () async {
           final game = FlameGame()..onGameResize(Vector2(320, 240));
           final box = RectangleComponent(
@@ -231,7 +231,7 @@ void main() {
 
       test(
         'Canvas3D Mesh3D UV mapping, Node3D hierarchy & Decal3D batch into '
-        'BatchMeshRenderer3D (#25)',
+        'BatchMeshRenderer3D',
         () {
           final tex = _makeTinyImageSync(64, 64, const Color(0xFF4FC3F7));
           try {

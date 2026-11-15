@@ -3,10 +3,13 @@ import 'dart:math' as math;
 import 'dart:ui' as ui show Image;
 import 'dart:ui' hide Image;
 
-import 'package:flame/components.dart';
-import 'package:flame/post_process.dart';
+import 'package:flame/src/camera/camera_component.dart';
+import 'package:flame/src/camera/render_pass.dart';
+import 'package:flame/src/camera/world.dart';
+import 'package:flame/src/components/core/component.dart';
 import 'package:flame/src/game/telemetry_canvas.dart';
 import 'package:flutter/foundation.dart';
+import 'package:vector_math/vector_math.dart';
 
 /// A way to apply effects to a whole component tree.
 ///
@@ -19,10 +22,10 @@ import 'package:flutter/foundation.dart';
 /// to render the component tree. This method will take care of setting up
 /// the context for the post process, so children can know if they are being
 /// rendered within a post process by using
-/// [PostProcessingContextFinder.findPostProcessFromContext].
+/// `PostProcessingContextFinder.findPostProcessFromContext`.
 ///
 /// The subtree of a post process is the children of the owner, if it is a
-/// [PostProcessComponent], or the [World] if
+/// `PostProcessComponent`, or the [World] if
 /// the owner is a [CameraComponent]. When using a
 /// [PostProcessSequentialGroup], the subtree also includes the preceding
 /// post processes in the group.
@@ -35,23 +38,23 @@ import 'package:flutter/foundation.dart';
 /// [PostProcessSequentialGroup] to build a chain of post processes.
 ///
 /// Post processes can be used via [CameraComponent.postProcess] or
-/// [PostProcessComponent].
+/// `PostProcessComponent`.
 ///
 /// A post process may even render a subtree multiple times if it needs to.
 /// In addition, if children check for
-/// [PostProcessingContextFinder.findPostProcessFromContext],
+/// `PostProcessingContextFinder.findPostProcessFromContext`,
 /// they may even render differently in each render pass.
 /// Ideal for mask textures.
 ///
 /// See also:
-/// - [PostProcessComponent] for a component that applies a post process
+/// - `PostProcessComponent` for a component that applies a post process
 /// - [PostProcessGroup] for a group of post processes that will be applied
 ///   in parallel
 /// - [PostProcessSequentialGroup] for a group of post processes that will be
 ///   applied in sequence
 /// - [FragmentProgram] for a way to create post processes using fragment
 ///   shaders
-/// - [PostProcessingContextFinder] for a way to access the post process
+/// - `PostProcessingContextFinder` for a way to access the post process
 ///   context from within a component during rendering
 abstract class PostProcess({double? pixelRatio}) {
   /// Whether [pixelRatio] was omitted at construction time and should track
@@ -83,7 +86,7 @@ abstract class PostProcess({double? pixelRatio}) {
   ///
   /// Use this to load any resources needed for the post process. This is called
   /// when the post process is added to a [CameraComponent] or a
-  /// [PostProcessComponent].
+  /// `PostProcessComponent`.
   ///
   /// See also:
   /// - [Component.onLoad] for more information on how to load components.
@@ -97,7 +100,7 @@ abstract class PostProcess({double? pixelRatio}) {
   /// An example of usage is to update the time uniform of a shader.
   void update(double dt) {}
 
-  /// Called when the owning [PostProcessComponent] is removed from the tree.
+  /// Called when the owning `PostProcessComponent` is removed from the tree.
   ///
   /// Override to release transient per-mount resources (such as held frame
   /// textures) while keeping the post process reusable if mounted again.
@@ -154,7 +157,7 @@ abstract class PostProcess({double? pixelRatio}) {
 
   /// This method is called to render the post process, to be called by the
   /// "owner" of
-  /// the post process, like a [CameraComponent] or a [PostProcessComponent].
+  /// the post process, like a [CameraComponent] or a `PostProcessComponent`.
   @internal
   void render(
     Canvas canvas,
@@ -263,7 +266,7 @@ abstract class PostProcess({double? pixelRatio}) {
   ///
   /// This method will set the context of the post process, so that
   /// components can know they are being rendered within a post process.
-  /// See [PostProcessingContextFinder.findPostProcessFromContext].
+  /// See `PostProcessingContextFinder.findPostProcessFromContext`.
   @nonVirtual
   @protected
   void renderSubtree(Canvas canvas) {
