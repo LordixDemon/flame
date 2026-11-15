@@ -248,3 +248,14 @@ You can explore the source code [on GitHub](https://github.com/flame-engine/flam
   below `FlameGame.graphics.tier` are skipped automatically, and when **zero** stages are active
   (`bypassedLastFrame == true`), the pipeline renders the subtree directly onto the canvas with
   **zero** offscreen `Picture.toImageSync` allocations.
+- **HD-2D `TiltShiftPostProcess`, `DayNightWeatherController` & `WeatherPrecipitationLayer`**:
+  - `TiltShiftPostProcess` renders a miniature diorama depth-of-field lens (`focusCenterV`,
+    `focusHalfBand`, `blurSigma`, optional warm/cool `colorMatrix`, and zero-copy sharp focus band
+    preserving crisp pixel-art sprites at the focal plane; auto-bypasses when `blurSigma <= 0` and
+    color grading is identity).
+  - `DayNightWeatherController` interpolates `DayNightKeyframe` stops across cyclic `0..24h` world
+    time in perceptual `OklabColor` space, driving a `5x4` `ColorFilter.matrix` and matching 3D sun
+    direction/ambient colors.
+  - `WeatherPrecipitationLayer` simulates zero-allocation SoA `rain`, `snow`, `ashEmbers`, `sakuraPetals`,
+    and `autumnLeaves` with camera-delta screen wrapping (`0` teleport streaks on fast camera cuts) and
+    optional lightning flash overlays.

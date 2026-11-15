@@ -280,3 +280,12 @@ cloud in a single `Canvas.drawRawAtlas` call.
     (`yaw`/`pitch`/`roll`, `Quaternion3D`, or `Matrix3`) and non-uniform/negative `scaleX/Y/Z` (with
     automatic winding-flip compensation when `det < 0`), accelerating `MeshHitbox3D` narrowphase
     raycasts to `O(log T)`.
+- **HD-2D `SpriteBillboard3D` Standees & Double-Sided Ground Shadows (`doubleSidedShadow`)**:
+  - `SpriteBillboard3D` renders 2D pixel-art character/prop sprites inside a 3D `BatchMeshRenderer3D`
+    world with `BillboardOrientationMode3D.cylindricalZ` (upright around `+Z`), `sphericalCameraPlane`,
+    or `tiltedStandee` cardboard pitch, `setFlipbookFrame` UV sheet slicing, full directional +
+    `PointLight3D` + height-fog shading, and `TriangleDepthMode3D.nearest` depth sorting so standees
+    never clip into the 3D ground plane.
+  - `BatchMeshRenderer3D.enqueueDeformedBuffers(..., doubleSidedShadow: true)` (enabled by default on
+    `SpriteBillboard3D`) projects planar ground shadows regardless of whether the directional sun is in
+    front of or behind single-sided sprite quads.

@@ -1,6 +1,8 @@
 /// Hierarchical multi-bus game audio mixer, sidechain ducking, adaptive music
-/// stems, concurrency-limited sound cues, and 2D spatial audio listener.
+/// stems, concurrency-limited sound cues, 2D spatial audio listener, and
+/// sample-looped RPG BGM/ME transport stack.
 library;
 
 export 'src/audio/audio_mixer.dart';
+export 'src/audio/bgm_transport_stack.dart';
 export 'src/audio/spatial_sound_cue.dart';

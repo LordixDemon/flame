@@ -6,4 +6,5 @@ export 'src/post_process/post_process_component.dart';
 export 'src/post_process/post_process_pipeline.dart';
 export 'src/post_process/shader_post_process.dart';
 export 'src/post_process/standard_effects.dart';
+export 'src/post_process/tilt_shift_and_weather.dart';
 export 'src/post_process/uniform_slot_buffer.dart';

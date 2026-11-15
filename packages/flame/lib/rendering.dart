@@ -4,6 +4,8 @@ export 'src/rendering/hue_decorator.dart' show HueDecorator, hueRotationMatrix;
 export 'src/rendering/light_2d_layer.dart'
     show Light2DLayer, PointLight2D, ShadowOccluder2D, SpotLight2D;
 export 'src/rendering/mutable_transform.dart' show MutableRSTransform;
+export 'src/rendering/normal_lit_and_water_2d.dart'
+    show NormalMappedSpriteBatch, SurfaceNormal2D, WaterSurface2DComponent;
 export 'src/rendering/paint_decorator.dart' show PaintDecorator;
 export 'src/rendering/ribbon_and_verlet.dart'
     show RibbonTrailComponent, SplineStripMesh2D, VerletRope2D;

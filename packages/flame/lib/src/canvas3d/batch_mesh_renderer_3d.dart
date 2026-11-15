@@ -366,6 +366,7 @@ class BatchMeshRenderer3D({
     int sortOrder = 0,
     double depthBias = 0.0,
     bool castGroundShadow = false,
+    bool doubleSidedShadow = false,
     double groundZ = 0.0,
     Color shadowColor = const Color(0xFF16131F),
     double shadowOpacity = 0.24,
@@ -405,6 +406,7 @@ class BatchMeshRenderer3D({
       sortOrder: sortOrder,
       depthBias: depthBias,
       castGroundShadow: castGroundShadow,
+      doubleSidedShadow: doubleSidedShadow,
       groundZ: groundZ,
       shadowColor: shadowColor,
       shadowOpacity: shadowOpacity,
@@ -439,6 +441,7 @@ class BatchMeshRenderer3D({
     int sortOrder = 0,
     double depthBias = 0.0,
     bool castGroundShadow = false,
+    bool doubleSidedShadow = false,
     double groundZ = 0.0,
     Color shadowColor = const Color(0xFF16131F),
     double shadowOpacity = 0.24,
@@ -478,6 +481,7 @@ class BatchMeshRenderer3D({
       sortOrder: sortOrder,
       depthBias: depthBias,
       castGroundShadow: castGroundShadow,
+      doubleSidedShadow: doubleSidedShadow,
       groundZ: groundZ,
       shadowColor: shadowColor,
       shadowOpacity: shadowOpacity,
@@ -511,6 +515,7 @@ class BatchMeshRenderer3D({
     int sortOrder = 0,
     double depthBias = 0.0,
     bool castGroundShadow = false,
+    bool doubleSidedShadow = false,
     double groundZ = 0.0,
     Color shadowColor = const Color(0xFF16131F),
     double shadowOpacity = 0.24,
@@ -550,6 +555,7 @@ class BatchMeshRenderer3D({
       sortOrder: sortOrder,
       depthBias: depthBias,
       castGroundShadow: castGroundShadow,
+      doubleSidedShadow: doubleSidedShadow,
       groundZ: groundZ,
       shadowColor: shadowColor,
       shadowOpacity: shadowOpacity,
@@ -586,6 +592,7 @@ class BatchMeshRenderer3D({
     int sortOrder = 0,
     double depthBias = 0.0,
     bool castGroundShadow = false,
+    bool doubleSidedShadow = false,
     double groundZ = 0.0,
     Color shadowColor = const Color(0xFF16131F),
     double shadowOpacity = 0.24,
@@ -623,6 +630,7 @@ class BatchMeshRenderer3D({
       sortOrder: sortOrder,
       depthBias: depthBias,
       castGroundShadow: castGroundShadow,
+      doubleSidedShadow: doubleSidedShadow,
       groundZ: groundZ,
       shadowColor: shadowColor,
       shadowOpacity: shadowOpacity,
@@ -665,6 +673,7 @@ class BatchMeshRenderer3D({
     int sortOrder = 0,
     double depthBias = 0.0,
     bool castGroundShadow = false,
+    bool doubleSidedShadow = false,
     double groundZ = 0.0,
     Color shadowColor = const Color(0xFF16131F),
     double shadowOpacity = 0.24,
@@ -703,6 +712,7 @@ class BatchMeshRenderer3D({
       sortOrder: sortOrder,
       depthBias: depthBias,
       castGroundShadow: castGroundShadow,
+      doubleSidedShadow: doubleSidedShadow,
       groundZ: groundZ,
       shadowColor: shadowColor,
       shadowOpacity: shadowOpacity,
@@ -745,6 +755,7 @@ class BatchMeshRenderer3D({
     int sortOrder = 0,
     double depthBias = 0.0,
     bool castGroundShadow = false,
+    bool doubleSidedShadow = false,
     double groundZ = 0.0,
     Color shadowColor = const Color(0xFF16131F),
     double shadowOpacity = 0.24,
@@ -783,6 +794,7 @@ class BatchMeshRenderer3D({
       sortOrder: sortOrder,
       depthBias: depthBias,
       castGroundShadow: castGroundShadow,
+      doubleSidedShadow: doubleSidedShadow,
       groundZ: groundZ,
       shadowColor: shadowColor,
       shadowOpacity: shadowOpacity,
@@ -823,6 +835,7 @@ class BatchMeshRenderer3D({
     int sortOrder = 0,
     double depthBias = 0.0,
     bool castGroundShadow = false,
+    bool doubleSidedShadow = false,
     double groundZ = 0.0,
     Color shadowColor = const Color(0xFF16131F),
     double shadowOpacity = 0.24,
@@ -1220,7 +1233,7 @@ class BatchMeshRenderer3D({
         final (rx1, ry1, rz1) = worldRelPos(i1);
         final (rx2, ry2, rz2) = worldRelPos(i2);
 
-        if (cullBackfaceShadows) {
+        if (cullBackfaceShadows && !doubleSidedShadow) {
           final e1x = rx1 - rx0;
           final e1y = ry1 - ry0;
           final e1z = rz1 - rz0;

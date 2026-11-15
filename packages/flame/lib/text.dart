@@ -30,6 +30,21 @@ export 'src/text/nodes/plain_text_node.dart' show PlainTextNode;
 export 'src/text/nodes/strikethrough_text_node.dart' show StrikethroughTextNode;
 export 'src/text/nodes/text_block_node.dart' show TextBlockNode;
 export 'src/text/nodes/text_node.dart' show TextNode;
+export 'src/text/renderers/dialogue_box_component.dart'
+    show
+        DialogueBoxComponent,
+        DialogueBoxState,
+        DialogueChoiceOption,
+        DialoguePageLayout,
+        DialoguePositionedGlyph,
+        VoiceBlipConfig;
+export 'src/text/renderers/dynamic_font_atlas.dart'
+    show
+        DynamicFontAtlas,
+        DynamicGlyphEntry,
+        LocalizationTable,
+        PluralCategory,
+        PluralRuleResolver;
 export 'src/text/renderers/raster_font_atlas.dart'
     show GlyphBatchRenderer, RasterFontAtlas, RasterGlyphMetrics;
 export 'src/text/renderers/rich_batched_text_component.dart'

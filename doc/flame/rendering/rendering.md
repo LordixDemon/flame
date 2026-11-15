@@ -8,6 +8,7 @@ decorators, and running post-processing shaders.
 
 - [High-Resolution, Graphics Quality & FPS](graphics_and_fps.md)
 - [Canvas3D (3D Meshes & Picking)](canvas3d.md)
+- [Tilemaps, Autotiles & World Streaming](tilemap.md)
 - [Post Processing and Shaders](post_processing.md)
 - [Colors and Palette](palette.md)
 - [Decorators](decorators.md)
@@ -21,6 +22,7 @@ decorators, and running post-processing shaders.
 
 High-Res, Graphics & FPS        <graphics_and_fps.md>
 Canvas3D (3D Meshes & Picking)  <canvas3d.md>
+Tilemaps & Autotiles            <tilemap.md>
 Post Processing and Shaders     <post_processing.md>
 Colors and Palette              <palette.md>
 Decorators                      <decorators.md>
