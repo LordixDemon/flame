@@ -541,19 +541,19 @@ class PositionComponent({
   /// or the [anchor] change.
   void _onModifiedSizeOrAnchor() {
     transform.offset = Vector2(-_anchor.x * _size.x, -_anchor.y * _size.y);
-    _localBoundsRect = Rect.fromLTWH(0, 0, _size.x, _size.y);
   }
 
-  Rect _localBoundsRect = Rect.zero;
-
-  /// Optional local-space bounds override forwarded to [decorator] during
-  /// [renderTree].
+  /// Optional local-space bounds forwarded to [decorator] during
+  /// [renderTree], so that decorators which draw through an offscreen layer
+  /// (such as `PaintDecorator` and `Shadow3DDecorator`) can use a tight
+  /// bounded `Canvas.saveLayer` instead of a full-viewport one.
   ///
-  /// Useful for custom-rendered 2.5D/3D components whose `size` is zero or
-  /// whose artwork extends beyond `Offset.zero & size` (or container components
-  /// with children whose combined local extent is known). When `null`, leaf
-  /// [PositionComponent]s with positive [size] automatically forward
-  /// `Offset.zero & size`.
+  /// The bounds are a promise about where this component (including its
+  /// children and everything a later decorator in the chain adds, such as a
+  /// projected shadow) paints: anything outside of them may be cut off. [size]
+  /// is not such a promise (strokes, glows and custom `render` code routinely
+  /// paint outside of it), so nothing is derived from it: when this is `null`
+  /// (the default) the decorator chain renders through unbounded layers.
   Rect? decoratorBounds;
 
   @override
@@ -590,16 +590,7 @@ class PositionComponent({
 
   @override
   void renderTree(Canvas canvas) {
-    final explicitBounds = decoratorBounds;
-    final localBounds =
-        explicitBounds ??
-        ((!hasChildren &&
-                _size.x > 0 &&
-                _size.y > 0 &&
-                decorator is Transform2DDecorator)
-            ? _localBoundsRect
-            : null);
-    decorator.applyChain(super.renderTree, canvas, bounds: localBounds);
+    decorator.applyChain(super.renderTree, canvas, bounds: decoratorBounds);
   }
 
   @internal

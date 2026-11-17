@@ -20,11 +20,28 @@ class _PaintedBox({
 
 void main() {
   group('Bounded Decorator saveLayer', () {
-    test('PaintDecorator passes tight local bounds for leaf component', () {
+    test('PaintDecorator is unbounded unless decoratorBounds is supplied', () {
       final box = _PaintedBox(
         position: Vector2(200, 150),
         size: Vector2(48, 32),
       );
+      final tint = PaintDecorator.tint(const Color(0x8800FFAA));
+      box.decorator.addLast(tint);
+
+      final recorder = PictureRecorder();
+      box.renderTree(Canvas(recorder));
+      recorder.endRecording().dispose();
+
+      // The size of a component says nothing about where it paints, so no
+      // bounds are derived from it.
+      expect(tint.lastSaveLayerBounds, isNull);
+    });
+
+    test('PaintDecorator passes explicit local bounds to saveLayer', () {
+      final box = _PaintedBox(
+        position: Vector2(200, 150),
+        size: Vector2(48, 32),
+      )..decoratorBounds = const Rect.fromLTWH(0, 0, 48, 32);
       final tint = PaintDecorator.tint(const Color(0x8800FFAA));
       box.decorator.addLast(tint);
 
@@ -35,7 +52,7 @@ void main() {
 
       final saved = tint.lastSaveLayerBounds;
       expect(saved, isNotNull);
-      // Leaf size (48x32) inflated by 2.0px AA margin.
+      // The bounds (48x32) inflated by 2.0px AA margin.
       expect(saved!.left, closeTo(-2.0, 1e-4));
       expect(saved.top, closeTo(-2.0, 1e-4));
       expect(saved.width, closeTo(52.0, 1e-4));
@@ -43,7 +60,8 @@ void main() {
     });
 
     test('PaintDecorator.blur inflates saveLayer bounds by 4*sigma + 4', () {
-      final box = _PaintedBox(size: Vector2(40, 20));
+      final box = _PaintedBox(size: Vector2(40, 20))
+        ..decoratorBounds = const Rect.fromLTWH(0, 0, 40, 20);
       final blur = PaintDecorator.blur(5.0);
       box.decorator.addLast(blur);
 
@@ -80,8 +98,8 @@ void main() {
           game.render(Canvas(recorder));
           recorder.endRecording().dispose();
 
-          // Because parent has children that may overflow 50x50, automatic
-          // bounds are skipped to avoid clipping children.
+          // No bounds were supplied, so the layer is unbounded and the
+          // child that overflows 50x50 is not clipped.
           expect(tint.lastSaveLayerBounds, isNull);
 
           // Explicit decoratorBounds opts back into bounded saveLayer.
@@ -100,7 +118,7 @@ void main() {
       final box = _PaintedBox(
         position: Vector2(100, 100),
         size: Vector2(40, 60),
-      );
+      )..decoratorBounds = const Rect.fromLTWH(0, 0, 40, 60);
       final shadow = Shadow3DDecorator(
         base: Vector2(0, 60),
         angle: -0.9,
