@@ -372,6 +372,7 @@ class TextBoxComponent<T extends TextRenderer>({
             i * _lineHeight,
       );
       textElement.render(canvas, position);
+      textElement.dispose();
       if (position.y > _currentLinePosition) {
         _currentLinePosition = position.y;
         newLineNotifier.value = newLineNotifier.value + 1;

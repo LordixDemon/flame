@@ -63,11 +63,17 @@ class TextComponent<T extends TextRenderer>({
   }
 
   late InlineTextElement _textElement;
+  bool _hasElement = false;
 
   void _updateElement() {
+    final previous = _hasElement ? _textElement : null;
     _elementDisposed = false;
     _textElement = _textRenderer.format(_text);
+    _hasElement = true;
     _textElement.translate(0, _textElement.metrics.ascent);
+    // Released only after the new element exists, so that a painter that both
+    // share stays alive.
+    previous?.dispose();
   }
 
   @internal
@@ -104,6 +110,12 @@ class TextComponent<T extends TextRenderer>({
   void onRemove() {
     if (_ownsRenderer && _textRenderer is TextPaint) {
       (_textRenderer as TextPaint).dispose();
+      _elementDisposed = true;
+    }
+    if (_hasElement) {
+      // Gives the painter back to the renderer; the element is formatted
+      // again when the component is mounted or rendered the next time.
+      _textElement.dispose();
       _elementDisposed = true;
     }
     super.onRemove();

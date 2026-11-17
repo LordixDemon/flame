@@ -22,7 +22,7 @@ void main() {
     });
 
     test(
-      'MemoryCache.onEvict fires on FIFO eviction, overwrite, and clear',
+      'MemoryCache.onEvict fires on eviction, overwrite, and clear',
       () {
         final evicted = <(String, int)>[];
         final cache = MemoryCache<String, int>(
