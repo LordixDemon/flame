@@ -21,13 +21,17 @@
 //          * gemMatCapStrength
 //          else gloss > matCapThreshold: matCap(view-space normal)
 //          * matCapStrength * mix(1, gloss, matCapGlossWeight)
+//   surf = base * lit + rim
+//   shaded = mix(surf + cap, min(surf, 1) * reflected, matCapMetallic)
+//          + spec + highlight * highlightColor
 //   glow = clamp(emissive mask * (emissiveStrength + boost), 0, 1)
-//   out  = mix(base * lit + spec + rim + cap + highlight * highlightColor,
-//              mix(emissive, emissiveBoost, clamp(boost, 0, 1)), glow)
+//   out  = mix(shaded, mix(emissive, emissiveBoost, clamp(boost, 0, 1)),
+//              glow)
 //   alpha = albedo alpha * vertex alpha * (1 - fade)
 //
 // with hemi = 0.5 + 0.5 * n.up, bounce = max(0, -n.up), skyFill an rgb
-// weight, and boost, highlight and fade the x, y and w of the instance data.
+// weight, reflected the cap on vertices that get a MatCap and 1 on the
+// others, and boost, highlight and fade the x, y and w of the instance data.
 // The color is output premultiplied by its alpha.
 
 in vec3 fragPosition;
@@ -65,6 +69,7 @@ uniform Material {
   float matCapGlossWeight;
   float gemMatCapStrength;
   float gemThreshold;
+  float matCapMetallic;
 } material;
 
 #include <flame_3d/lights.glsl>
@@ -155,8 +160,16 @@ void main() {
   float coatWeight = gloss > material.matCapThreshold ? 1.0 - gemWeight : 0.0;
   vec3 matCap = coatWeight * coat + gemWeight * gem;
 
-  vec3 color = base * lit + vec3(specular) + rim + matCap +
-    highlight * material.highlightColor.rgb;
+  // The MatCap is a sheen added to the lit surface, or, as far as the
+  // material is metallic, the surface's own reflection: the lit surface, at
+  // most 1, scales it. Vertices without a MatCap keep their lit color.
+  vec3 surface = base * lit + rim;
+  vec3 reflected = mix(vec3(1.0), matCap, coatWeight + gemWeight);
+  vec3 color = mix(
+    surface + matCap,
+    min(surface, vec3(1.0)) * reflected,
+    material.matCapMetallic
+  ) + vec3(specular) + highlight * material.highlightColor.rgb;
   vec3 emissive = mix(
     material.emissiveColor.rgb,
     material.emissiveBoostColor.rgb,

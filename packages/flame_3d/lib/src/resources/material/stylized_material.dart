@@ -74,17 +74,31 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 ///        elsewhere, where gloss > matCapThreshold:
 ///          matCapTexture(view-space normal) * matCapStrength
 ///          * mix(1, gloss, matCapGlossWeight)
+/// surface = base * lit + rim
+/// shaded  = mix(surface + cap, min(surface, 1) * reflected, matCapMetallic)
+///           + spec + highlight * highlightColor
 /// glow = clamp(emissive mask * (emissiveStrength + boost), 0, 1)
-/// out  = mix(base * lit + spec + rim + cap + highlight * highlightColor,
+/// out  = mix(shaded,
 ///            mix(emissiveColor, emissiveBoostColor, clamp(boost, 0, 1)),
 ///            glow)
 /// alpha = albedoColor.a * vertex alpha * (1 - fade)
 /// ```
 ///
 /// `falloff` is the point light's: `(1 - d / range)²` with a range, `1 / d²`
-/// without. Highlights are white and follow the direction of the directional
-/// lights, not their intensity. The result is clamped to `[0, 1]`, with no
-/// tone mapping, and output premultiplied by its alpha.
+/// without. `reflected` is `cap` on the vertices that get a MatCap texture
+/// and `1` on the others. Highlights are white and follow the direction of
+/// the directional lights, not their intensity. The result is clamped to
+/// `[0, 1]`, with no tone mapping, and output premultiplied by its alpha.
+///
+/// ## Metals
+///
+/// By default a MatCap texture is a sheen added over the surface: a clear
+/// coat, the glint of a gem. With [matCapMetallic] at `1` it is the
+/// surface's own reflection instead, tinted by it: the lit surface, at most
+/// `1` per channel, multiplies the texture, so that a gold MatCap on a gold
+/// tint gives a deep, saturated gold where an added sheen would wash it out
+/// towards white. A fully lit white vertex then shows the texture as painted;
+/// vertices without a MatCap keep their lit color.
 ///
 /// ## Wind
 ///
@@ -213,6 +227,12 @@ class StylizedMaterial({
   /// Vertices with more gloss than this get the [gemMatCapTexture], when
   /// there is one.
   var double gemThreshold = 1.0,
+
+  /// How the MatCap textures combine with the lit surface: `0` (the
+  /// default) adds them, as a sheen; `1` multiplies the lit surface (at most
+  /// `1`) by them, as the reflection of a metal; values in between blend the
+  /// two. See the "Metals" section of [StylizedMaterial].
+  var double matCapMetallic = 0,
 
   /// The direction vertices sway in, in [windSpace].
   Vector3? windDirection,
@@ -384,7 +404,8 @@ class StylizedMaterial({
       ..setFloat(
         'Material.gemThreshold',
         gemMatCap == null ? _never : gemThreshold,
-      );
+      )
+      ..setFloat('Material.matCapMetallic', matCapMetallic);
   }
 
   final Vector4 _skyFill = Vector4.zero();

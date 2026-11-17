@@ -168,6 +168,8 @@ void main() {
         member(fragment, 'Material', 'gemThreshold', 1).single,
         greaterThan(1e29),
       );
+      // The MatCap is an added sheen, not a metal's reflection.
+      expect(member(fragment, 'Material', 'matCapMetallic', 1), [0]);
       // World-space wind.
       expect(member(vertex, 'Wind', 'direction', 3), [1, 0, 0]);
       expect(member(vertex, 'Wind', 'modelDirection', 3), [0, 0, 0]);
@@ -182,6 +184,7 @@ void main() {
         gemMatCapTexture: gem,
         gemMatCapStrength: 0.75,
         gemThreshold: 1.5,
+        matCapMetallic: 0.75,
         windSpace: WindSpace.model,
         windDirection: Vector3(0, 1, 0),
         translucent: true,
@@ -200,6 +203,7 @@ void main() {
       expect(member(fragment, 'Material', 'skyFill', 3), [0.5, 0.25, 0.125]);
       expect(member(fragment, 'Material', 'gemMatCapStrength', 1), [0.75]);
       expect(member(fragment, 'Material', 'gemThreshold', 1), [1.5]);
+      expect(member(fragment, 'Material', 'matCapMetallic', 1), [0.75]);
       expect(member(vertex, 'Wind', 'direction', 3), [0, 0, 0]);
       expect(member(vertex, 'Wind', 'modelDirection', 3), [0, 1, 0]);
       expect(

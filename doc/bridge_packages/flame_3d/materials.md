@@ -185,14 +185,18 @@ cap  = where gloss > gemThreshold (with a gemMatCapTexture):
        elsewhere, where gloss > matCapThreshold:
          matCapTexture(view-space normal) * matCapStrength
          * mix(1, gloss, matCapGlossWeight)
+surface = base * lit + rim
+shaded  = mix(surface + cap, min(surface, 1) * reflected, matCapMetallic)
+          + spec + highlight * highlightColor
 glow = clamp(emissive mask * (emissiveStrength + boost), 0, 1)
-out  = mix(base * lit + spec + rim + cap + highlight * highlightColor,
+out  = mix(shaded,
            mix(emissiveColor, emissiveBoostColor, clamp(boost, 0, 1)), glow)
 alpha = albedoColor.a * vertex alpha * (1 - fade)
 ```
 
-`falloff` is the point light's (see [Lights](#lights)). Highlights are white and follow the
-direction of the directional lights, not their intensity, so they keep their strength when a sun
+`falloff` is the point light's (see [Lights](#lights)). `reflected` is `cap` on the vertices that
+get a MatCap texture and `1` on the others (see [Metals](#metals)). Highlights are white and follow
+the direction of the directional lights, not their intensity, so they keep their strength when a sun
 dims. The result is clamped to `[0, 1]`, with no tone mapping, and output premultiplied by its
 alpha. For orthographic cameras, `v` is the camera's direction. `skyFillWeight` weighs the sky fill
 per channel, for example `Vector3(1, 1, 0.914)` with the default `skyFill` for a fill of
@@ -216,6 +220,7 @@ per channel, for example `Vector3(1, 1, 0.914)` with the default `skyFill` for a
 | `matCapThreshold`, `matCapGlossWeight`        | `0`, `1`                    | least gloss, weighting |
 | `gemMatCapTexture`, `gemMatCapStrength`       | none, `1`                   | MatCap of gems         |
 | `gemThreshold`                                | `1`                         | least gloss of gems    |
+| `matCapMetallic`                              | `0`                         | MatCap as reflection   |
 | `windDirection`, `windAmplitude`, `windSpace` | `(1, 0, 0)`, `0.032`, world | sway way and reach     |
 | `windFrequency`, `windPhase`, `windTime`      | `2.3`, `(0.7, 0, 0.5)`, `0` | sway timing            |
 
@@ -230,6 +235,29 @@ final material = StylizedMaterial(
   matCapGlossWeight: 0, // the same strength whatever the gloss
   gemMatCapTexture: gemSheen,
   gemThreshold: 1.5, // vertices with more gloss are gems
+);
+```
+
+
+### Metals
+
+An added MatCap is a sheen over the surface: a clear coat, the glint of a gem. On metals it washes
+the color out, a gold tint plus a bright gold sheen reading as pale yellow. With
+`matCapMetallic: 1` the MatCap is the surface's own reflection instead: the lit surface, at most `1`
+per channel, multiplies it, so that a gold MatCap on a gold tint gives a deep, saturated gold, dark
+where the MatCap is dark. A fully lit white vertex shows the MatCap as painted; vertices without a
+MatCap (below `matCapThreshold`) keep their lit color, and values between `0` and `1` blend the
+sheen and the reflection. Both tiers reflect, so one material can hold two metals picked by gloss:
+
+```dart
+final metals = StylizedMaterial(
+  matCapTexture: goldMatCap, // every vertex up to the gem threshold
+  matCapThreshold: -1,
+  matCapGlossWeight: 0,
+  gemMatCapTexture: steelMatCap, // vertices with more gloss than 1.5
+  gemThreshold: 1.5,
+  matCapMetallic: 1,
+  specularStrength: 0, // the MatCaps paint the highlights
 );
 ```
 

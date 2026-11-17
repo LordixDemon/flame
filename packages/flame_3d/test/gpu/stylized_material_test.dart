@@ -108,6 +108,8 @@ class _Look({
     Vector3? skyFill,
     Vector3? emissive,
     Vector3? highlight,
+    Vector3? reflected,
+    double metallic = 1,
   }) {
     final color = shadeColor(
       position: position,
@@ -125,6 +127,8 @@ class _Look({
       skyFill: skyFill,
       emissive: emissive,
       highlight: highlight,
+      reflected: reflected,
+      metallic: metallic,
     );
     int channel(double c) => (c * 255).round();
     return (channel(color.x), channel(color.y), channel(color.z));
@@ -135,7 +139,9 @@ class _Look({
   /// [matCap] is added in proportion to the gloss, [cap] as it is;
   /// [skyFill] weighs the sky color per channel (0.35 by default);
   /// [emissive] replaces the emissive color; [highlight] is added before the
-  /// emission.
+  /// emission. With [reflected] the material is metallic by [metallic]: the
+  /// lit surface, at most 1, scales [reflected] instead of [cap] being added
+  /// to it.
   Vector3 shadeColor({
     required Vector3 position,
     required Vector3 normal,
@@ -152,6 +158,8 @@ class _Look({
     Vector3? skyFill,
     Vector3? emissive,
     Vector3? highlight,
+    Vector3? reflected,
+    double metallic = 1,
   }) {
     final n = normal.normalized();
     // Orthographic cameras look down -z; perspective ones from [viewer].
@@ -197,12 +205,23 @@ class _Look({
     }
     final rim = sky * (math.pow(1 - n.dot(v).clamp(0.0, 1.0), 3) * rimStrength);
 
-    color = (color..multiply(lit)) + Vector3.all(spec) + rim;
-    if (matCap != null) {
-      color.add(matCap * gloss);
-    }
-    if (cap != null) {
-      color.add(cap);
+    final surface = (color..multiply(lit)) + rim;
+    if (reflected != null) {
+      final sheen = surface + (cap ?? Vector3.zero());
+      final metal = Vector3(
+        math.min(surface.x, 1),
+        math.min(surface.y, 1),
+        math.min(surface.z, 1),
+      )..multiply(reflected);
+      color = sheen + (metal - sheen) * metallic + Vector3.all(spec);
+    } else {
+      color = surface + Vector3.all(spec);
+      if (matCap != null) {
+        color.add(matCap * gloss);
+      }
+      if (cap != null) {
+        color.add(cap);
+      }
     }
     if (highlight != null) {
       color.add(highlight);
@@ -894,5 +913,114 @@ void main() {
         );
       }
     });
+
+    testGpuEngine(
+      'reflects a metallic MatCap tinted by the lit surface',
+      () async {
+        const coat = Color(0xFFE0A030);
+        const gem = Color(0xFFB0C8E0);
+        const tint = Color(0xFFFFD54F);
+        StylizedMaterial metal(double metallic) => newMaterial()
+          ..matCapTexture = ColorTexture(coat)
+          ..matCapThreshold = 0.36
+          ..matCapGlossWeight = 0
+          ..gemMatCapTexture = ColorTexture(gem)
+          ..gemThreshold = 1.5
+          ..matCapMetallic = metallic;
+        // (x, y, metallic, vertex, expected MatCap: null for none)
+        final squares = <(double, double, double, _Vertex, Color?)>[
+          // Below the MatCap threshold: lit as without a MatCap.
+          (
+            -0.6,
+            0.5,
+            1,
+            _Vertex(normal: Vector3(0, 0, 1), tint: 1, gloss: 0.2),
+            null,
+          ),
+          // The clear-coat tile, multiplied by the gold surface.
+          (
+            0,
+            0.5,
+            1,
+            _Vertex(normal: Vector3(0, 0.6, 0.8), tint: 1, gloss: 0.6),
+            coat,
+          ),
+          // The gem tile, multiplied by the gold surface.
+          (
+            0.6,
+            0.5,
+            1,
+            _Vertex(
+              normal: Vector3(0.3, 0.3, 0.9),
+              tint: 1,
+              gloss: 0.52 / 0.28,
+            ),
+            gem,
+          ),
+          // A surface lit beyond 1 shows the tile as it is.
+          (
+            -0.6,
+            -0.5,
+            1,
+            _Vertex(normal: Vector3(0, 0, 1), occlusion: 4, gloss: 0.6),
+            coat,
+          ),
+          // Half metallic: half way between the sheen and the reflection.
+          (
+            0,
+            -0.5,
+            0.5,
+            _Vertex(normal: Vector3(0, 0, 1), tint: 1, gloss: 0.6),
+            coat,
+          ),
+        ];
+
+        final frame = await renderFrame(
+          draw: (context) {
+            for (final (x, y, metallic, vertex, _) in squares) {
+              context.drawSurface(
+                _square(metal(metallic), vertex, x: x, y: y),
+                color: tint,
+              );
+            }
+          },
+          lights: lights(),
+        );
+
+        for (final (i, (x, y, metallic, vertex, cap)) in squares.indexed) {
+          final (px, py) = pixelAt(x, y);
+          final expected = look.shade(
+            position: _worldAt(px, py),
+            normal: vertex.normal,
+            vertexColor: _rgb(vertex.color),
+            ao: vertex.occlusion,
+            tint: vertex.tint == 1 ? _rgb(tint) : null,
+            gloss: vertex.gloss,
+            gem: vertex.gloss > 1.5,
+            cap: cap == null ? null : _rgb(cap),
+            reflected: cap == null ? null : _rgb(cap),
+            metallic: metallic,
+          );
+          expect(
+            _difference(frame.pixels.at(px, py), expected),
+            lessThan(2),
+            reason: 'square $i: ${frame.pixels.at(px, py)} vs $expected',
+          );
+        }
+
+        // The reflection keeps the gold saturated where the sheen washes it
+        // out: the blue channel of the clear-coat square.
+        final (px, py) = pixelAt(0, 0.5);
+        final sheen = look.shade(
+          position: _worldAt(px, py),
+          normal: Vector3(0, 0.6, 0.8),
+          vertexColor: Vector3.all(1),
+          tint: _rgb(tint),
+          gloss: 0.6,
+          cap: _rgb(coat),
+        );
+        expect(frame.pixels.at(px, py).$3, lessThan(sheen.$3 - 60));
+      },
+    );
   });
 }
