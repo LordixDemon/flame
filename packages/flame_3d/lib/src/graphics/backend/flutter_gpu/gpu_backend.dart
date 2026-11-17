@@ -3,6 +3,7 @@
 import 'dart:ui';
 
 import 'package:flame_3d/game.dart';
+import 'package:flame_3d/src/graphics/backend/flutter_gpu/shader_bundle_reflection.dart';
 import 'package:flame_3d/src/graphics/backend/gpu_backend.dart' as base;
 import 'package:flame_3d/src/graphics/backend/gpu_enums.dart';
 import 'package:flame_3d/src/graphics/backend/gpu_handles.dart';
@@ -20,10 +21,24 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
 
   static GpuBackend? create() => GpuBackend();
 
+  /// Whether Flutter GPU can be used: it needs Impeller and the Flutter GPU
+  /// flag (`--enable-flutter-gpu` or `FLTEnableFlutterGPU`).
+  static bool get isAvailable {
+    try {
+      return gpu.gpuContext.minimumUniformByteAlignment > 0;
+      // Flutter GPU reports a missing Impeller backend with a plain Exception.
+      // ignore: avoid_catches_without_on_clauses
+    } catch (_) {
+      return false;
+    }
+  }
+
   final gpu.GpuContext _context = gpuContext ?? gpu.gpuContext;
 
-  late final gpu.HostBuffer _hostBuffer = _context.createHostBuffer();
   late final _FlutterGpuFrame _frame = _FlutterGpuFrame(this);
+
+  @override
+  late final int uniformAlignment = _context.minimumUniformByteAlignment;
 
   @override
   GpuTexture createTexture({
@@ -52,7 +67,7 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
     );
   }
 
-  final Map<String, gpu.ShaderLibrary> _shaderLibraries = {};
+  final Map<String, _FlutterGpuShaderLibrary> _shaderLibraries = {};
 
   /// Loads every `.shaderbundle` shader asset declared by the app.
   ///
@@ -66,15 +81,35 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
       if (assetName.endsWith('.shaderbundle')) {
         final library = await gpu.ShaderLibrary.fromAsset(assetName);
         if (library != null) {
-          _shaderLibraries[assetName] = library;
+          final bytes = await rootBundle.load(assetName);
+          _shaderLibraries[assetName] = _FlutterGpuShaderLibrary(
+            library,
+            assetName,
+            reflectShaderBundleInputs(bytes),
+          );
         }
       }
     }
   }
 
   @override
+  Future<void> registerShaderLibrary(String assetName, ByteData bytes) async {
+    final library = await gpu.ShaderLibrary.fromBytes(bytes);
+    if (library == null) {
+      throw StateError('"$assetName" is not a valid shader bundle.');
+    }
+    _shaderLibraries[assetName] = _FlutterGpuShaderLibrary(
+      library,
+      assetName,
+      reflectShaderBundleInputs(bytes),
+    );
+  }
+
+  @override
   GpuShaderLibrary loadShaderLibrary(String assetName) {
-    final library = _shaderLibraries[assetName];
+    final library =
+        _shaderLibraries[assetName] ??
+        _shaderLibraries[_withoutPackagePrefix(assetName)];
     if (library == null) {
       throw StateError(
         'Shader library "$assetName" has not been loaded. Make sure to '
@@ -82,18 +117,20 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
         'the asset is declared in pubspec.yaml.',
       );
     }
-    return _FlutterGpuShaderLibrary(library, assetName);
+    return library;
   }
 
   @override
   GpuPipeline createPipeline({
     required GpuShader vertexShader,
     required GpuShader fragmentShader,
+    GpuVertexLayout? vertexLayout,
   }) {
     return _FlutterGpuPipeline(
       _context.createRenderPipeline(
         (vertexShader as _FlutterGpuShader).raw,
         (fragmentShader as _FlutterGpuShader).raw,
+        vertexLayout: vertexLayout == null ? null : _vertexLayout(vertexLayout),
       ),
     );
   }
@@ -105,28 +142,28 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
     required Color clearValue,
     int msaaSampleCount = 1,
   }) {
-    final colorTexture = _FlutterGpuTexture(
-      _context.createTexture(
-        gpu.StorageMode.devicePrivate,
-        width,
-        height,
-        format: gpu.PixelFormat.r8g8b8a8UNormInt,
-      ),
+    // Silently ignore the request for MSAA if the device does not support it.
+    final sampleCount = msaaSampleCount > 1 && _context.doesSupportOffscreenMSAA
+        ? msaaSampleCount
+        : 1;
+
+    // The presented color textures come from an image surface: it only hands
+    // out a texture again once Flutter no longer samples the image made from
+    // it and the GPU finished writing it, so a frame never overwrites one that
+    // is still on screen.
+    final surface = _context.createImageSurface(
+      width,
+      height,
+      format: _colorFormat,
     );
 
-    // Silently ignore the request for MSAA if the device does not support it.
-    var effectiveMsaaSampleCount = msaaSampleCount;
-    if (msaaSampleCount > 1 && !_context.doesSupportOffscreenMSAA) {
-      effectiveMsaaSampleCount = 1;
-    }
-
-    final multisampleColorTexture = effectiveMsaaSampleCount > 1
+    final multisampleColorTexture = sampleCount > 1
         ? _context.createTexture(
             gpu.StorageMode.deviceTransient,
             width,
             height,
-            format: gpu.PixelFormat.r8g8b8a8UNormInt,
-            sampleCount: msaaSampleCount,
+            format: _colorFormat,
+            sampleCount: sampleCount,
             enableShaderReadUsage: false,
           )
         : null;
@@ -136,27 +173,17 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
       width,
       height,
       format: _context.defaultDepthStencilFormat,
-      sampleCount: effectiveMsaaSampleCount,
-      enableShaderReadUsage: effectiveMsaaSampleCount == 1,
+      sampleCount: sampleCount,
+      enableShaderReadUsage: sampleCount == 1,
     );
+
     return _FlutterGpuRenderTarget(
-      colorTexture,
-      gpu.RenderTarget.singleColor(
-        gpu.ColorAttachment(
-          texture: multisampleColorTexture ?? colorTexture.raw,
-          resolveTexture: effectiveMsaaSampleCount > 1
-              ? colorTexture.raw
-              : null,
-          storeAction: effectiveMsaaSampleCount > 1
-              ? gpu.StoreAction.multisampleResolve
-              : gpu.StoreAction.store,
-          clearValue: Vector4Utils.fromColor(clearValue),
-        ),
-        depthStencilAttachment: gpu.DepthStencilAttachment(
-          texture: depthTexture,
-          depthClearValue: 1.0,
-        ),
-      ),
+      width,
+      height,
+      surface,
+      multisampleColorTexture,
+      depthTexture,
+      Vector4Utils.fromColor(clearValue),
     );
   }
 
@@ -172,12 +199,58 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
     };
   }
 
+  static const _colorFormat = gpu.PixelFormat.r8g8b8a8UNormInt;
+
   static gpu.StorageMode _storageMode(GpuStorageMode mode) {
     return switch (mode) {
       GpuStorageMode.hostVisible => gpu.StorageMode.hostVisible,
       GpuStorageMode.devicePrivate => gpu.StorageMode.devicePrivate,
       GpuStorageMode.deviceTransient => gpu.StorageMode.deviceTransient,
     };
+  }
+
+  static gpu.VertexLayout _vertexLayout(GpuVertexLayout layout) {
+    return gpu.VertexLayout(
+      buffers: [
+        for (final buffer in layout.buffers)
+          gpu.VertexBuffer(
+            strideInBytes: buffer.strideInBytes,
+            stepMode: buffer.perInstance
+                ? gpu.VertexStepMode.instance
+                : gpu.VertexStepMode.vertex,
+            attributes: [
+              for (final attribute in buffer.attributes)
+                gpu.VertexAttribute(
+                  name: attribute.name,
+                  offsetInBytes: attribute.offsetInBytes,
+                  format: switch (attribute.components) {
+                    1 => gpu.VertexFormat.float32,
+                    2 => gpu.VertexFormat.float32x2,
+                    3 => gpu.VertexFormat.float32x3,
+                    4 => gpu.VertexFormat.float32x4,
+                    final components => throw ArgumentError.value(
+                      components,
+                      'components',
+                      'Vertex attribute "${attribute.name}" must have 1 to 4 '
+                          'components',
+                    ),
+                  },
+                ),
+            ],
+          ),
+      ],
+    );
+  }
+
+  /// When an app (or a package's own tests) is the root package, its assets
+  /// are listed without the `packages/<name>/` prefix other packages use to
+  /// refer to them.
+  static String _withoutPackagePrefix(String assetName) {
+    if (!assetName.startsWith('packages/')) {
+      return assetName;
+    }
+    final packageEnd = assetName.indexOf('/', 'packages/'.length);
+    return packageEnd < 0 ? assetName : assetName.substring(packageEnd + 1);
   }
 }
 
@@ -189,144 +262,232 @@ class const _FlutterGpuTexture(final gpu.Texture raw) implements GpuTexture {
   Image asImage() => raw.asImage();
 }
 
-class const _FlutterGpuBuffer(final gpu.DeviceBuffer raw) implements GpuBuffer {
+class _FlutterGpuBuffer(final gpu.DeviceBuffer raw) implements GpuBuffer {
+  @override
+  int get sizeInBytes => raw.sizeInBytes;
+
   @override
   void write(ByteData data, {int destinationOffsetInBytes = 0}) {
     raw.overwrite(data, destinationOffsetInBytes: destinationOffsetInBytes);
   }
+
+  // `flutter_gpu` takes buffer ranges as `BufferView` objects. Ranges recur
+  // from frame to frame (a surface's vertices, the same slices of a transient
+  // block), so their views are kept instead of allocated on every bind.
+  final Map<int, gpu.BufferView> _views = {};
+
+  gpu.BufferView view(int offsetInBytes, int lengthInBytes) {
+    final view = _views[offsetInBytes];
+    if (view != null && view.lengthInBytes == lengthInBytes) {
+      return view;
+    }
+    if (_views.length >= _maxViews) {
+      _views.clear();
+    }
+    return _views[offsetInBytes] = gpu.BufferView(
+      raw,
+      offsetInBytes: offsetInBytes,
+      lengthInBytes: lengthInBytes,
+    );
+  }
+
+  static const _maxViews = 4096;
 }
 
-class const _FlutterGpuShaderLibrary(
+class _FlutterGpuShaderLibrary(
   final gpu.ShaderLibrary raw,
   final String _assetName,
+  final Map<String, List<GpuShaderInput>>? _inputs,
 ) implements GpuShaderLibrary {
+  final Map<String, _FlutterGpuShader> _shaders = {};
+
   @override
   GpuShader operator [](String entryPoint) {
-    final shader = raw[entryPoint];
-    if (shader == null) {
-      throw StateError(
-        'Shader "$entryPoint" not found in library "$_assetName"',
-      );
-    }
-    return _FlutterGpuShader(shader);
+    return _shaders.putIfAbsent(entryPoint, () {
+      final shader = raw[entryPoint];
+      if (shader == null) {
+        throw StateError(
+          'Shader "$entryPoint" not found in library "$_assetName"',
+        );
+      }
+      return _FlutterGpuShader(shader, _inputs?[entryPoint]);
+    });
   }
 }
 
-class const _FlutterGpuShader(final gpu.Shader raw) implements GpuShader {
+class _FlutterGpuShader(
+  final gpu.Shader raw,
+  @override final List<GpuShaderInput>? inputs,
+) implements GpuShader {
+  final Map<String, _FlutterGpuUniformSlot> _slots = {};
+
   @override
   GpuUniformSlot getUniformSlot(String slot) {
-    return _FlutterGpuUniformSlot(raw.getUniformSlot(slot));
+    return _slots.putIfAbsent(
+      slot,
+      () => _FlutterGpuUniformSlot(raw.getUniformSlot(slot)),
+    );
   }
 }
 
-class const _FlutterGpuUniformSlot(final gpu.UniformSlot raw)
+class _FlutterGpuUniformSlot(final gpu.UniformSlot raw)
     implements GpuUniformSlot {
   @override
-  int? get sizeInBytes => raw.sizeInBytes;
+  String get name => raw.uniformName;
+
+  @override
+  late final int? sizeInBytes = raw.sizeInBytes;
+
+  final Map<String, int?> _offsets = {};
 
   @override
   int? getMemberOffsetInBytes(String member) {
-    return raw.getMemberOffsetInBytes(member);
+    return _offsets.putIfAbsent(
+      member,
+      () => raw.getMemberOffsetInBytes(member),
+    );
   }
 }
 
 class const _FlutterGpuPipeline(final gpu.RenderPipeline raw)
     implements GpuPipeline;
 
-class const _FlutterGpuRenderTarget(
-  final _FlutterGpuTexture _colorTexture,
-  final gpu.RenderTarget raw,
-) implements GpuRenderTarget {
-  @override
-  GpuTexture get colorTexture => _colorTexture;
-}
+class _FlutterGpuRenderTarget(
+  @override final int width,
+  @override final int height,
+  final gpu.GpuImageSurface surface,
+  final gpu.Texture? multisampleColorTexture,
+  final gpu.Texture depthTexture,
+  final Vector4 clearValue,
+) implements GpuRenderTarget;
 
 class const _FlutterGpuFrame(final GpuBackend _backend)
     implements base.GpuFrame {
   @override
-  base.GpuRenderPass beginRenderPass(
-    GpuRenderTarget target, {
-    required BlendState blend,
-    required DepthStencilState depthStencil,
-  }) {
+  base.GpuRenderPass beginRenderPass(GpuRenderTarget target) {
+    final renderTarget = target as _FlutterGpuRenderTarget;
+    final frame = renderTarget.surface.acquireNextFrame();
+    final multisample = renderTarget.multisampleColorTexture;
     final commandBuffer = _backend._context.createCommandBuffer();
     final renderPass =
-        commandBuffer.createRenderPass((target as _FlutterGpuRenderTarget).raw)
+        commandBuffer.createRenderPass(
+            gpu.RenderTarget.singleColor(
+              gpu.ColorAttachment(
+                texture: multisample ?? frame.colorTexture,
+                resolveTexture: multisample == null ? null : frame.colorTexture,
+                storeAction: multisample == null
+                    ? gpu.StoreAction.store
+                    : gpu.StoreAction.multisampleResolve,
+                clearValue: renderTarget.clearValue,
+              ),
+              depthStencilAttachment: gpu.DepthStencilAttachment(
+                texture: renderTarget.depthTexture,
+                depthClearValue: 1.0,
+              ),
+            ),
+          )
+          // The default state documented on `GpuFrame.beginRenderPass`.
           ..setWindingOrder(gpu.WindingOrder.counterClockwise)
-          ..setColorBlendEnable(blend != BlendState.opaque)
-          ..setColorBlendEquation(_blendEquation(blend))
-          ..setDepthWriteEnable(depthStencil == DepthStencilState.standard)
-          ..setDepthCompareOperation(_depthCompare(depthStencil));
-    return _FlutterGpuRenderPass(_backend, commandBuffer, renderPass);
+          ..setCullMode(gpu.CullMode.none)
+          ..setColorBlendEnable(false)
+          ..setDepthWriteEnable(true)
+          ..setDepthCompareOperation(gpu.CompareFunction.less);
+    return _FlutterGpuRenderPass(
+      renderTarget,
+      frame,
+      commandBuffer,
+      renderPass,
+    );
   }
 
   @override
-  void end() => _backend._hostBuffer.reset();
-
-  static gpu.ColorBlendEquation _blendEquation(BlendState blend) {
-    return switch (blend) {
-      BlendState.opaque => gpu.ColorBlendEquation(
-        sourceColorBlendFactor: gpu.BlendFactor.one,
-        destinationColorBlendFactor: gpu.BlendFactor.zero,
-        sourceAlphaBlendFactor: gpu.BlendFactor.one,
-        destinationAlphaBlendFactor: gpu.BlendFactor.zero,
-      ),
-      BlendState.alphaBlend => gpu.ColorBlendEquation(
-        sourceColorBlendFactor: gpu.BlendFactor.one,
-        destinationColorBlendFactor: gpu.BlendFactor.oneMinusSourceAlpha,
-        sourceAlphaBlendFactor: gpu.BlendFactor.one,
-        destinationAlphaBlendFactor: gpu.BlendFactor.oneMinusSourceAlpha,
-      ),
-      BlendState.additive => gpu.ColorBlendEquation(
-        sourceColorBlendFactor: gpu.BlendFactor.one,
-        destinationColorBlendFactor: gpu.BlendFactor.one,
-        sourceAlphaBlendFactor: gpu.BlendFactor.one,
-        destinationAlphaBlendFactor: gpu.BlendFactor.one,
-      ),
-    };
-  }
-
-  static gpu.CompareFunction _depthCompare(DepthStencilState state) {
-    return switch (state) {
-      DepthStencilState.standard => gpu.CompareFunction.less,
-      DepthStencilState.depthRead => gpu.CompareFunction.lessEqual,
-      DepthStencilState.none => gpu.CompareFunction.always,
-    };
-  }
+  void end() {}
 }
 
 class _FlutterGpuRenderPass(
-  final GpuBackend _backend,
+  final _FlutterGpuRenderTarget _target,
+  final gpu.GpuImageSurfaceFrame _frame,
   final gpu.CommandBuffer _commandBuffer,
   final gpu.RenderPass _renderPass,
 ) implements base.GpuRenderPass {
-  // `flutter_gpu` takes the counts in `draw`/`drawIndexed` rather than at
-  // bind time, so they are recorded here until [draw] is called.
-  int _vertexCount = 0;
-  int? _indexCount;
-
   @override
-  void bindPipeline(GpuPipeline pipeline, CullMode cullMode) {
-    _renderPass
-      ..bindPipeline((pipeline as _FlutterGpuPipeline).raw)
-      ..setCullMode(gpu.CullMode.values[cullMode.index]);
+  void bindPipeline(GpuPipeline pipeline) {
+    _renderPass.bindPipeline((pipeline as _FlutterGpuPipeline).raw);
   }
 
   @override
-  void bindVertexBuffer(GpuBufferView view, int vertexCount) {
-    _vertexCount = vertexCount;
-    _renderPass.bindVertexBuffer(_bufferView(view));
+  void setBlendState(BlendState blend) {
+    if (blend == BlendState.opaque) {
+      _renderPass.setColorBlendEnable(false);
+      return;
+    }
+    _renderPass
+      ..setColorBlendEnable(true)
+      ..setColorBlendEquation(switch (blend) {
+        BlendState.opaque || BlendState.premultipliedAlpha => _premultiplied,
+        BlendState.alpha => _straightAlpha,
+        BlendState.additive => _additive,
+      });
+  }
+
+  @override
+  void setDepthState({
+    required CompareFunction compare,
+    required bool writeEnabled,
+  }) {
+    _renderPass
+      ..setDepthCompareOperation(switch (compare) {
+        CompareFunction.never => gpu.CompareFunction.never,
+        CompareFunction.less => gpu.CompareFunction.less,
+        CompareFunction.equal => gpu.CompareFunction.equal,
+        CompareFunction.lessEqual => gpu.CompareFunction.lessEqual,
+        CompareFunction.greater => gpu.CompareFunction.greater,
+        CompareFunction.notEqual => gpu.CompareFunction.notEqual,
+        CompareFunction.greaterEqual => gpu.CompareFunction.greaterEqual,
+        CompareFunction.always => gpu.CompareFunction.always,
+      })
+      ..setDepthWriteEnable(writeEnabled);
+  }
+
+  @override
+  void setCullMode(CullMode cullMode) {
+    _renderPass.setCullMode(switch (cullMode) {
+      CullMode.none => gpu.CullMode.none,
+      CullMode.frontFace => gpu.CullMode.frontFace,
+      CullMode.backFace => gpu.CullMode.backFace,
+    });
+  }
+
+  @override
+  void setWindingOrder(WindingOrder windingOrder) {
+    _renderPass.setWindingOrder(switch (windingOrder) {
+      WindingOrder.clockwise => gpu.WindingOrder.clockwise,
+      WindingOrder.counterClockwise => gpu.WindingOrder.counterClockwise,
+    });
+  }
+
+  @override
+  void bindVertexBuffer(
+    GpuBuffer buffer, {
+    required int offsetInBytes,
+    required int lengthInBytes,
+    int slot = 0,
+  }) {
+    _renderPass.bindVertexBuffer(
+      (buffer as _FlutterGpuBuffer).view(offsetInBytes, lengthInBytes),
+      slot: slot,
+    );
   }
 
   @override
   void bindIndexBuffer(
-    GpuBufferView view,
-    GpuIndexType indexType,
-    int indexCount,
-  ) {
-    _indexCount = indexCount;
+    GpuBuffer buffer, {
+    required int offsetInBytes,
+    required int lengthInBytes,
+    required GpuIndexType indexType,
+  }) {
     _renderPass.bindIndexBuffer(
-      _bufferView(view),
+      (buffer as _FlutterGpuBuffer).view(offsetInBytes, lengthInBytes),
       switch (indexType) {
         GpuIndexType.uint16 => gpu.IndexType.int16,
         GpuIndexType.uint32 => gpu.IndexType.int32,
@@ -335,10 +496,15 @@ class _FlutterGpuRenderPass(
   }
 
   @override
-  void bindUniform(GpuUniformSlot slot, ByteData data) {
+  void bindUniform(
+    GpuUniformSlot slot,
+    GpuBuffer buffer, {
+    required int offsetInBytes,
+    required int lengthInBytes,
+  }) {
     _renderPass.bindUniform(
       (slot as _FlutterGpuUniformSlot).raw,
-      _backend._hostBuffer.emplace(data),
+      (buffer as _FlutterGpuBuffer).view(offsetInBytes, lengthInBytes),
     );
   }
 
@@ -347,34 +513,53 @@ class _FlutterGpuRenderPass(
     _renderPass.bindTexture(
       (slot as _FlutterGpuUniformSlot).raw,
       (texture as _FlutterGpuTexture).raw,
+      // Passed explicitly: `flutter_gpu` allocates default options otherwise.
+      sampler: _defaultSampler,
     );
   }
 
+  static final _defaultSampler = gpu.SamplerOptions();
+
   @override
-  void clearBindings() {
-    _vertexCount = 0;
-    _indexCount = null;
-    _renderPass.clearBindings();
+  void clearBindings() => _renderPass.clearBindings();
+
+  @override
+  void draw(int vertexCount, {int instanceCount = 1}) {
+    _renderPass.draw(vertexCount, instanceCount: instanceCount);
   }
 
   @override
-  void draw() {
-    final indexCount = _indexCount;
-    if (indexCount != null) {
-      _renderPass.drawIndexed(indexCount);
-    } else {
-      _renderPass.draw(_vertexCount);
-    }
+  void drawIndexed(int indexCount, {int instanceCount = 1}) {
+    _renderPass.drawIndexed(indexCount, instanceCount: instanceCount);
   }
 
   @override
-  void submit() => _commandBuffer.submit();
-
-  static gpu.BufferView _bufferView(GpuBufferView view) {
-    return gpu.BufferView(
-      (view.buffer as _FlutterGpuBuffer).raw,
-      offsetInBytes: view.offsetInBytes,
-      lengthInBytes: view.lengthInBytes,
+  Image submit({void Function()? onCompleted}) {
+    _frame.present(_commandBuffer);
+    _commandBuffer.submit(
+      completionCallback: onCompleted == null ? null : (_) => onCompleted(),
     );
+    return _target.surface.currentImage!;
   }
+
+  static final _premultiplied = gpu.ColorBlendEquation(
+    sourceColorBlendFactor: gpu.BlendFactor.one,
+    destinationColorBlendFactor: gpu.BlendFactor.oneMinusSourceAlpha,
+    sourceAlphaBlendFactor: gpu.BlendFactor.one,
+    destinationAlphaBlendFactor: gpu.BlendFactor.oneMinusSourceAlpha,
+  );
+
+  static final _straightAlpha = gpu.ColorBlendEquation(
+    sourceColorBlendFactor: gpu.BlendFactor.sourceAlpha,
+    destinationColorBlendFactor: gpu.BlendFactor.oneMinusSourceAlpha,
+    sourceAlphaBlendFactor: gpu.BlendFactor.one,
+    destinationAlphaBlendFactor: gpu.BlendFactor.oneMinusSourceAlpha,
+  );
+
+  static final _additive = gpu.ColorBlendEquation(
+    sourceColorBlendFactor: gpu.BlendFactor.one,
+    destinationColorBlendFactor: gpu.BlendFactor.one,
+    sourceAlphaBlendFactor: gpu.BlendFactor.one,
+    destinationAlphaBlendFactor: gpu.BlendFactor.one,
+  );
 }

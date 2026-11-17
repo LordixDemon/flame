@@ -5,3 +5,6 @@ export 'src/graphics/graphics_device.dart';
 export 'src/graphics/msaa.dart';
 export 'src/graphics/render_context.dart';
 export 'src/graphics/render_context_3d.dart';
+export 'src/graphics/render_state.dart';
+export 'src/graphics/render_stats.dart';
+export 'src/graphics/vertex_layout.dart';

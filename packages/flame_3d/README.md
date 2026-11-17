@@ -120,6 +120,63 @@ await GpuBackend.initialize();
 ```
 
 
+## Rendering
+
+`flame_3d` records the draws of every visible `Object3D` while the world is
+traversed, then submits them in an order that is cheap for the GPU:
+
+- Opaque draws are grouped by pipeline, material and surface, then roughly
+  ordered front to back. Consecutive draws of the same `Surface` with the same
+  `Material` instance become a single instanced draw, so components sharing a
+  `Mesh` cost one draw call per surface, however many there are.
+- Translucent draws come after all opaque ones, back to front, one draw each.
+
+Each component can give its draws a per-instance color (`MeshComponent.color`)
+that materials may use; the built-in materials multiply their base color by it.
+Materials must not change their values between the draws of one frame to vary
+objects: they are applied when the draws are submitted, not when they are
+recorded. Use the per-instance color, or distinct materials.
+
+A material declares how it is drawn with its `renderState`:
+
+```dart
+final glow = UnlitMaterial()..renderState = RenderState.additive;
+
+final glass = UnlitMaterial(albedoColor: const Color(0x80FFFFFF))
+  ..renderState = const RenderState(
+    blend: BlendState.alpha,
+    depthWrite: false,
+  );
+
+final floor = SpatialMaterial()
+  ..renderState = const RenderState(cullMode: CullMode.backFace);
+```
+
+Front faces are counter-clockwise on screen. The winding flips automatically
+when the camera mirrors the scene, or when an object's transform mirrors it
+(an odd number of negative scales), so back-face culling stays right.
+
+A surface can be built straight from typed arrays, with its own interleaved
+vertex layout. Its attributes feed the vertex shader inputs of the same name:
+
+```dart
+final surface = Surface.fromBuffers(
+  vertices: positionsAndColors, // a Float32List, 7 floats per vertex
+  indices: indices, // a Uint16List, or a Uint32List for large surfaces
+  layout: VertexLayout(const [
+    VertexAttribute('vertexPosition', 3),
+    VertexAttribute('vertexColor', 4),
+  ]),
+  material: myVertexColorMaterial,
+);
+```
+
+The statistics of the last rendered frame (draw calls, instances, triangles,
+pipeline and state changes, uploads) are available from
+`FlameGame3D.renderStats`. `World3D.renderScale` renders the world at a
+fraction of the device pixels.
+
+
 ## Building shaders
 
 If you are using the materials provided by `flame_3d`, you do not need to worry
@@ -143,8 +200,23 @@ build the WebGPU shader bundles. That step needs the `naga` CLI on your `PATH`
 Shaders can also reuse shared GLSL through `#include`. An
 `#include <package_name/file.glsl>` resolves against the `shaders/` directory of
 any package in your dependency graph, so chunks can be shared across packages.
-Including ones that `flame_3d` itself ships, such as
-`#include <flame_3d/skinning.glsl>` for vertex skinning.
+Including ones that `flame_3d` itself ships:
+
+- `#include <flame_3d/instancing.glsl>` declares the per-instance inputs
+  (`instanceModel0` to `instanceModel3`, the model matrix columns, and
+  `instanceColor`) and `instanceModelMatrix()`. A vertex shader that declares
+  the model columns is drawn instanced; one that does not gets its model matrix
+  from uniforms set by its material, one draw per object.
+- `#include <flame_3d/camera.glsl>` declares the `CameraMatrices` block
+  (`view`, `projection`, `viewProjection`), filled once per render pass.
+- `#include <flame_3d/skinning.glsl>` for vertex skinning; the joint matrices of
+  skinned draws are filled by `flame_3d`.
+
+Uniform blocks named `CameraMatrices`, `Camera`, `AmbientLight` and `Lights` are
+filled by `flame_3d` once per render pass, and your own blocks can be added
+with `RenderContext3D.registerPassUniform`. A shader must use every vertex input
+it declares, or `impellerc` rejects it; surfaces must provide every input the
+shader declares, except the per-instance ones.
 
 You can check out the
 [default shaders](https://github.com/flame-engine/flame/tree/main/packages/flame_3d/shaders)

@@ -2,40 +2,75 @@ import 'dart:ui';
 
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/graphics/material_pipeline_cache.dart';
+import 'package:meta/meta.dart';
 
 /// {@template material}
-/// Base material [Resource], it holds the shader library that should be used
-/// for the material.
+/// Base material: the shaders a surface is drawn with, the values it binds to
+/// them, and the [renderState] it is drawn with.
+///
+/// The [RenderContext3D] links the shaders into a pipeline for the vertex
+/// layout of each surface the material draws, and caches it.
+///
+/// ## Instancing
+///
+/// When the vertex shader declares the per-instance inputs of
+/// `shaders/flame_3d/instancing.glsl` (the model matrix columns, and
+/// optionally `instanceColor`), the draws of one surface with the same
+/// material are batched into instanced draws, and [apply] runs once each time
+/// the material is bound. Otherwise every object is drawn on its own and
+/// [apply] runs before each draw, with [RenderContext3D.model] set to its
+/// model matrix.
 /// {@endtemplate}
 abstract class Material({
   required var Shader _vertexShader,
   required var Shader _fragmentShader,
-}) extends Resource<GpuPipeline> {
+}) {
   static Material defaultMaterial = SpatialMaterial()
     ..albedoColor = const Color(0xFFFF00FF);
 
-  @override
-  GpuPipeline createResource() {
-    return GpuBackend.instance.createPipeline(
-      vertexShader: _vertexShader.resource,
-      fragmentShader: _fragmentShader.resource,
-    );
-  }
+  static int _nextId = 0;
+
+  /// A number identifying this material, used to group draws by material.
+  final int id = _nextId++;
 
   Shader get vertexShader => _vertexShader;
   set vertexShader(Shader shader) {
     _vertexShader = shader;
-    recreateResource = true;
+    pipelineCache = null;
   }
 
   Shader get fragmentShader => _fragmentShader;
   set fragmentShader(Shader shader) {
     _fragmentShader = shader;
-    recreateResource = true;
+    pipelineCache = null;
   }
 
-  /// Face culling mode for this material. Defaults to [CullMode.none].
-  CullMode cullMode = CullMode.none;
+  /// The blending, depth and culling state this material draws with, and
+  /// whether it is translucent. Defaults to [RenderState.opaque].
+  ///
+  /// For example, a material for glows that are added to what is behind them:
+  ///
+  /// ```dart
+  /// material.renderState = RenderState.additive;
+  /// ```
+  ///
+  /// or an opaque material that culls back faces:
+  ///
+  /// ```dart
+  /// material.renderState = const RenderState(cullMode: CullMode.backFace);
+  /// ```
+  RenderState renderState = RenderState.opaque;
 
+  /// The pipeline this material drew with last, managed by the
+  /// [RenderContext3D].
+  @internal
+  MaterialPipelineCache? pipelineCache;
+
+  /// Writes this material's values into its shaders, see [Material].
+  ///
+  /// Uniform blocks filled by the [RenderContext3D] (see
+  /// [RenderContext3D.registerPassUniform]) and the joint matrices of skinned
+  /// draws need not be written.
   void apply(RenderContext context) {}
 }
