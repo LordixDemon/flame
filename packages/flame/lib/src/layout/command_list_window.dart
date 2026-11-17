@@ -132,16 +132,24 @@ class CommandListWindow({
     final steps = delta.abs();
 
     for (var s = 0; s < steps; s++) {
-      var probes = 0;
-      do {
-        final next = candidate + step;
-        if (wrap) {
-          candidate = ((next % n) + n) % n;
-        } else {
-          candidate = next.clamp(0, n - 1);
+      // Looks for the next row that can be selected in the direction of
+      // travel. When there is none (the end of a list that does not wrap, or
+      // only disabled rows ahead), the selection stays where it got to.
+      var probe = candidate;
+      var found = false;
+      for (var probes = 0; probes < n && !found; probes++) {
+        final next = probe + step;
+        final target = wrap ? ((next % n) + n) % n : next.clamp(0, n - 1);
+        if (target == probe) {
+          break;
         }
-        probes++;
-      } while (skipDisabled && !_items[candidate].enabled && probes < n);
+        probe = target;
+        found = !skipDisabled || _items[probe].enabled;
+      }
+      if (!found) {
+        break;
+      }
+      candidate = probe;
     }
 
     if (candidate != _selectedIndex) {

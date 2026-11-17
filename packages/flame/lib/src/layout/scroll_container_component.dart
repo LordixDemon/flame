@@ -51,7 +51,7 @@ class ScrollContainerComponent({
       _viewportContent.addAll(contentChildren);
     }
   }
-  final Vector2? _explicitContentSize = contentSize?.clone();
+  Vector2? _explicitContentSize = contentSize?.clone();
   final Vector2 _scrollOffset = Vector2.zero();
   final Vector2 _velocity = Vector2.zero();
   bool _isDragging = false;
@@ -112,14 +112,18 @@ class ScrollContainerComponent({
   }
 
   /// Sets an explicit scrollable content extent (`null` reverts to automatic
-  /// child bounds measurement).
+  /// child bounds measurement), whether or not the container was created with
+  /// one. The scroll offset is clamped to the new extent.
   void setContentSize(Vector2? nextSize) {
     if (nextSize == null) {
-      _explicitContentSize?.setZero();
-    } else if (_explicitContentSize != null) {
-      _explicitContentSize.setFrom(nextSize);
+      _explicitContentSize = null;
+    } else {
+      (_explicitContentSize ??= Vector2.zero()).setFrom(nextSize);
     }
     _applyClampedOffset(_scrollOffset.x, _scrollOffset.y);
+    // The scrollbar thumb depends on the extent even when the offset stays.
+    Game.notifyVisualMutation();
+    markSubtreeDirty();
   }
 
   /// Maximum scrollable X offset (`>= 0`).

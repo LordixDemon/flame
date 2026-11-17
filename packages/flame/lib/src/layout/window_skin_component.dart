@@ -1,8 +1,10 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flame/src/components/position_component.dart';
 import 'package:flame/src/layout/flex_grid_layout.dart';
+import 'package:vector_math/vector_math.dart' show Matrix4;
 
 /// Visual theme parameters for classic & modern JRPG [WindowSkinComponent]s.
 class const WindowSkinStyle({
@@ -202,18 +204,33 @@ class WindowSkinComponent({
       return;
     }
     if (_openness < 0.999) {
+      // The window unfolds from its own horizontal middle line. That line is
+      // known in the local space of the window, so the squash is applied
+      // there (T * S * T^-1 before the T that super.renderTree applies),
+      // which is right for any anchor, angle and scale.
+      final local = transform.transformMatrix;
+      if (_unfoldInverse.copyInverse(local) == 0.0) {
+        return;
+      }
       final midY = size.y * 0.5;
+      _unfoldScratch.setAll(0, local.storage);
       canvas
         ..save()
-        ..translate(position.x, position.y + midY)
+        ..transform(_unfoldScratch)
+        ..translate(0.0, midY)
         ..scale(1.0, _openness)
-        ..translate(-position.x, -(position.y + midY));
+        ..translate(0.0, -midY);
+      _unfoldScratch.setAll(0, _unfoldInverse.storage);
+      canvas.transform(_unfoldScratch);
       super.renderTree(canvas);
       canvas.restore();
       return;
     }
     super.renderTree(canvas);
   }
+
+  final Matrix4 _unfoldInverse = Matrix4.zero();
+  final Float64List _unfoldScratch = Float64List(16);
 
   @override
   void render(ui.Canvas canvas) {

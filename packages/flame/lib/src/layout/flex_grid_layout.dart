@@ -382,8 +382,11 @@ class NineSlicePanelComponent({
             img.width * 0.5,
             img.height * 0.5,
           );
+      // The tint multiplies the image once, color and alpha alike: the paint
+      // stays opaque white, as its alpha would be applied on top of the
+      // filter and square the opacity of a translucent tint.
       _fillPaint
-        ..color = tint
+        ..color = const Color(0xFFFFFFFF)
         ..colorFilter = tint == const Color(0xFFFFFFFF)
             ? null
             : ColorFilter.mode(tint, BlendMode.modulate);

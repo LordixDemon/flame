@@ -97,6 +97,8 @@ class PagedGridWindow({
       _selectedIndex = -1;
       _scrollTopRow = 0;
       setTargetCursorRect(null, snap: true);
+      showScrollUpIndicator = false;
+      showScrollDownIndicator = false;
       return;
     }
     _selectedIndex = (selectIndex ?? _selectedIndex).clamp(
