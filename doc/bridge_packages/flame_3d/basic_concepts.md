@@ -30,7 +30,7 @@ models, with custom materials and animations).
 
 The main building block of a 3D scene is the `Component3D`, which is the base class for all 3D:
 
-```{include} diagrams/flame_3d_components.md
+```{include} ../../flame/diagrams/flame_3d_components.md
 ```
 
 Instead of extending `World` directly, your `FlameGame`'s world must be an instance `World3D`. You
