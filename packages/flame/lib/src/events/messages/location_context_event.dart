@@ -71,5 +71,7 @@ abstract class LocationContextEvent<C, R>({required super.raw})
     // [collectApplicableChildren] might stop short, leaving the frames
     // un-popped; for consistency, they are always cleaned at the end.
     renderingTrace.clear();
+    // A break above leaves the lazy 3D hit list unfinished.
+    CameraComponent.clearActiveSpatialRayHits();
   }
 }

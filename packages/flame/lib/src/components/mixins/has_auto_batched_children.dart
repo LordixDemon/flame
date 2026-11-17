@@ -74,6 +74,11 @@ mixin HasAutoBatchedChildren on Component {
   // Priority of the child group currently being accumulated.
   int? _currentPriority;
 
+  // Blend mode of the pending batches. Children are only regrouped (by image)
+  // while they share a blend mode, so the draw order of children with
+  // different blend modes is always the child order.
+  BlendMode? _pendingBlendMode;
+
   static const Set<BlendMode> _supportedBlendModes = {
     BlendMode.srcOver,
     BlendMode.plus,
@@ -93,9 +98,8 @@ mixin HasAutoBatchedChildren on Component {
     }
 
     final activePass = CameraComponent.currentRenderPass;
-    if (activePass != null &&
-        activePass.exclusiveToMultiPass &&
-        child is! MultiPassComponent) {
+    if (child is! MultiPassComponent &&
+        !CameraComponent.paintsOrdinaryComponents(activePass)) {
       _flushAll(canvas);
       super.renderChild(canvas, child);
       return;
@@ -151,6 +155,10 @@ mixin HasAutoBatchedChildren on Component {
     Canvas canvas,
   ) {
     final key = (info.image, info.blendMode);
+    if (_pendingBlendMode != null && _pendingBlendMode != info.blendMode) {
+      _flushAll(canvas);
+    }
+    _pendingBlendMode = info.blendMode;
     if (info.requiresAffineVertices) {
       // Flush any pending drawAtlas batches first to preserve z-order.
       _flushAtlasOnly(canvas);
@@ -170,7 +178,7 @@ mixin HasAutoBatchedChildren on Component {
       acc.accumulate(
         info.sourceRect,
         _toRSTransform(child, info.sourceRect),
-        info.atlasBatchColor,
+        info.rawColor,
       );
     }
   }
@@ -226,6 +234,7 @@ mixin HasAutoBatchedChildren on Component {
   void _flushAll(Canvas canvas) {
     _flushAtlasOnly(canvas);
     _flushAffineOnly(canvas);
+    _pendingBlendMode = null;
   }
 
   static _BatchInfo? _tryGetBatchInfo(
@@ -332,15 +341,10 @@ mixin HasAutoBatchedChildren on Component {
       return null;
     }
 
-    final atlasBatchColor = rawColor != const Color(0xFFFFFFFF)
-        ? rawColor
-        : const Color(0x00000000);
-
     return _BatchInfo(
       image: image,
       sourceRect: sourceRect,
       rawColor: rawColor,
-      atlasBatchColor: atlasBatchColor,
       blendMode: blendMode,
       requiresAffineVertices: requiresAffine,
     );
@@ -367,21 +371,42 @@ mixin HasAutoBatchedChildren on Component {
 class _BatchAccumulator(Image atlas, final BlendMode blendMode) {
   final SpriteBatch batch = SpriteBatch(atlas);
   final Paint _paint = Paint()..blendMode = blendMode;
+  final List<(Rect, RSTransform, Color)> _items = [];
+  bool _anyTint = false;
 
   void accumulate(Rect source, RSTransform transform, Color color) {
-    batch.addTransform(source: source, transform: transform, color: color);
+    _items.add((source, transform, color));
+    if (color != _white) {
+      _anyTint = true;
+    }
   }
 
+  static const Color _white = Color(0xFFFFFFFF);
+
   void flush(Canvas canvas, {Rect? cullRect}) {
-    if (!batch.isEmpty) {
-      batch.render(
-        canvas,
-        blendMode: BlendMode.srcOver,
-        cullRect: cullRect,
-        paint: blendMode == BlendMode.srcOver ? null : _paint,
-      );
-      batch.clear();
+    if (_items.isEmpty) {
+      return;
     }
+    for (final (source, transform, color) in _items) {
+      // Without any tint the colors are left out altogether. Otherwise the
+      // sprite is modulated by its color (so that opacity and tint apply to
+      // the sprite, like on the affine path), and untinted sprites are
+      // modulated by opaque white.
+      batch.addTransform(
+        source: source,
+        transform: transform,
+        color: _anyTint ? color : null,
+      );
+    }
+    batch.render(
+      canvas,
+      blendMode: BlendMode.modulate,
+      cullRect: cullRect,
+      paint: blendMode == BlendMode.srcOver ? null : _paint,
+    );
+    batch.clear();
+    _items.clear();
+    _anyTint = false;
   }
 }
 
@@ -533,7 +558,6 @@ class _BatchInfo({
   required final Image image,
   required final Rect sourceRect,
   required final Color rawColor,
-  required final Color atlasBatchColor,
   required final BlendMode blendMode,
   required final bool requiresAffineVertices,
 });

@@ -899,6 +899,33 @@ class CameraComponent({
   @internal
   static void popRenderPass() => _renderPassStack.removeLast();
 
+  /// Whether ordinary components (everything that is not a
+  /// [MultiPassComponent]) paint themselves during [pass].
+  ///
+  /// An ordinary component has no per-pass drawing, so it is painted exactly
+  /// once per frame: outside multi-pass rendering, or in the first
+  /// non-exclusive pass of the current camera's [renderPasses]. Exclusive
+  /// passes (see [RenderPass.exclusiveToMultiPass]) never paint them.
+  @internal
+  static bool paintsOrdinaryComponents(RenderPass? pass) {
+    if (pass == null) {
+      return true;
+    }
+    if (pass.exclusiveToMultiPass) {
+      return false;
+    }
+    final passes = currentCamera?.renderPasses;
+    if (passes == null || passes.isEmpty) {
+      return true;
+    }
+    for (final candidate in passes) {
+      if (!candidate.exclusiveToMultiPass) {
+        return identical(candidate, pass) || candidate == pass;
+      }
+    }
+    return true;
+  }
+
   /// Renders the world and the viewfinder elements through the camera
   /// transform. An instance method rather than a local function, so that the
   /// render pass does not allocate a closure per camera per frame.
@@ -1202,6 +1229,27 @@ class CameraComponent({
     return 0;
   }
 
+  static final Set<SpatialHitbox3D> _activeSpatialRayHits = <SpatialHitbox3D>{};
+
+  /// Ends the 3D ray hit-test whose results are being consumed: resets the
+  /// [SpatialHitbox3D.isActiveSpatialRayHit] flag of every component that was
+  /// handed out by a ray pick.
+  ///
+  /// The hit lists are lazy `sync*` iterables, and an abandoned `sync*`
+  /// generator never runs its cleanup code. Event dispatchers that stop
+  /// iterating early (once a handler consumed the event) must therefore call
+  /// this when they are finished, next to clearing [currentCameras].
+  @internal
+  static void clearActiveSpatialRayHits() {
+    if (_activeSpatialRayHits.isEmpty) {
+      return;
+    }
+    for (final hitbox in _activeSpatialRayHits) {
+      hitbox.isActiveSpatialRayHit = false;
+    }
+    _activeSpatialRayHits.clear();
+  }
+
   Iterable<Component> _worldComponentsWithSpatialRay<T>(
     Ray3D ray,
     T worldPoint,
@@ -1329,11 +1377,13 @@ class CameraComponent({
         if (validTransform) {
           yieldedSpatial.add(hit.component);
           hit.component.isActiveSpatialRayHit = true;
-          try {
-            yield hit.component;
-          } finally {
-            hit.component.isActiveSpatialRayHit = false;
-          }
+          _activeSpatialRayHits.add(hit.component);
+          yield hit.component;
+          // Only reached when the consumer asks for the next component. A
+          // consumer that stops here never resumes this generator, so it must
+          // call [clearActiveSpatialRayHits] when it is done.
+          hit.component.isActiveSpatialRayHit = false;
+          _activeSpatialRayHits.remove(hit.component);
         }
         if (nestedContexts != null && nestedContexts.length > savedLength) {
           nestedContexts.removeRange(savedLength, nestedContexts.length);

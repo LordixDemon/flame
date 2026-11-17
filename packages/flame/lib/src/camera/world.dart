@@ -254,9 +254,8 @@ class World({
     }
 
     final activePass = CameraComponent.currentRenderPass;
-    if (activePass == null ||
-        !activePass.exclusiveToMultiPass ||
-        this is MultiPassComponent) {
+    if (this is MultiPassComponent ||
+        CameraComponent.paintsOrdinaryComponents(activePass)) {
       render(canvas);
     }
 

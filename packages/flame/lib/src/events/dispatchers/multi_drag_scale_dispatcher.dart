@@ -226,6 +226,8 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
       break;
     }
     _dropHitTraceScratch.clear();
+    // The loop above may have stopped inside the lazy 3D hit list.
+    CameraComponent.clearActiveSpatialRayHits();
     return resolved;
   }
 
