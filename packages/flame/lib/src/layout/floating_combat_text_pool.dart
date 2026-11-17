@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 
 import 'package:flame/src/anchor.dart';
 import 'package:flame/src/components/core/component.dart';
+import 'package:flame/src/game/game.dart';
 import 'package:flame/src/text/renderers/raster_font_atlas.dart';
 import 'package:flutter/painting.dart';
 
@@ -33,6 +34,11 @@ enum CombatPopupKind() {
 /// When multiple hits land near the same world coordinate within
 /// [clusterWindowSeconds], subsequent popups automatically stagger vertically
 /// and fan slightly horizontally so multi-hit combos remain 100% legible.
+///
+/// Spawning, moving, expiring and clearing popups all report a visual mutation
+/// (`Game.notifyVisualMutation`), so the pool keeps repainting under
+/// `IdleRenderMode.onDemand` for as long as a popup is alive and for the frame
+/// that removes the last one.
 class FloatingCombatTextPool({
   this.fontAtlas,
   this.maxPopups = 128,
@@ -144,6 +150,7 @@ class FloatingCombatTextPool({
     _baseScale[slot] = scale ?? defaultScale;
     _colors[slot] = (customColor ?? defaultColor).toARGB32();
     _labels[slot] = text;
+    Game.notifyVisualMutation();
     return slot;
   }
 
@@ -157,6 +164,9 @@ class FloatingCombatTextPool({
 
   /// Immediately clears all active popups.
   void clear() {
+    if (_activeCount > 0) {
+      Game.notifyVisualMutation();
+    }
     _active.fillRange(0, maxPopups, 0);
     _activeCount = 0;
   }
@@ -199,6 +209,9 @@ class FloatingCombatTextPool({
       _x[i] += _vx[i] * dt;
       _y[i] += _vy[i] * dt;
     }
+    // Every live popup moved or faded, and an expired one has to be painted
+    // away.
+    Game.notifyVisualMutation();
   }
 
   @override

@@ -81,18 +81,15 @@ void main() {
           oriented: true,
           onWaypointReached: reached.add,
           target: actor,
-        )..advance(0.5);
+        )..advance(0.75);
 
+        // Half the time is half the way along the curve, which by the
+        // symmetry of this path is the middle of its middle segment.
         expect(actor.position.x, closeTo(50.0, 1e-3));
-        expect(actor.position.y, closeTo(0.0, 1e-3));
+        expect(actor.position.y, closeTo(25.0, 1e-3));
         expect(reached, [0]);
 
-        effect.advance(0.5);
-        expect(actor.position.x, closeTo(50.0, 1e-3));
-        expect(actor.position.y, closeTo(50.0, 1e-3));
-        expect(reached, [0, 1]);
-
-        effect.advance(0.5);
+        effect.advance(0.75);
         expect(actor.position.x, closeTo(100.0, 1e-3));
         expect(actor.position.y, closeTo(50.0, 1e-3));
         expect(actor.angle, closeTo(0.0, 0.25));

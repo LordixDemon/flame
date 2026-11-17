@@ -9,12 +9,23 @@ import 'package:flame/src/effects/provider_interfaces.dart';
 /// Moves a [PositionProvider] smoothly through an ordered list of waypoints
 /// using zero-`ui.Path`-allocation linear or Catmull-Rom spline interpolation,
 /// with arc-length parameterization and per-waypoint arrival callbacks.
+///
+/// The effect's progress is proportional to the distance travelled along the
+/// curve, so with a linear controller the target moves at constant speed over
+/// the whole path, however unevenly the waypoints are spaced and however much
+/// the curve bends between them. The length of each curved segment is
+/// measured on [samplesPerSegment] straight pieces; [measure] returns the
+/// length of the whole curve.
+///
+/// [tension] `0.0` gives a Catmull-Rom spline through the waypoints, `1.0`
+/// straight lines between them.
 class WaypointPathEffect(
   List<Vector2> waypoints,
   EffectController controller, {
   final double tension = 0.0,
   final bool includeCurrentPosition = true,
   final bool oriented = false,
+  final int samplesPerSegment = 16,
   final void Function(int waypointIndex)? onWaypointReached,
   PositionProvider? target,
   super.onComplete,
@@ -29,6 +40,10 @@ class WaypointPathEffect(
         tension >= 0.0 && tension <= 1.0,
         'tension must be in [0.0 .. 1.0]: $tension',
       ),
+      assert(
+        samplesPerSegment >= 1,
+        'samplesPerSegment must be at least 1: $samplesPerSegment',
+      ),
       super(controller, target);
 
   final List<Vector2> _inputWaypoints = List<Vector2>.generate(
@@ -39,12 +54,22 @@ class WaypointPathEffect(
 
   late Float64List _knotX;
   late Float64List _knotY;
+
+  /// Distance along the curve from its start to each knot.
   late Float64List _cumulativeLength;
+
+  /// Distance along the curve from its start to each sample point; every
+  /// segment between two knots contributes [_samplesInSegment] pieces.
+  late Float64List _arcTable;
+  int _samplesInSegment = 1;
   double _totalLength = 0.0;
   int _nextWaypointCallbackIndex = 0;
 
   final Vector2 _lastWorldPos = Vector2.zero();
   double _lastAngle = 0.0;
+
+  /// Whether the path consists of straight lines between the knots.
+  bool get _isPiecewiseLinear => tension >= 0.999 || _knotX.length <= 2;
 
   void _rebuildSplineFrom(Vector2 startPos) {
     final count = includeCurrentPosition
@@ -68,13 +93,26 @@ class WaypointPathEffect(
       }
     }
 
+    // A straight segment needs no subdivision to be measured exactly.
+    final samples = _isPiecewiseLinear ? 1 : samplesPerSegment;
+    _samplesInSegment = samples;
+    final segments = count - 1;
+    _arcTable = Float64List(segments * samples + 1);
+
     var acc = 0.0;
-    _cumulativeLength[0] = 0.0;
-    for (var i = 1; i < count; i++) {
-      final dx = _knotX[i] - _knotX[i - 1];
-      final dy = _knotY[i] - _knotY[i - 1];
-      acc += math.sqrt(dx * dx + dy * dy);
-      _cumulativeLength[i] = acc;
+    var prevX = _knotX[0];
+    var prevY = _knotY[0];
+    for (var seg = 0; seg < segments; seg++) {
+      for (var k = 1; k <= samples; k++) {
+        final (px, py, _, _) = _evaluateSegment(seg, k / samples);
+        final dx = px - prevX;
+        final dy = py - prevY;
+        acc += math.sqrt(dx * dx + dy * dy);
+        _arcTable[seg * samples + k] = acc;
+        prevX = px;
+        prevY = py;
+      }
+      _cumulativeLength[seg + 1] = acc;
     }
     _totalLength = acc;
   }
@@ -110,6 +148,7 @@ class WaypointPathEffect(
     }
   }
 
+  /// Position and (unnormalized) tangent of the curve at [dist] along it.
   (double x, double y, double tx, double ty) _sampleAtDistance(double dist) {
     final n = _knotX.length;
     if (n == 1 || _totalLength <= 1e-9) {
@@ -117,37 +156,52 @@ class WaypointPathEffect(
     }
     final clampedDist = dist.clamp(0.0, _totalLength);
 
-    // Binary search segment [seg .. seg + 1]
+    // Binary search the piece [lo .. lo + 1] of the arc table.
     var lo = 0;
-    var hi = n - 1;
+    var hi = _arcTable.length - 1;
     while (lo + 1 < hi) {
       final mid = (lo + hi) >>> 1;
-      if (_cumulativeLength[mid] <= clampedDist) {
+      if (_arcTable[mid] <= clampedDist) {
         lo = mid;
       } else {
         hi = mid;
       }
     }
-    final segStart = _cumulativeLength[lo];
-    final segLen = _cumulativeLength[lo + 1] - segStart;
-    final u = segLen > 1e-9 ? ((clampedDist - segStart) / segLen) : 0.0;
+    final pieceStart = _arcTable[lo];
+    final pieceLen = _arcTable[lo + 1] - pieceStart;
+    final within = pieceLen > 1e-12
+        ? (clampedDist - pieceStart) / pieceLen
+        : 0.0;
 
-    final x1 = _knotX[lo];
-    final y1 = _knotY[lo];
-    final x2 = _knotX[lo + 1];
-    final y2 = _knotY[lo + 1];
+    final samples = _samplesInSegment;
+    final seg = lo ~/ samples;
+    final u = ((lo - seg * samples) + within) / samples;
+    return _evaluateSegment(seg, u);
+  }
+
+  /// Position and (unnormalized) tangent at parameter [u] in `[0, 1]` of the
+  /// segment between knots [seg] and `seg + 1`.
+  (double x, double y, double tx, double ty) _evaluateSegment(
+    int seg,
+    double u,
+  ) {
+    final n = _knotX.length;
+    final x1 = _knotX[seg];
+    final y1 = _knotY[seg];
+    final x2 = _knotX[seg + 1];
+    final y2 = _knotY[seg + 1];
 
     // Pure piecewise-linear fast path when tension == 1.0 or only 2 knots.
-    if (tension >= 0.999 || n == 2) {
+    if (_isPiecewiseLinear) {
       final px = x1 + (x2 - x1) * u;
       final py = y1 + (y2 - y1) * u;
       return (px, py, x2 - x1, y2 - y1);
     }
 
-    final x0 = lo > 0 ? _knotX[lo - 1] : (2.0 * x1 - x2);
-    final y0 = lo > 0 ? _knotY[lo - 1] : (2.0 * y1 - y2);
-    final x3 = (lo + 2 < n) ? _knotX[lo + 2] : (2.0 * x2 - x1);
-    final y3 = (lo + 2 < n) ? _knotY[lo + 2] : (2.0 * y2 - y1);
+    final x0 = seg > 0 ? _knotX[seg - 1] : (2.0 * x1 - x2);
+    final y0 = seg > 0 ? _knotY[seg - 1] : (2.0 * y1 - y2);
+    final x3 = (seg + 2 < n) ? _knotX[seg + 2] : (2.0 * x2 - x1);
+    final y3 = (seg + 2 < n) ? _knotY[seg + 2] : (2.0 * y2 - y1);
 
     // Cardinal / Catmull-Rom tangents scaled by `0.5 * (1 - tension)`.
     final s = 0.5 * (1.0 - tension);

@@ -31,14 +31,18 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
   buttons, virtual touch actions, and gamepad buttons/axes with radial deadzones and runtime JSON
   key-rebinding (`exportBindingsJson` / `importBindingsJson`).
 - **`InputContext`, `InputContextStack` & `InputBuffer`**: Modal input routing (`gameplay` ->
-  `hudPopup` -> `cutscene` with `blocksLowerContexts`) plus frame-accurate **coyote time** and
-  pre-landing action buffering (`recordAction`, `consumeBuffered`, `isCoyoteActive`).
+  `hudPopup` -> `cutscene` with `blocksLowerContexts`; `pop` removes the top-most enabled context)
+  plus a time-windowed press buffer for actions pressed a few frames early (`buffer`,
+  `hasBuffered`, `consume`, `update`).
 - **`FocusableComponent` & `FocusNavigationGroup`**: Spatial D-pad / arrow-key / Tab focus
-  traversal (`FocusDirection` cone scoring + explicit neighbor overrides) for menus, inventories,
-  and board tiles without Flutter widget focus overhead.
-- **`HapticEngine`, `HapticPattern` & `HapticBackend`**: Semantic tactile patterns (`lightTap`,
-  `heavyImpact`, `selectionTick`, `doublePulse`, `rumbleBurst`) with global intensity, cooldown
-  throttling, and deterministic `RecordingHapticBackend` test verification.
+  traversal (`moveFocus` with `FocusDirection` cone scoring, `requestFocus`, `activateFocused`) for
+  menus, inventories, and board tiles without Flutter widget focus overhead. A component removed
+  from the tree gives up focus and leaves the group until it is mounted again.
+- **`HapticEngine`, `HapticPattern` & `HapticBackend`**: Semantic tactile patterns
+  (`selectionTick`, `lightImpact`, `mediumImpact`, `successPulse`, `warningBuzz`, `heavyImpact`,
+  `errorBuzz`) coalesced to the strongest request of a frame (`request` + `flushFrame`), with an
+  `enabled` switch, cooldown throttling (a request arriving inside the cooldown is dropped), and
+  deterministic `RecordingHapticBackend` test verification.
 
 ---
 
@@ -56,8 +60,9 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
   progress), guarded event transitions, `stateElapsed`, and pushdown state stack (`pushState` /
   `popState`).
 - **`SeededRng` & `CommandRecorder<C>`**: Deterministic 32-bit safe Xoshiro128** PRNG
-  (`saveState` / `restoreState`, non-mutating `fork(label)`, weighted choice, Fisher-Yates shuffle,
-  unit-circle/annulus sampling) plus tick-indexed deterministic command recording and replay.
+  (`saveState` / `restoreState` of the exact state, including a pending `gaussian` sample;
+  non-mutating `fork(label)`, weighted choice, Fisher-Yates shuffle, unit-circle/annulus sampling)
+  plus tick-indexed deterministic command recording and replay.
 - **`HasTags` & `WorldQuery<T>`**: Incremental `O(1)` cached component queries registered on
   `World.registerQuery` filtering by component type `T`, `withTags`, `withoutTags`, and predicate
   callbacks, with live auto-revalidation on `addTag` / `removeTag` / `clearTags` and
@@ -131,9 +136,12 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
 ## 7. Audio Mixer, Ducking & Spatial Sound Cues (`package:flame/audio.dart`)
 
 - **`AudioMixer`, `AudioBus`, `DuckingRule` & `AdaptiveMusicController`**: Hierarchical buses
-  (`master` -> `music`, `sfx`, `ui`, `voice`, `ambient`), automatic sidechain-style ducking (e.g.
-  lowering `music` while `voice` is active), synchronized multi-stem adaptive music crossfades, and
-  pluggable `AudioBackend` (`InMemoryAudioBackend` for headless tests).
+  (`master` -> `music`, `sfx`, `ambience`, `voice`, `ui`), automatic sidechain-style ducking (e.g.
+  lowering `music` while `voice` is active), one-shot voices that live for
+  `durationSeconds / pitch`, track cross-fades (`playTrack`) and intensity-driven stems
+  (`MusicStemLayer`: a base layer by default, or silent up to `minIntensity` and rising to
+  `maxVolume` at `fullIntensity`), and pluggable `AudioBackend` (`InMemoryAudioBackend` for
+  headless tests).
 - **`SoundCue`, `SoundCueMixerPlayer` & `SpatialAudioListener2D`**: Randomized clip pools (no
   immediate repeat), pitch/volume jitter, per-cue cooldowns, polyphony limits (`VoiceStealPolicy`),
   and 2D listener distance attenuation + stereo panner.
@@ -173,7 +181,9 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
   `DeferHitTestToComponents` passthrough for spotlight tutorials and modals; `World.spatialHitboxes3D`
   + `boundingSphere3D` accelerates 3D ray picking to `O(k)`; `DropTargetCallbacks` + `DragDropEvent`
   delivers cross-layer HUD-to-3D-world drag-and-drop (`canAcceptDrop`, `onDragTargetEnter/Move/Leave`,
-  `onDrop`, `onDragTargetCancel`).
+  `onDrop`, `onDragTargetCancel`). `onDrop` runs before the dragged component's `onDragEnd`, whose
+  `DragEndEvent.dropTarget` / `dropAccepted` report the outcome; drags of components with
+  `isDropPayload == false`, and all drags while no drop target is mounted, skip the search.
 - **Universal `ParticleBatchGroup` Coalescing, Zero-Rebuild `mouseCursorListenable` &
   `Game.visualMutationCount`**: `ParticleBatchGroup` coalesces arbitrary `Anchor`, `angle`, positive
   uniform `scale`, and `BatchTransparentContainer` hierarchies into `1` `Canvas.drawRawAtlas` call
@@ -213,9 +223,11 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
     into Flutter's `SemanticsNode` tree (`VoiceOver`, `TalkBack`, Web ARIA, `find.semantics`),
     routing `tap`, `longPress`, `increase`, `decrease`, `focus`, and `dismiss` actions while culling
     offscreen world nodes (`semanticsEnabled`, `semanticsExcluded`).
-  - Every pointer/gesture event exposes `PointerHardwareSample` (`deviceKind`, `buttons`, `pressure`,
-    `normalizedPressure`, stylus `tilt`/`orientation`, `isShiftPressed`/`isControlPressed`/
-    `isAltPressed`/`isMetaPressed`), and `GameRenderBox` automatically cancels active drags/taps via
+  - Every position and displacement event (taps, drags, scales, hovers) exposes hardware pointer
+    telemetry (`deviceKind`, `buttons`, `pressure`, stylus `tilt`/`orientation`, `isShiftPressed`/
+    `isControlPressed`/`isAltPressed`/`isMetaPressed`), backed by the `PointerHardwareSample`
+    (`normalizedPressure`) in `Game.latestPointerTelemetry`, and `GameRenderBox` automatically
+    cancels active taps, double taps, long presses, drags, scales and hovers via
     `cancelActivePointerGestures()` when the app blurs/pauses (`cancelGesturesOnLifecyclePause`).
 - **Broadphase-Accelerated 2D Raycasts + Static-Sleeping `Sweep`, `SdfFontAtlas` &
   `EngineComputePool`**:
