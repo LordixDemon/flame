@@ -66,7 +66,9 @@ class const RenderState({
   );
 
   /// Additive effects (glows, particles): added to the target, depth tested,
-  /// without depth writes.
+  /// without depth writes. The target keeps its alpha (see
+  /// [BlendState.additive]), so over a transparent target they are added to
+  /// what is drawn behind it.
   static const RenderState additive = RenderState(
     blend: BlendState.additive,
     depthWrite: false,

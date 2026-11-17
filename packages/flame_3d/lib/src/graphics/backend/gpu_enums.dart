@@ -54,7 +54,12 @@ enum BlendState() {
   /// alpha: `color = src + dst * (1 - srcAlpha)`.
   premultipliedAlpha,
 
-  /// Additive blending: `color = src + dst`.
+  /// Additive blending: `color = src + dst`, `alpha = dstAlpha`.
+  ///
+  /// Added light covers nothing, so the alpha of the target is kept: where
+  /// the target is transparent (a scene rendered into an image that is then
+  /// drawn over 2D content, as `Scene3DComponent` does), the color is added
+  /// to whatever is drawn behind the image.
   additive,
 }
 

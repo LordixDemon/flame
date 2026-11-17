@@ -78,7 +78,48 @@ void main() {
       expect(r, closeTo(128, 1));
       expect(g, closeTo(128, 1));
       expect(b, 0);
-      expect(a, closeTo(255, 1));
+      // Added light covers nothing: the clear target stays transparent, so
+      // the image adds its color to whatever it is drawn over.
+      expect(a, 0);
+    });
+
+    testGpuEngine('keeps the alpha of what additive draws add to', () async {
+      final glow = quad(
+        UnlitMaterial(albedoColor: const Color(0xFF004000))
+          ..renderState = RenderState.additive,
+        halfSize: .3,
+      );
+      final half = quad(
+        UnlitMaterial(albedoColor: const Color(0x80800000))
+          ..renderState = RenderState.premultipliedAlphaBlend,
+        halfSize: .3,
+      );
+      final frame = await renderFrame(
+        draw: (context) => context
+          // Over an opaque surface, over a half transparent one, over nothing.
+          ..drawSurface(glow, transform: Matrix4.translationValues(-.6, 0, -4))
+          ..drawSurface(glow, transform: Matrix4.translationValues(0, 0, -4))
+          ..drawSurface(glow, transform: Matrix4.translationValues(.6, 0, -4))
+          ..drawSurface(
+            quad(opaqueUnlit(const Color(0xFF000080)), halfSize: .3),
+            transform: Matrix4.translationValues(-.6, 0, -6),
+          )
+          ..drawSurface(half, transform: Matrix4.translationValues(0, 0, -6)),
+      );
+      final (ox, oy) = pixelAt(-.6, 0);
+      final (hx, hy) = pixelAt(0, 0);
+      final (nx, ny) = pixelAt(.6, 0);
+      final opaque = frame.pixels.at(ox, oy);
+      expect(opaque.$2, closeTo(64, 1));
+      expect(opaque.$3, closeTo(128, 1));
+      expect(opaque.$4, 255);
+      final translucent = frame.pixels.at(hx, hy);
+      expect(translucent.$1, closeTo(128, 1));
+      expect(translucent.$2, closeTo(64, 1));
+      expect(translucent.$4, closeTo(128, 1));
+      final alone = frame.pixels.at(nx, ny);
+      expect(alone.$2, closeTo(64, 1));
+      expect(alone.$4, 0);
     });
 
     testGpuEngine('applies a different state to each draw of a pass', () async {

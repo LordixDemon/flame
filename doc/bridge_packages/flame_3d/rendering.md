@@ -60,7 +60,9 @@ Custom objects pass them to `RenderContext3D.drawSurface` and `drawMesh` with `c
 A material declares how it is drawn with its `renderState`: the blend mode (`BlendState.opaque`,
 `alpha`, `premultipliedAlpha` or `additive`), whether the depth test is on and with which
 `CompareFunction`, whether depth is written, the `CullMode`, and whether the material is
-translucent (by default, every blend mode other than opaque is).
+translucent (by default, every blend mode other than opaque is). Additive draws add their color and
+keep the alpha of the target: added light covers nothing, so in a `Scene3DComponent` a glow over an
+empty part of the scene adds its color to the 2D components drawn behind the layer.
 
 ```dart
 final glow = UnlitMaterial()..renderState = RenderState.additive;

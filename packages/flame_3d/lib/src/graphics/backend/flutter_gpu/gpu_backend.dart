@@ -714,10 +714,11 @@ class _FlutterGpuRenderPass(
     destinationAlphaBlendFactor: gpu.BlendFactor.oneMinusSourceAlpha,
   );
 
+  // Added light covers nothing: the alpha of the target is kept.
   static final _additive = gpu.ColorBlendEquation(
     sourceColorBlendFactor: gpu.BlendFactor.one,
     destinationColorBlendFactor: gpu.BlendFactor.one,
-    sourceAlphaBlendFactor: gpu.BlendFactor.one,
+    sourceAlphaBlendFactor: gpu.BlendFactor.zero,
     destinationAlphaBlendFactor: gpu.BlendFactor.one,
   );
 }

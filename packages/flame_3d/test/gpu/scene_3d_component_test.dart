@@ -479,6 +479,48 @@ void main() {
       });
     });
 
+    testGpu('adds additive glows to the 2D components behind it', (
+      tester,
+    ) async {
+      final layer = Scene3DComponent(projection: _boardProjection());
+      final center = Vector3(1, 1, 0.5);
+      layer.world.add(
+        MeshComponent(
+          mesh: CuboidMesh(
+            size: Vector3.all(1),
+            // Only the faces towards the viewer, each pixel added once.
+            material: UnlitMaterial(albedoColor: const Color(0xFF006000))
+              ..renderState = RenderState.additive.copyWith(
+                cullMode: CullMode.backFace,
+              ),
+          ),
+          position: center,
+        ),
+      );
+      final centerPosition = layer.positionOf(
+        layer.scenePointToLocal(center),
+      );
+      final game = FlameGame(
+        world: World(
+          children: [
+            RectangleComponent(
+              position: Vector2.all(-5000),
+              size: Vector2.all(10000),
+              paint: Paint()..color = _blue,
+              priority: -1,
+            ),
+            layer,
+          ],
+        ),
+      );
+      game.camera.viewfinder.position = centerPosition;
+      final pixels = await _render(tester, game);
+      final at = game.camera.localToGlobal(centerPosition);
+      // The glow over the blue rectangle, not over an opaque black.
+      expect(_colorAt(pixels, at), const Color(0xFF0060FF));
+      expect(_colorAt(pixels, at + Vector2(0, 55)), _blue);
+    });
+
     testGpu('renders several layers in one game, one pass each', (
       tester,
     ) async {

@@ -422,11 +422,12 @@ GPUColorTargetState _colorTarget(BlendState blend) {
         alpha: component('one', 'one-minus-src-alpha'),
       ),
     ),
+    // Added light covers nothing: the alpha of the target is kept.
     BlendState.additive => GPUColorTargetState(
       format: _canvasFormat,
       blend: GPUBlendState(
         color: component('one', 'one'),
-        alpha: component('one', 'one'),
+        alpha: component('zero', 'one'),
       ),
     ),
   };
