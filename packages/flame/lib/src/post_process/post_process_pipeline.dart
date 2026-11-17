@@ -9,6 +9,12 @@ import 'package:flame/src/post_process/post_process_component.dart';
 import 'package:flame/src/post_process/standard_effects.dart';
 
 /// A single named, quality-gated stage inside a [PostProcessPipeline].
+///
+/// [resolutionScale] multiplies the pipeline's pixel ratio for this stage
+/// (for example `0.5` for a half-resolution bloom). It applies to a
+/// [postProcess] that follows the display
+/// ([PostProcess.autoSyncDevicePixelRatio]); a post process with an explicit
+/// `pixelRatio` keeps that ratio.
 class PostProcessStage({
   required final String name,
   required final PostProcess postProcess,
@@ -17,6 +23,10 @@ class PostProcessStage({
   var double resolutionScale = 1.0,
   var bool Function()? activePredicate,
 }) {
+  /// Whether the stage ran in the most recent frame and may therefore still
+  /// hold textures of it.
+  bool _ranLastFrame = false;
+
   /// Evaluates whether this stage should execute under [controller].
   bool isStageActive(GraphicsSettingsController? controller) {
     if (!enabled) {
@@ -55,7 +65,21 @@ final class _FoldedColorGradingOp(
 /// `graphics.effectivePostProcessEnabled == false`, or when all enabled stages
 /// have zero intensity), [postProcess] invokes [renderSubtree] directly onto
 /// the destination canvas with `0` offscreen `PictureRecorder` or
-/// `Picture.toImageSync` calls.
+/// `Picture.toImageSync` calls of its own. A camera that owns the pipeline
+/// then renders its world exactly as it would without a post process,
+/// including the reduced (or supersampled) surface of its world render
+/// scale; the same holds while only stages that do not rasterize their
+/// subtree (color grading, vignette) are active.
+///
+/// The pipeline's [pixelRatio] times [PostProcessStage.resolutionScale] is
+/// handed to every stage that follows the display. A stage whose post process
+/// was given an explicit `pixelRatio` keeps it, and so does a pipeline whose
+/// own [pixelRatio] was passed to the constructor or assigned.
+///
+/// A stage that stops running (it is disabled, gated out by the quality
+/// tier or its predicate, or turns into a no-op) is asked to
+/// [PostProcess.releaseFrameResources], so it does not keep a full-screen
+/// texture of its last frame while it is off.
 class PostProcessPipeline({
   List<PostProcessStage>? stages,
   this.graphics,
@@ -107,8 +131,16 @@ class PostProcessPipeline({
   void syncDevicePixelRatio(double targetRatio) {
     super.syncDevicePixelRatio(targetRatio);
     for (var i = 0; i < stages.length; i++) {
-      stages[i].postProcess.syncDevicePixelRatio(targetRatio);
+      _syncStagePixelRatio(stages[i]);
     }
+  }
+
+  /// Hands this pipeline's ratio, scaled for [stage], to its post process
+  /// unless that one has an explicit ratio of its own.
+  void _syncStagePixelRatio(PostProcessStage stage) {
+    stage.postProcess.syncDevicePixelRatio(
+      (pixelRatio * stage.resolutionScale.clamp(0.125, 2.5)).clamp(0.25, 4.0),
+    );
   }
 
   /// Looks up the first stage matching [name], or `null` if not found.
@@ -165,8 +197,18 @@ class PostProcessPipeline({
   void onRemove() {
     for (var i = 0; i < stages.length; i++) {
       stages[i].postProcess.onRemove();
+      stages[i]._ranLastFrame = false;
     }
     super.onRemove();
+  }
+
+  @override
+  void releaseFrameResources() {
+    for (var i = 0; i < stages.length; i++) {
+      stages[i].postProcess.releaseFrameResources();
+      stages[i]._ranLastFrame = false;
+    }
+    super.releaseFrameResources();
   }
 
   @override
@@ -186,14 +228,19 @@ class PostProcessPipeline({
 
     for (var i = 0; i < stages.length; i++) {
       final stage = stages[i];
-      if (!stage.isStageActive(controller)) {
-        continue;
-      }
-      if (stage.postProcess.isEffectivelyNoOp) {
+      var runs = stage.isStageActive(controller);
+      if (runs && stage.postProcess.isEffectivelyNoOp) {
         skippedNoOp++;
-        continue;
+        runs = false;
       }
-      _activeStagesScratch.add(stage);
+      if (runs) {
+        stage._ranLastFrame = true;
+        _activeStagesScratch.add(stage);
+      } else if (stage._ranLastFrame) {
+        // The stage just went quiet: let go of its last frame's textures.
+        stage._ranLastFrame = false;
+        stage.postProcess.releaseFrameResources();
+      }
     }
 
     _lastSkippedNoOpStageCount = skippedNoOp;
@@ -203,14 +250,8 @@ class PostProcessPipeline({
       return;
     }
 
-    final baseRatio = pixelRatio;
     for (var i = 0; i < _activeStagesScratch.length; i++) {
-      final stage = _activeStagesScratch[i];
-      stage.postProcess.pixelRatio =
-          (baseRatio * stage.resolutionScale.clamp(0.125, 2.5)).clamp(
-            0.25,
-            4.0,
-          );
+      _syncStagePixelRatio(_activeStagesScratch[i]);
     }
 
     var i = 0;

@@ -258,7 +258,14 @@ class CameraComponent({
             postProcessor.render(
               canvas,
               vSize,
-              _renderWorld,
+              // A post process that rasterizes the world sets the resolution
+              // itself (its pixel ratio follows the world render scale). When
+              // the world goes straight onto the canvas instead (a bypassed
+              // pipeline, or stages that only wrap it in a layer), it takes
+              // the same render-scale surface as without a post process.
+              (canvas) => PostProcess.isRasterizingSubtree
+                  ? _renderWorld(canvas)
+                  : _renderScaledOrDirectWorld(canvas),
               _updatePostProcessContext,
             );
           } else {

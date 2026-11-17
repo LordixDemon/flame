@@ -117,6 +117,11 @@ class DayNightWeatherController({
   double hoursPerRealSecond;
 
   double _hour = 12.0;
+
+  /// The hour the lighting values were last computed for. The clock itself
+  /// ([_hour]) is kept exact, and the lighting is only recomputed once it has
+  /// moved away from this by a noticeable amount.
+  double _evaluatedHour = 12.0;
   double _sunDirX = -0.25;
   double _sunDirY = -0.30;
   double _sunDirZ = 0.92;
@@ -147,10 +152,19 @@ class DayNightWeatherController({
 
   /// Sets exact time of day in hours (wrapping modulo `24.0` cleanly even for
   /// negative values).
+  ///
+  /// [hour] always takes the new value. The lighting values, [version] and
+  /// the visual-mutation notification follow once the clock has moved more
+  /// than a millionth of an hour away from the time they were last computed
+  /// for, so arbitrarily small steps add up instead of being lost.
   void setHour(double nextHour) {
-    final wrapped = _wrapHour(nextHour);
-    if ((_hour - wrapped).abs() > 1e-6) {
-      _evaluate(wrapped);
+    _hour = _wrapHour(nextHour);
+    var moved = (_hour - _evaluatedHour).abs();
+    if (moved > 12.0) {
+      moved = 24.0 - moved;
+    }
+    if (moved > 1e-6) {
+      _evaluate(_hour);
       _version++;
       Game.notifyVisualMutation();
     }
@@ -158,6 +172,9 @@ class DayNightWeatherController({
 
   /// Advances the clock by `dt * hoursPerRealSecond` and optionally pushes
   /// updated lighting onto [light3D] and [light2D].
+  ///
+  /// The clock advances by exactly that amount on every call, however small
+  /// the step is.
   void update(
     double dt, {
     DirectionalLight3D? light3D,
@@ -193,6 +210,7 @@ class DayNightWeatherController({
 
   void _evaluate(double h) {
     _hour = h;
+    _evaluatedHour = h;
     final n = _keyframes.length;
     if (n == 1) {
       final k = _keyframes[0];

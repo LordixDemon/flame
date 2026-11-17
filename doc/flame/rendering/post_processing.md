@@ -204,17 +204,23 @@ class CrystalBallGame extends FlameGame<CrystalBallGameWorld> {
 
 - **`ShaderPostProcess` & `UniformSlotBuffer`**: Base class for single-pass GPU `FragmentShader`
   post-processes that caches a single `FragmentShader` instance across frames, disposes transient
-  subtree `ui.Image` textures without leaks, and pairs with `UniformSlotBuffer` — an IEEE-754
-  32-bit float dirty cache (`setFloat`, `setVec2`, `setVec3`, `setVec4`, `skippedCount`) that skips
-  redundant Dart-to-GPU FFI `shader.setFloat` calls when uniform values have not changed.
+  subtree `ui.Image` textures without leaks, and pairs with `UniformSlotBuffer`, a thin writer for
+  float uniforms (`setFloat`, `setVec2`, `setVec3`, `setVec4`). `FragmentShader.setFloat` only
+  stores into a Dart-side array, so these calls pass every value straight through; only
+  `setFloatCustom`, for an arbitrary uploader, is dirty-checked (`skippedCount`). While the effect
+  is switched off (`enabled == false` or no program) the subtree is drawn untouched and the stage
+  holds no frame image or shader.
 - **`DualPassShaderPostProcess`**: For multi-pass effects such as separable bloom + ACES
-  tone-mapping + vignette/bokeh, caches intermediate offscreen GPU `ui.Image` ping-pong targets
-  across frames when resolution is unchanged and exposes `disposeResources()` for deterministic GPU
-  texture cleanup in `FlameGame.onRemove()`.
+  tone-mapping + vignette/bokeh. It rasterizes the subtree and the auxiliary pass into new images
+  every frame and keeps the latest ones until the next frame replaces them; they are released
+  when the effect is switched off, when its pipeline stage turns inactive, and in `onRemove()`
+  (`releaseFrameResources()`). `dispose()` additionally frees the cached `FragmentShader`.
 - **`PostProcessPipeline` & `PostProcessStage`**: Declarative quality-aware post-processing chain
   supporting per-stage `minQualityTier`, `activePredicate(GraphicsProfile)`, `resolutionScale` (e.g.
-  `0.5` half-res bloom), automatic `DisplayMetrics.devicePixelRatio` propagation, and a
-  zero-`toImageSync` fast bypass (`bypassedLastFrame`) when all stages are inactive.
+  `0.5` half-res bloom), automatic `DisplayMetrics.devicePixelRatio` propagation to the stages and pipelines built
+  without an explicit `pixelRatio` (a ratio given at construction, or assigned by hand, is kept),
+  and a zero-`toImageSync` fast bypass (`bypassedLastFrame`) when all stages are inactive. The
+  bypass still draws the world at the camera's render scale.
 - **`ContrastAdaptiveSharpenPostProcess`**: Single-pass 5-tap GPU sharpening stage (plus reusable
   GLSL helper `ContrastAdaptiveSharpenHelper.glslFunction`) to restore crisp detail when
   `camera.worldRenderScale < 1.0`.
@@ -249,13 +255,15 @@ You can explore the source code [on GitHub](https://github.com/flame-engine/flam
   (`bypassedLastFrame == true`), the pipeline renders the subtree directly onto the canvas with
   **zero** offscreen `Picture.toImageSync` allocations.
 - **HD-2D `TiltShiftPostProcess`, `DayNightWeatherController` & `WeatherPrecipitationLayer`**:
-  - `TiltShiftPostProcess` renders a miniature diorama depth-of-field lens (`focusCenterV`,
-    `focusHalfBand`, `blurSigma`, optional warm/cool `colorMatrix`, and zero-copy sharp focus band
-    preserving crisp pixel-art sprites at the focal plane; auto-bypasses when `blurSigma <= 0` and
-    color grading is identity).
+  - `TiltShiftPostProcess` renders a miniature diorama depth-of-field lens (`focusCenterY`,
+    `focusBandHalfHeight`, `featherFalloff`, `farSigma`, `nearSigma`, `strength`) with a sharp focus
+    band that preserves crisp pixel-art sprites at the focal plane; it auto-bypasses when it is
+    disabled, `strength` is `0`, or both sigmas are negligible.
   - `DayNightWeatherController` interpolates `DayNightKeyframe` stops across cyclic `0..24h` world
     time in perceptual `OklabColor` space, driving a `5x4` `ColorFilter.matrix` and matching 3D sun
     direction/ambient colors.
-  - `WeatherPrecipitationLayer` simulates zero-allocation SoA `rain`, `snow`, `ashEmbers`, `sakuraPetals`,
-    and `autumnLeaves` with camera-delta screen wrapping (`0` teleport streaks on fast camera cuts) and
-    optional lightning flash overlays.
+  - `WeatherPrecipitationLayer` simulates zero-allocation SoA `WeatherKind.rain`, `snow`, `embers`, `hail`
+    and `ash`. The drops live in world space on a repeating tile (`wrapPeriod`, by default the size
+    of `fallbackBounds`) and are integrated every frame, so panning, camera cuts, zooming and
+    changing wind or fall speed never move a drop abruptly. `onDropImpact` receives impact points
+    inside the area the camera sees.

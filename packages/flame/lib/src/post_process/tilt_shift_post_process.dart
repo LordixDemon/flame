@@ -22,8 +22,6 @@ class TiltShiftPostProcess({
   var bool enabled = true,
   super.pixelRatio,
 }) extends PostProcess {
-  ui.Image? _heldImage;
-
   final Paint _basePaint = Paint()..filterQuality = FilterQuality.medium;
   final Paint _farBlurPaint = Paint()..filterQuality = FilterQuality.medium;
   final Paint _nearBlurPaint = Paint()..filterQuality = FilterQuality.medium;
@@ -32,13 +30,6 @@ class TiltShiftPostProcess({
 
   double _cachedFarSigma = -1.0;
   double _cachedNearSigma = -1.0;
-
-  void _replaceHeldImage(ui.Image? next) {
-    if (!identical(_heldImage, next)) {
-      _heldImage?.dispose();
-      _heldImage = next;
-    }
-  }
 
   void _syncBlurFilters(double effFar, double effNear) {
     if ((_cachedFarSigma - effFar).abs() > 1e-4) {
@@ -156,17 +147,12 @@ class TiltShiftPostProcess({
   @override
   void postProcess(Vector2 size, Canvas canvas) {
     if (isEffectivelyNoOp || size.x < 2 || size.y < 2) {
+      releaseFrameResources();
       renderSubtree(canvas);
       return;
     }
     final sceneImage = rasterizeSubtree();
-    _replaceHeldImage(sceneImage);
+    holdFrameImage(sceneImage);
     renderFromImage(sceneImage, size, canvas);
-  }
-
-  @override
-  void onRemove() {
-    _replaceHeldImage(null);
-    super.onRemove();
   }
 }

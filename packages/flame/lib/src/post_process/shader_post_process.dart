@@ -8,10 +8,15 @@ import 'package:flutter/painting.dart';
 import 'package:meta/meta.dart';
 
 /// Base class for GPU fragment-shader post processes that automatically caches
-/// a single [ui.FragmentShader] instance across frames, skips redundant float
-/// uniform FFI uploads via [uniforms], and disposes transient rasterized
-/// subtree [ui.Image]s without per-frame shader allocations or GPU texture
-/// leaks.
+/// a single [ui.FragmentShader] instance across frames, writes its float
+/// uniforms through [uniforms], and disposes transient rasterized subtree
+/// [ui.Image]s without per-frame shader allocations or GPU texture leaks.
+///
+/// The subtree is rasterized into a new image every frame; that image is
+/// kept until the next frame replaces it. While the post process is switched
+/// off ([enabled] is false or there is no program) it passes the subtree
+/// through untouched and holds neither the last image nor the shader that
+/// samples it.
 abstract class ShaderPostProcess extends PostProcess {
   /// Creates a [ShaderPostProcess] that loads [assetPath] during [onLoad] or
   /// uses an already-loaded [program].
@@ -37,7 +42,6 @@ abstract class ShaderPostProcess extends PostProcess {
   ui.FragmentProgram? _program;
   ui.FragmentProgram? _shaderProgram;
   ui.FragmentShader? _cachedShader;
-  ui.Image? _heldImage;
 
   int _quadW = -1;
   int _quadH = -1;
@@ -47,7 +51,7 @@ abstract class ShaderPostProcess extends PostProcess {
 
   double _time = 0.0;
 
-  /// Dirty-checked float32 uniform cache associated with this post-process.
+  /// Float uniform writer associated with this post-process.
   final UniformSlotBuffer uniforms = UniformSlotBuffer();
 
   /// Whether shader post-processing is active; when false, the subtree is
@@ -60,8 +64,7 @@ abstract class ShaderPostProcess extends PostProcess {
   /// Whether a live [ui.FragmentShader] instance is currently cached.
   bool get hasCachedShader => _cachedShader != null;
 
-  /// Writes [value] into uniform slot [index] on [shader] only when its 32-bit
-  /// float representation changed since the previous upload.
+  /// Writes [value] into uniform slot [index] on [shader] through [uniforms].
   @protected
   bool setShaderFloat(ui.FragmentShader shader, int index, double value) =>
       uniforms.setFloat(shader, index, value);
@@ -112,17 +115,16 @@ abstract class ShaderPostProcess extends PostProcess {
 
   /// Replaces and disposes the previously held primary scene [ui.Image].
   @protected
-  void replaceHeldSceneImage(ui.Image nextImage) {
-    if (!identical(_heldImage, nextImage)) {
-      _heldImage?.dispose();
-      _heldImage = nextImage;
-    }
-  }
+  void replaceHeldSceneImage(ui.Image nextImage) => holdFrameImage(nextImage);
+
+  @override
+  bool get isEffectivelyNoOp => !enabled || resolveProgram() == null;
 
   @override
   void postProcess(Vector2 size, Canvas canvas) {
     final program = resolveProgram();
     if (!enabled || program == null || size.x < 4 || size.y < 4) {
+      releaseFrameResources();
       renderSubtree(canvas);
       return;
     }
@@ -162,18 +164,13 @@ abstract class ShaderPostProcess extends PostProcess {
     _shaderPaint.shader = null;
   }
 
+  /// Besides the held scene image this drops the cached shader, because a
+  /// shader keeps the textures bound to its samplers alive; a new one is
+  /// created on the next frame.
   @override
   @mustCallSuper
-  void onRemove() {
-    _heldImage?.dispose();
-    _heldImage = null;
-    super.onRemove();
-  }
-
-  @override
-  @mustCallSuper
-  void dispose() {
-    super.dispose();
+  void releaseFrameResources() {
+    super.releaseFrameResources();
     uniforms.invalidate();
     _cachedShader?.dispose();
     _cachedShader = null;

@@ -2,9 +2,19 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-/// Dirty-checked float32 uniform cache for [ui.FragmentShader] that skips
-/// redundant Dart-to-Impeller/Skia FFI `setFloat` calls when a uniform slot's
-/// IEEE-754 32-bit float value has not changed since the previous frame.
+/// Writes float uniforms, slot by slot, to a [ui.FragmentShader] or to a
+/// custom uniform sink.
+///
+/// `FragmentShader.setFloat` only stores the value in a float list on the
+/// Dart side; nothing crosses into the engine until the shader is drawn. A
+/// cache lookup would cost more than the store it could save, so [setFloat]
+/// and the vector helpers pass every value straight through to the shader.
+/// They are counted in [uploadedCount] and never in [skippedCount].
+///
+/// [setFloatCustom] writes to an arbitrary uploader, whose cost is not
+/// known. That path is dirty-checked: the uploader is skipped
+/// ([skippedCount]) while the slot's IEEE-754 32-bit float value is the one
+/// last sent to the same target.
 class UniformSlotBuffer({int initialCapacity = 32}) {
   this : assert(initialCapacity > 0, 'initialCapacity must be positive') {
     final cap = math.max(8, initialCapacity);
@@ -21,14 +31,15 @@ class UniformSlotBuffer({int initialCapacity = 32}) {
   int _uploadedCount = 0;
   int _skippedCount = 0;
 
-  /// Number of `shader.setFloat` FFI calls actually transmitted.
+  /// Number of values written: every [setFloat], and every
+  /// [setFloatCustom] whose value differed from the cached one.
   int get uploadedCount => _uploadedCount;
 
-  /// Number of redundant `shader.setFloat` FFI calls skipped via
-  /// dirty-checking.
+  /// Number of [setFloatCustom] writes skipped because the slot already held
+  /// the value.
   int get skippedCount => _skippedCount;
 
-  /// Current slot capacity of the backing typed array.
+  /// Current slot capacity of the dirty cache used by [setFloatCustom].
   int get capacity => _bits.length;
 
   void _ensureCapacity(int index) {
@@ -63,17 +74,13 @@ class UniformSlotBuffer({int initialCapacity = 32}) {
     return true;
   }
 
-  /// Writes [value] into uniform slot [index] on [shader] only if [shader]
-  /// changed, the slot has not yet been written, or its 32-bit float bit
-  /// pattern differs from the cached value.
+  /// Writes [value] into uniform slot [index] on [shader].
   ///
-  /// Returns `true` when `shader.setFloat` was invoked, or `false` when
-  /// skipped.
+  /// The write always happens (see the class documentation), so this always
+  /// returns `true`.
   bool setFloat(ui.FragmentShader shader, int index, double value) {
-    if (!_prepareSlot(shader, index, value)) {
-      return false;
-    }
     shader.setFloat(index, value);
+    _uploadedCount++;
     return true;
   }
 
@@ -131,7 +138,8 @@ class UniformSlotBuffer({int initialCapacity = 32}) {
     setVec4(shader, baseIndex, color.r, color.g, color.b, color.a);
   }
 
-  /// Marks all cached uniform slots dirty so the next frame re-uploads them.
+  /// Marks all slots cached for [setFloatCustom] dirty, so the next write
+  /// to each of them reaches the uploader.
   void invalidate() {
     _boundShader = null;
     _valid.fillRange(0, _valid.length, 0);

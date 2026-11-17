@@ -41,7 +41,6 @@ class BloomPostProcess({
   var bool enabled = true,
   super.pixelRatio,
 }) extends PostProcess {
-  ui.Image? _heldImage;
   final Paint _basePaint = Paint()..filterQuality = FilterQuality.medium;
   final Paint _bloomPaint = Paint()
     ..blendMode = BlendMode.plus
@@ -50,13 +49,6 @@ class BloomPostProcess({
   double _cachedThreshold = -1.0;
   double _cachedIntensity = -1.0;
   double _cachedSigma = -1.0;
-
-  void _replaceHeldImage(ui.Image? next) {
-    if (!identical(_heldImage, next)) {
-      _heldImage?.dispose();
-      _heldImage = next;
-    }
-  }
 
   void _syncFilters(double t, double gain, double blurSigma) {
     if ((_cachedThreshold - t).abs() > 1e-4 ||
@@ -133,6 +125,7 @@ class BloomPostProcess({
   void postProcess(Vector2 size, Canvas canvas) {
     final clampedGain = intensity.clamp(0.0, 3.0);
     if (!enabled || clampedGain <= 1e-3 || size.x < 2 || size.y < 2) {
+      releaseFrameResources();
       renderSubtree(canvas);
       return;
     }
@@ -144,14 +137,8 @@ class BloomPostProcess({
       renderSubtree(canvas);
       return;
     }
-    _replaceHeldImage(frameImage);
+    holdFrameImage(frameImage);
     renderFromImage(frameImage, size, canvas);
-  }
-
-  @override
-  void onRemove() {
-    _replaceHeldImage(null);
-    super.onRemove();
   }
 }
 
@@ -247,8 +234,6 @@ class ChromaticAberrationPostProcess({
   var bool enabled = true,
   super.pixelRatio,
 }) extends PostProcess {
-  ui.Image? _heldImage;
-
   static final Paint _redPaint = Paint()
     ..filterQuality = FilterQuality.medium
     ..colorFilter = const ColorFilter.matrix(<double>[
@@ -279,13 +264,6 @@ class ChromaticAberrationPostProcess({
     ]);
 
   static final Paint _layerPaint = Paint();
-
-  void _replaceHeldImage(ui.Image? next) {
-    if (!identical(_heldImage, next)) {
-      _heldImage?.dispose();
-      _heldImage = next;
-    }
-  }
 
   @override
   bool get isEffectivelyNoOp => !enabled || offsetPx.abs() <= 1e-2;
@@ -330,6 +308,7 @@ class ChromaticAberrationPostProcess({
   @override
   void postProcess(Vector2 size, Canvas canvas) {
     if (!enabled || offsetPx.abs() <= 1e-2 || size.x < 2 || size.y < 2) {
+      releaseFrameResources();
       renderSubtree(canvas);
       return;
     }
@@ -341,19 +320,17 @@ class ChromaticAberrationPostProcess({
       renderSubtree(canvas);
       return;
     }
-    _replaceHeldImage(frameImage);
+    holdFrameImage(frameImage);
     renderFromImage(frameImage, size, canvas);
-  }
-
-  @override
-  void onRemove() {
-    _replaceHeldImage(null);
-    super.onRemove();
   }
 }
 
 /// Zero-asset `4x5` color matrix grading [PostProcess] with artistic presets,
 /// exposure, contrast, saturation, and temperature controls.
+///
+/// The controls combine with every [preset]: the presets that tint or
+/// re-balance the image scale the controls, and [ColorGradingPreset.sepia]
+/// tones the image first and has the controls applied to the result.
 class ColorGradingPostProcess({
   var ColorGradingPreset preset = ColorGradingPreset.neutral,
   var double exposure = 0.0,
@@ -435,28 +412,8 @@ class ColorGradingPostProcess({
         sat *= 0.82;
         con *= 1.06;
       case ColorGradingPreset.sepia:
-        return <double>[
-          0.393,
-          0.769,
-          0.189,
-          0,
-          0,
-          0.349,
-          0.686,
-          0.168,
-          0,
-          0,
-          0.272,
-          0.534,
-          0.131,
-          0,
-          0,
-          0,
-          0,
-          0,
-          1,
-          0,
-        ];
+        // The toning matrix is applied first; see the end of this method.
+        break;
       case ColorGradingPreset.noir:
         sat = 0.0;
         con *= 1.32;
@@ -483,7 +440,7 @@ class ColorGradingPostProcess({
     final c = con.clamp(0.1, 3.0);
     final intercept = 128.0 * (1.0 - c);
 
-    return <double>[
+    final controls = <double>[
       (sr + s) * rGain * c,
       sg * rGain * c,
       sb * rGain * c,
@@ -505,7 +462,17 @@ class ColorGradingPostProcess({
       1,
       0,
     ];
+    return preset == ColorGradingPreset.sepia
+        ? concatColorMatrices(controls, _sepiaMatrix)
+        : controls;
   }
+
+  static const List<double> _sepiaMatrix = <double>[
+    0.393, 0.769, 0.189, 0, 0, //
+    0.349, 0.686, 0.168, 0, 0, //
+    0.272, 0.534, 0.131, 0, 0, //
+    0, 0, 0, 1, 0, //
+  ];
 
   void _syncPaint() {
     final hash = Object.hash(

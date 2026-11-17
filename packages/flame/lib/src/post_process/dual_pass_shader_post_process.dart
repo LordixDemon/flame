@@ -96,6 +96,7 @@ abstract class DualPassShaderPostProcess extends ShaderPostProcess {
   void postProcess(Vector2 size, Canvas canvas) {
     final program = resolveProgram();
     if (!enabled || program == null || size.x < 4 || size.y < 4) {
+      releaseFrameResources();
       renderSubtree(canvas);
       return;
     }
@@ -164,10 +165,13 @@ abstract class DualPassShaderPostProcess extends ShaderPostProcess {
   }
 
   @override
+  bool get holdsFrameImage => super.holdsFrameImage || _heldAuxImage != null;
+
+  @override
   @mustCallSuper
-  void onRemove() {
+  void releaseFrameResources() {
     _heldAuxImage?.dispose();
     _heldAuxImage = null;
-    super.onRemove();
+    super.releaseFrameResources();
   }
 }

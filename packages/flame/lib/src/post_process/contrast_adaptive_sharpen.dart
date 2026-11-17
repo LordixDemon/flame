@@ -130,15 +130,6 @@ class ContrastAdaptiveSharpenPostProcess({
   var FilterQuality filterQuality = FilterQuality.medium,
   super.pixelRatio,
 }) extends PostProcess {
-  ui.Image? _heldImage;
-
-  void _replaceHeldImage(ui.Image? next) {
-    if (!identical(_heldImage, next)) {
-      _heldImage?.dispose();
-      _heldImage = next;
-    }
-  }
-
   @override
   bool get isEffectivelyNoOp => !enabled || strength.clamp(0.0, 1.0) <= 1e-3;
 
@@ -171,6 +162,7 @@ class ContrastAdaptiveSharpenPostProcess({
   void postProcess(Vector2 size, Canvas canvas) {
     final clampedStrength = strength.clamp(0.0, 1.0);
     if (!enabled || clampedStrength <= 1e-3 || size.x < 2 || size.y < 2) {
+      releaseFrameResources();
       renderSubtree(canvas);
       return;
     }
@@ -182,13 +174,7 @@ class ContrastAdaptiveSharpenPostProcess({
       renderSubtree(canvas);
       return;
     }
-    _replaceHeldImage(frameImage);
+    holdFrameImage(frameImage);
     renderFromImage(frameImage, size, canvas);
-  }
-
-  @override
-  void onRemove() {
-    _replaceHeldImage(null);
-    super.onRemove();
   }
 }
