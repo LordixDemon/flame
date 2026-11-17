@@ -42,6 +42,15 @@ class DoubleTapDispatcher() extends Dispatcher<FlameGame> {
     _components.clear();
   }
 
+  /// Cancels a double tap that is pressed but not released yet (for example
+  /// when the app window loses OS focus in between).
+  void cancelAllActiveDoubleTaps() {
+    if (_components.isEmpty) {
+      return;
+    }
+    _onDoubleTapCancel(DoubleTapCancelEvent());
+  }
+
   static void addDispatcher(Component component) {
     Dispatcher.addDispatcher(
       component,

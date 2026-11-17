@@ -24,6 +24,13 @@ class MultiDragScaleGestureRecognizer({
 
   /// Minimum rotation angle (in radians) required to start a pure rotation
   /// scale gesture.
+  ///
+  /// For touch and mouse pointers the angle alone is not enough: the two
+  /// pointers must also have travelled further than the platform's scale slop
+  /// along the arc around their midpoint. Fingers that merely rest or tap next
+  /// to each other therefore never start a gesture, however close together
+  /// they are. Trackpad gestures report their rotation directly and only need
+  /// to exceed the angle.
   var double rotationThreshold = 0.05,
 
   /// When `true`, desktop/macOS trackpad `PointerPanZoom` gestures bypass the
@@ -326,20 +333,23 @@ class MultiDragScaleGestureRecognizer({
     final scaleFactor = _scale.scaleFactor;
     final focalDelta =
         (_scale.currentFocalPoint! - _scale.initialFocalPoint!).distance;
-    final rotationDelta = _computeRotationFactor().abs();
 
     final bool exceedsThreshold;
     if (zeroTrackpadDeadzone && kind == PointerDeviceKind.trackpad) {
       exceedsThreshold =
           (scaleFactor - 1.0).abs() > 1e-9 ||
           focalDelta > 0.0 ||
-          rotationDelta > 0.0;
+          _computeRotationFactor().abs() > 0.0;
     } else {
+      final scaleSlop = computeScaleSlop(kind);
+      final pointerRotation = _computePointerRotation().abs();
       exceedsThreshold =
-          spanDelta > computeScaleSlop(kind) ||
+          spanDelta > scaleSlop ||
           math.max(scaleFactor, 1.0 / scaleFactor) > scaleThreshold ||
           focalDelta > computePanSlop(kind, gestureSettings) ||
-          rotationDelta > rotationThreshold;
+          _computePanZoomRotation().abs() > rotationThreshold ||
+          (pointerRotation > rotationThreshold &&
+              pointerRotation * _pointerRotationRadius() > scaleSlop);
     }
 
     if (exceedsThreshold) {
@@ -436,25 +446,59 @@ class MultiDragScaleGestureRecognizer({
     }
   }
 
-  double _computeRotationFactor() {
-    var factor = 0.0;
+  /// The rotation reported to the scale callbacks: the turn of the line
+  /// between the first two pointers plus what the trackpad gestures report.
+  double _computeRotationFactor() =>
+      _computePointerRotation() + _computePanZoomRotation();
+
+  /// How far the line between the first two pointers has turned since the
+  /// gesture began, in radians within `(-pi, pi]`.
+  ///
+  /// The two `atan2` results are each within `[-pi, pi]`, so their plain
+  /// difference jumps by a full turn whenever the line crosses the horizontal
+  /// with the first pointer on the left. The difference is brought back to
+  /// the shortest turn, which leaves every other case bit-identical.
+  double _computePointerRotation() {
     final initialLine = _scale.initialLine;
     final currentLine = _scale.currentLine;
-    if (initialLine != null && currentLine != null) {
-      final fx = initialLine.pointerStartLocation.dx;
-      final fy = initialLine.pointerStartLocation.dy;
-      final sx = initialLine.pointerEndLocation.dx;
-      final sy = initialLine.pointerEndLocation.dy;
-
-      final nfx = currentLine.pointerStartLocation.dx;
-      final nfy = currentLine.pointerStartLocation.dy;
-      final nsx = currentLine.pointerEndLocation.dx;
-      final nsy = currentLine.pointerEndLocation.dy;
-
-      final angle1 = math.atan2(fy - sy, fx - sx);
-      final angle2 = math.atan2(nfy - nsy, nfx - nsx);
-      factor = angle2 - angle1;
+    if (initialLine == null || currentLine == null) {
+      return 0.0;
     }
+    final fx = initialLine.pointerStartLocation.dx;
+    final fy = initialLine.pointerStartLocation.dy;
+    final sx = initialLine.pointerEndLocation.dx;
+    final sy = initialLine.pointerEndLocation.dy;
+
+    final nfx = currentLine.pointerStartLocation.dx;
+    final nfy = currentLine.pointerStartLocation.dy;
+    final nsx = currentLine.pointerEndLocation.dx;
+    final nsy = currentLine.pointerEndLocation.dy;
+
+    final angle1 = math.atan2(fy - sy, fx - sx);
+    final angle2 = math.atan2(nfy - nsy, nfx - nsx);
+    var turn = angle2 - angle1;
+    if (turn > math.pi) {
+      turn -= 2.0 * math.pi;
+    } else if (turn <= -math.pi) {
+      turn += 2.0 * math.pi;
+    }
+    return turn;
+  }
+
+  /// Half the current distance between the first two pointers: the radius of
+  /// the arc each of them describes when the pair turns about its midpoint.
+  double _pointerRotationRadius() {
+    final line = _scale.currentLine;
+    if (line == null) {
+      return 0.0;
+    }
+    return 0.5 * (line.pointerEndLocation - line.pointerStartLocation).distance;
+  }
+
+  /// The rotation contributed by trackpad gestures since the set of inputs
+  /// last changed.
+  double _computePanZoomRotation() {
+    var factor = 0.0;
     for (final panZoom in _scale.panZooms.values) {
       factor += panZoom.rotation;
     }

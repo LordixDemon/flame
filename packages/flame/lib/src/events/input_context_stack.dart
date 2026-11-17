@@ -80,8 +80,17 @@ class InputContextStack() {
     _stack.insert(insertAt, context);
   }
 
-  /// Removes the top-most enabled context, returning it or `null` if empty.
-  InputContext? pop() => _stack.isEmpty ? null : _stack.removeAt(0);
+  /// Removes the top-most enabled context and returns it, or returns `null`
+  /// if no context is enabled. Disabled contexts are left in place: they take
+  /// no part in routing, so they are not what is on top.
+  InputContext? pop() {
+    for (var i = 0; i < _stack.length; i++) {
+      if (_stack[i].isEnabled) {
+        return _stack.removeAt(i);
+      }
+    }
+    return null;
+  }
 
   /// Removes the context matching [name], returning `true` if found.
   bool removeByName(String name) {

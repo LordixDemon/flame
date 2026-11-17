@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flame/src/components/position_component.dart';
+import 'package:meta/meta.dart';
 import 'package:vector_math/vector_math.dart';
 
 /// Cardinal and sequential traversal directions for [FocusNavigationGroup].
@@ -15,8 +16,18 @@ enum FocusDirection() {
 
 /// Mixin making a [PositionComponent] navigable by keyboard arrows, `Tab`, or
 /// gamepad D-Pad / stick inside a [FocusNavigationGroup].
+///
+/// A component that is removed from the component tree leaves the candidates
+/// of every group it is registered in (giving up focus if it holds it) and
+/// rejoins them when it is mounted again, so a group never keeps navigating
+/// to, or holding on to, components that are gone. Call
+/// [FocusNavigationGroup.unregister] to take a component out for good.
 mixin FocusableComponent on PositionComponent {
   bool _isFocused = false;
+
+  /// Groups this component is registered in, whether or not it is currently
+  /// among their candidates.
+  final List<FocusNavigationGroup> _focusGroups = <FocusNavigationGroup>[];
 
   /// Whether this component can currently receive focus.
   bool canFocus = true;
@@ -37,6 +48,24 @@ mixin FocusableComponent on PositionComponent {
   /// Invoked when the player triggers `confirm` / `Enter` / `Space` / `South`
   /// while focused.
   void onFocusActivate() {}
+
+  @override
+  @mustCallSuper
+  void onMount() {
+    super.onMount();
+    for (var i = 0; i < _focusGroups.length; i++) {
+      _focusGroups[i]._admit(this);
+    }
+  }
+
+  @override
+  @mustCallSuper
+  void onRemove() {
+    for (var i = 0; i < _focusGroups.length; i++) {
+      _focusGroups[i]._withdraw(this);
+    }
+    super.onRemove();
+  }
 }
 
 /// Spatial and sequential focus controller enabling seamless keyboard, D-Pad,
@@ -69,18 +98,34 @@ class FocusNavigationGroup({
       List<FocusableComponent>.unmodifiable(_items);
 
   /// Registers [item] into this navigation group.
+  ///
+  /// The registration outlives a removal of [item] from the component tree:
+  /// the item drops out of [candidates] while it is removed and returns when
+  /// it is mounted again.
   void register(FocusableComponent item) {
+    if (!item._focusGroups.contains(this)) {
+      item._focusGroups.add(this);
+    }
+    _admit(item);
+  }
+
+  void _admit(FocusableComponent item) {
     if (!_items.contains(item)) {
       _items.add(item);
     }
   }
 
-  /// Removes [item] from this group (clearing focus if it was focused).
-  void unregister(FocusableComponent item) {
+  void _withdraw(FocusableComponent item) {
     if (_focused == item) {
       requestFocus(null);
     }
     _items.remove(item);
+  }
+
+  /// Removes [item] from this group (clearing focus if it was focused).
+  void unregister(FocusableComponent item) {
+    item._focusGroups.remove(this);
+    _withdraw(item);
   }
 
   /// Explicitly assigns focus to [target] (or clears focus when `null`).

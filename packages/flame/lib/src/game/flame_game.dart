@@ -433,6 +433,9 @@ class FlameGame<W extends World>({
     findByKey<NonPrimaryTapDispatcher>(
       const NonPrimaryTapDispatcherKey(),
     )?.cancelAllActiveNonPrimaryTaps();
+    findByKey<DoubleTapDispatcher>(
+      const DoubleTapDispatcherKey(),
+    )?.cancelAllActiveDoubleTaps();
     findByKey<MouseMoveDispatcher>(
       const MouseMoveDispatcherKey(),
     )?.cancelAllActiveHovers();

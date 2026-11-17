@@ -145,9 +145,24 @@ abstract class DisplacementEvent<R>(
   /// property at other times.
   Vector2 get localDelta => localEndPosition - localStartPosition;
 
+  Vector2? _pointerCanvasPosition;
+
+  /// Tells the event where on the canvas the pointer actually is, when the
+  /// dispatcher knows better than the displacement itself (the first update
+  /// of a drag reports the gesture origin as its start).
+  @internal
+  set pointerCanvasPosition(Vector2 value) => _pointerCanvasPosition = value;
+
+  /// The point on the canvas the gesture is currently at.
+  ///
+  /// Unless the dispatcher supplied the pointer position, this is the start
+  /// of the displacement, not its end: the recognizers report the pointer's
+  /// (or the focal point's) position together with the delta that led to it,
+  /// and the event's end position is that position plus the delta once more.
   @override
   @internal
-  Vector2? get eventCanvasPosition => canvasEndPosition;
+  Vector2? get eventCanvasPosition =>
+      _pointerCanvasPosition ?? canvasStartPosition;
 
   @override
   Iterable<Component> collectApplicableChildren({

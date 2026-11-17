@@ -40,6 +40,20 @@ mixin DragCallbacks on Component implements PointerInputCallbacks {
   /// plus two-finger pinch still works.
   bool get allowsMultiPointerDrag => true;
 
+  /// Whether this component is something that can be dropped onto a
+  /// [DropTargetCallbacks] component while it is dragged.
+  ///
+  /// While this is `true` (the default) and the game has at least one mounted
+  /// drop target, the dispatcher looks for the drop target under the pointer
+  /// on every drag start, update and end, which costs one extra hit test of
+  /// the component tree per pointer sample.
+  ///
+  /// Set this to `false` (or override the getter) on components whose drags
+  /// never drop anything, such as a camera pan surface, a slider or a virtual
+  /// joystick: their drags then skip drop-target resolution altogether and no
+  /// drop target is notified about them.
+  bool isDropPayload = true;
+
   /// The user initiated a drag gesture on top of this component.
   ///
   /// By default, only one component will receive a drag event. However, setting
@@ -76,6 +90,11 @@ mixin DragCallbacks on Component implements PointerInputCallbacks {
   /// This event will be delivered to the component(s) that captured the initial
   /// [onDragStart], even if the point of touch moves outside of the boundaries
   /// of the component.
+  ///
+  /// If the component was released over a [DropTargetCallbacks] component that
+  /// accepts it, that target's `onDrop` has already been called and
+  /// [DragEndEvent.dropTarget] refers to it; otherwise
+  /// [DragEndEvent.dropAccepted] is `false`.
   @mustCallSuper
   void onDragEnd(DragEndEvent event) {
     _isDragged = false;
@@ -86,10 +105,12 @@ mixin DragCallbacks on Component implements PointerInputCallbacks {
   /// Unlike [onDragEnd], a cancellation is not the natural end of a gesture: it
   /// happens when the drag is interrupted (another recognizer wins the gesture
   /// arena, a second pointer triggers a scale takeover, a system event, etc.),
-  /// so it carries no meaningful velocity. The default implementation only
-  /// resets the drag state. Override this and call
+  /// so it carries no meaningful velocity and nothing is dropped: a hovered
+  /// drop target has already received `onDragTargetCancel`. The default
+  /// implementation only resets the drag state. Override this and call
   /// `onDragEnd(event.toDragEnd())` yourself if you want a cancellation
-  /// handled identically to a natural drag end.
+  /// handled like a natural drag end; the converted event has
+  /// [DragEndEvent.wasCancelled] set and no drop target.
   @mustCallSuper
   void onDragCancel(DragCancelEvent event) {
     _isDragged = false;

@@ -35,6 +35,37 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
   _hoveredDropTargets = {};
   final List<Vector2> _dropHitTraceScratch = <Vector2>[];
 
+  /// Number of mounted [DropTargetCallbacks] components per root game.
+  ///
+  /// Kept outside the dispatcher instance because drop targets may mount
+  /// before the first [DragCallbacks] component creates the dispatcher.
+  static final Expando<int> _mountedDropTargets = Expando<int>(
+    'MultiDragScaleDispatcher.mountedDropTargets',
+  );
+
+  /// Counts a [DropTargetCallbacks] component that mounted into [game].
+  @internal
+  static void registerDropTarget(FlameGame game) {
+    _mountedDropTargets[game] = (_mountedDropTargets[game] ?? 0) + 1;
+  }
+
+  /// Uncounts a [DropTargetCallbacks] component that was removed from [game].
+  @internal
+  static void unregisterDropTarget(FlameGame game) {
+    final next = (_mountedDropTargets[game] ?? 0) - 1;
+    _mountedDropTargets[game] = next > 0 ? next : null;
+  }
+
+  /// Number of [DropTargetCallbacks] components currently mounted in the game.
+  @visibleForTesting
+  int get mountedDropTargetCount => _mountedDropTargets[gameRef] ?? 0;
+
+  /// Whether dragging [dragged] has to look for drop targets at all: it must
+  /// be a drop payload and there must be a target to drop it onto. Everything
+  /// else keeps the plain drag cost (no extra hit test of the tree).
+  bool _resolvesDropTargets(DragCallbacks dragged) =>
+      dragged.isDropPayload && (_mountedDropTargets[gameRef] ?? 0) > 0;
+
   // Reference counts rather than booleans so that enableDrag/enableScale can
   // be called before onMount (when _recognizer is null). onMount uses these
   // counts to initialize the recognizer flags.
@@ -237,6 +268,14 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
   ) {
     final dragged = record.component;
     final prevTarget = _hoveredDropTargets[record];
+    if (!_resolvesDropTargets(dragged)) {
+      // Not (or no longer) a payload, or nothing left to drop onto.
+      if (prevTarget != null) {
+        _hoveredDropTargets.remove(record);
+        _leaveDropTarget(prevTarget, record, canvasPos);
+      }
+      return;
+    }
     final hit = _resolveDropTarget(
       pointerId: record.pointerId,
       dragged: dragged,
@@ -247,16 +286,7 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
     if (!identical(prevTarget, nextTarget)) {
       if (prevTarget != null) {
         _hoveredDropTargets.remove(record);
-        if (prevTarget.isMounted && !prevTarget.isRemoving) {
-          prevTarget.onDragTargetLeave(
-            DragDropEvent(
-              pointerId: record.pointerId,
-              draggedComponent: dragged,
-              canvasPosition: canvasPos.clone(),
-              localPosition: canvasPos.clone(),
-            ),
-          );
-        }
+        _leaveDropTarget(prevTarget, record, canvasPos);
       }
       if (nextTarget != null && hit != null) {
         _hoveredDropTargets[record] = nextTarget;
@@ -267,39 +297,13 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
     }
   }
 
-  void _completeDropForRecord(
+  void _leaveDropTarget(
+    DropTargetCallbacks target,
     TaggedComponent<DragCallbacks> record,
-    Vector2? canvasPos,
-    Vector2 velocity,
+    Vector2 canvasPos,
   ) {
-    final prevTarget = _hoveredDropTargets.remove(record);
-    if (canvasPos == null) {
-      if (prevTarget != null &&
-          prevTarget.isMounted &&
-          !prevTarget.isRemoving) {
-        prevTarget.onDragTargetCancel(
-          DragDropEvent(
-            pointerId: record.pointerId,
-            draggedComponent: record.component,
-            canvasPosition: Vector2.zero(),
-            localPosition: Vector2.zero(),
-          ),
-        );
-      }
-      return;
-    }
-    final hit = _resolveDropTarget(
-      pointerId: record.pointerId,
-      dragged: record.component,
-      canvasPos: canvasPos,
-      velocity: velocity,
-    );
-    final finalTarget = hit?.$1;
-    if (prevTarget != null &&
-        !identical(prevTarget, finalTarget) &&
-        prevTarget.isMounted &&
-        !prevTarget.isRemoving) {
-      prevTarget.onDragTargetLeave(
+    if (target.isMounted && !target.isRemoving) {
+      target.onDragTargetLeave(
         DragDropEvent(
           pointerId: record.pointerId,
           draggedComponent: record.component,
@@ -308,12 +312,61 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
         ),
       );
     }
+  }
+
+  /// Resolves the drop of [record] at the end of its drag and notifies the
+  /// drop targets involved. Returns the target that accepted the drop together
+  /// with the event it received, or `null` if nothing was dropped.
+  (DropTargetCallbacks, DragDropEvent)? _completeDropForRecord(
+    TaggedComponent<DragCallbacks> record,
+    Vector2? canvasPos,
+    Vector2 velocity,
+  ) {
+    final dragged = record.component;
+    if (canvasPos == null || !dragged.isMounted || dragged.isRemoving) {
+      // Nothing can be dropped without a position or by a component that is
+      // gone: a target that was hovered sees the drag as cancelled.
+      _cancelDropForRecord(record, canvasPos);
+      return null;
+    }
+    final prevTarget = _hoveredDropTargets.remove(record);
+    if (!_resolvesDropTargets(dragged)) {
+      if (prevTarget != null) {
+        _leaveDropTarget(prevTarget, record, canvasPos);
+      }
+      return null;
+    }
+    final hit = _resolveDropTarget(
+      pointerId: record.pointerId,
+      dragged: dragged,
+      canvasPos: canvasPos,
+      velocity: velocity,
+    );
+    final finalTarget = hit?.$1;
+    if (prevTarget != null && !identical(prevTarget, finalTarget)) {
+      _leaveDropTarget(prevTarget, record, canvasPos);
+    }
     if (finalTarget != null && hit != null) {
       if (!identical(prevTarget, finalTarget)) {
         finalTarget.onDragTargetEnter(hit.$2);
       }
       finalTarget.onDrop(hit.$2);
     }
+    return hit;
+  }
+
+  /// Removes and returns the drag records of [pointerId], in the order the
+  /// components received their `onDragStart`.
+  List<TaggedComponent<DragCallbacks>> _takeRecordsForPointer(int pointerId) {
+    final taken = <TaggedComponent<DragCallbacks>>[];
+    _records.removeWhere((record) {
+      if (record.pointerId == pointerId) {
+        taken.add(record);
+        return true;
+      }
+      return false;
+    });
+    return taken;
   }
 
   void _cancelDropForRecord(
@@ -334,6 +387,20 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
     }
   }
 
+  /// Called when the user initiates a drag gesture, for example by touching the
+  /// screen and then moving the finger.
+  ///
+  /// The handler propagates the [event] to any component located at the point
+  /// of touch and that uses the [DragCallbacks] mixin. The event will be first
+  /// delivered to the topmost such component, and then propagated to the
+  /// components below only if explicitly requested.
+  ///
+  /// Each [event] has an `event.pointerId` to keep track of multiple touches
+  /// that may occur simultaneously.
+  ///
+  /// A component that sets [DragCallbacks.allowsMultiPointerDrag] to false is
+  /// skipped while it already has a drag in progress, and the event carries on
+  /// to the components below it.
   @mustCallSuper
   void onDragStart(DragStartEvent event) {
     _lastCanvasPosByPointer[event.pointerId] = event.canvasPosition.clone();
@@ -381,7 +448,12 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
             prevPos.distanceToSquared(event.canvasStartPosition) <= 1e-6)
         ? event.canvasEndPosition
         : event.canvasStartPosition;
-    _lastCanvasPosByPointer[event.pointerId] = currentCanvasPos.clone();
+    if (prevPos != null) {
+      prevPos.setFrom(currentCanvasPos);
+    } else {
+      _lastCanvasPosByPointer[event.pointerId] = currentCanvasPos.clone();
+    }
+    event.pointerCanvasPosition = currentCanvasPos;
     final updated = <TaggedComponent<DragCallbacks>>{};
     final stale = <TaggedComponent<DragCallbacks>>{};
     final activeForPointer = <TaggedComponent<DragCallbacks>>[];
@@ -436,53 +508,52 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
   /// The default handler will deliver this event to all components who has
   /// previously received the corresponding [onDragStart] event and
   /// [onDragUpdate]s.
+  ///
+  /// For a component that is a drop payload, the drop is resolved first: the
+  /// [DropTargetCallbacks] component under the pointer receives `onDrop`, and
+  /// only then the dragged component receives `onDragEnd`, with the outcome in
+  /// [DragEndEvent.dropTarget] / [DragEndEvent.dropAccepted].
   @mustCallSuper
   void onDragEnd(DragEndEvent event) {
     final lastPos = _lastCanvasPosByPointer.remove(event.pointerId);
-    final endedRecords = <TaggedComponent<DragCallbacks>>[];
-    _records.removeWhere((record) {
-      if (record.pointerId == event.pointerId) {
-        endedRecords.add(record);
-        record.component.onDragEnd(event);
-        return true;
-      }
-      return false;
-    });
+    final endedRecords = _takeRecordsForPointer(event.pointerId);
     for (var i = 0; i < endedRecords.length; i++) {
-      _completeDropForRecord(endedRecords[i], lastPos, event.velocity);
+      final record = endedRecords[i];
+      final drop = _completeDropForRecord(record, lastPos, event.velocity);
+      event.setDropResult(drop?.$1, drop?.$2);
+      record.component.onDragEnd(event);
     }
   }
 
+  /// Called when the drag gesture is cancelled.
+  ///
+  /// A drop target hovered by a cancelled drag receives `onDragTargetCancel`
+  /// before the dragged component receives `onDragCancel`; nothing is dropped.
   @mustCallSuper
   void onDragCancel(DragCancelEvent event) {
     final lastPos = _lastCanvasPosByPointer.remove(event.pointerId);
-    final cancelledRecords = <TaggedComponent<DragCallbacks>>[];
-    _records.removeWhere((record) {
-      if (record.pointerId == event.pointerId) {
-        cancelledRecords.add(record);
-        record.component.onDragCancel(event);
-        return true;
-      }
-      return false;
-    });
+    final cancelledRecords = _takeRecordsForPointer(event.pointerId);
     for (var i = 0; i < cancelledRecords.length; i++) {
-      _cancelDropForRecord(cancelledRecords[i], lastPos);
+      final record = cancelledRecords[i];
+      _cancelDropForRecord(record, lastPos);
+      record.component.onDragCancel(event);
     }
   }
 
   /// Cancels all active in-flight drag, drop-target, and scale gestures (for
   /// example when the app window loses OS focus mid-drag).
+  ///
+  /// Every component that holds a drag or a scale is told, including one that
+  /// was removed from the tree in the meantime, so that none is left believing
+  /// its gesture is still in progress.
   void cancelAllActiveGestures() {
     if (_records.isNotEmpty) {
       final activeDrags = _records.toList(growable: false);
       _records.clear();
       for (var i = 0; i < activeDrags.length; i++) {
         final rec = activeDrags[i];
-        final lastPos = _lastCanvasPosByPointer[rec.pointerId];
-        if (rec.component.isMounted && !rec.component.isRemoving) {
-          rec.component.onDragCancel(DragCancelEvent(rec.pointerId));
-        }
-        _cancelDropForRecord(rec, lastPos);
+        _cancelDropForRecord(rec, _lastCanvasPosByPointer[rec.pointerId]);
+        rec.component.onDragCancel(DragCancelEvent(rec.pointerId));
       }
     }
     _lastCanvasPosByPointer.clear();
@@ -492,11 +563,9 @@ class MultiDragScaleDispatcher() extends Dispatcher<FlameGame> {
       _scaleRecords.clear();
       for (var i = 0; i < activeScales.length; i++) {
         final rec = activeScales[i];
-        if (rec.component.isMounted && !rec.component.isRemoving) {
-          rec.component.onScaleEnd(
-            ScaleEndEvent(rec.pointerId, ScaleEndDetails()),
-          );
-        }
+        rec.component.onScaleEnd(
+          ScaleEndEvent(rec.pointerId, ScaleEndDetails()),
+        );
       }
     }
   }

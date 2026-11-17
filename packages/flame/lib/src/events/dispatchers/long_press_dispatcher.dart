@@ -77,7 +77,8 @@ class LongPressDispatcher() extends Dispatcher<FlameGame> {
     });
   }
 
-  /// Cancels all active in-flight long-press gestures.
+  /// Cancels all active in-flight long-press gestures, including those held
+  /// by components that have been removed from the tree in the meantime.
   void cancelAllActiveLongPresses() {
     if (_records.isEmpty) {
       return;
@@ -86,9 +87,7 @@ class LongPressDispatcher() extends Dispatcher<FlameGame> {
     _records.clear();
     for (var i = 0; i < active.length; i++) {
       final rec = active[i];
-      if (rec.component.isMounted && !rec.component.isRemoving) {
-        rec.component.onLongPressCancel(LongPressCancelEvent(rec.pointerId));
-      }
+      rec.component.onLongPressCancel(LongPressCancelEvent(rec.pointerId));
     }
   }
 

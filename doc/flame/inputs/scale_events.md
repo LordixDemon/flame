@@ -117,12 +117,12 @@ gesture.
 
 Scale events are not fired immediately when two fingers touch the screen. Instead, a small movement
 threshold must be crossed first. By default, the fingers must spread or pinch by at least 5% (a
-scale factor of 1.05) before `onScaleStart` is called.
+scale factor of 1.05) before `onScaleStart` is called. This prevents accidental scale gestures when
+the user simply places two fingers without intending to scale.
 
 On desktop/macOS trackpads (`PointerPanZoom`), set `trackpadImmediateScale = true` on `FlameGame`
 to bypass the 5% pinch and pan-slop deadzones for instant, zero-latency two-finger trackpad pan,
-pinch, and rotation while keeping touch deadzones active for finger inputs. This prevents accidental scale gestures when
-the user simply places two fingers without intending to scale.
+pinch, and rotation while keeping touch deadzones active for finger inputs.
 
 The threshold can be changed by accessing the `MultiDragScaleDispatcher` from your game and setting
 `scaleThreshold` before any `ScaleCallbacks` component mounts:
@@ -137,6 +137,21 @@ class MyGame extends FlameGame {
   }
 }
 ```
+
+
+### rotationThreshold
+
+Twisting two fingers about their midpoint changes neither their distance nor their focal point, so
+the thresholds above never trip on a pure rotation. A scale gesture therefore also starts once the
+line between the first two pointers has turned by more than `rotationThreshold` radians (0.05 by
+default, settable on the `MultiDragScaleDispatcher` like `scaleThreshold`) **and** the pointers
+have travelled further than the platform's scale slop along the arc around their midpoint. The
+second condition keeps fingers that merely rest or tap next to each other from starting a gesture,
+however close together they are. Trackpad gestures report their rotation directly and only need
+to exceed the angle.
+
+The turn is always the shortest one: `event.rotation` stays within `(-pi, pi]` and does not jump by
+a full circle when the line between the fingers crosses the horizontal.
 
 A lower value makes the recognizer more sensitive (reacts to smaller pinch movements), while a
 higher value requires a more deliberate gesture before scale events fire.

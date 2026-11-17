@@ -68,16 +68,16 @@ class NonPrimaryTapDispatcher() extends Dispatcher<FlameGame> {
     _tertiaryComponents.clear();
   }
 
-  /// Cancels any active secondary or tertiary mouse press gestures.
+  /// Cancels any active secondary or tertiary mouse press gestures, including
+  /// those held by components that have been removed from the tree in the
+  /// meantime.
   void cancelAllActiveNonPrimaryTaps() {
     if (_secondaryComponents.isNotEmpty) {
       final sec = _secondaryComponents.toList(growable: false);
       _secondaryComponents.clear();
       final ev = SecondaryTapCancelEvent();
       for (var i = 0; i < sec.length; i++) {
-        if (sec[i].isMounted && !sec[i].isRemoving) {
-          sec[i].onSecondaryTapCancel(ev);
-        }
+        sec[i].onSecondaryTapCancel(ev);
       }
     }
     if (_tertiaryComponents.isNotEmpty) {
@@ -85,9 +85,7 @@ class NonPrimaryTapDispatcher() extends Dispatcher<FlameGame> {
       _tertiaryComponents.clear();
       final ev = TertiaryTapCancelEvent();
       for (var i = 0; i < ter.length; i++) {
-        if (ter[i].isMounted && !ter[i].isRemoving) {
-          ter[i].onTertiaryTapCancel(ev);
-        }
+        ter[i].onTertiaryTapCancel(ev);
       }
     }
   }

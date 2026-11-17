@@ -8,7 +8,10 @@ class DragCancelEvent(
 ) extends Event<void> {
   this : super(raw: null);
 
-  DragEndEvent toDragEnd() => DragEndEvent(pointerId, DragEndDetails());
+  /// Converts this cancellation into a [DragEndEvent] with zero velocity,
+  /// [DragEndEvent.wasCancelled] set and no drop target.
+  DragEndEvent toDragEnd() =>
+      DragEndEvent(pointerId, DragEndDetails(), wasCancelled: true);
 
   @override
   String toString() => 'DragCancelEvent(pointerId: $pointerId)';

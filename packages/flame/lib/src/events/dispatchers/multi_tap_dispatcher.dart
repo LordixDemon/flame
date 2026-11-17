@@ -111,6 +111,9 @@ class MultiTapDispatcher() extends Dispatcher<FlameGame> {
 
   /// Cancels every currently pressed tap across all active pointer IDs (for
   /// example when the app window loses OS focus mid-tap).
+  ///
+  /// Like a regular tap cancellation, this reaches every component that holds
+  /// a tap, including one that has been removed from the tree in the meantime.
   void cancelAllActiveTaps() {
     if (_record.isEmpty) {
       return;
@@ -119,9 +122,7 @@ class MultiTapDispatcher() extends Dispatcher<FlameGame> {
     _record.clear();
     for (var i = 0; i < active.length; i++) {
       final pair = active[i];
-      if (pair.component.isMounted && !pair.component.isRemoving) {
-        pair.component.onTapCancel(TapCancelEvent(pair.pointerId));
-      }
+      pair.component.onTapCancel(TapCancelEvent(pair.pointerId));
     }
   }
 

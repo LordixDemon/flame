@@ -92,14 +92,19 @@ used, for example, to compute the speed of the movement.
 This event is fired when the user lifts their finger and thus stops the drag gesture. There is no
 position associated with this event.
 
+If the component was released over a [drop target](#drop-targets) that accepts it, the target has
+already received its `onDrop` when `onDragEnd` runs, and `event.dropTarget` refers to it. Otherwise
+`event.dropAccepted` is `false`.
+
 
 ### onDragCancel
 
 This event is fired when the drag gesture is interrupted before it ends naturally, for example when
 another gesture recognizer wins the gesture arena or a second pointer triggers a scale takeover.
-Unlike `onDragEnd` it carries no velocity information. The default implementation simply resets the
+Unlike `onDragEnd` it carries no velocity information, and nothing is dropped: a drop target that
+was hovered receives `onDragTargetCancel` first. The default implementation simply resets the
 drag state; override it and call `onDragEnd(event.toDragEnd())` yourself if you want a cancellation
-handled identically to a natural drag end.
+handled like a natural drag end. The converted event has `wasCancelled` set and no drop target.
 
 
 ## Mixins
@@ -163,6 +168,62 @@ ends rather than continuing on the remaining finger.
 
 This only gates drags. A component that also uses `ScaleCallbacks` keeps receiving scale events
 normally, so one-finger drag plus two-finger pinch still works.
+
+
+## Drop targets
+
+Mix `DropTargetCallbacks` into a component to let dragged components be dropped onto it. While a
+`DragCallbacks` component is dragged, the dispatcher looks for the topmost drop target under the
+pointer (ignoring the dragged component itself and its children) and calls:
+
+- `canAcceptDrop(dragged, event)` to ask whether the target takes this component; returning `false`
+  lets the search continue with the targets underneath;
+- `onDragTargetEnter`, `onDragTargetMove` and `onDragTargetLeave` as the pointer enters, moves
+  across and leaves the target;
+- `onDrop` when the pointer is lifted over the target;
+- `onDragTargetCancel` if the drag is cancelled while over the target.
+
+When the pointer is lifted, the drop is delivered **before** the dragged component's `onDragEnd`,
+as in HTML drag and drop, so the dragged component can tell a hit from a miss right there:
+
+```dart
+class Card extends PositionComponent with DragCallbacks {
+  @override
+  void onDragEnd(DragEndEvent event) {
+    super.onDragEnd(event);
+    if (!event.dropAccepted) {
+      returnToHand();
+    }
+  }
+}
+
+class Slot extends PositionComponent with DropTargetCallbacks {
+  @override
+  bool canAcceptDrop(Component dragged, DragDropEvent event) => dragged is Card;
+
+  @override
+  void onDrop(DragDropEvent event) {
+    place(event.draggedComponent as Card);
+  }
+}
+```
+
+`DragDropEvent` carries the `draggedComponent`, the `canvasPosition` and `localPosition` of the
+pointer, the release `velocity` (on `onDrop`), and, for a target picked by a 3D ray
+(`SpatialHitbox3D`), `hitPoint3D` and `hitDistance3D`.
+
+Looking for a drop target costs one extra hit test of the component tree per pointer sample. It
+only happens while at least one drop target is mounted and the dragged component is a drop payload.
+Set `isDropPayload = false` on components whose drags never drop anything (a camera pan surface, a
+slider, a virtual joystick) to keep their drags at the plain cost:
+
+```dart
+class PanSurface extends PositionComponent with DragCallbacks {
+  PanSurface() {
+    isDropPayload = false;
+  }
+}
+```
 
 
 ## Combining with ScaleCallbacks
