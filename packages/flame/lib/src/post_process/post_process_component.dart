@@ -1,6 +1,5 @@
 import 'package:flame/components.dart';
 import 'package:flame/extensions.dart';
-import 'package:flame/src/camera/camera_component.dart';
 import 'package:flame/src/game/notifying_vector2.dart';
 import 'package:flame/src/post_process/post_process.dart';
 import 'package:meta/meta.dart';
@@ -137,19 +136,29 @@ class PostProcessComponentRenderContext<T extends PostProcess>({
 }) extends ComponentRenderContext;
 
 extension PostProcessingContextFinder on Component {
+  /// The post process of type [T] that is currently rendering this component,
+  /// or `null` if there is none.
+  ///
+  /// The closest [PostProcessComponent] ancestor is checked first, then the
+  /// [CameraComponent.postProcess] of the cameras currently rendering, from
+  /// the innermost to the outermost.
   T? findPostProcessFromContext<T extends PostProcess>() {
     final closestContext =
         findRenderContext<PostProcessComponentRenderContext<T>>();
     if (closestContext != null) {
       return closestContext.postProcess;
     }
-    final contextInCamera =
-        findRenderContext<CameraRenderContext>()?.currentPostProcess ??
-        CameraComponent.currentCamera?.renderContext.currentPostProcess;
-    if (contextInCamera is T) {
-      return contextInCamera;
+    // The world isn't a child of the camera that renders it, so the camera's
+    // render context never reaches the world's components. The cameras that
+    // are rendering are found through [CameraComponent.currentCameras]
+    // instead.
+    final cameras = CameraComponent.currentCameras;
+    for (var i = cameras.length - 1; i >= 0; i--) {
+      final postProcess = cameras[i].renderContext.currentPostProcess;
+      if (postProcess is T) {
+        return postProcess;
+      }
     }
-
     return null;
   }
 }
