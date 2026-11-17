@@ -177,6 +177,42 @@ pipeline and state changes, uploads) are available from
 fraction of the device pixels.
 
 
+## Embedding 3D in a 2D game
+
+A `Scene3DComponent` shows a 3D scene as one layer of an ordinary 2D Flame
+game, at its priority among the 2D components, seen through the 2D camera. A
+`Scene3DProjection` maps the scene to the component's local coordinates, for
+example as the parallel projection of isometric 2D art, and the layer lines up
+with the 2D art pixel for pixel at every zoom and pan:
+
+```dart
+final layer = Scene3DComponent(
+  projection: Scene3DProjection.affine(
+    xAxis: Vector2(44, 22), // where the scene's unit vectors land in 2D
+    yAxis: Vector2(-44, 22),
+    zAxis: Vector2(0, -54),
+    towardsViewer: Vector3(1, 1, 1),
+    near: -50,
+    far: 50,
+  ),
+  priority: 1,
+);
+world.add(layer);
+layer.world.add(MeshComponent(mesh: house, position: Vector3(3, 4, 0)));
+
+// A 2D label above the house, and a tap turned into a 3D ray.
+layer.add(TextComponent(text: 'Inn')
+  ..position = layer.scenePointToLocal(Vector3(3, 4, 1.5)));
+// tapInWorld: camera.globalToLocal(event.canvasPosition)
+final ray = layer.localPointToRay(layer.absoluteToLocal(tapInWorld));
+```
+
+Each frame the layer renders only the part of the screen its scene covers, at
+the device's resolution, in one render pass. See the
+[documentation](https://docs.flame-engine.org/latest/bridge_packages/flame_3d/embedding.html)
+and the `houses` scenario of the example.
+
+
 ## Building shaders
 
 If you are using the materials provided by `flame_3d`, you do not need to worry
