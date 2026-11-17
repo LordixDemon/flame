@@ -85,10 +85,13 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 /// ```
 ///
 /// `falloff` is the point light's: `(1 - d / range)²` with a range, `1 / d²`
-/// without. `reflected` is `cap` on the vertices that get a MatCap texture
-/// and `1` on the others. Highlights are white and follow the direction of
-/// the directional lights, not their intensity. The result is clamped to
-/// `[0, 1]`, with no tone mapping, and output premultiplied by its alpha.
+/// without. MatCap textures are sampled at `(0.5 + 0.5 x, 0.5 - 0.5 y)` of
+/// the view-space normal, `x` pointing right and `y` up in the picture, also
+/// when the projection mirrors it. `reflected` is `cap` on the vertices that
+/// get a MatCap texture and `1` on the others. Highlights are white and
+/// follow the direction of the directional lights, not their intensity. The
+/// result is clamped to `[0, 1]`, with no tone mapping, and output
+/// premultiplied by its alpha.
 ///
 /// ## Metals
 ///

@@ -194,8 +194,11 @@ out  = mix(shaded,
 alpha = albedoColor.a * vertex alpha * (1 - fade)
 ```
 
-`falloff` is the point light's (see [Lights](#lights)). `reflected` is `cap` on the vertices that
-get a MatCap texture and `1` on the others (see [Metals](#metals)). Highlights are white and follow
+`falloff` is the point light's (see [Lights](#lights)). MatCap textures are sampled at
+`(0.5 + 0.5 x, 0.5 - 0.5 y)` of the view-space normal, `x` pointing right and `y` up in the
+picture, also when the projection mirrors the picture (as some `Scene3DProjection`s do).
+`reflected` is `cap` on the vertices that get a MatCap texture and `1` on the others (see
+[Metals](#metals)). Highlights are white and follow
 the direction of the directional lights, not their intensity, so they keep their strength when a sun
 dims. The result is clamped to `[0, 1]`, with no tone mapping, and output premultiplied by its
 alpha. For orthographic cameras, `v` is the camera's direction. `skyFillWeight` weighs the sky fill

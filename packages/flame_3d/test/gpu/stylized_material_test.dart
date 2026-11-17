@@ -1024,6 +1024,51 @@ void main() {
     );
 
     testGpuEngine(
+      'orients the MatCap as the picture, also through a mirroring projection',
+      () async {
+        const left = Color(0xFFFF0000);
+        const right = Color(0xFF00FF00);
+        // The left half of the MatCap red, the right half green.
+        final matCap = Texture(
+          ByteData.sublistView(
+            Uint8List.fromList([255, 0, 0, 255, 0, 255, 0, 255]),
+          ),
+          width: 2,
+          height: 1,
+        );
+        final material = newMaterial()
+          ..matCapTexture = matCap
+          ..matCapThreshold = -1
+          ..matCapGlossWeight = 0;
+        // Black and tilted towards +x: the MatCap alone (and a faint rim).
+        final surface = _square(
+          material,
+          _Vertex(normal: Vector3(0.6, 0, 0.8), color: const Color(0xFF000000)),
+        );
+
+        Future<(int, int, int, int)> centerWith(Matrix4 projection) async {
+          final frame = await renderFrame(
+            draw: (context) => context.drawSurface(surface),
+            projection: projection,
+            lights: lights(),
+          );
+          return frame.pixels.at(32, 32);
+        }
+
+        // A standard camera shows +x on the right of the picture.
+        final standard = await centerWith(defaultProjection);
+        // Mirrored left to right, +x is on the left of the picture.
+        final mirrored = await centerWith(
+          defaultProjection..setEntry(0, 0, -1),
+        );
+        expect(standard.$2, greaterThan(200), reason: '$standard ($right)');
+        expect(standard.$1, lessThan(20), reason: '$standard ($right)');
+        expect(mirrored.$1, greaterThan(200), reason: '$mirrored ($left)');
+        expect(mirrored.$2, lessThan(20), reason: '$mirrored ($left)');
+      },
+    );
+
+    testGpuEngine(
       'keeps the lit color of a metallic material without MatCap textures',
       () async {
         final material = newMaterial()

@@ -80,6 +80,21 @@ uniform Camera {
   vec3 position;
 } camera;
 
+// -1 when the projection mirrors the picture compared to a standard camera,
+// 1 otherwise, as RenderContext3D.mirrors decides: the sign of the
+// determinant of the x, y and w rows of the projection (x, y and depth rows
+// for a parallel projection), negative for a standard camera. The view is
+// rigid and does not change it.
+float pictureMirror() {
+  mat4 p = camera.projection;
+  vec3 rowX = vec3(p[0][0], p[1][0], p[2][0]);
+  vec3 rowY = vec3(p[0][1], p[1][1], p[2][1]);
+  vec3 rowW = vec3(p[0][3], p[1][3], p[2][3]);
+  vec3 rowZ = vec3(p[0][2], p[1][2], p[2][2]);
+  vec3 rowR = dot(rowW, rowW) > 1e-12 ? rowW : rowZ;
+  return dot(rowX, cross(rowY, rowR)) > 0.0 ? -1.0 : 1.0;
+}
+
 void main() {
   vec3 n = normalize(fragNormal);
   // Towards the viewer. Orthographic cameras look along one direction.
@@ -149,8 +164,11 @@ void main() {
     (hemisphereLight.skyColor.rgb + material.rimColor.rgb);
 
   // Both MatCap textures are sampled outside of any branch, so that their
-  // texture coordinates' derivatives are defined.
+  // texture coordinates' derivatives are defined. A MatCap is a sphere as
+  // seen in the picture: when the projection mirrors the picture, the x axis
+  // of the (rigid) view points to the left of it, and is mirrored back.
   vec3 viewNormal = normalize(mat3(camera.view) * n);
+  viewNormal.x *= pictureMirror();
   vec2 matCapUv = vec2(0.5 + 0.5 * viewNormal.x, 0.5 - 0.5 * viewNormal.y);
   vec3 coat = texture(matCapTexture, matCapUv).rgb * material.matCapStrength *
     mix(1.0, gloss, material.matCapGlossWeight);
