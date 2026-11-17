@@ -298,7 +298,7 @@ class RenderContext3D(super.device) extends RenderContext {
   }
 
   DevicePipeline _pipelineFor(Material material, VertexLayout layout) {
-    final vertexShader = material.vertexShader;
+    final vertexShader = material.vertexShaderFor(layout);
     final fragmentShader = material.fragmentShader;
     // Resolve the resources first: recreating them bumps their generation.
     vertexShader.resource;
@@ -394,12 +394,13 @@ class RenderContext3D(super.device) extends RenderContext {
     final surface = _surfaces[first]!;
     final material = _materials[first]!;
     final pipeline = _pipelines[first]!;
+    final vertexShader = material.vertexShaderFor(surface.layout);
 
     device.bindPipeline(pipeline);
     if (device.bindingEpoch != _bindingEpoch) {
       _bindingEpoch = device.bindingEpoch;
       _boundMaterial = null;
-      _bindPassSlots(material);
+      _bindPassSlots(material, vertexShader);
     }
     device
       ..setRenderState(material.renderState)
@@ -421,8 +422,8 @@ class RenderContext3D(super.device) extends RenderContext {
           draw * VertexLayout.instanceStrideInFloats,
         );
         _jointTransforms = _joints[draw];
-        _applyMaterial(material);
-        _bindJoints(material, _joints[draw]);
+        _applyMaterial(material, vertexShader);
+        _bindJoints(vertexShader, _joints[draw]);
         device.bindSurface(surface);
         if (pipeline.usesInstanceData) {
           _gatherInstances(order, i, 1);
@@ -436,9 +437,9 @@ class RenderContext3D(super.device) extends RenderContext {
     final joints = _joints[first];
     if (!identical(material, _boundMaterial)) {
       _jointTransforms = joints;
-      _applyMaterial(material);
+      _applyMaterial(material, vertexShader);
     }
-    _bindJoints(material, joints);
+    _bindJoints(vertexShader, joints);
     device.bindSurface(surface);
     _gatherInstances(order, start, count);
     device.bindInstances(_batchInstances, count);
@@ -448,9 +449,9 @@ class RenderContext3D(super.device) extends RenderContext {
   Material? _boundMaterial;
   int _bindingEpoch = -1;
 
-  void _applyMaterial(Material material) {
+  void _applyMaterial(Material material, Shader vertexShader) {
     material.apply(this);
-    _bindSlots(material.vertexShader, _materialScope);
+    _bindSlots(vertexShader, _materialScope);
     _bindSlots(material.fragmentShader, _materialScope);
     if (!identical(material, _boundMaterial)) {
       device.stats.materialChanges++;
@@ -458,16 +459,16 @@ class RenderContext3D(super.device) extends RenderContext {
     }
   }
 
-  void _bindPassSlots(Material material) {
-    _bindSlots(material.vertexShader, _passScope);
+  void _bindPassSlots(Material material, Shader vertexShader) {
+    _bindSlots(vertexShader, _passScope);
     _bindSlots(material.fragmentShader, _passScope);
   }
 
-  void _bindJoints(Material material, List<Matrix4>? joints) {
+  void _bindJoints(Shader vertexShader, List<Matrix4>? joints) {
     if (joints == null) {
       return;
     }
-    _bindSlots(material.vertexShader, _jointsScope, joints);
+    _bindSlots(vertexShader, _jointsScope, joints);
   }
 
   /// Binds the slots of [shader] of the given [scope].
