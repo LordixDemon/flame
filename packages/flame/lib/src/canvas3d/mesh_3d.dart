@@ -8,6 +8,11 @@ import 'package:flame/src/canvas3d/mesh_bvh_3d.dart';
 /// Coordinates follow Flame `canvas3d`'s right-handed world convention where
 /// `+X` and `+Y` span the ground plane and `+Z` points upward, with
 /// counter-clockwise (`CCW`) outward-facing triangle winding.
+///
+/// [indices] are 16-bit, so one mesh addresses at most [maxVertexCount]
+/// vertices. The generators throw an [ArgumentError] rather than wrap when a
+/// tessellation would exceed that; build larger geometry with 32-bit indices
+/// and split it with [partitionByVertexLimit].
 class Mesh3D({
   required final Float32List positions,
   required final Float32List normals,
@@ -599,7 +604,9 @@ class Mesh3D({
   }
 
   /// Builds an `N`-sided regular prism (pillar, pedestal, crown cylinder) from
-  /// `baseZ` to `baseZ + height`.
+  /// `baseZ` to `baseZ + height`, with faceted sides by default and no UVs.
+  ///
+  /// Use [Mesh3D.cylinder] for a round, UV-mapped column.
   factory Mesh3D.prism({
     int sides = 6,
     double radius = 0.5,
@@ -614,6 +621,7 @@ class Mesh3D({
     final topZ = baseZ + height;
     // Side quads: 4*n verts (2*n tris); caps: 2*(n+1) verts (2*n tris).
     final vCount = 4 * n + 2 * (n + 1);
+    _checkVertexLimit('prism', vCount);
     final tCount = 4 * n;
 
     final pos = Float32List(vCount * 3);
@@ -822,6 +830,9 @@ class Mesh3D({
 
   /// Builds a smooth analytic UV sphere centered at `(0, 0, centerZ)` with
   /// [segments] longitudinal slices and [rings] latitudinal bands.
+  ///
+  /// Its UVs are equirectangular: `u` runs once around (the seam vertices are
+  /// duplicated) and `v` from the top pole (`0`) to the bottom pole (`1`).
   factory Mesh3D.uvSphere({
     double radius = 0.5,
     int segments = 16,
@@ -834,10 +845,12 @@ class Mesh3D({
     final cols = segs + 1;
     final rows = rgs + 1;
     final vCount = cols * rows;
+    _checkVertexLimit('uvSphere', vCount);
     final tCount = segs * rgs * 2;
 
     final pos = Float32List(vCount * 3);
     final nrm = Float32List(vCount * 3);
+    final uv = Float32List(vCount * 2);
     final ao = Float32List(vCount);
     final idx = Uint16List(tCount * 3);
 
@@ -859,6 +872,8 @@ class Mesh3D({
         nrm[pIdx] = nx;
         nrm[pIdx + 1] = ny;
         nrm[pIdx + 2] = nz;
+        uv[v * 2] = s / segs;
+        uv[v * 2 + 1] = r / rgs;
         ao[v] = aoVal;
         v++;
       }
@@ -885,7 +900,485 @@ class Mesh3D({
       normals: nrm,
       indices: idx,
       ambientOcclusion: ao,
+      uvs: uv,
     );
+  }
+
+  /// Builds a capped cylinder around `+Z` from `baseZ` to `baseZ + height`,
+  /// or a frustum when [radiusTop] and [radiusBottom] differ. [radiusBottom]
+  /// is the radius at `baseZ`; a negative [height] builds downwards from
+  /// there.
+  ///
+  /// The side has smooth normals and UVs that wrap once around (`u`) and run
+  /// from the top (`v = 0`) to the bottom (`v = 1`); the caps are flat discs
+  /// with their own vertices and disc-shaped UVs. A cap whose radius is `0` is
+  /// left out.
+  factory Mesh3D.cylinder({
+    double radiusTop = 0.5,
+    double radiusBottom = 0.5,
+    double height = 1.0,
+    int segments = 16,
+    double baseZ = 0.0,
+    bool capTop = true,
+    bool capBottom = true,
+    double bottomAo = 0.74,
+  }) {
+    _checkDimension('cylinder', 'radiusTop', radiusTop);
+    _checkDimension('cylinder', 'radiusBottom', radiusBottom);
+    _checkDimension('cylinder', 'height', height, allowNegative: true);
+    if (radiusTop == 0.0 && radiusBottom == 0.0) {
+      throw ArgumentError('Mesh3D.cylinder needs a non-zero radius at one end');
+    }
+    final segs = math.max(3, segments);
+    final hasTop = capTop && radiusTop > 0.0;
+    final hasBottom = capBottom && radiusBottom > 0.0;
+    // Built upright; a negative height is mirrored about `baseZ` at the end.
+    final rise = height.abs();
+    final vCount =
+        2 * (segs + 1) + (hasTop ? segs + 1 : 0) + (hasBottom ? segs + 1 : 0);
+    _checkVertexLimit('cylinder', vCount);
+    final tCount = 2 * segs + (hasTop ? segs : 0) + (hasBottom ? segs : 0);
+    final b = _MeshBuilder(vCount, tCount);
+    final topZ = baseZ + rise;
+    // The side normal leans by the slope of the wall, the same all around.
+    final slopeZ = radiusBottom - radiusTop;
+    final slant = math.sqrt(rise * rise + slopeZ * slopeZ);
+    final nOut = slant > 1e-7 ? rise / slant : 1.0;
+    final nz = slant > 1e-7 ? slopeZ / slant : 0.0;
+
+    for (var s = 0; s <= segs; s++) {
+      final a = 2.0 * math.pi * (s / segs);
+      final c = math.cos(a);
+      final sn = math.sin(a);
+      final nx = c * nOut;
+      final ny = sn * nOut;
+      final u = s / segs;
+      b
+        ..vertex(c * radiusBottom, sn * radiusBottom, baseZ, nx, ny, nz, u, 1.0)
+        ..ao(bottomAo)
+        ..vertex(c * radiusTop, sn * radiusTop, topZ, nx, ny, nz, u, 0.0)
+        ..ao(1.0);
+    }
+    for (var s = 0; s < segs; s++) {
+      final b0 = 2 * s;
+      b
+        ..triangle(b0, b0 + 2, b0 + 3)
+        ..triangle(b0, b0 + 3, b0 + 1);
+    }
+    if (hasTop) {
+      b.disc(radiusTop, topZ, segs, up: true, aoValue: 1.0);
+    }
+    if (hasBottom) {
+      b.disc(radiusBottom, baseZ, segs, up: false, aoValue: bottomAo);
+    }
+    if (height < 0.0) {
+      b.mirrorZ(baseZ);
+    }
+    return b.build();
+  }
+
+  /// Builds a cone around `+Z` with its base at `baseZ` and its apex at
+  /// `baseZ + height` (below the base for a negative [height]).
+  ///
+  /// The side has smooth normals; the apex is one vertex per segment so that
+  /// each carries the normal of its own side strip. UVs wrap once around
+  /// (`u`) and run from the apex (`v = 0`) to the base (`v = 1`); the base
+  /// cap is a flat disc with disc-shaped UVs.
+  factory Mesh3D.cone({
+    double radius = 0.5,
+    double height = 1.0,
+    int segments = 16,
+    double baseZ = 0.0,
+    bool capBottom = true,
+    double bottomAo = 0.74,
+  }) {
+    _checkDimension('cone', 'radius', radius);
+    _checkDimension('cone', 'height', height, allowNegative: true);
+    final segs = math.max(3, segments);
+    final hasBottom = capBottom && radius > 0.0;
+    final vCount = (segs + 1) + segs + (hasBottom ? segs + 1 : 0);
+    _checkVertexLimit('cone', vCount);
+    final tCount = segs + (hasBottom ? segs : 0);
+    final b = _MeshBuilder(vCount, tCount);
+    // Built upright; a negative height is mirrored about `baseZ` at the end.
+    final rise = height.abs();
+    final topZ = baseZ + rise;
+    final slant = math.sqrt(rise * rise + radius * radius);
+    final nOut = slant > 1e-7 ? rise / slant : 0.0;
+    final nz = slant > 1e-7 ? radius / slant : 1.0;
+
+    for (var s = 0; s <= segs; s++) {
+      final a = 2.0 * math.pi * (s / segs);
+      final c = math.cos(a);
+      final sn = math.sin(a);
+      b
+        ..vertex(
+          c * radius,
+          sn * radius,
+          baseZ,
+          c * nOut,
+          sn * nOut,
+          nz,
+          s / segs,
+          1.0,
+        )
+        ..ao(bottomAo);
+    }
+    final apexBase = segs + 1;
+    for (var s = 0; s < segs; s++) {
+      final a = 2.0 * math.pi * ((s + 0.5) / segs);
+      b
+        ..vertex(
+          0.0,
+          0.0,
+          topZ,
+          math.cos(a) * nOut,
+          math.sin(a) * nOut,
+          nz,
+          (s + 0.5) / segs,
+          0.0,
+        )
+        ..ao(1.0);
+    }
+    for (var s = 0; s < segs; s++) {
+      b.triangle(s, s + 1, apexBase + s);
+    }
+    if (hasBottom) {
+      b.disc(radius, baseZ, segs, up: false, aoValue: bottomAo);
+    }
+    if (height < 0.0) {
+      b.mirrorZ(baseZ);
+    }
+    return b.build();
+  }
+
+  /// Builds a torus (ring) lying in the ground plane around `+Z`, centred at
+  /// `(0, 0, centerZ)`: a tube of radius [minorRadius] swept along a circle of
+  /// radius [majorRadius].
+  ///
+  /// Normals are smooth. UVs run once around the ring (`u`) and once around
+  /// the tube (`v`), with the seam vertices duplicated.
+  factory Mesh3D.torus({
+    double majorRadius = 0.5,
+    double minorRadius = 0.15,
+    int majorSegments = 24,
+    int minorSegments = 12,
+    double centerZ = 0.0,
+    double bottomAo = 0.76,
+  }) {
+    _checkDimension('torus', 'majorRadius', majorRadius);
+    _checkDimension('torus', 'minorRadius', minorRadius);
+    final major = math.max(3, majorSegments);
+    final minor = math.max(3, minorSegments);
+    final cols = minor + 1;
+    final vCount = (major + 1) * cols;
+    _checkVertexLimit('torus', vCount);
+    final b = _MeshBuilder(vCount, major * minor * 2);
+
+    for (var i = 0; i <= major; i++) {
+      final phi = 2.0 * math.pi * (i / major);
+      final cPhi = math.cos(phi);
+      final sPhi = math.sin(phi);
+      for (var j = 0; j <= minor; j++) {
+        final theta = 2.0 * math.pi * (j / minor);
+        final cTheta = math.cos(theta);
+        final sTheta = math.sin(theta);
+        final nx = cPhi * cTheta;
+        final ny = sPhi * cTheta;
+        final nz = sTheta;
+        b
+          ..vertex(
+            cPhi * majorRadius + nx * minorRadius,
+            sPhi * majorRadius + ny * minorRadius,
+            centerZ + nz * minorRadius,
+            nx,
+            ny,
+            nz,
+            i / major,
+            j / minor,
+          )
+          ..ao(bottomAo + (1.0 - bottomAo) * (sTheta * 0.5 + 0.5));
+      }
+    }
+    for (var i = 0; i < major; i++) {
+      for (var j = 0; j < minor; j++) {
+        final a = i * cols + j;
+        final next = (i + 1) * cols + j;
+        b
+          ..triangle(a, next, a + 1)
+          ..triangle(a + 1, next, next + 1);
+      }
+    }
+    return b.build();
+  }
+
+  /// Extrudes a flat polygon along `+Z` from `baseZ` to `baseZ + height`
+  /// (walls, floor plans, letters, arrows).
+  ///
+  /// [outline] lists the corners of a simple polygon in the ground plane as
+  /// flat `x0, y0, x1, y1, ...` pairs. It may be convex or concave and wound
+  /// either way, but must not cross itself or contain holes. A closing point
+  /// that repeats the first one is ignored.
+  ///
+  /// Each wall is a flat quad with its own vertices and normal; its UVs run
+  /// along the outline (`u`, proportional to edge length) and from the top
+  /// (`v = 0`) to the bottom (`v = 1`). The caps are triangulated by ear
+  /// clipping and mapped with the polygon's bounding box as `[0..1]` UVs.
+  factory Mesh3D.extrudePolygon({
+    required List<double> outline,
+    double height = 1.0,
+    double baseZ = 0.0,
+    bool capTop = true,
+    bool capBottom = true,
+    double bottomAo = 0.74,
+  }) {
+    if (outline.length.isOdd) {
+      throw ArgumentError.value(
+        outline.length,
+        'outline',
+        'must hold x, y pairs, so an even number of values',
+      );
+    }
+    _checkDimension('extrudePolygon', 'height', height, allowNegative: true);
+    for (final value in outline) {
+      if (!value.isFinite) {
+        throw ArgumentError.value(outline, 'outline', 'must be finite');
+      }
+    }
+    final xs = <double>[];
+    final ys = <double>[];
+    for (var i = 0; i + 1 < outline.length; i += 2) {
+      final x = outline[i];
+      final y = outline[i + 1];
+      // Skip a point that repeats its predecessor: it adds no edge.
+      if (xs.isNotEmpty && xs.last == x && ys.last == y) {
+        continue;
+      }
+      xs.add(x);
+      ys.add(y);
+    }
+    if (xs.length > 1 && xs.first == xs.last && ys.first == ys.last) {
+      xs.removeLast();
+      ys.removeLast();
+    }
+    final n = xs.length;
+    if (n < 3) {
+      throw ArgumentError.value(
+        outline,
+        'outline',
+        'needs at least three distinct corners',
+      );
+    }
+
+    var area2 = 0.0;
+    var perimeter = 0.0;
+    var loX = double.infinity;
+    var loY = double.infinity;
+    var hiX = double.negativeInfinity;
+    var hiY = double.negativeInfinity;
+    for (var i = 0; i < n; i++) {
+      final j = (i + 1) % n;
+      area2 += xs[i] * ys[j] - xs[j] * ys[i];
+      final ex = xs[j] - xs[i];
+      final ey = ys[j] - ys[i];
+      perimeter += math.sqrt(ex * ex + ey * ey);
+      loX = math.min(loX, xs[i]);
+      loY = math.min(loY, ys[i]);
+      hiX = math.max(hiX, xs[i]);
+      hiY = math.max(hiY, ys[i]);
+    }
+    final spanX = hiX - loX;
+    final spanY = hiY - loY;
+    if (area2.abs() <= 1e-12 * math.max(1.0, spanX * spanY)) {
+      throw ArgumentError.value(
+        outline,
+        'outline',
+        'encloses no area',
+      );
+    }
+    if (area2 < 0.0) {
+      // Clockwise: reverse it so that walls and caps face outwards.
+      for (var i = 0, j = n - 1; i < j; i++, j--) {
+        final tx = xs[i];
+        xs[i] = xs[j];
+        xs[j] = tx;
+        final ty = ys[i];
+        ys[i] = ys[j];
+        ys[j] = ty;
+      }
+    }
+
+    final vCount = 4 * n + (capTop ? n : 0) + (capBottom ? n : 0);
+    _checkVertexLimit('extrudePolygon', vCount);
+    final capTriangles = _triangulatePolygon(xs, ys);
+    final capTriCount = capTriangles.length ~/ 3;
+    final b = _MeshBuilder(
+      vCount,
+      2 * n + (capTop ? capTriCount : 0) + (capBottom ? capTriCount : 0),
+    );
+    final z0 = math.min(baseZ, baseZ + height);
+    final z1 = math.max(baseZ, baseZ + height);
+
+    var travelled = 0.0;
+    for (var i = 0; i < n; i++) {
+      final j = (i + 1) % n;
+      final ex = xs[j] - xs[i];
+      final ey = ys[j] - ys[i];
+      final len = math.sqrt(ex * ex + ey * ey);
+      // A counter-clockwise outline has its outside on the right of travel.
+      final nx = ey / len;
+      final ny = -ex / len;
+      final u0 = travelled / perimeter;
+      travelled += len;
+      final u1 = travelled / perimeter;
+      final base = b.vertexCount;
+      b
+        ..vertex(xs[i], ys[i], z0, nx, ny, 0.0, u0, 1.0)
+        ..ao(bottomAo)
+        ..vertex(xs[j], ys[j], z0, nx, ny, 0.0, u1, 1.0)
+        ..ao(bottomAo)
+        ..vertex(xs[j], ys[j], z1, nx, ny, 0.0, u1, 0.0)
+        ..ao(1.0)
+        ..vertex(xs[i], ys[i], z1, nx, ny, 0.0, u0, 0.0)
+        ..ao(1.0)
+        ..triangle(base, base + 1, base + 2)
+        ..triangle(base, base + 2, base + 3);
+    }
+
+    void cap(double z, {required bool up}) {
+      final base = b.vertexCount;
+      for (var i = 0; i < n; i++) {
+        b
+          ..vertex(
+            xs[i],
+            ys[i],
+            z,
+            0.0,
+            0.0,
+            up ? 1.0 : -1.0,
+            spanX > 0.0 ? (xs[i] - loX) / spanX : 0.0,
+            spanY > 0.0 ? (ys[i] - loY) / spanY : 0.0,
+          )
+          ..ao(up ? 1.0 : bottomAo);
+      }
+      for (var t = 0; t < capTriangles.length; t += 3) {
+        if (up) {
+          b.triangle(
+            base + capTriangles[t],
+            base + capTriangles[t + 1],
+            base + capTriangles[t + 2],
+          );
+        } else {
+          b.triangle(
+            base + capTriangles[t],
+            base + capTriangles[t + 2],
+            base + capTriangles[t + 1],
+          );
+        }
+      }
+    }
+
+    if (capTop) {
+      cap(z1, up: true);
+    }
+    if (capBottom) {
+      cap(z0, up: false);
+    }
+    return b.build();
+  }
+
+  /// Ear-clips the counter-clockwise simple polygon `(xs, ys)` into
+  /// counter-clockwise triangles (flat index triples into the corner lists).
+  static List<int> _triangulatePolygon(List<double> xs, List<double> ys) {
+    final remaining = List<int>.generate(xs.length, (i) => i);
+    final out = <int>[];
+
+    double cross(int a, int b, int c) =>
+        (xs[b] - xs[a]) * (ys[c] - ys[a]) - (ys[b] - ys[a]) * (xs[c] - xs[a]);
+
+    while (remaining.length > 3) {
+      var clipped = false;
+      for (var i = 0; i < remaining.length; i++) {
+        final ia = remaining[(i + remaining.length - 1) % remaining.length];
+        final ib = remaining[i];
+        final ic = remaining[(i + 1) % remaining.length];
+        final turn = cross(ia, ib, ic);
+        if (turn.abs() <= 1e-12) {
+          // A corner on a straight line adds no area: drop it.
+          remaining.removeAt(i);
+          clipped = true;
+          break;
+        }
+        if (turn < 0.0) {
+          continue; // Reflex corner: not an ear.
+        }
+        var blocked = false;
+        for (final ip in remaining) {
+          if (ip == ia || ip == ib || ip == ic) {
+            continue;
+          }
+          if (cross(ia, ib, ip) >= 0.0 &&
+              cross(ib, ic, ip) >= 0.0 &&
+              cross(ic, ia, ip) >= 0.0) {
+            blocked = true;
+            break;
+          }
+        }
+        if (blocked) {
+          continue;
+        }
+        out
+          ..add(ia)
+          ..add(ib)
+          ..add(ic);
+        remaining.removeAt(i);
+        clipped = true;
+        break;
+      }
+      if (!clipped) {
+        // No ear left: the outline crosses itself. Fan what remains so that
+        // the caller still gets a mesh.
+        break;
+      }
+    }
+    for (var k = 1; k + 1 < remaining.length; k++) {
+      out
+        ..add(remaining[0])
+        ..add(remaining[k])
+        ..add(remaining[k + 1]);
+    }
+    return out;
+  }
+
+  /// Largest number of vertices one [Mesh3D] can address with its 16-bit
+  /// [indices].
+  static const int maxVertexCount = 65535;
+
+  static void _checkDimension(
+    String generator,
+    String name,
+    double value, {
+    bool allowNegative = false,
+  }) {
+    if (!value.isFinite || (!allowNegative && value < 0.0)) {
+      throw ArgumentError.value(
+        value,
+        name,
+        'Mesh3D.$generator needs a finite ${allowNegative ? '' : 'non-negative '}'
+        'value',
+      );
+    }
+  }
+
+  static void _checkVertexLimit(String generator, int vertexCount) {
+    if (vertexCount > maxVertexCount) {
+      throw ArgumentError(
+        'Mesh3D.$generator would need $vertexCount vertices, but a Mesh3D '
+        'addresses at most $maxVertexCount with its 16-bit indices. Lower '
+        'the tessellation, or build the buffers with 32-bit indices and '
+        'split them with Mesh3D.partitionByVertexLimit.',
+      );
+    }
   }
 
   /// Local AABB minimum X.
@@ -1081,5 +1574,125 @@ class Mesh3D({
 
     flushPart();
     return parts;
+  }
+}
+
+/// Fills the Struct-of-Arrays buffers of a generated [Mesh3D].
+class _MeshBuilder(int vertexCapacity, int triangleCapacity) {
+  final Float32List positions = Float32List(vertexCapacity * 3);
+  final Float32List normals = Float32List(vertexCapacity * 3);
+  final Float32List uvs = Float32List(vertexCapacity * 2);
+  final Float32List aoValues = Float32List(vertexCapacity);
+  final Uint16List indices = Uint16List(triangleCapacity * 3);
+
+  /// Number of vertices added so far.
+  int vertexCount = 0;
+  int _indexCount = 0;
+
+  /// Appends a vertex with full ambient occlusion (`1.0`).
+  void vertex(
+    double x,
+    double y,
+    double z,
+    double nx,
+    double ny,
+    double nz,
+    double u,
+    double v,
+  ) {
+    final p = vertexCount * 3;
+    positions[p] = x;
+    positions[p + 1] = y;
+    positions[p + 2] = z;
+    normals[p] = nx;
+    normals[p + 1] = ny;
+    normals[p + 2] = nz;
+    final t = vertexCount * 2;
+    uvs[t] = u;
+    uvs[t + 1] = v;
+    aoValues[vertexCount] = 1.0;
+    vertexCount++;
+  }
+
+  /// Sets the ambient occlusion of the vertex added last.
+  void ao(double value) {
+    aoValues[vertexCount - 1] = value;
+  }
+
+  /// Appends the counter-clockwise triangle `(a, b, c)`.
+  void triangle(int a, int b, int c) {
+    indices[_indexCount++] = a;
+    indices[_indexCount++] = b;
+    indices[_indexCount++] = c;
+  }
+
+  /// Appends a flat disc of [segments] triangles around `(0, 0, z)` facing
+  /// `+Z` ([up]) or `-Z`.
+  void disc(
+    double radius,
+    double z,
+    int segments, {
+    required bool up,
+    required double aoValue,
+  }) {
+    final nz = up ? 1.0 : -1.0;
+    final center = vertexCount;
+    vertex(0.0, 0.0, z, 0.0, 0.0, nz, 0.5, 0.5);
+    ao(aoValue);
+    for (var k = 0; k < segments; k++) {
+      final a = 2.0 * math.pi * (k / segments);
+      final c = math.cos(a);
+      final s = math.sin(a);
+      vertex(
+        c * radius,
+        s * radius,
+        z,
+        0.0,
+        0.0,
+        nz,
+        0.5 + 0.5 * c,
+        0.5 + 0.5 * s,
+      );
+      ao(aoValue);
+    }
+    for (var k = 0; k < segments; k++) {
+      final current = center + 1 + k;
+      final next = center + 1 + ((k + 1) % segments);
+      if (up) {
+        triangle(center, current, next);
+      } else {
+        triangle(center, next, current);
+      }
+    }
+  }
+
+  /// Mirrors everything built so far in the plane `z = planeZ`, flipping
+  /// normals and winding with it so that the surface still faces outwards.
+  void mirrorZ(double planeZ) {
+    for (var v = 0; v < vertexCount; v++) {
+      final p = v * 3 + 2;
+      positions[p] = 2.0 * planeZ - positions[p];
+      normals[p] = -normals[p];
+    }
+    for (var i = 0; i + 2 < _indexCount; i += 3) {
+      final swap = indices[i + 1];
+      indices[i + 1] = indices[i + 2];
+      indices[i + 2] = swap;
+    }
+  }
+
+  Mesh3D build() {
+    assert(
+      vertexCount * 3 == positions.length && _indexCount == indices.length,
+      'generator filled $vertexCount vertices / $_indexCount indices, '
+      'expected ${positions.length ~/ 3} / ${indices.length}',
+    );
+    return Mesh3D(
+      positions: positions,
+      normals: normals,
+      indices: indices,
+      ambientOcclusion: aoValues,
+      uvs: uvs,
+    );
   }
 }
