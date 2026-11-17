@@ -225,6 +225,43 @@ class CameraComponent({
     return viewfinder.visibleWorldRect;
   }
 
+  Rect? _cullRect;
+  Rect? _cullRectBase;
+  double _cullRectMargin = 0.0;
+
+  /// The axis-aligned [world] region that can reach the screen in the frame
+  /// that is being rendered: [visibleWorldRect], grown by whatever the camera
+  /// moves the picture by without moving the viewfinder (the active trauma
+  /// shake of the [viewfinder] and the sub-pixel shift of [pixelSnapMode]).
+  ///
+  /// Everything outside of this rectangle is guaranteed to be off screen, so
+  /// this is the rectangle to cull rendering against (`CullWhenOffscreen`,
+  /// `SpatialCullGroup` and the `World` spatial index use it). For gameplay
+  /// decisions keep using [visibleWorldRect], which a shake does not change.
+  ///
+  /// Equal to [visibleWorldRect] (the same instance) while nothing displaces
+  /// the picture. Like [visibleWorldRect] it may only be accessed after the
+  /// camera was mounted.
+  Rect get cullWorldRect {
+    final base = visibleWorldRect;
+    var margin = viewfinder.shakeDisplacementBound;
+    if (pixelSnapMode != PixelSnapMode.none) {
+      // The snapped translation is at most half a logical pixel away.
+      margin += 0.5;
+    }
+    if (margin <= 0.0) {
+      return base;
+    }
+    final zoom = viewfinder.zoom;
+    final worldMargin = zoom > 1e-9 ? margin / zoom : margin;
+    if (identical(_cullRectBase, base) && _cullRectMargin == worldMargin) {
+      return _cullRect!;
+    }
+    _cullRectBase = base;
+    _cullRectMargin = worldMargin;
+    return _cullRect = base.inflate(worldMargin);
+  }
+
   /// Renders the [world] as seen through this camera.
   ///
   /// Nothing is rendered while the world is not mounted, with one exception:
@@ -1349,8 +1386,46 @@ class CameraComponent({
   /// This variable is set to `this` when we begin rendering the world through
   /// this particular camera, and reset back to `null` at the end. This variable
   /// is not set when rendering components that are attached to the viewport.
+  ///
+  /// It is also `null` while a component subtree is being recorded into a
+  /// camera-independent cache (a `Snapshot`, or a `SceneLayerComponent` with
+  /// `cacheAsPicture`), see [beginDetachedRecording].
   static CameraComponent? get currentCamera {
-    return currentCameras.isEmpty ? null : currentCameras.last;
+    return currentCameras.length > _detachedFloor ? currentCameras.last : null;
+  }
+
+  // Cameras at stack positions below this index belong to the frame that
+  // surrounds a detached recording and are hidden from [currentCamera].
+  static int _detachedFloor = 0;
+  static final List<int> _detachedFloors = <int>[];
+  static final List<WorldSpatialIndex?> _detachedIndices =
+      <WorldSpatialIndex?>[];
+
+  /// Starts recording a subtree whose picture will be replayed later, for any
+  /// camera, and therefore must not depend on the camera that happens to be
+  /// rendering right now.
+  ///
+  /// Until the matching [endDetachedRecording], [currentCamera] is `null` for
+  /// the subtree (so nothing is culled, masked by `cameraMask`, clamped or
+  /// scaled against a camera), the `World` spatial index does not filter
+  /// children by visibility, and no [RenderPass] is active (so a
+  /// [MultiPassComponent] records all of its `fallbackPasses`). A camera that
+  /// is itself part of the recorded subtree works as usual.
+  @internal
+  static void beginDetachedRecording() {
+    _detachedFloors.add(_detachedFloor);
+    _detachedIndices.add(WorldSpatialIndex.activeRenderIndex);
+    _detachedFloor = currentCameras.length;
+    WorldSpatialIndex.activeRenderIndex = null;
+    pushRenderPass(null);
+  }
+
+  /// Ends the scope opened by [beginDetachedRecording].
+  @internal
+  static void endDetachedRecording() {
+    popRenderPass();
+    WorldSpatialIndex.activeRenderIndex = _detachedIndices.removeLast();
+    _detachedFloor = _detachedFloors.removeLast();
   }
 
   /// Stack of all current cameras in the render tree.

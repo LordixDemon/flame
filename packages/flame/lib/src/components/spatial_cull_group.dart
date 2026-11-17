@@ -2,6 +2,7 @@ import 'dart:math';
 import 'dart:ui';
 
 import 'package:flame/src/camera/camera_component.dart';
+import 'package:flame/src/camera/scene_layer_component.dart';
 import 'package:flame/src/camera/world.dart';
 import 'package:flame/src/components/core/component.dart';
 import 'package:flame/src/components/mixins/cull_when_offscreen.dart';
@@ -15,6 +16,11 @@ import 'package:meta/meta.dart';
 /// Ideal for grouping map quadrants, island sides, tile chunks, or regional
 /// prop clusters inside a [World] so off-screen regions skip iterating dozens
 /// or hundreds of individual children when zoomed in.
+///
+/// The group is tested against `CameraComponent.cullWorldRect` (which covers
+/// an active camera shake), shifted by the parallax of any
+/// `SceneLayerComponent` it is drawn through, and is never culled while it is
+/// recorded into a camera-independent cache.
 class SpatialCullGroup({
   this.cullingEnabled = true,
   this.staticBounds = false,
@@ -50,6 +56,7 @@ class SpatialCullGroup({
 
   World? _world;
   bool _hasDirectWorldCoords = false;
+  List<SceneLayerComponent>? _sceneLayers;
   bool _boundsDirty = true;
   Rect? _cachedGroupBounds;
   int _cachedChildSignature = 0;
@@ -75,6 +82,7 @@ class SpatialCullGroup({
     super.onMount();
     _world = enclosingWorld();
     _hasDirectWorldCoords = hasDirectWorldCoordinates();
+    _sceneLayers = SceneLayerComponent.ancestorLayersOf(this);
     _boundsDirty = true;
   }
 
@@ -83,6 +91,7 @@ class SpatialCullGroup({
   void onRemove() {
     _world = null;
     _hasDirectWorldCoords = false;
+    _sceneLayers = null;
     _cachedGroupBounds = null;
     _boundsDirty = true;
     super.onRemove();
@@ -225,17 +234,35 @@ class SpatialCullGroup({
     );
   }
 
+  bool _overlapsCullRect(CameraComponent camera, Rect bounds) {
+    final visible = camera.cullWorldRect;
+    final layers = _sceneLayers;
+    if (layers == null) {
+      return visible.overlaps(bounds);
+    }
+    var shiftX = 0.0;
+    var shiftY = 0.0;
+    for (var i = 0; i < layers.length; i++) {
+      shiftX += layers[i].parallaxShiftX(camera);
+      shiftY += layers[i].parallaxShiftY(camera);
+    }
+    return bounds.left + shiftX < visible.right &&
+        visible.left < bounds.right + shiftX &&
+        bounds.top + shiftY < visible.bottom &&
+        visible.top < bounds.bottom + shiftY;
+  }
+
   @override
   void renderTree(Canvas canvas) {
     final world = _world;
-    if (cullingEnabled &&
-        world != null &&
-        CameraComponent.currentCameras.isNotEmpty) {
-      final camera = CameraComponent.currentCameras.last;
+    // `currentCamera` is null while the subtree is recorded into a
+    // camera-independent cache: nothing may be left out then.
+    final camera = CameraComponent.currentCamera;
+    if (cullingEnabled && world != null && camera != null) {
       if (camera.world == world) {
         final bounds = groupWorldBounds;
         if (bounds != null) {
-          if (!camera.visibleWorldRect.overlaps(bounds)) {
+          if (!_overlapsCullRect(camera, bounds)) {
             _wasGroupCulledLastFrame = true;
             camera.recordCullDecision(culled: true);
             return;

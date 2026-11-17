@@ -290,7 +290,8 @@ class Viewfinder({
   ///
   /// Shake amplitude scales quadratically (`trauma * trauma`) for natural
   /// physical impact falloff without mutating [position], [angle], or
-  /// [visibleWorldRect].
+  /// [visibleWorldRect]. Render culling does account for the shake: see
+  /// [CameraComponent.cullWorldRect].
   double get trauma => _trauma;
 
   /// Current transient render-only viewport offset produced by [trauma].
@@ -304,6 +305,33 @@ class Viewfinder({
   @internal
   bool get hasActiveShake =>
       _shakeOffset.x != 0.0 || _shakeOffset.y != 0.0 || _shakeRoll != 0.0;
+
+  /// Upper bound, in viewport virtual pixels, of how far the active trauma
+  /// shake moves any point of the picture (`0.0` when no shake is active).
+  ///
+  /// The translation moves every point by the length of [shakeOffset]; the
+  /// roll around the viewfinder anchor moves a point at distance `r` from
+  /// that anchor by `2 * r * sin(|shakeRoll| / 2)`, and no point of the
+  /// viewport is further away from it than its furthest corner.
+  @internal
+  double get shakeDisplacementBound {
+    if (!hasActiveShake) {
+      return 0.0;
+    }
+    var bound = sqrt(
+      _shakeOffset.x * _shakeOffset.x + _shakeOffset.y * _shakeOffset.y,
+    );
+    if (_shakeRoll != 0.0 && parent != null) {
+      final viewportSize = camera.viewport.virtualSize;
+      final pivotX = transform.position.x;
+      final pivotY = transform.position.y;
+      final farX = max(pivotX.abs(), (viewportSize.x - pivotX).abs());
+      final farY = max(pivotY.abs(), (viewportSize.y - pivotY).abs());
+      final reach = sqrt(farX * farX + farY * farY);
+      bound += 2.0 * reach * sin(_shakeRoll.abs() * 0.5);
+    }
+    return bound;
+  }
 
   /// Adds [amount] (`> 0`) to [trauma], clamped to `[0.0 .. 1.0]`, and wakes
   /// per-frame updates if sleeping.

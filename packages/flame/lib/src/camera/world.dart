@@ -50,7 +50,11 @@ class World({
   WorldSpatialIndex? _spatialIndex;
   WorldEventBus? _eventBus;
   List<WorldQuery<Component>>? _queries;
-  final List<Component> _spatialRenderScratch = <Component>[];
+  // One list per nesting depth of spatial render passes, so that a pass
+  // started from within another pass of this world keeps its own list.
+  final List<List<Component>> _spatialRenderScratches = <List<Component>>[
+    <Component>[],
+  ];
   final List<SpatialHitbox3D> _spatialHitboxes3D = <SpatialHitbox3D>[];
 
   /// Live registry of mounted [SpatialHitbox3D] descendants inside this world,
@@ -257,25 +261,37 @@ class World({
     }
 
     final idx = spatialIndex..syncWithChildren(children);
-    final (visibleIndexed, visibleCullables) = idx.collectVisibleForRender(
-      camera.visibleWorldRect,
-      _spatialRenderScratch,
-      cameraMask: camera.cameraMask,
-    );
-    _lastSpatialRenderedCount = visibleIndexed;
-    camera.recordCullDecisionsBulk(
-      visible: visibleCullables,
-      culled: idx.indexedCullableCount - visibleCullables,
-    );
-
+    // This world may be rendered again from within this pass (a camera or
+    // render texture inside the world that looks at the world): every pass
+    // gets its own visibility state in the index and its own list here.
+    final depth = idx.beginRenderPass();
+    while (_spatialRenderScratches.length <= depth) {
+      _spatialRenderScratches.add(<Component>[]);
+    }
+    final visible = _spatialRenderScratches[depth];
     final prevActiveIndex = WorldSpatialIndex.activeRenderIndex;
-    WorldSpatialIndex.activeRenderIndex = idx;
     try {
-      for (var i = 0; i < _spatialRenderScratch.length; i++) {
-        renderChild(canvas, _spatialRenderScratch[i]);
+      final (visibleIndexed, visibleCullables) = idx.collectVisibleForRender(
+        camera.cullWorldRect,
+        visible,
+        cameraMask: camera.cameraMask,
+      );
+      _lastSpatialRenderedCount = visibleIndexed;
+      camera.recordCullDecisionsBulk(
+        visible: visibleCullables,
+        culled: idx.indexedCullableCount - visibleCullables,
+      );
+
+      WorldSpatialIndex.activeRenderIndex = idx;
+      for (var i = 0; i < visible.length; i++) {
+        renderChild(canvas, visible[i]);
       }
     } finally {
       WorldSpatialIndex.activeRenderIndex = prevActiveIndex;
+      idx.endRenderPass();
+      if (depth > 0) {
+        visible.clear();
+      }
     }
 
     afterChildrenRendered(canvas);

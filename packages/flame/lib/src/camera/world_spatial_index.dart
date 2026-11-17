@@ -9,6 +9,7 @@ import 'package:flame/src/camera/world.dart';
 import 'package:flame/src/components/core/component.dart';
 import 'package:flame/src/components/mixins/cull_when_offscreen.dart';
 import 'package:flame/src/components/position_component.dart';
+import 'package:flame/src/components/spatial_cull_group.dart';
 import 'package:flame/src/game/transform2d.dart';
 import 'package:flame/src/geometry/spatial_grid_2d.dart';
 import 'package:meta/meta.dart';
@@ -27,11 +28,50 @@ class _IndexedNode({
   int visibleStamp = -1;
 }
 
+/// What one camera pass sees. A pass that is started while another pass over
+/// the same index is still rendering (a camera or render texture inside the
+/// world that looks at this world again) gets a state of its own, so the pass
+/// around it finds its buckets and visibility marks untouched afterwards.
+class _RenderPassState() {
+  int stamp = 0;
+
+  final Map<Component, List<Component>> visibleByContainer =
+      HashMap<Component, List<Component>>.identity();
+
+  /// Nodes visible in this pass. Only nested passes use it; the outermost
+  /// pass marks nodes with its stamp, which costs nothing per frame.
+  final Set<_IndexedNode> visibleNodes = HashSet<_IndexedNode>.identity();
+}
+
 /// Native `SpatialGrid2D`-backed spatial index for `World`, accelerating camera
 /// frustum culling from `O(N)` to `O(visible)` and 2D point hit-testing from
 /// `O(N)` to `O(1)` across both direct `World` children and nested layer
 /// hierarchies while preserving exact `(priority, sortKey, mountOrder)` draw
 /// and input ordering.
+///
+/// ## What is indexed
+///
+/// A `PositionComponent` without children and with a positive `size` is an
+/// indexed leaf, measured by its `size` box; a `CullWhenOffscreen` component
+/// is a leaf measured by `cullBounds` plus padding. Containers whose children
+/// are all leaves (or such containers) render only their visible children.
+///
+/// ## Hit-testing
+///
+/// A leaf is only offered to hit-testing when the point lies inside those
+/// bounds, so a leaf whose `containsLocalPoint` reaches outside of its `size`
+/// box should mix in `CullWhenOffscreen` with a matching padding.
+/// Containers are different: a container that can be hit itself is always
+/// offered. Only containers that are known to have no hit area of their own
+/// (plain `Component`, `SceneLayerComponent` and `SpatialCullGroup`
+/// instances, not subclasses) are skipped when none of their leaves is under
+/// the point.
+///
+/// ## Nested passes
+///
+/// A world may be rendered again while it is being rendered (an in-world
+/// camera, mirror or `RenderTextureComponent` that looks at the same world).
+/// Each pass keeps its own visibility state, see [beginRenderPass].
 class WorldSpatialIndex({
   double cellSize = 256.0,
   final int initialCapacity = 128,
@@ -55,8 +95,17 @@ class WorldSpatialIndex({
   final List<_IndexedNode> _nodeList = <_IndexedNode>[];
   final List<Component> _unindexed = <Component>[];
   final Set<Component> _pureIndexedContainers = HashSet<Component>.identity();
-  final Map<Component, List<Component>> _visibleByContainer =
-      HashMap<Component, List<Component>>.identity();
+
+  /// Pure containers that hit-testing may skip when none of their leaves is
+  /// under the point: neither they nor any container below them can be hit.
+  final Set<Component> _hitSkippableContainers = HashSet<Component>.identity();
+
+  /// One state per nesting level of render passes; index `0` is the outermost
+  /// pass (and the state used by a stand-alone [collectVisibleForRender]).
+  final List<_RenderPassState> _passStates = <_RenderPassState>[
+    _RenderPassState(),
+  ];
+  int _openPassCount = 0;
   final List<List<Component>> _bucketPool = <List<Component>>[];
   final List<PositionComponent> _gridScratch = <PositionComponent>[];
 
@@ -86,6 +135,42 @@ class WorldSpatialIndex({
 
   /// Monotonically increasing stamp for the latest [collectVisibleForRender].
   int get renderPassStamp => _renderPassStamp;
+
+  /// Number of render passes over this index that are currently open (more
+  /// than `1` while the world is rendered from within its own render pass).
+  int get openRenderPassCount => _openPassCount;
+
+  _RenderPassState get _activePass =>
+      _passStates[_openPassCount > 0 ? _openPassCount - 1 : 0];
+
+  /// Opens a camera render pass over this index and returns its nesting depth
+  /// (`0` for the outermost pass).
+  ///
+  /// Everything that [collectVisibleForRender] computes from here on, and
+  /// that `Component.renderTree` reads back through the active index, belongs
+  /// to this pass until the matching [endRenderPass]. Passes nest: a pass
+  /// opened while another one is rendering does not disturb it.
+  @internal
+  int beginRenderPass() {
+    final depth = _openPassCount++;
+    if (_passStates.length <= depth) {
+      _passStates.add(_RenderPassState());
+    }
+    return depth;
+  }
+
+  /// Closes the pass opened by the matching [beginRenderPass].
+  @internal
+  void endRenderPass() {
+    assert(_openPassCount > 0, 'endRenderPass without beginRenderPass');
+    if (_openPassCount > 1) {
+      // A nested pass leaves nothing behind for the pass around it.
+      final state = _passStates[_openPassCount - 1];
+      _releaseVisibleBuckets(state);
+      state.visibleNodes.clear();
+    }
+    _openPassCount--;
+  }
 
   /// Underlying [SpatialGrid2D] cell count.
   int get nonEmptyCellCount => _grid.nonEmptyCellCount;
@@ -120,6 +205,16 @@ class WorldSpatialIndex({
       return child.cullingEnabled;
     }
     return !child.hasChildren && child.size.x > 0 && child.size.y > 0;
+  }
+
+  /// Whether [container] is certain to have no hit area of its own. Only the
+  /// exact engine container types qualify: they keep the default
+  /// `containsLocalPoint`, which a subclass might override.
+  static bool _isHitInertContainer(Component container) {
+    final type = container.runtimeType;
+    return type == Component ||
+        type == SceneLayerComponent ||
+        type == SpatialCullGroup;
   }
 
   static bool _canDescendIntoContainer(Component container) {
@@ -178,26 +273,31 @@ class WorldSpatialIndex({
     _dirtyMembership = true;
   }
 
-  void _releaseVisibleBuckets() {
-    if (_visibleByContainer.isEmpty) {
+  void _releaseVisibleBuckets(_RenderPassState state) {
+    final buckets = state.visibleByContainer;
+    if (buckets.isEmpty) {
       return;
     }
-    for (final list in _visibleByContainer.values) {
+    for (final list in buckets.values) {
       list.clear();
       _bucketPool.add(list);
     }
-    _visibleByContainer.clear();
+    buckets.clear();
   }
 
-  List<Component> _acquireBucket(Component container) {
-    final existing = _visibleByContainer[container];
+  List<Component> _acquireBucket(
+    _RenderPassState state,
+    Component container,
+  ) {
+    final buckets = state.visibleByContainer;
+    final existing = buckets[container];
     if (existing != null) {
       return existing;
     }
     final list = _bucketPool.isNotEmpty
         ? _bucketPool.removeLast()
         : <Component>[];
-    _visibleByContainer[container] = list;
+    buckets[container] = list;
     return list;
   }
 
@@ -208,7 +308,12 @@ class WorldSpatialIndex({
     _nodeList.clear();
     _unindexed.clear();
     _pureIndexedContainers.clear();
-    _releaseVisibleBuckets();
+    _hitSkippableContainers.clear();
+    for (final state in _passStates) {
+      _releaseVisibleBuckets(state);
+      state.visibleNodes.clear();
+      state.stamp = 0;
+    }
     _indexedCullableCount = 0;
     _renderPassStamp = 0;
     _dirtyMembership = true;
@@ -236,6 +341,7 @@ class WorldSpatialIndex({
       return false;
     }
     var allChildrenPure = true;
+    var hitSkippable = _isHitInertContainer(container);
     for (final child in container.children) {
       if (_isEligibleLeafForSpatialGrid(child)) {
         _registerLeaf(child as PositionComponent, isDirectWorldChild: false);
@@ -244,12 +350,18 @@ class WorldSpatialIndex({
         if (!subPure) {
           allChildrenPure = false;
         }
+        if (!_hitSkippableContainers.contains(child)) {
+          hitSkippable = false;
+        }
       } else {
         allChildrenPure = false;
       }
     }
     if (allChildrenPure) {
       _pureIndexedContainers.add(container);
+      if (hitSkippable) {
+        _hitSkippableContainers.add(container);
+      }
     }
     return allChildrenPure;
   }
@@ -258,6 +370,12 @@ class WorldSpatialIndex({
   /// subtrees) and updates only AABBs whose local or ancestor `Transform2D`
   /// version or dimensions changed since the previous sync.
   void syncWithChildren(Iterable<Component> children) {
+    if (_openPassCount > 0) {
+      // A pass is rendering from the nodes and buckets collected at its
+      // start (which was preceded by a sync in this very frame). Rebuilding
+      // them underneath it would make it drop what it has not drawn yet.
+      return;
+    }
     if (_dirtyMembership) {
       _dirtyMembership = false;
       _grid.clear();
@@ -265,6 +383,7 @@ class WorldSpatialIndex({
       _nodeList.clear();
       _unindexed.clear();
       _pureIndexedContainers.clear();
+      _hitSkippableContainers.clear();
       _indexedCullableCount = 0;
       for (final child in children) {
         if (_isEligibleLeafForSpatialGrid(child)) {
@@ -386,7 +505,7 @@ class WorldSpatialIndex({
     if (!_pureIndexedContainers.contains(container)) {
       return null;
     }
-    return _visibleByContainer[container] ?? const <Component>[];
+    return _activePass.visibleByContainer[container] ?? const <Component>[];
   }
 
   /// Internal check used by mixed-child containers to skip offscreen indexed
@@ -397,7 +516,10 @@ class WorldSpatialIndex({
     if (node == null) {
       return true;
     }
-    return node.visibleStamp == _renderPassStamp;
+    if (_openPassCount > 1) {
+      return _activePass.visibleNodes.contains(node);
+    }
+    return node.visibleStamp == _passStates[0].stamp;
   }
 
   /// Populates [out] with all visible direct components overlapping
@@ -412,9 +534,13 @@ class WorldSpatialIndex({
     int cameraMask = 0xFFFFFFFF,
   }) {
     out.clear();
-    _releaseVisibleBuckets();
+    final state = _activePass;
+    final nested = _openPassCount > 1;
+    _releaseVisibleBuckets(state);
+    state.visibleNodes.clear();
     _gridScratch.clear();
     final stamp = ++_renderPassStamp;
+    state.stamp = stamp;
     _grid.queryRect(visibleWorldRect, _gridScratch);
     var visibleIndexed = 0;
     var visibleCullables = 0;
@@ -428,7 +554,12 @@ class WorldSpatialIndex({
       if (node == null) {
         continue;
       }
-      node.visibleStamp = stamp;
+      if (nested) {
+        // The stamp on the node belongs to the outermost pass.
+        state.visibleNodes.add(node);
+      } else {
+        node.visibleStamp = stamp;
+      }
       visibleIndexed++;
       if (comp is CullWhenOffscreen) {
         comp.markSpatialVisible(stamp);
@@ -440,7 +571,7 @@ class WorldSpatialIndex({
         var cursor = comp as Component;
         var parent = cursor.parent;
         while (parent != null && _pureIndexedContainers.contains(parent)) {
-          final bucket = _acquireBucket(parent);
+          final bucket = _acquireBucket(state, parent);
           if (identical(cursor, comp) || !bucket.contains(cursor)) {
             bucket.add(cursor);
           }
@@ -450,7 +581,7 @@ class WorldSpatialIndex({
       }
     }
 
-    for (final bucket in _visibleByContainer.values) {
+    for (final bucket in state.visibleByContainer.values) {
       if (bucket.length > 1) {
         _shellSortComponents(bucket);
       }
@@ -503,8 +634,11 @@ class WorldSpatialIndex({
     }
     for (var i = 0; i < _unindexed.length; i++) {
       final c = _unindexed[i];
+      // A container is only left out when it is known that neither it nor
+      // any container below it can be hit: then the leaves found above are
+      // everything there is to hit inside of it.
       if ((c.cameraMask & cameraMask) != 0 &&
-          !_pureIndexedContainers.contains(c) &&
+          !_hitSkippableContainers.contains(c) &&
           addedTopLevel.add(c)) {
         out.add(c);
       }

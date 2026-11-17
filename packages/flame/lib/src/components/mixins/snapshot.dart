@@ -39,6 +39,14 @@ enum SnapshotResolutionPolicy() {
 ///
 /// Native [Picture] and [Image] GPU resources are deterministically disposed
 /// whenever the snapshot is invalidated, replaced, or unmounted.
+///
+/// A snapshot does not depend on the camera that happens to render when it is
+/// taken: while the subtree is recorded there is no current camera, so
+/// descendants are not frustum-culled (by `CullWhenOffscreen`,
+/// `SpatialCullGroup` or the `World` spatial index), not filtered by their own
+/// `cameraMask`, not scaled as billboards, and a `MultiPassComponent` records
+/// all of its fallback passes. The component's own `cameraMask` and
+/// `minQualityTier` are checked on every frame before the cache is drawn.
 mixin Snapshot on PositionComponent {
   static final Matrix4 _inverseScratch = Matrix4.identity();
   static final Paint _rasterPaint = Paint()..filterQuality = FilterQuality.low;
@@ -235,7 +243,14 @@ mixin Snapshot on PositionComponent {
     _inverseScratch.setFrom(transformMatrix);
     _inverseScratch.invert();
     canvas.transform32(_inverseScratch.storage);
-    super.renderTree(canvas);
+    // Recorded without a current camera: the picture is replayed for every
+    // camera and camera position, so nothing in it may depend on this one.
+    CameraComponent.beginDetachedRecording();
+    try {
+      super.renderTree(canvas);
+    } finally {
+      CameraComponent.endDetachedRecording();
+    }
     _picture = recorder.endRecording();
     return _picture!;
   }
@@ -364,6 +379,15 @@ mixin Snapshot on PositionComponent {
   @override
   void renderTree(Canvas canvas) {
     if (renderSnapshot) {
+      // The cache replaces `Component.renderTree`, so the gates that live
+      // there are applied here, before anything is baked or drawn.
+      if (!isActiveForCurrentGraphicsTier) {
+        return;
+      }
+      final camera = CameraComponent.currentCamera;
+      if (camera != null && (cameraMask & camera.cameraMask) == 0) {
+        return;
+      }
       if (_picture == null) {
         takeSnapshot();
       }

@@ -2,6 +2,7 @@ import 'dart:math';
 import 'dart:ui';
 
 import 'package:flame/src/camera/camera_component.dart';
+import 'package:flame/src/camera/scene_layer_component.dart';
 import 'package:flame/src/camera/world.dart';
 import 'package:flame/src/components/core/component.dart';
 import 'package:flame/src/components/mixins/has_visibility.dart';
@@ -74,6 +75,12 @@ class const OffscreenTickPolicy._({
 /// (useful for tall 2.5D/3D towers extending in `-Y` or long directional
 /// shadows without wasting padding on opposite sides), and caches axis-aligned
 /// world bounds across stationary frames via `Transform2D.version`.
+///
+/// "On-screen" is decided against `CameraComponent.cullWorldRect`, which
+/// covers the active trauma shake of the camera, and the bounds are shifted
+/// by the parallax of any `SceneLayerComponent` the component is drawn
+/// through. Nothing is culled while the component is recorded into a
+/// camera-independent cache (a `Snapshot` or a cached `SceneLayerComponent`).
 mixin CullWhenOffscreen on PositionComponent {
   /// Turns culling on or off for this component only.
   bool cullingEnabled = true;
@@ -140,8 +147,7 @@ mixin CullWhenOffscreen on PositionComponent {
     final game = findGame();
     if (game is FlameGame && identical(game.camera.world, world)) {
       if (game.camera.parent != null) {
-        final expanded = _expandedBounds(cullBounds);
-        return !game.camera.visibleWorldRect.overlaps(expanded);
+        return !_overlapsCullRect(game.camera, _expandedBounds(cullBounds));
       }
     }
     return _wasCulledLastFrame;
@@ -262,6 +268,7 @@ mixin CullWhenOffscreen on PositionComponent {
 
   World? _world;
   bool _hasDirectWorldCoords = false;
+  List<SceneLayerComponent>? _sceneLayers;
 
   /// Whether this component has zero transforming ancestors between itself and
   /// its owning [World].
@@ -274,6 +281,7 @@ mixin CullWhenOffscreen on PositionComponent {
     super.onMount();
     _world = enclosingWorld();
     _hasDirectWorldCoords = hasDirectWorldCoordinates();
+    _sceneLayers = SceneLayerComponent.ancestorLayersOf(this);
     _cachedWorldBounds = null;
   }
 
@@ -282,8 +290,33 @@ mixin CullWhenOffscreen on PositionComponent {
   void onRemove() {
     _world = null;
     _hasDirectWorldCoords = false;
+    _sceneLayers = null;
     _cachedWorldBounds = null;
     super.onRemove();
+  }
+
+  /// Whether [bounds] (in the coordinates this component is laid out in)
+  /// reaches into what [camera] can show this frame.
+  ///
+  /// A parallax `SceneLayerComponent` between this component and the world
+  /// draws its subtree shifted on the canvas, so [bounds] are shifted by the
+  /// same amount before they are compared.
+  bool _overlapsCullRect(CameraComponent camera, Rect bounds) {
+    final visible = camera.cullWorldRect;
+    final layers = _sceneLayers;
+    if (layers == null) {
+      return visible.overlaps(bounds);
+    }
+    var shiftX = 0.0;
+    var shiftY = 0.0;
+    for (var i = 0; i < layers.length; i++) {
+      shiftX += layers[i].parallaxShiftX(camera);
+      shiftY += layers[i].parallaxShiftY(camera);
+    }
+    return bounds.left + shiftX < visible.right &&
+        visible.left < bounds.right + shiftX &&
+        bounds.top + shiftY < visible.bottom &&
+        visible.top < bounds.bottom + shiftY;
   }
 
   @override
@@ -315,23 +348,22 @@ mixin CullWhenOffscreen on PositionComponent {
       return false;
     }
     final world = _world;
-    if (!cullingEnabled ||
-        world == null ||
-        CameraComponent.currentCameras.isEmpty) {
+    // The innermost camera is the one currently rendering this component.
+    // There is none while the subtree is recorded into a camera-independent
+    // cache, and then nothing may be left out.
+    final camera = CameraComponent.currentCamera;
+    if (!cullingEnabled || world == null || camera == null) {
       _wasCulledLastFrame = false;
       return false;
     }
-    // The innermost camera is the one currently rendering this component.
-    final camera = CameraComponent.currentCameras.last;
     if (camera.world != world) {
       _wasCulledLastFrame = false;
       return false;
     }
     final bounds = cullBounds;
     final expanded = _expandedBounds(bounds);
-    final visibleRect = camera.visibleWorldRect;
-    final offscreen = !visibleRect.overlaps(expanded);
-    assert(_debugVerifyCulledSubtree(offscreen, visibleRect, expanded));
+    final offscreen = !_overlapsCullRect(camera, expanded);
+    assert(_debugVerifyCulledSubtree(offscreen, camera, expanded));
     _wasCulledLastFrame = offscreen;
     camera.recordCullDecision(culled: offscreen);
     return offscreen;
@@ -341,10 +373,23 @@ mixin CullWhenOffscreen on PositionComponent {
   /// true, or throws when a culled component has a visible descendant.
   bool _debugVerifyCulledSubtree(
     bool offscreen,
-    Rect visibleRect,
+    CameraComponent camera,
     Rect bounds,
   ) {
     if (offscreen && debugVerifyCulledSubtrees && hasChildren) {
+      // Children are measured in un-shifted coordinates, so the rectangle
+      // they are compared with is moved back by the parallax of the layers.
+      var visibleRect = camera.cullWorldRect;
+      final layers = _sceneLayers;
+      if (layers != null) {
+        var shiftX = 0.0;
+        var shiftY = 0.0;
+        for (final layer in layers) {
+          shiftX += layer.parallaxShiftX(camera);
+          shiftY += layer.parallaxShiftY(camera);
+        }
+        visibleRect = visibleRect.shift(Offset(-shiftX, -shiftY));
+      }
       final problem = _debugCulledSubtreeProblem(visibleRect, bounds);
       if (problem != null) {
         throw AssertionError(problem);

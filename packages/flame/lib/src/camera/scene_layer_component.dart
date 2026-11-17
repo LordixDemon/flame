@@ -8,6 +8,23 @@ import 'package:meta/meta.dart';
 /// camera-relative parallax translation, `minQualityTier` gating, and optional
 /// static display-list (`ui.Picture`) caching.
 ///
+/// ## Parallax
+///
+/// A [parallaxFactor] other than `(1, 1)` shifts the whole subtree on the
+/// canvas by `camera.viewfinder.position * (1 - parallaxFactor)`. The shift is
+/// applied while rendering only: `CullWhenOffscreen` and `SpatialCullGroup`
+/// descendants take it into account when they decide whether they are on
+/// screen, the `World` spatial index leaves such a layer alone, and
+/// hit-testing still uses the un-shifted positions.
+///
+/// ## Picture cache
+///
+/// With [cacheAsPicture] the subtree is recorded once, independently of any
+/// camera (nothing is culled, masked by `cameraMask`, or filtered by render
+/// pass while recording), and replayed until [markLayerDirty] is called or a
+/// direct child is added or removed. The layer's own `layerBit`,
+/// `cameraMask`, `minQualityTier` and parallax are applied on every frame.
+///
 /// Typical scene setups mount dedicated layers inside a [World] (for example:
 /// `skyBackdrop`, `terrain`, `groundProps`, `mainActors`, `weatherOverlay`),
 /// allowing auxiliary cameras (minimaps, reflection passes, clean exports) to
@@ -27,11 +44,62 @@ class SceneLayerComponent({
     if (minQualityTier != null) {
       this.minQualityTier = minQualityTier;
     }
+    (this.parallaxFactor as NotifyingVector2).addListener(
+      _onParallaxFactorChanged,
+    );
   }
 
   /// Camera translation multiplier `(1.0, 1.0)` = normal 1:1 world space,
   /// `< 1.0` = distant background parallax, `> 1.0` = foreground depth shift.
-  final Vector2 parallaxFactor = parallaxFactor?.clone() ?? Vector2.all(1.0);
+  ///
+  /// The vector can be changed at any time; the layer then repaints and the
+  /// `World` spatial index re-evaluates whether it may index the subtree.
+  final Vector2 parallaxFactor = NotifyingVector2.copy(
+    parallaxFactor ?? Vector2.all(1.0),
+  );
+
+  void _onParallaxFactorChanged() {
+    if (!isMounted) {
+      return;
+    }
+    final world = enclosingWorld();
+    if (world != null && world.spatialIndexEnabled) {
+      world.spatialIndex.markMembershipDirty();
+    }
+    markSubtreeDirty();
+    Game.notifyVisualMutation();
+  }
+
+  /// Whether this layer currently moves its subtree relative to the world.
+  bool get hasParallax => parallaxFactor.x != 1.0 || parallaxFactor.y != 1.0;
+
+  /// Horizontal canvas shift this layer applies to its subtree when it is
+  /// rendered through [camera].
+  double parallaxShiftX(CameraComponent camera) =>
+      camera.viewfinder.position.x * (1.0 - parallaxFactor.x);
+
+  /// Vertical canvas shift this layer applies to its subtree when it is
+  /// rendered through [camera].
+  double parallaxShiftY(CameraComponent camera) =>
+      camera.viewfinder.position.y * (1.0 - parallaxFactor.y);
+
+  /// Returns the [SceneLayerComponent] ancestors of [component] up to its
+  /// enclosing `World` (innermost first), or `null` when there are none.
+  ///
+  /// Cullers keep this list from `onMount` on, so that they can add up the
+  /// parallax shifts of the layers they are drawn through.
+  @internal
+  static List<SceneLayerComponent>? ancestorLayersOf(Component component) {
+    List<SceneLayerComponent>? layers;
+    var cursor = component.parent;
+    while (cursor != null && cursor is! World) {
+      if (cursor is SceneLayerComponent) {
+        (layers ??= <SceneLayerComponent>[]).add(cursor);
+      }
+      cursor = cursor.parent;
+    }
+    return layers;
+  }
 
   bool _cacheAsPicture = cacheAsPicture;
   Picture? _cachedPicture;
@@ -87,20 +155,16 @@ class SceneLayerComponent({
       return;
     }
     final camera = CameraComponent.currentCamera;
-    if (camera != null && (camera.layerMask & layerBit) == 0) {
+    if (camera != null &&
+        ((camera.layerMask & layerBit) == 0 ||
+            (camera.cameraMask & cameraMask) == 0)) {
       return;
     }
 
-    final px = parallaxFactor.x;
-    final py = parallaxFactor.y;
-    final hasParallax = camera != null && (px != 1.0 || py != 1.0);
-    if (hasParallax) {
-      final camPos = camera.viewfinder.position;
+    final shiftsSubtree = camera != null && hasParallax;
+    if (shiftsSubtree) {
       canvas.save();
-      canvas.translate(
-        camPos.x * (1.0 - px),
-        camPos.y * (1.0 - py),
-      );
+      canvas.translate(parallaxShiftX(camera), parallaxShiftY(camera));
     }
 
     try {
@@ -109,7 +173,16 @@ class SceneLayerComponent({
           _disposeCachedPicture();
           final recorder = PictureRecorder();
           final recCanvas = Canvas(recorder);
-          super.renderTree(recCanvas);
+          // The picture is replayed for every camera and every camera
+          // position, so it is recorded without a camera: a culler or the
+          // spatial index would otherwise leave out whatever is off screen
+          // right now, for good.
+          CameraComponent.beginDetachedRecording();
+          try {
+            super.renderTree(recCanvas);
+          } finally {
+            CameraComponent.endDetachedRecording();
+          }
           _cachedPicture = recorder.endRecording();
           _pictureDirty = false;
           _pictureBakeCount++;
@@ -119,7 +192,7 @@ class SceneLayerComponent({
         super.renderTree(canvas);
       }
     } finally {
-      if (hasParallax) {
+      if (shiftsSubtree) {
         canvas.restore();
       }
     }
