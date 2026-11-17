@@ -30,14 +30,15 @@ import 'package:flutter/widgets.dart' show MediaQuery;
 /// ## Rendering
 ///
 /// Every time the component renders, it renders the part of the scene that
-/// is visible on screen in one render pass: the part of the canvas's clip and
-/// of the game's area that the picture of the scene's bounding box covers
-/// (see [Component3D.aabb]; lights do not count), inside the component's
-/// [size] unless that is zero. It renders at the resolution of the screen,
-/// [pixelRatio] times [renderScale] pixels per logical pixel, aligned with
-/// the device's pixel grid, and culls the objects outside that part. The
-/// image is drawn back over the same part of the screen, unfiltered when
-/// [renderScale] is `1`. Nothing is rendered when that part is empty.
+/// is visible on screen in one render pass: the part of the canvas's clip (or
+/// of the game's area when nothing clips) that the picture of the scene's
+/// bounding box covers (see [Component3D.aabb]; lights do not count), inside
+/// the component's [size] unless that is zero. It renders at the resolution
+/// of the screen, [pixelRatio] times [renderScale] pixels per logical pixel,
+/// aligned with the device's pixel grid, and culls the objects outside that
+/// part. The image is drawn back over the same part of the screen,
+/// unfiltered when [renderScale] is `1`. Nothing is rendered when that part
+/// is empty.
 ///
 /// The render target is rounded up to a multiple of 64 pixels in both
 /// directions, so that panning and zooming reuse the same target, and is at
@@ -241,15 +242,17 @@ class Scene3DComponent({
       return;
     }
 
-    // The part of the screen to render, in device coordinates.
+    // The part of the screen to render, in device coordinates: the clip, or
+    // the game's area when nothing clips the canvas (the game is painted in
+    // a layer of its own, starting at its top left corner).
     var visible = canvas.getDestinationClipBounds();
     final game = findGame();
-    if (game != null && game.hasLayout) {
+    if (visible.width > _unclipped || visible.height > _unclipped) {
+      if (game == null || !game.hasLayout) {
+        return;
+      }
       final gameSize = game.canvasSize;
       visible = visible.intersect(Rect.fromLTWH(0, 0, gameSize.x, gameSize.y));
-    } else if (visible.width > _unknownScreenLimit ||
-        visible.height > _unknownScreenLimit) {
-      return;
     }
     final width = size.x;
     final height = size.y;
@@ -485,9 +488,8 @@ class Scene3DComponent({
 
   static const int _bucket = 64;
 
-  /// The largest clip, in logical pixels, rendered without knowing the size
-  /// of the screen.
-  static const double _unknownScreenLimit = 16384;
+  /// The size, in logical pixels, beyond which a clip counts as no clip.
+  static const double _unclipped = 1e6;
 
   static int _roundUp(int pixels) =>
       (pixels + _bucket - 1) ~/ _bucket * _bucket;
