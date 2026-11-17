@@ -1022,5 +1022,37 @@ void main() {
         expect(frame.pixels.at(px, py).$3, lessThan(sheen.$3 - 60));
       },
     );
+
+    testGpuEngine(
+      'keeps the lit color of a metallic material without MatCap textures',
+      () async {
+        final material = newMaterial()
+          ..matCapThreshold = -1
+          ..matCapMetallic = 1;
+        final vertex = _Vertex(
+          normal: Vector3(0, 0.6, 0.8),
+          color: const Color(0xFFC09060),
+          gloss: 0.6,
+        );
+
+        final frame = await renderFrame(
+          draw: (context) => context.drawSurface(_square(material, vertex)),
+          lights: lights(),
+        );
+
+        final (px, py) = pixelAt(0, 0);
+        final expected = look.shade(
+          position: _worldAt(px, py),
+          normal: vertex.normal,
+          vertexColor: _rgb(vertex.color),
+          gloss: 0.6,
+        );
+        expect(
+          _difference(frame.pixels.at(px, py), expected),
+          lessThan(2),
+          reason: '${frame.pixels.at(px, py)} vs $expected',
+        );
+      },
+    );
   });
 }

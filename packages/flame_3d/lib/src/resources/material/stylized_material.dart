@@ -393,7 +393,12 @@ class StylizedMaterial({
         'Material.matCapStrength',
         matCap == null ? 0 : matCapStrength,
       )
-      ..setFloat('Material.matCapThreshold', matCapThreshold)
+      // Without a MatCap texture no vertex gets one: a metallic material
+      // then keeps the lit color instead of reflecting nothing.
+      ..setFloat(
+        'Material.matCapThreshold',
+        matCap == null ? _never : matCapThreshold,
+      )
       ..setFloat('Material.matCapGlossWeight', matCapGlossWeight)
       ..setFloat(
         'Material.gemMatCapStrength',

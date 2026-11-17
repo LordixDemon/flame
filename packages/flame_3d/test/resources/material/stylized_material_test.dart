@@ -159,9 +159,13 @@ void main() {
         member(fragment, 'Material', 'emissiveColor', 3),
       );
       expect(member(fragment, 'Material', 'skyFill', 3), [0.5, 0.5, 0.5]);
-      // The first MatCap applies to every glossy vertex, in proportion to
-      // its gloss; no vertex is a gem.
-      expect(member(fragment, 'Material', 'matCapThreshold', 1), [0]);
+      // Without MatCap textures no vertex gets one; with a texture the
+      // first MatCap applies to every glossy vertex, in proportion to its
+      // gloss (see below).
+      expect(
+        member(fragment, 'Material', 'matCapThreshold', 1).single,
+        greaterThan(1e29),
+      );
       expect(member(fragment, 'Material', 'matCapGlossWeight', 1), [1]);
       expect(member(fragment, 'Material', 'gemMatCapStrength', 1), [0]);
       expect(
@@ -224,12 +228,19 @@ void main() {
 
       draw([stylizedTriangle(material)]);
 
-      final offset =
+      int offsetOf(String member) =>
           material.fragmentShader
               .slot('Material')
-              .getMemberOffsetInBytes('matCapStrength')! ~/
+              .getMemberOffsetInBytes(member)! ~/
           4;
-      expect(backend.uniforms['Material']![offset], 0.75);
+      expect(backend.uniforms['Material']![offsetOf('matCapStrength')], 0.75);
+      // Every glossy vertex gets it, in proportion to its gloss; no vertex
+      // is a gem.
+      expect(backend.uniforms['Material']![offsetOf('matCapThreshold')], 0);
+      expect(
+        backend.uniforms['Material']![offsetOf('gemThreshold')],
+        greaterThan(1e29),
+      );
       expect(
         identical(
           backend.textureBindings['matCapTexture']!.$1,
