@@ -6,6 +6,14 @@ import 'package:vector_math/vector_math.dart';
 
 /// Zero-allocation Struct-of-Arrays 2D Verlet rope, chain, banner, or tether
 /// simulation with iterative distance constraints.
+///
+/// `nodeCount` must be at least `1`. A single node is a degenerate rope: one
+/// free (or pinned) point with no segments.
+///
+/// The integrator is plain position Verlet: velocity is carried as the
+/// displacement of the previous [step] and `damping` is applied once per
+/// step, so call [step] with a steady time step (for example from a fixed
+/// update) if the motion must not depend on the frame rate.
 class VerletRope2D({
   required final int nodeCount,
   required Vector2 start,
@@ -18,11 +26,15 @@ class VerletRope2D({
   bool pinStart = true,
   bool pinEnd = false,
 }) {
-  this : assert(nodeCount >= 2, 'nodeCount must be at least 2') {
+  this {
+    if (nodeCount < 1) {
+      throw ArgumentError.value(nodeCount, 'nodeCount', 'must be at least 1');
+    }
     final targetEnd =
         end ?? Vector2(start.x, start.y + segmentLength * (nodeCount - 1));
     for (var i = 0; i < nodeCount; i++) {
-      final t = i / (nodeCount - 1);
+      // A single node sits on `start` (no `0 / 0`).
+      final t = nodeCount > 1 ? i / (nodeCount - 1) : 0.0;
       final x = start.x + (targetEnd.x - start.x) * t;
       final y = start.y + (targetEnd.y - start.y) * t;
       posX[i] = x;
@@ -65,7 +77,8 @@ class VerletRope2D({
 
   /// Advances Verlet integration and distance constraints by [dt] seconds.
   void step(double dt) {
-    if (dt <= 0.0) {
+    // `!(dt > 0.0)` also rejects NaN.
+    if (!(dt > 0.0)) {
       return;
     }
     Game.notifyVisualMutation();

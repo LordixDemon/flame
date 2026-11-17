@@ -138,10 +138,19 @@ class ShadowOccluder2D._(
     );
   }
 
-  /// Computes extruded shadow quad(s) cast by this occluder from `(lx, ly)` out
-  /// to [extrudeDistance], appending them to [outPath].
+  /// Computes the extruded shadow shape(s) cast by this occluder from
+  /// `(lx, ly)` out to [extrudeDistance], appending them to [outPath].
   ///
-  /// Returns the number of shadow quads appended.
+  /// Each shadow-casting edge `(a, b)` contributes one closed polygon: the
+  /// edge itself plus far points pushed [extrudeDistance] beyond `a` and `b`
+  /// along the light rays. When the edge subtends a wide angle at the light (a
+  /// wall close to it), extra far points are inserted every `60` degrees or
+  /// less, so the far side of the polygon never cuts back inside the light
+  /// radius and everything behind the edge stays in shadow. [extrudeDistance]
+  /// should be at least `1.16 * radius` for that guarantee (`Light2DLayer`
+  /// passes `2.2 * radius`).
+  ///
+  /// Returns the number of shadow polygons appended (one per casting edge).
   int appendShadowQuads({
     required double lx,
     required double ly,
@@ -224,7 +233,30 @@ class ShadowOccluder2D._(
       outPath
         ..moveTo(a.x, a.y)
         ..lineTo(b.x, b.y)
-        ..lineTo(farBx, farBy)
+        ..lineTo(farBx, farBy);
+
+      // The straight chord farB -> farA passes at `d * cos(theta / 2)` from
+      // the light, where `theta` is the angle the edge subtends: for a wide
+      // edge near the light that is well inside the light radius and the
+      // region behind the edge would stay lit. Walk the far side around the
+      // light in steps of at most 60 degrees instead (`cos(30) = 0.87`).
+      final cross = dax * dby - day * dbx;
+      final dot = dax * dbx + day * dby;
+      final theta = math.atan2(cross, dot); // signed angle from a to b
+      final spans = (theta.abs() / (math.pi / 3.0)).ceil();
+      if (spans > 1) {
+        final farDist = math.max(lenA, lenB) + extrudeDistance;
+        final angA = math.atan2(day, dax);
+        for (var k = spans - 1; k >= 1; k--) {
+          final ang = angA + theta * (k / spans);
+          outPath.lineTo(
+            lx + math.cos(ang) * farDist,
+            ly + math.sin(ang) * farDist,
+          );
+        }
+      }
+
+      outPath
         ..lineTo(farAx, farAy)
         ..close();
       quads++;

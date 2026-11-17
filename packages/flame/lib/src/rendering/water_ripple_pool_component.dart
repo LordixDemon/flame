@@ -13,7 +13,9 @@ import 'package:flame/src/game/game.dart';
 /// Renders all active ripples in **1 single GPU `Canvas.drawVertices` call**
 /// using a cached procedural double-ring texture so non-uniform isometric
 /// [aspectRatio] (`0.5` for `2:1` dimetric projection) works without per-ripple
-/// canvas state saves.
+/// canvas state saves. (A pool with more than `16383` ripples visible at once
+/// needs one call per `16383` of them, the most quads 16-bit vertex indices
+/// can address.)
 class WaterRipplePoolComponent({
   this.capacity = 128,
   this.aspectRatio = 0.55,
@@ -34,8 +36,11 @@ class WaterRipplePoolComponent({
     _quadPositions = Float32List(capacity * 8);
     _quadUvs = Float32List(capacity * 8);
     _quadColors = Int32List(capacity * 4);
-    _quadIndices = Uint16List(capacity * 6);
-    for (var i = 0; i < capacity; i++) {
+    // 16-bit indices address at most `_maxQuadsPerDraw` quads; the index
+    // pattern is the same for every chunk, so one prefix serves them all.
+    final indexedQuads = math.min(capacity, _maxQuadsPerDraw);
+    _quadIndices = Uint16List(indexedQuads * 6);
+    for (var i = 0; i < indexedQuads; i++) {
       final v = i * 4;
       final k = i * 6;
       _quadIndices[k] = v;
@@ -44,7 +49,8 @@ class WaterRipplePoolComponent({
       _quadIndices[k + 3] = v;
       _quadIndices[k + 4] = v + 2;
       _quadIndices[k + 5] = v + 3;
-
+    }
+    for (var i = 0; i < capacity; i++) {
       final u = i * 8;
       _quadUvs[u] = 0.0;
       _quadUvs[u + 1] = 0.0;
@@ -65,6 +71,9 @@ class WaterRipplePoolComponent({
   double aspectRatio;
 
   static const int _texSize = 64;
+
+  /// Most quads one `drawVertices` call can address with 16-bit indices.
+  static const int _maxQuadsPerDraw = 16383;
   static final MemoryCache<int, ui.Image> _ringTextureCache =
       MemoryCache<int, ui.Image>(
         cacheSize: 4,
@@ -124,7 +133,8 @@ class WaterRipplePoolComponent({
   /// Number of currently active ripples.
   int get activeCount => _activeCount;
 
-  /// Number of GPU draw calls issued during the last [render] (`0` or `1`).
+  /// Number of GPU draw calls issued during the last [render]: `0` when
+  /// nothing is visible, otherwise `1` per `16383` visible ripples.
   int get lastDrawCalls => _lastDrawCalls;
 
   /// Spawns an expanding concentric ripple at `(x, y)`.
@@ -173,7 +183,8 @@ class WaterRipplePoolComponent({
   @override
   void update(double dt) {
     super.update(dt);
-    if (_activeCount == 0 || dt <= 0.0) {
+    // `!(dt > 0.0)` also rejects NaN.
+    if (_activeCount == 0 || !(dt > 0.0)) {
       return;
     }
     Game.notifyVisualMutation();
@@ -263,15 +274,28 @@ class WaterRipplePoolComponent({
       return;
     }
 
-    final vertices = ui.Vertices.raw(
-      ui.VertexMode.triangles,
-      Float32List.sublistView(_quadPositions, 0, quadCount * 8),
-      textureCoordinates: Float32List.sublistView(_quadUvs, 0, quadCount * 8),
-      colors: Int32List.sublistView(_quadColors, 0, quadCount * 4),
-      indices: Uint16List.sublistView(_quadIndices, 0, quadCount * 6),
-    );
-    canvas.drawVertices(vertices, ui.BlendMode.modulate, _paint);
-    vertices.dispose();
-    _lastDrawCalls = 1;
+    var calls = 0;
+    for (var first = 0; first < quadCount; first += _maxQuadsPerDraw) {
+      final count = math.min(_maxQuadsPerDraw, quadCount - first);
+      final vertices = ui.Vertices.raw(
+        ui.VertexMode.triangles,
+        Float32List.sublistView(
+          _quadPositions,
+          first * 8,
+          (first + count) * 8,
+        ),
+        textureCoordinates: Float32List.sublistView(_quadUvs, 0, count * 8),
+        colors: Int32List.sublistView(
+          _quadColors,
+          first * 4,
+          (first + count) * 4,
+        ),
+        indices: Uint16List.sublistView(_quadIndices, 0, count * 6),
+      );
+      canvas.drawVertices(vertices, ui.BlendMode.modulate, _paint);
+      vertices.dispose();
+      calls++;
+    }
+    _lastDrawCalls = calls;
   }
 }

@@ -41,9 +41,12 @@ class const SurfaceNormal2D(this.nx, this.ny, this.nz) {
   }
 }
 
-/// Zero-allocation 2D normal-lit sprite batcher computing directional / point
-/// `dot(N, L)` bevel & surface relief lighting across `PointLight2D` sources
-/// and flushing into `1` `Canvas.drawVertices` GPU call.
+/// 2D normal-lit sprite batcher computing directional / point `dot(N, L)`
+/// bevel & surface relief lighting across `PointLight2D` sources and
+/// flushing into `1` `Canvas.drawVertices` GPU call.
+///
+/// Queuing sprites writes into pre-allocated typed buffers (they grow by
+/// doubling up to [maxSprites]) and allocates nothing per sprite.
 class NormalMappedSpriteBatch({
   required this.diffuseAtlas,
   this.ambientColor = const ui.Color(0xFF404860),
@@ -91,8 +94,11 @@ class NormalMappedSpriteBatch({
   int get spriteCount => _spriteCount;
   int get lastDrawCalls => _lastDrawCalls;
 
+  /// Most quads one batch can hold: 4 vertices each under 16-bit indices.
+  static const int maxSprites = 16383;
+
   static Uint16List _buildQuadIndices(int quadCap) {
-    final safeCap = math.min(quadCap, 16383);
+    final safeCap = math.min(quadCap, maxSprites);
     final idx = Uint16List(safeCap * 6);
     for (var i = 0; i < safeCap; i++) {
       final v = i * 4;
@@ -116,7 +122,7 @@ class NormalMappedSpriteBatch({
     while (nextCap < neededSprites) {
       nextCap *= 2;
     }
-    nextCap = math.min(nextCap, 16383);
+    nextCap = math.min(nextCap, maxSprites);
     _positions = Float32List(nextCap * 8)
       ..setRange(0, _spriteCount * 8, _positions);
     _uvs = Float32List(nextCap * 8)..setRange(0, _spriteCount * 8, _uvs);
@@ -139,6 +145,31 @@ class NormalMappedSpriteBatch({
     ui.Color baseTint = const ui.Color(0xFFFFFFFF),
     double opacity = 1.0,
   }) {
+    return ui.Color(
+      _litArgb(
+        wx,
+        wy,
+        normal.nx,
+        normal.ny,
+        normal.nz,
+        lights,
+        baseTint,
+        opacity,
+      ),
+    );
+  }
+
+  /// Allocation-free core of [evaluateLitColor] returning packed ARGB.
+  int _litArgb(
+    double wx,
+    double wy,
+    double nx,
+    double ny,
+    double nz,
+    List<PointLight2D> lights,
+    ui.Color baseTint,
+    double opacity,
+  ) {
     var accR = ambientColor.r;
     var accG = ambientColor.g;
     var accB = ambientColor.b;
@@ -155,15 +186,13 @@ class NormalMappedSpriteBatch({
         continue;
       }
       final dz = defaultLightHeightZ;
-      final invLen3 = 1.0 / math.sqrt(dx * dx + dy * dy + dz * dz);
-      final lx = dx * invLen3;
-      final ly = dy * invLen3;
-      final lz = dz * invLen3;
-
-      final ndotl = math.max(
-        0.0,
-        normal.nx * lx + normal.ny * ly + normal.nz * lz,
-      );
+      final len3 = math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (len3 <= 1e-9) {
+        // Light exactly on the surface point with zero height: no direction.
+        continue;
+      }
+      final invLen3 = 1.0 / len3;
+      final ndotl = (nx * dx + ny * dy + nz * dz) * invLen3;
       if (ndotl <= 0.0) {
         continue;
       }
@@ -181,13 +210,17 @@ class NormalMappedSpriteBatch({
       0,
       255,
     );
-    return ui.Color.fromARGB(a, r, g, b);
+    return (a << 24) | (r << 16) | (g << 8) | b;
   }
 
   /// Adds a sprite quad `[dstRect]` sampling `[srcRect]` with either uniform
   /// [faceNormal] or spherical/bevel [bevelCurvature] (`0.0 .. 1.0`, curving
   /// corner normals outward so torches catch crisp bright edges on stone tiles,
   /// chests, pillars, and tokens!).
+  ///
+  /// Allocates nothing per call once the batch has grown to its working
+  /// capacity. A batch holds at most [maxSprites] quads (16-bit vertex
+  /// indices); further calls before the next [clear] are ignored.
   void addLitSprite({
     required ui.Rect srcRect,
     required ui.Rect dstRect,
@@ -197,7 +230,7 @@ class NormalMappedSpriteBatch({
     ui.Color tint = const ui.Color(0xFFFFFFFF),
     double opacity = 1.0,
   }) {
-    if (_spriteCount >= 16383 || opacity <= 0.0) {
+    if (_spriteCount >= maxSprites || opacity <= 0.0) {
       return;
     }
     _ensureCapacity(_spriteCount + 1);
@@ -222,31 +255,14 @@ class NormalMappedSpriteBatch({
     _uvs[pBase + 6] = srcRect.left;
     _uvs[pBase + 7] = srcRect.bottom;
 
-    final bev = bevelCurvature.clamp(0.0, 0.95);
-    const cornerSigns = <(double, double)>[
-      (-1.0, -1.0),
-      (1.0, -1.0),
-      (1.0, 1.0),
-      (-1.0, 1.0),
-    ];
-    final cornerX = <double>[
-      dstRect.left,
-      dstRect.right,
-      dstRect.right,
-      dstRect.left,
-    ];
-    final cornerY = <double>[
-      dstRect.top,
-      dstRect.top,
-      dstRect.bottom,
-      dstRect.bottom,
-    ];
-
+    final bev = bevelCurvature.clamp(0.0, 0.95) * 0.70710678;
     final cBase = slot * 4;
+    // Corners in vertex order: top-left, top-right, bottom-right, bottom-left.
     for (var c = 0; c < 4; c++) {
-      final (sx, sy) = cornerSigns[c];
-      var nx = faceNormal.nx + sx * bev * 0.70710678;
-      var ny = faceNormal.ny + sy * bev * 0.70710678;
+      final onRight = c == 1 || c == 2;
+      final onBottom = c >= 2;
+      var nx = faceNormal.nx + (onRight ? bev : -bev);
+      var ny = faceNormal.ny + (onBottom ? bev : -bev);
       var nz = faceNormal.nz;
       final len = math.sqrt(nx * nx + ny * ny + nz * nz);
       if (len > 1e-6) {
@@ -254,15 +270,16 @@ class NormalMappedSpriteBatch({
         ny /= len;
         nz /= len;
       }
-      final lit = evaluateLitColor(
-        wx: cornerX[c],
-        wy: cornerY[c],
-        normal: SurfaceNormal2D(nx, ny, nz),
-        lights: lights,
-        baseTint: tint,
-        opacity: opacity,
+      _colors[cBase + c] = _litArgb(
+        onRight ? dstRect.right : dstRect.left,
+        onBottom ? dstRect.bottom : dstRect.top,
+        nx,
+        ny,
+        nz,
+        lights,
+        tint,
+        opacity,
       );
-      _colors[cBase + c] = lit.toARGB32();
     }
   }
 

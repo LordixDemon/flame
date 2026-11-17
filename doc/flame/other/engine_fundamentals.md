@@ -97,14 +97,21 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
 ## 6. 2D/3D Procedural Rendering, Lighting & Post-FX (`package:flame/rendering.dart`, `package:flame/post_process.dart`, `package:flame/canvas3d.dart`)
 
 - **`RibbonTrailComponent`, `SplineStripMesh2D` & `VerletRope2D`**: Smooth width/color-tapered
-  motion trails, Catmull-Rom curved 2D triangle strips, and Verlet + Jakobsen distance-constrained
-  ropes, chains, and banners rendered in a single `Canvas.drawVertices` call.
+  motion trails and Catmull-Rom curved 2D triangle strips, each drawn in a single
+  `Canvas.drawVertices` call, and Verlet + Jakobsen distance-constrained ropes, chains, and banners
+  (`VerletRope2D` is the simulation only: draw its `posX` / `posY` nodes yourself, for example as
+  the control points of a `SplineStripMesh2D`). A ribbon reports visual changes only while it is
+  drawn (two points or more), so a trail whose target stands still lets the game render on demand.
+  `SplineStripMesh2D.fromCatmullRom(textureWidth:, textureHeight:)` scales the strip UVs into the
+  pixels of an `ImageShader` image.
 - **`SpriteAnimationTicker` Frame Events, `AttachmentSocket2D`, `SpringBone2D`/`3D` &
   `AnimationStateTree<S>`**: Deterministic keyframe callbacks (even across large `dt` spikes),
   named weapon/hat/VFX sockets, analytical spring-damper secondary motion, and state-driven sprite
   animation trees with automatic one-shot return transitions.
 - **`Light2DLayer`, `PointLight2D`, `SpotLight2D` & `ShadowOccluder2D`**: Dynamic 2D multiply +
-  additive lighting layer with CPU-extruded 2D shadow volumes.
+  additive lighting layer with CPU-extruded 2D shadow volumes (segment, rectangle, and convex
+  polygon occluders). A shadow covers everything behind its occluder inside the light radius, also
+  for a wall right next to the light.
 - **`BloomPostProcess`, `VignettePostProcess`, `ChromaticAberrationPostProcess`,
   `ColorGradingPostProcess` & `OutlineDecorator`**: Ready-to-use `PostProcessStage` implementations
   and selection silhouette decorator requiring zero external `.frag` shader asset files.

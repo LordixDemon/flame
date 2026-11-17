@@ -11,7 +11,7 @@ import 'package:vector_math/vector_math.dart';
 /// single `Canvas.drawVertices` call.
 ///
 /// Ideal for sword slashes, projectile streaks, vehicle skidmarks, magic
-/// ribbons, and board token motion trails.
+/// ribbons, and game-piece motion trails.
 class RibbonTrailComponent({
   final int maxPoints = 32,
   var double lifetime = 0.35,
@@ -27,6 +27,10 @@ class RibbonTrailComponent({
 }) extends Component {
   this
     : assert(maxPoints >= 2, 'maxPoints must be at least 2'),
+      assert(
+        maxPoints <= 32767,
+        'maxPoints must fit 16-bit vertex indices (at most 32767)',
+      ),
       assert(lifetime > 0, 'lifetime must be positive');
 
   /// Optional shader (such as an `ImageShader`) mapped across ribbon UVs.
@@ -71,7 +75,7 @@ class RibbonTrailComponent({
 
   /// Clears all active points immediately.
   void clear() {
-    if (_count > 0) {
+    if (_count >= 2) {
       Game.notifyVisualMutation();
     }
     _head = 0;
@@ -102,7 +106,10 @@ class RibbonTrailComponent({
       _ptAge[slot] = 0.0;
       _count++;
     }
-    Game.notifyVisualMutation();
+    // A single point draws nothing (see [render]), so it is no visual change.
+    if (_count >= 2) {
+      Game.notifyVisualMutation();
+    }
   }
 
   /// Convenience wrapper for [addPointXY].
@@ -111,7 +118,11 @@ class RibbonTrailComponent({
 
   @override
   void update(double dt) {
-    final hadPoints = _count > 0;
+    // Only a trail of two or more points is drawn. A lone point (what a
+    // [targetProvider] standing still keeps alive) ages and is replaced
+    // without anything changing on screen, so it must not keep reporting
+    // visual mutations and block idle rendering.
+    final wasDrawn = _count >= 2;
     for (var i = 0; i < _count; i++) {
       final idx = (_head + i) % maxPoints;
       _ptAge[idx] += dt;
@@ -126,7 +137,7 @@ class RibbonTrailComponent({
       final p = provider();
       addPointXY(p.x, p.y);
     }
-    if (hadPoints && dt > 0.0) {
+    if (wasDrawn && dt > 0.0) {
       Game.notifyVisualMutation();
     }
   }
@@ -156,7 +167,11 @@ class RibbonTrailComponent({
       final ringIdx = (_head + (n - 1 - i)) % maxPoints;
       final px = _ptX[ringIdx];
       final py = _ptY[ringIdx];
-      final ageRatio = (_ptAge[ringIdx] / lifetime).clamp(0.0, 1.0);
+      // `lifetime` is mutable: a non-positive value means "already expired"
+      // rather than a division by zero.
+      final ageRatio = lifetime > 0.0
+          ? (_ptAge[ringIdx] / lifetime).clamp(0.0, 1.0)
+          : 1.0;
       final along = i * invLast;
       final t = math.max(ageRatio, along);
 

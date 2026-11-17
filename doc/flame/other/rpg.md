@@ -78,6 +78,8 @@ Flame includes a modular, opt-in suite of RPG, Tactical RPG, and Visual Novel pr
   slot/weight-capped inventory with atomic two-handed/offhand equipment swaps and side-effect-free
   `previewEquipStatDiff`; and event-driven DAG quests (`allOf`, `anyOf`, `sequential`, failure
   recovery branches, `WorldEventBus` binding, and JSON serialization).
-- **`NormalMappedSpriteBatch` & `WaterSurface2DComponent` (`package:flame/rendering.dart`)**: Per-pixel /
-  per-quad 2D normal-mapped dynamic point-light shading for pixel-art props and animated 2D water
-  surfaces with shoreline foam, wave-rippled reflections, and sun specular glints.
+- **`NormalMappedSpriteBatch` & `WaterSurface2DComponent` (`package:flame/rendering.dart`)**:
+  Per-quad 2D dynamic point-light shading for pixel-art props (`dot(N, L)` evaluated at the four
+  corners of each sprite from a face normal plus bevel curvature and interpolated across it) and
+  animated 2D water surfaces with shoreline foam, wave-rippled reflections, and sun specular
+  glints.

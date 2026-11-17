@@ -14,8 +14,30 @@ class SplineStripMesh2D._({
   required final Uint16List indices,
   required final int sampleCount,
 }) {
+  /// Most spine samples one strip can hold: two vertices each under the
+  /// 16-bit vertex indices of `Canvas.drawVertices`.
+  static const int maxSamples = 32767;
+
   /// Builds a tessellated triangle strip along [controlPoints] with
-  /// [subdivisionsPerSegment] samples per span.
+  /// [subdivisionsPerSegment] samples per span. Fewer than two control points
+  /// give an empty mesh that draws nothing.
+  ///
+  /// [tension] `0.5` is the standard Catmull-Rom spline; `1.0` gives straight
+  /// segments and `0.0` doubles the tangents.
+  ///
+  /// Texture coordinates: `U` grows along the strip by one repeat every
+  /// [uvRepeatLength] world units and `V` runs across it, both normalised
+  /// (`0 .. 1` per repeat) and then multiplied by [textureWidth] and
+  /// [textureHeight]. `Canvas.drawVertices` reads texture coordinates in the
+  /// shader's own pixels, so pass the pixel size of the image behind the
+  /// `ImageShader` given to [render] to map one repeat onto the whole image.
+  /// With the defaults (`1.0`) the coordinates stay normalised, for a shader
+  /// that carries its own scale matrix.
+  ///
+  /// A strip holds at most [maxSamples] spine samples. When
+  /// `(controlPoints.length - 1) * subdivisionsPerSegment` exceeds that, the
+  /// subdivisions are reduced to fit; more than [maxSamples] control points
+  /// throw an [ArgumentError].
   factory SplineStripMesh2D.fromCatmullRom({
     required List<Vector2> controlPoints,
     int subdivisionsPerSegment = 8,
@@ -25,6 +47,8 @@ class SplineStripMesh2D._({
     Color? endColor,
     double tension = 0.5,
     double uvRepeatLength = 64.0,
+    double textureWidth = 1.0,
+    double textureHeight = 1.0,
   }) {
     if (controlPoints.length < 2) {
       return SplineStripMesh2D._(
@@ -36,8 +60,18 @@ class SplineStripMesh2D._({
       );
     }
 
-    final subs = math.max(1, subdivisionsPerSegment);
     final spans = controlPoints.length - 1;
+    if (spans + 1 > maxSamples) {
+      throw ArgumentError.value(
+        controlPoints.length,
+        'controlPoints',
+        'a strip holds at most $maxSamples control points',
+      );
+    }
+    final subs = math.max(
+      1,
+      math.min(subdivisionsPerSegment, (maxSamples - 1) ~/ spans),
+    );
     final totalSamples = spans * subs + 1;
     final finalEndWidth = endWidth ?? startWidth;
     final finalEndColor = endColor ?? startColor;
@@ -137,11 +171,11 @@ class SplineStripMesh2D._({
       positions[vBase + 2] = px - nx * halfW;
       positions[vBase + 3] = py - ny * halfW;
 
-      final uCoord = arcDist * invRepeat;
+      final uCoord = arcDist * invRepeat * textureWidth;
       uvs[vBase] = uCoord;
       uvs[vBase + 1] = 0.0;
       uvs[vBase + 2] = uCoord;
-      uvs[vBase + 3] = 1.0;
+      uvs[vBase + 3] = textureHeight;
 
       colors[i * 2] = argb;
       colors[i * 2 + 1] = argb;

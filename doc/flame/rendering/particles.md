@@ -430,8 +430,11 @@ be rotated or scaled while `worldSpace` is enabled.
     `waterSplash`, `groundMist`).
 - **Interactive Shallow-Water Waves (`WaterSurface2DComponent` v2), `WaterRipplePoolComponent` &
   3-Band `WeatherPrecipitationLayer` v2**:
-  - `WaterSurface2DComponent` adds 1D coupled Hooke–Verlet wave columns (`splash`, `sampleSurfaceY`,
-    `sampleSlope`, `waveMechanicalEnergy`) with crest-reactive shoreline foam and caustics, paired with
-    `WaterRipplePoolComponent` (`1` `Canvas.drawVertices` call for concentric isometric water rings).
+  - `WaterSurface2DComponent` adds 1D coupled Hooke spring wave columns (`splash`, `sampleSurfaceY`,
+    `sampleSlope`, `waveMechanicalEnergy`) with crest-reactive shoreline foam and caustics. The
+    columns advance in fixed `1/120` s steps (left-over frame time is carried over), so a splash
+    spreads at the same speed at every frame rate. Paired with `WaterRipplePoolComponent`
+    (`spawnRipple`; `1` `Canvas.drawVertices` call for concentric isometric water rings, one more
+    per `16383` ripples visible at once).
   - `WeatherPrecipitationLayer` v2 adds 3 depth-parallax speed/size bands, `WeatherKind.hail` and
     `WeatherKind.ash`, coherent wind gusts, and `onDropImpact` splash coupling into water surfaces.

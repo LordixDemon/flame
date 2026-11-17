@@ -43,8 +43,7 @@ class Shadow3DDecorator({
   final Vector2 _base = base?.clone() ?? Vector2.zero();
   set base(Vector2 value) {
     _base.setFrom(value);
-    _transformMatrix = null;
-    _cachedShadowBounds = null;
+    _invalidateTransform();
   }
 
   /// How high is the component above the ground.
@@ -52,8 +51,7 @@ class Shadow3DDecorator({
   double _ascent = ascent ?? 0;
   set ascent(double value) {
     _ascent = value;
-    _transformMatrix = null;
-    _cachedShadowBounds = null;
+    _invalidateTransform();
   }
 
   /// The amount of skew the shadow is experiencing. The value of 0 corresponds
@@ -67,8 +65,7 @@ class Shadow3DDecorator({
   double _shift = xShift ?? 100.0;
   set xShift(double value) {
     _shift = value;
-    _transformMatrix = null;
-    _cachedShadowBounds = null;
+    _invalidateTransform();
   }
 
   /// The length of the shadow relative to the height of the object. If the sun
@@ -79,9 +76,8 @@ class Shadow3DDecorator({
   double _scale = yScale ?? 1.0;
   set yScale(double value) {
     _scale = value;
-    _transformMatrix = null;
     _paint = null;
-    _cachedShadowBounds = null;
+    _invalidateTransform();
   }
 
   /// Visual angle between a vertically standing component and the ground. This
@@ -93,8 +89,7 @@ class Shadow3DDecorator({
   double _angle = angle ?? -1.4;
   set angle(double value) {
     _angle = value;
-    _transformMatrix = null;
-    _cachedShadowBounds = null;
+    _invalidateTransform();
   }
 
   /// The amount of blur to apply to the shadow. The value of 0 produces crisp
@@ -111,7 +106,7 @@ class Shadow3DDecorator({
   set blur(double value) {
     _blur = value;
     _paint = null;
-    _cachedShadowBounds = null;
+    _hasCachedShadowBounds = false;
   }
 
   /// Shadow's intensity. The value of 1 will create a hard pitch-black shadow,
@@ -148,9 +143,20 @@ class Shadow3DDecorator({
     return paint;
   }
 
-  Matrix4? _transformMatrix;
-  Matrix4 _makeTransform() {
-    return Matrix4.identity()
+  /// Shadow projection matrix, rebuilt in place (no allocation) whenever a
+  /// property it depends on changes.
+  final Matrix4 _transformMatrix = Matrix4.identity();
+  bool _transformDirty = true;
+
+  /// Marks the projection, and the layer bounds derived from it, as stale.
+  void _invalidateTransform() {
+    _transformDirty = true;
+    _hasCachedShadowBounds = false;
+  }
+
+  void _updateTransform() {
+    _transformMatrix
+      ..setIdentity()
       ..translateByDouble(0.0, 0.0, _scale * _ascent, 1.0)
       ..setEntry(3, 2, 0.001)
       ..rotateX(_angle)
@@ -161,6 +167,7 @@ class Shadow3DDecorator({
         0.0,
         1.0,
       );
+    _transformDirty = false;
   }
 
   /// Whether [applyChain] bounds should be projected into a tight shadow
@@ -180,7 +187,7 @@ class Shadow3DDecorator({
     if (_hasCachedShadowBounds && _lastInputBounds == bounds) {
       return _cachedShadowBounds;
     }
-    final m = _transformMatrix!.storage;
+    final m = _transformMatrix.storage;
     final tx = base.x + _shift;
     final ty = base.y;
 
@@ -260,7 +267,9 @@ class Shadow3DDecorator({
       _paint = null;
     }
 
-    _transformMatrix ??= _makeTransform();
+    if (_transformDirty) {
+      _updateTransform();
+    }
     _paint ??= _makePaint(opacityScale);
 
     final shadowBounds =
@@ -270,7 +279,7 @@ class Shadow3DDecorator({
     _lastSaveLayerBounds = shadowBounds;
     canvas.saveLayer(shadowBounds, _paint!);
     canvas.translate(base.x + _shift, base.y);
-    canvas.transform32(_transformMatrix!.storage);
+    canvas.transform32(_transformMatrix.storage);
     draw(canvas);
     canvas.restore();
     draw(canvas);

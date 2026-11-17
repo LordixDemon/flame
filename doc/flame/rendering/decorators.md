@@ -259,8 +259,11 @@ from its root, which usually is `component.decorator`.
   `PaintDecorator.grayscale`, or `PaintDecorator.tint`, set a tight local `decoratorBounds` (`Rect`)
   on the `PositionComponent` so `Canvas.saveLayer` allocates only the component's local rect instead
   of an unbounded full-screen offscreen layer.
-- **`Shadow3DDecorator`**: Reuses a pre-allocated `Float64List(16)` affine transform buffer across
-  frames with zero per-frame `Matrix4` allocations.
+- **`Shadow3DDecorator`**: Keeps one projection matrix and rebuilds it in place only when `base`,
+  `ascent`, `xShift`, `yScale`, or `angle` change, so an animated shadow allocates no `Matrix4`
+  per frame. With local bounds available (see `decoratorBounds`), the shadow is drawn into a
+  `Canvas.saveLayer` sized to the projected bounds, and stays bounded while those properties (or
+  `blur`) are animated.
 
 
 [Component]: ../components/components.md#component

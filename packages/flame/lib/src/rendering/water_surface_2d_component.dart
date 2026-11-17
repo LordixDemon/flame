@@ -92,8 +92,15 @@ class WaterSurface2DComponent({
   late final Float32List _foamPositions;
   late final Int32List _foamColors;
 
+  /// Fixed simulation step of the wave columns. The neighbour smoothing is
+  /// applied per step, so the step must not depend on the frame time.
+  static const double _waveStep = 1.0 / 120.0;
+
   double _elapsed = 0.0;
   bool _hasActiveWaves = false;
+
+  /// Simulation time not yet consumed by whole [_waveStep]s.
+  double _waveAccumulator = 0.0;
 
   final ui.Paint _meshPaint = ui.Paint();
   final ui.Paint _foamPaint = ui.Paint();
@@ -148,6 +155,7 @@ class WaterSurface2DComponent({
     _colHeight.fillRange(0, _columnCount, 0.0);
     _colVel.fillRange(0, _columnCount, 0.0);
     _hasActiveWaves = false;
+    _waveAccumulator = 0.0;
   }
 
   /// Samples the pure dynamic splash wave displacement at [localX] in pixels.
@@ -185,7 +193,8 @@ class WaterSurface2DComponent({
   @override
   void update(double dt) {
     super.update(dt);
-    if (dt <= 0.0) {
+    // `!(dt > 0.0)` also rejects NaN.
+    if (!(dt > 0.0)) {
       return;
     }
     var mutated = false;
@@ -193,8 +202,7 @@ class WaterSurface2DComponent({
       _elapsed += dt;
       mutated = true;
     }
-    if (_hasActiveWaves) {
-      _stepWaveColumns(dt.clamp(0.0, 0.05));
+    if (_hasActiveWaves && _stepWaveColumns(dt.clamp(0.0, 0.05))) {
       mutated = true;
     }
     if (mutated) {
@@ -202,10 +210,20 @@ class WaterSurface2DComponent({
     }
   }
 
-  void _stepWaveColumns(double dt) {
-    // Sub-step at <= 1/120s so stiff Hooke waves remain unconditionally stable.
-    final steps = math.max(1, (dt * 120.0).ceil());
-    final subDt = dt / steps;
+  /// Advances the wave columns by [dt]; returns whether a step was run.
+  bool _stepWaveColumns(double dt) {
+    // Fixed 1/120 s steps with an accumulator: the Hooke springs stay stable
+    // (for any `springStiffness` below `(2 * 120)^2`) and the number of
+    // neighbour-smoothing passes per second is the same at every frame rate
+    // (a frame only slightly longer than a step must not double the
+    // smoothing).
+    _waveAccumulator += dt;
+    final steps = (_waveAccumulator / _waveStep + 1e-9).floor();
+    if (steps <= 0) {
+      return false;
+    }
+    _waveAccumulator = math.max(0.0, _waveAccumulator - steps * _waveStep);
+    const subDt = _waveStep;
     final spread = waveSpread.clamp(0.0, 0.45);
     final dampFactor = math.max(0.0, 1.0 - waveDamping * subDt);
     final n = _columnCount;
@@ -250,6 +268,7 @@ class WaterSurface2DComponent({
     if (maxAbs < 1e-4) {
       clearWaves();
     }
+    return true;
   }
 
   @override
@@ -334,7 +353,11 @@ class WaterSurface2DComponent({
     // 3. Crest-reactive undulating shoreline foam strip:
     if (shoreFoamHeight > 0.0) {
       final pulse = 1.0 + 0.22 * math.sin(_elapsed * waveSpeed * 1.4);
-      final baseFoamH = (shoreFoamHeight * pulse).clamp(1.0, height);
+      // A strip thinner than 1 px must not invert the clamp range.
+      final baseFoamH = (shoreFoamHeight * pulse).clamp(
+        math.min(1.0, height),
+        height,
+      );
       final foamBaseA = (foamColor.a * 255).round();
       final foamRgb = foamColor.toARGB32() & 0x00FFFFFF;
 
@@ -407,7 +430,12 @@ class WaterSurface2DComponent({
           ((i * 0.37 + 0.11) % 0.86 + 0.05) * width +
           math.cos(_elapsed + i) * 4.0;
       final gy = ((i * 0.29 + 0.18) % 0.75 + 0.15) * height;
-      final halfLen = (4.0 + 8.0 * shimmer).clamp(2.0, width * 0.25);
+      // A strip narrower than 8 px must not invert the clamp range.
+      final maxHalfLen = width * 0.25;
+      final halfLen = (4.0 + 8.0 * shimmer).clamp(
+        math.min(2.0, maxHalfLen),
+        maxHalfLen,
+      );
       _glintSegments[cursor++] = gx - halfLen;
       _glintSegments[cursor++] = gy;
       _glintSegments[cursor++] = gx + halfLen;
