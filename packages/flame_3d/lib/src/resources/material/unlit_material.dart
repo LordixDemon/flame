@@ -7,8 +7,9 @@ import 'package:flame_3d/resources.dart';
 /// A material that renders textures without any lighting calculations.
 ///
 /// Unlike [SpatialMaterial], this material outputs the texture color multiplied
-/// by [albedoColor] (and by the per-instance color) directly, with no PBR
-/// shading, tone mapping, or gamma correction. This makes it ideal for:
+/// by [albedoColor], by the vertex color and by the per-instance color
+/// directly, with no PBR shading, tone mapping, or gamma correction. This makes
+/// it ideal for:
 ///
 /// - 2D canvas content rendered onto 3D surfaces
 /// - UI panels and HUD elements in 3D space
