@@ -207,20 +207,20 @@ single `Canvas.drawRawAtlas` call**:
 - `FlipbookParticleRenderer` steps each particle through a `columns × rows`
   grid over its normalized lifetime (or loops at `loops` cycles).
 - `VariantSpriteParticleRenderer` assigns each spawned particle a deterministic
-  or random `Rect` from `frames` (stored in `ParticleBuffer.variant`) with zero
+  or random `Rect` from `sourceRects` (stored in `ParticleBuffer.variant`) with zero
   per-frame allocations.
 
 ```dart
 final flipbook = FlipbookParticleRenderer(
-  atlasImage,
+  image: atlasImage,
   columns: 4,
   rows: 2,
   blendMode: BlendMode.plus,
 );
 
 final variants = VariantSpriteParticleRenderer(
-  atlasImage,
-  frames: const [
+  image: atlasImage,
+  sourceRects: const [
     Rect.fromLTWH(0, 0, 32, 32),
     Rect.fromLTWH(32, 0, 32, 32),
     Rect.fromLTWH(64, 0, 32, 32),
@@ -233,29 +233,33 @@ final variants = VariantSpriteParticleRenderer(
 
 `ParticleEmitter` supports zero-allocation physical modifiers and force fields:
 
-- `ParticleAttractor`: pulls particles toward a static `Vector2` or dynamic
-  `targetProvider` (e.g. a moving player token or HUD counter), absorbing
-  particles within `arrivalRadius` and reporting arrivals per step via
-  `onParticlesArrived(int count)`.
+- `ParticleAttractor`: pulls particles toward a static `position` or a dynamic
+  `positionProvider` (e.g. a moving player token or HUD counter). A particle
+  within `arrivalRadius` has arrived: with `consumeOnArrival` it is removed,
+  without it the particle stays alive. Either way `onParticlesArrived(int
+  count)` reports it once per arrival, after the simulation step.
 - `ParticleVortex`: applies tangential swirl + radial inward/outward pull.
 - `floorY` & `floorRestitution`: bounces falling sparks/debris off a horizontal
   ground plane.
 - `velocityStretch` & `maxStretch`: elongates fast-moving particles along their
-  instantaneous velocity vector inside `TextureParticleRenderer`.
+  instantaneous velocity vector inside `TextureParticleRenderer`. The length
+  grows as `1 + speed * velocityStretch` and never exceeds `maxStretch` (a
+  multiple of the unstretched length, at least `1`, default `4`). The width
+  stays the particle's `size`.
 
 ```dart
 final coinStream = ParticleEmitter(
   maxParticles: 48,
-  bursts: const [ParticleBurst(count: 24)],
-  lifetime: const Range(0.6, 0.9),
-  speed: const Range(80, 160),
+  bursts: const [EmitterBurst(0, 24)],
+  lifespan: (0.6, 0.9),
+  speed: (80, 160),
   velocityStretch: 0.012,
   maxStretch: 2.6,
   floorY: 42.0,
   floorRestitution: 0.45,
-  forceFields: [
+  fields: [
     ParticleAttractor(
-      targetProvider: () => playerToken.position,
+      positionProvider: () => playerToken.position,
       strength: 950.0,
       arrivalRadius: 14.0,
       consumeOnArrival: true,
@@ -270,12 +274,16 @@ final coinStream = ParticleEmitter(
 
 When dozens of short-lived `ParticleEmitterComponent` bursts are active at the
 same time, `ParticleBatchGroup` coalesces every child emitter that shares the
-same `(Image, BlendMode)` texture key into **one combined `Canvas.drawRawAtlas`
-call** (`lastDrawCallCount`, `lastBatchedEmitterCount`,
-`lastBatchedParticleCount`).
+same texture and paint settings into **one combined `Canvas.drawRawAtlas`
+call**. `lastBatchedEmitterCount` tells how many emitters were merged in the
+last frame, `lastAtlasDrawCalls` how many atlas calls that took, and
+`lastQuadBatchDrawCalls` how many `Canvas.drawVertices` calls drew the
+stretched or non-uniformly scaled emitters. The group applies the same render
+gates as any component: `cameraMask`, `minQualityTier` and exclusive render
+passes of the group and of each emitter.
 
 `ParticleEmitterComponent` also mixes in `RecyclableComponent` and provides
-`reconfigure(...)` / `reset()`, so burst components can be acquired from a
+`reconfigure(...)`, so burst components can be acquired from a
 `ComponentPool<ParticleEmitterComponent>` with zero buffer reallocations:
 
 ```dart
@@ -293,8 +301,7 @@ final burstPool = ComponentPool<ParticleEmitterComponent>(
 void spawnSparks(Vector2 worldPos) {
   final comp = burstPool.acquire()
     ..reconfigure(
-      emitter: sparkEmitter,
-      renderer: sharedCircleRenderer,
+      nextEmitter: sparkEmitter,
       position: worldPos,
     );
   batchGroup.add(comp);
@@ -304,7 +311,9 @@ void spawnSparks(Vector2 worldPos) {
 `CircleParticleRenderer` also shares a static synchronous GPU texture cache
 keyed by `(resolution, quantizedSoftness)` (`CircleParticleRenderer.cachedTextureCount`,
 `CircleParticleRenderer.clearTextureCache()`), eliminating duplicate raster
-uploads and blank first frames.
+uploads and blank first frames. A texture is only disposed once no renderer
+uses it any more, so clearing the cache never blanks a renderer that is
+already loaded.
 
 
 ### Custom rendering

@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:ui';
 
-import 'package:flame/src/cache/memory_cache.dart';
 import 'package:flame/src/particles/particle_renderer.dart';
+import 'package:flame/src/particles/shared_particle_texture_cache.dart';
 
 /// Renders each particle as a circle, batched into a single draw call.
 ///
@@ -10,6 +10,11 @@ import 'package:flame/src/particles/particle_renderer.dart';
 /// shared across all [CircleParticleRenderer] instances via a bounded GPU
 /// texture cache keyed by quantized [softness], eliminating first-frame async
 /// flicker and preventing per-emitter GPU texture leaks.
+///
+/// The shared texture is reference counted: it is never disposed while a
+/// loaded renderer uses it, not even by [clearTextureCache] or when the
+/// cache evicts it. A renderer gives its texture back in [dispose] (or when
+/// it is garbage collected) and takes a fresh one on the next [onLoad].
 class CircleParticleRenderer({
   /// How much the circle fades out towards its edge, from 0 (crisp) to 1
   /// (fully soft).
@@ -31,27 +36,23 @@ class CircleParticleRenderer({
   static const int _textureSize = 64;
   static const int _softnessBuckets = 64;
 
-  static final MemoryCache<int, Image> _sharedTextureCache =
-      MemoryCache<int, Image>(
-        cacheSize: 24,
-        onEvict: (_, image) => image.dispose(),
-      );
+  static final SharedParticleTextureCache<int> _sharedTextureCache =
+      SharedParticleTextureCache<int>(capacity: 24);
 
   /// Number of shared procedural circle GPU textures currently cached.
   static int get cachedTextureCount => _sharedTextureCache.size;
 
-  /// Disposes and clears all cached procedural circle GPU textures.
-  static void clearTextureCache() => _sharedTextureCache.clearCache();
+  /// Empties the shared texture cache.
+  ///
+  /// Textures that no renderer uses are disposed immediately. A texture that
+  /// a loaded renderer still draws with stays valid and is disposed when its
+  /// last renderer is disposed; renderers loaded afterwards get a new one.
+  static void clearTextureCache() => _sharedTextureCache.clear();
 
-  static Image _obtainSharedTexture(double softness) {
-    final bucket = (softness * _softnessBuckets).round().clamp(
-      0,
-      _softnessBuckets,
-    );
-    final existing = _sharedTextureCache.getValue(bucket);
-    if (existing != null) {
-      return existing;
-    }
+  static int _bucketOf(double softness) =>
+      (softness * _softnessBuckets).round().clamp(0, _softnessBuckets);
+
+  static Image _rasterize(int bucket) {
     final quantized = bucket / _softnessBuckets;
     const white = Color(0xffffffff);
     const transparent = Color(0x00ffffff);
@@ -73,14 +74,13 @@ class CircleParticleRenderer({
     final picture = recorder.endRecording();
     final image = picture.toImageSync(_textureSize, _textureSize);
     picture.dispose();
-    _sharedTextureCache.setValue(bucket, image);
     return image;
   }
 
-  Image? _texture;
+  SharedParticleTexture? _shared;
 
   @override
-  Image? get texture => _texture;
+  Image? get texture => _shared?.image;
 
   @override
   Rect get srcRect =>
@@ -88,6 +88,24 @@ class CircleParticleRenderer({
 
   @override
   FutureOr<void> onLoad() {
-    _texture ??= _obtainSharedTexture(softness);
+    final shared = _shared;
+    if (shared == null || shared.isDisposed) {
+      final bucket = _bucketOf(softness);
+      _shared = _sharedTextureCache.acquire(
+        bucket,
+        this,
+        () => _rasterize(bucket),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    final shared = _shared;
+    if (shared != null) {
+      _shared = null;
+      _sharedTextureCache.release(shared, this);
+    }
+    super.dispose();
   }
 }

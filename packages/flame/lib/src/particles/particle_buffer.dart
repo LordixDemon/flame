@@ -57,6 +57,12 @@ class ParticleBuffer(
   /// Anisotropic elongation factor along the velocity axis (`1.0` = uniform).
   final Float32List stretch = Float32List(capacity);
 
+  /// Per-particle force-field state bits. Bit `f` is set while the particle
+  /// is inside the arrival radius of the emitter's field number `f`, so that
+  /// an arrival is reported once when the particle enters the radius rather
+  /// than on every simulation step. Cleared when the particle spawns.
+  final Uint32List fieldFlags = Uint32List(capacity);
+
   /// Whether any live particle currently has `stretch > 1.001`.
   bool hasStretch = false;
 
@@ -99,7 +105,30 @@ class ParticleBuffer(
       color[index] = color[last];
       variant[index] = variant[last];
       stretch[index] = stretch[last];
+      fieldFlags[index] = fieldFlags[last];
     }
+  }
+
+  /// Replaces the live particles of this buffer with the live particles of
+  /// [other], keeping at most [capacity] of them.
+  void copyLiveFrom(ParticleBuffer other) {
+    final count = other._length < capacity ? other._length : capacity;
+    posX.setRange(0, count, other.posX);
+    posY.setRange(0, count, other.posY);
+    velX.setRange(0, count, other.velX);
+    velY.setRange(0, count, other.velY);
+    age.setRange(0, count, other.age);
+    invLifespan.setRange(0, count, other.invLifespan);
+    baseSize.setRange(0, count, other.baseSize);
+    size.setRange(0, count, other.size);
+    rotation.setRange(0, count, other.rotation);
+    spin.setRange(0, count, other.spin);
+    color.setRange(0, count, other.color);
+    variant.setRange(0, count, other.variant);
+    stretch.setRange(0, count, other.stretch);
+    fieldFlags.setRange(0, count, other.fieldFlags);
+    _length = count;
+    hasStretch = other.hasStretch;
   }
 
   /// Removes all live particles.

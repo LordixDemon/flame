@@ -19,8 +19,7 @@ import 'package:meta/meta.dart';
 /// and automatic multi-emitter `drawRawAtlas` merging when placed inside a
 /// `ParticleBatchGroup`.
 class ParticleEmitterComponent({
-  /// The description of what to spawn and how particles behave.
-  required var ParticleEmitter emitter,
+  required ParticleEmitter emitter,
 
   /// The renderer that draws the live particles.
   required final ParticleRenderer renderer,
@@ -50,16 +49,37 @@ class ParticleEmitterComponent({
   /// The random source used for all sampling; seed it for determinism.
   final Random random = random ?? Random();
 
-  late ParticleBuffer _buffer = ParticleBuffer(emitter.maxParticles);
-  late List<bool> _burstFired = List.filled(emitter.bursts.length, false);
+  ParticleEmitter _emitter = emitter;
+
+  /// The description of what to spawn and how particles behave.
+  ///
+  /// Assigning another emitter takes effect on the next simulation step: live
+  /// particles are kept and continue under the new emitter's rules, the
+  /// particle storage grows when the new emitter allows more particles, and
+  /// the emission clock keeps running, so bursts of the new emitter that lie
+  /// before the current time do not fire. Use [reconfigure] to restart the
+  /// component from scratch instead.
+  ParticleEmitter get emitter => _emitter;
+  set emitter(ParticleEmitter value) {
+    if (!identical(value, _emitter)) {
+      _adoptEmitter(value, keepParticles: true);
+    }
+  }
+
+  late ParticleBuffer _buffer = ParticleBuffer(_emitter.maxParticles);
+  late List<bool> _burstFired = List.filled(_emitter.bursts.length, false);
   final Vector2 _sampledPosition = Vector2.zero();
   final Vector2 _fieldScratch = Vector2.zero();
   List<int> _arrivedScratch = const [];
+  Float64List _fieldPoints = Float64List(0);
   Float32List _bounceScratch = Float32List(0);
   Vector2? _lastAbsolutePosition;
 
-  /// Set to `true` by an ancestor `ParticleBatchGroup` while rendering so the
-  /// group can merge all compatible child emitters into one `drawRawAtlas`.
+  /// When `true`, [render] does not draw the particles, because a parent
+  /// draws them as part of a larger batch.
+  ///
+  /// `ParticleBatchGroup` does not need this flag (it never calls [render]
+  /// on the emitters it merges); it exists for custom batching parents.
   @internal
   bool renderedByBatchGroup = false;
 
@@ -84,8 +104,35 @@ class ParticleEmitterComponent({
   @override
   FutureOr<void> onLoad() => renderer.onLoad();
 
-  /// Reconfigures and restarts this emitter in-place without reallocating its
-  /// [ParticleBuffer] unless the new [nextEmitter] exceeds `_buffer.capacity`.
+  void _adoptEmitter(ParticleEmitter next, {required bool keepParticles}) {
+    if (next.maxParticles > _buffer.capacity) {
+      final grown = ParticleBuffer(next.maxParticles);
+      if (keepParticles) {
+        grown.copyLiveFrom(_buffer);
+      }
+      _buffer = grown;
+    }
+    final bursts = next.bursts;
+    if (_burstFired.length != bursts.length) {
+      _burstFired = List.filled(bursts.length, false);
+    }
+    if (keepParticles) {
+      // The clock keeps running: bursts that lie in the past stay unfired.
+      for (var i = 0; i < bursts.length; i++) {
+        _burstFired[i] = bursts[i].time < _clock;
+      }
+    }
+    _emitter = next;
+  }
+
+  /// Reconfigures and restarts this emitter in-place: moves it to [position],
+  /// switches to [nextEmitter], removes all live particles and restarts the
+  /// emission timeline (paused when [autoStart] is false).
+  ///
+  /// The [ParticleBuffer] is reused, and only replaced by a larger one when
+  /// [nextEmitter] allows more particles than it can hold. A buffer that is
+  /// larger than needed is kept, but the number of live particles is always
+  /// limited by the current emitter's `maxParticles`.
   void reconfigure({
     Vector2? position,
     ParticleEmitter? nextEmitter,
@@ -94,14 +141,8 @@ class ParticleEmitterComponent({
     if (position != null) {
       this.position.setFrom(position);
     }
-    if (nextEmitter != null && !identical(nextEmitter, emitter)) {
-      if (nextEmitter.maxParticles > _buffer.capacity) {
-        _buffer = ParticleBuffer(nextEmitter.maxParticles);
-      }
-      if (_burstFired.length != nextEmitter.bursts.length) {
-        _burstFired = List.filled(nextEmitter.bursts.length, false);
-      }
-      emitter = nextEmitter;
+    if (nextEmitter != null && !identical(nextEmitter, _emitter)) {
+      _adoptEmitter(nextEmitter, keepParticles: false);
     }
     _buffer.clear();
     _clock = 0;
@@ -270,6 +311,11 @@ class ParticleEmitterComponent({
 
   bool _spawnOne() {
     final buffer = _buffer;
+    // The buffer of a reused component can be larger than the current
+    // emitter allows, so the emitter's own limit is checked first.
+    if (buffer.length >= emitter.maxParticles) {
+      return false;
+    }
     final index = buffer.spawn();
     if (index < 0) {
       return false;
@@ -298,8 +344,9 @@ class ParticleEmitterComponent({
     buffer.spin[index] = emitter.spin.sample(random);
     buffer.color[index] = _colorAt(0);
     buffer.variant[index] = random.nextInt(0x10000);
+    buffer.fieldFlags[index] = 0;
     if (vStretch > 0) {
-      final st = 1.0 + speed * vStretch;
+      final st = min(1.0 + speed * vStretch, emitter.maxStretch);
       buffer.stretch[index] = st;
       if (st > 1.001) {
         buffer.hasStretch = true;
@@ -335,23 +382,48 @@ class ParticleEmitterComponent({
     final friction = emitter.floorFriction;
     final onFloorBounce = emitter.onFloorBounce;
     var bounceCount = 0;
-    if (onFloorBounce != null && _bounceScratch.length < 192) {
-      _bounceScratch = Float32List(192);
+    // A particle bounces at most once per step, so three floats per slot
+    // record every bounce of the step.
+    if (onFloorBounce != null && _bounceScratch.length < buffer.capacity * 3) {
+      _bounceScratch = Float32List(buffer.capacity * 3);
     }
     final vStretch = emitter.velocityStretch;
+    final maxStretch = emitter.maxStretch;
     final orientToVel = emitter.rotateToVelocity || vStretch > 0;
     var anyStretch = false;
     var hasPostColliders = false;
+    // Field targets and centers are resolved once per step, not once per
+    // particle: a provider is called a single time and every particle of the
+    // step sees the same point.
     if (hasFields) {
+      if (_fieldPoints.length < fields.length * 2) {
+        _fieldPoints = Float64List(fields.length * 2);
+      }
       for (var f = 0; f < fields.length; f++) {
         final fld = fields[f];
-        if (fld is ParticlePlaneCollider ||
-            (fld is ParticleRepulsor && fld.hardBoundary)) {
-          hasPostColliders = true;
-          break;
+        switch (fld) {
+          case ParticleAttractor():
+            fld.resolveTarget(_fieldScratch);
+          case ParticleVortex():
+            fld.resolveCenter(_fieldScratch);
+          case ParticleRepulsor():
+            fld.resolveCenter(_fieldScratch);
+            if (fld.hardBoundary) {
+              hasPostColliders = true;
+            }
+          case ParticlePlaneCollider():
+            hasPostColliders = true;
+            continue;
+          case ParticleCurlNoiseField():
+          case ParticleBuoyancyField():
+          case ParticleWindField():
+            continue;
         }
+        _fieldPoints[f * 2] = _fieldScratch.x;
+        _fieldPoints[f * 2 + 1] = _fieldScratch.y;
       }
     }
+    final fieldPoints = _fieldPoints;
 
     var i = 0;
     particleLoop:
@@ -374,17 +446,26 @@ class ParticleEmitterComponent({
           final field = fields[f];
           switch (field) {
             case ParticleAttractor():
-              field.resolveTarget(_fieldScratch);
-              final dx = _fieldScratch.x - px;
-              final dy = _fieldScratch.y - py;
+              final dx = fieldPoints[f * 2] - px;
+              final dy = fieldPoints[f * 2 + 1] - py;
               final distSq = dx * dx + dy * dy;
               final r = field.arrivalRadius;
+              // One state bit per field remembers that the particle is
+              // inside the radius, so an arrival is counted when it enters,
+              // not on every step it stays.
+              final bit = f < 32 ? 1 << f : 0;
               if (distSq <= r * r) {
-                _arrivedScratch[f]++;
+                final flags = buffer.fieldFlags[i];
+                if (bit == 0 || (flags & bit) == 0) {
+                  buffer.fieldFlags[i] = flags | bit;
+                  _arrivedScratch[f]++;
+                }
                 if (field.consumeOnArrival) {
                   buffer.removeAt(i);
                   continue particleLoop;
                 }
+              } else if (bit != 0) {
+                buffer.fieldFlags[i] &= ~bit;
               }
               if (distSq > 1e-8) {
                 final invDist = 1.0 / sqrt(distSq);
@@ -394,9 +475,8 @@ class ParticleEmitterComponent({
                 ay += ny * field.strength + nx * field.swirl;
               }
             case ParticleVortex():
-              field.resolveCenter(_fieldScratch);
-              final dx = px - _fieldScratch.x;
-              final dy = py - _fieldScratch.y;
+              final dx = px - fieldPoints[f * 2];
+              final dy = py - fieldPoints[f * 2 + 1];
               final distSq = dx * dx + dy * dy;
               final maxR = field.radius;
               if (distSq > 1e-8 && distSq < maxR * maxR) {
@@ -434,9 +514,8 @@ class ParticleEmitterComponent({
               ax += wx;
               ay += wy;
             case ParticleRepulsor():
-              field.resolveCenter(_fieldScratch);
-              final dx = px - _fieldScratch.x;
-              final dy = py - _fieldScratch.y;
+              final dx = px - fieldPoints[f * 2];
+              final dy = py - fieldPoints[f * 2 + 1];
               final distSq = dx * dx + dy * dy;
               final maxR = field.radius;
               if (distSq < maxR * maxR) {
@@ -469,8 +548,7 @@ class ParticleEmitterComponent({
         if (velY.abs() < 4.0) {
           velY = 0;
           nextY = floorY;
-        } else if (onFloorBounce != null &&
-            bounceCount * 3 + 2 < _bounceScratch.length) {
+        } else if (onFloorBounce != null) {
           final base = bounceCount * 3;
           _bounceScratch[base] = nextX;
           _bounceScratch[base + 1] = floorY;
@@ -483,9 +561,10 @@ class ParticleEmitterComponent({
         for (var f = 0; f < fields.length; f++) {
           final field = fields[f];
           if (field is ParticleRepulsor && field.hardBoundary) {
-            field.resolveCenter(_fieldScratch);
-            final dx = nextX - _fieldScratch.x;
-            final dy = nextY - _fieldScratch.y;
+            final centerX = fieldPoints[f * 2];
+            final centerY = fieldPoints[f * 2 + 1];
+            final dx = nextX - centerX;
+            final dy = nextY - centerY;
             final distSq = dx * dx + dy * dy;
             final r = field.radius;
             if (distSq < r * r) {
@@ -499,8 +578,8 @@ class ParticleEmitterComponent({
                 nx = 0.0;
                 ny = -1.0;
               }
-              nextX = _fieldScratch.x + nx * r;
-              nextY = _fieldScratch.y + ny * r;
+              nextX = centerX + nx * r;
+              nextY = centerY + ny * r;
               final vn = finalVelX * nx + velY * ny;
               if (vn < 0) {
                 final impulse = -(1.0 + field.restitution) * vn;
@@ -543,7 +622,7 @@ class ParticleEmitterComponent({
 
       if (vStretch > 0) {
         final spd = sqrt(finalVelX * finalVelX + velY * velY);
-        final st = 1.0 + spd * vStretch;
+        final st = min(1.0 + spd * vStretch, maxStretch);
         buffer.stretch[i] = st;
         if (st > 1.001) {
           anyStretch = true;

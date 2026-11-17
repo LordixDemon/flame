@@ -13,8 +13,8 @@ import 'package:flame/src/particles/particle_renderer.dart';
 mixin BatchTransparentContainer on Component;
 
 /// Container component that merges compatible descendant
-/// [ParticleEmitterComponent]s sharing `(Image, BlendMode, FilterQuality)` into
-/// minimal GPU draw calls per frame:
+/// [ParticleEmitterComponent]s sharing `(Image, BlendMode, FilterQuality,
+/// paint opacity)` into minimal GPU draw calls per frame:
 /// - **Shared `Canvas.drawRawAtlas`** for unstretched emitters with any
 ///   [Anchor], any `angle`, positive uniform scale, and nested container
 ///   hierarchies.
@@ -23,8 +23,20 @@ mixin BatchTransparentContainer on Component;
 ///   non-uniform/mirrored scale.
 ///
 /// Emitters with custom [CallbackParticleRenderer], custom `ColorFilter` /
-/// `ImageFilter` / `Shader`, or non-empty child hierarchies seamlessly fall
-/// back to their own `renderTree` in exact priority/sortKey order.
+/// `ImageFilter` / `MaskFilter` / `Shader`, or non-empty child hierarchies
+/// seamlessly fall back to their own `renderTree` in exact priority/sortKey
+/// order.
+///
+/// A merged emitter is drawn under the same conditions as one that renders
+/// itself: the group and each emitter honor [Component.cameraMask] and
+/// [Component.minQualityTier], and merged particles are left out of a
+/// [RenderPass] that is `exclusiveToMultiPass` (such as
+/// [RenderPass.emissiveMask]), like the `render` of any component that is
+/// not a [MultiPassComponent].
+///
+/// [lastBatchedEmitterCount], [lastAtlasDrawCalls] and
+/// [lastQuadBatchDrawCalls] describe the most recent pass in which the group
+/// was allowed to draw; a pass that skips it leaves them untouched.
 class ParticleBatchGroup({
   var bool batchingEnabled = true,
   var bool recursiveBatching = true,
@@ -46,6 +58,7 @@ class ParticleBatchGroup({
   Uint16List _sharedQuadIndices = Uint16List(0);
 
   final Paint _batchPaint = Paint();
+  double _batchPaintOpacity = 1.0;
 
   int _lastBatchedEmitterCount = 0;
   int _lastAtlasDrawCalls = 0;
@@ -118,15 +131,21 @@ class ParticleBatchGroup({
   }
 
   bool _isPureContainer(Component c) {
-    if (!recursiveBatching || !c.hasChildren || c.debugMode) {
+    if (!recursiveBatching ||
+        !c.hasChildren ||
+        c.debugMode ||
+        c is MultiPassComponent) {
       return false;
     }
     if (c is PositionComponent && !c.decorator.isLastDecorator) {
       return false;
     }
+    if (c is ParticleBatchGroup) {
+      // A nested group that has batching switched off renders by itself.
+      return c.batchingEnabled;
+    }
     return c.runtimeType == Component ||
         c.runtimeType == PositionComponent ||
-        c is ParticleBatchGroup ||
         c is BatchTransparentContainer;
   }
 
@@ -146,17 +165,34 @@ class ParticleBatchGroup({
 
   @override
   void renderTree(Canvas canvas) {
-    render(canvas);
+    // The same gates as [Component.renderTree], which this method replaces.
+    if (!isActiveForCurrentGraphicsTier) {
+      return;
+    }
+    final activeCamera = CameraComponent.currentCamera;
+    final activeCameraMask = activeCamera?.cameraMask ?? 0xFFFFFFFF;
+    if ((cameraMask & activeCameraMask) == 0) {
+      return;
+    }
+    final activePass = CameraComponent.currentRenderPass;
+    final exclusivePass = activePass != null && activePass.exclusiveToMultiPass;
+    if (!exclusivePass) {
+      render(canvas);
+    }
     if (!hasChildren) {
-      _lastBatchedEmitterCount = 0;
-      _lastAtlasDrawCalls = 0;
-      _lastQuadBatchDrawCalls = 0;
+      if (!exclusivePass) {
+        _lastBatchedEmitterCount = 0;
+        _lastAtlasDrawCalls = 0;
+        _lastQuadBatchDrawCalls = 0;
+      }
       return;
     }
     if (!batchingEnabled) {
-      _lastBatchedEmitterCount = 0;
-      _lastAtlasDrawCalls = 0;
-      _lastQuadBatchDrawCalls = 0;
+      if (!exclusivePass) {
+        _lastBatchedEmitterCount = 0;
+        _lastAtlasDrawCalls = 0;
+        _lastQuadBatchDrawCalls = 0;
+      }
       for (final child in children) {
         child.renderTree(canvas);
       }
@@ -167,6 +203,7 @@ class ParticleBatchGroup({
     ImageShader? activeQuadShader;
     BlendMode? activeBlendMode;
     var activeFilterQuality = FilterQuality.none;
+    var activeOpacity = 1.0;
     var activeIsQuadMode = false;
     var bufferedAtlasParticles = 0;
     var bufferedQuads = 0;
@@ -179,6 +216,16 @@ class ParticleBatchGroup({
         bufferedAtlasParticles = 0;
         bufferedQuads = 0;
         return;
+      }
+      // Textured draws only take the opacity from the paint's color.
+      if (_batchPaintOpacity != activeOpacity) {
+        _batchPaintOpacity = activeOpacity;
+        _batchPaint.color = Color.from(
+          alpha: activeOpacity,
+          red: 0,
+          green: 0,
+          blue: 0,
+        );
       }
       if (!activeIsQuadMode && bufferedAtlasParticles > 0) {
         _batchPaint
@@ -290,12 +337,19 @@ class ParticleBatchGroup({
         }
 
         if (child is ParticleEmitterComponent &&
+            child is! MultiPassComponent &&
             !child.hasChildren &&
             !child.debugMode &&
             child.decorator.isLastDecorator) {
           final r = child.renderer;
           if (r is TextureParticleRenderer &&
               r.canBatchAsQuads(child.particles)) {
+            // What the emitter's own renderTree would have decided: it is
+            // hidden from this camera, or its render is left out of an
+            // exclusive pass (it has no children to traverse).
+            if ((child.cameraMask & activeCameraMask) == 0 || exclusivePass) {
+              continue;
+            }
             final s = child.transform.transformMatrix.storage;
             final cM00 = s[0];
             final cM01 = s[1];
@@ -324,11 +378,13 @@ class ParticleBatchGroup({
             final tex = r.texture!;
             final blend = r.paint.blendMode;
             final fq = r.paint.filterQuality;
+            final opacity = r.paint.color.a;
 
             if (activeTexture != null &&
                 (!identical(activeTexture, tex) ||
                     activeBlendMode != blend ||
                     activeFilterQuality != fq ||
+                    activeOpacity != opacity ||
                     activeIsQuadMode != wantQuadMode)) {
               flushActiveBatch();
             }
@@ -337,6 +393,7 @@ class ParticleBatchGroup({
               activeTexture = tex;
               activeBlendMode = blend;
               activeFilterQuality = fq;
+              activeOpacity = opacity;
               activeIsQuadMode = false;
               _ensureAtlasCapacity(bufferedAtlasParticles + count);
               // Pass m00 as cosA and m01 as sinA with uniformScale = 1.0 since
@@ -370,6 +427,7 @@ class ParticleBatchGroup({
                 activeQuadShader = r.ensureCachedImageShader(tex);
                 activeBlendMode = blend;
                 activeFilterQuality = fq;
+                activeOpacity = opacity;
                 activeIsQuadMode = true;
                 _ensureQuadCapacity(bufferedQuads + chunk);
                 bufferedQuads = r.appendToSharedQuads(
@@ -396,6 +454,9 @@ class ParticleBatchGroup({
         }
 
         if (_isPureContainer(child)) {
+          if ((child.cameraMask & activeCameraMask) == 0) {
+            continue;
+          }
           if (child is PositionComponent) {
             final s = child.transform.transformMatrix.storage;
             final cM00 = s[0];
@@ -459,8 +520,10 @@ class ParticleBatchGroup({
       isIdentityParent: true,
     );
     flushActiveBatch();
-    _lastBatchedEmitterCount = batchedEmitters;
-    _lastAtlasDrawCalls = atlasDraws;
-    _lastQuadBatchDrawCalls = quadDraws;
+    if (!exclusivePass) {
+      _lastBatchedEmitterCount = batchedEmitters;
+      _lastAtlasDrawCalls = atlasDraws;
+      _lastQuadBatchDrawCalls = quadDraws;
+    }
   }
 }

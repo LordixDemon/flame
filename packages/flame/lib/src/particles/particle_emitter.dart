@@ -99,6 +99,9 @@ class ParticleEmitter({
 
   /// Spatial force fields (such as [ParticleAttractor] and [ParticleVortex])
   /// applied to every live particle during simulation.
+  ///
+  /// Arrival tracking of [ParticleAttractor]s uses one bit per field, so it
+  /// is exact for the first 32 fields of an emitter.
   final List<ParticleForceField> fields = const [],
 
   /// Optional horizontal ground plane `y` in local simulation coordinates.
@@ -118,8 +121,15 @@ class ParticleEmitter({
   final void Function(double x, double y, double impactSpeed)? onFloorBounce,
 
   /// Anisotropic elongation factor (`>= 0`) stretching particles along their
-  /// velocity vector (`stretch = 1 + speed * velocityStretch`).
+  /// velocity vector (`stretch = 1 + speed * velocityStretch`, capped at
+  /// [maxStretch]).
   final double velocityStretch = 0,
+
+  /// Upper bound (`>= 1`) of the elongation produced by [velocityStretch], as
+  /// a multiple of the particle's unstretched length. Keeps particles that
+  /// are accelerated hard (for example by a `ParticleAttractor`) from turning
+  /// into arbitrarily long streaks.
+  final double maxStretch = 4,
 }) {
   /// Creates an emitter preset.
   ///
@@ -143,6 +153,7 @@ class ParticleEmitter({
         'floorFriction must be between 0 and 1',
       ),
       assert(velocityStretch >= 0, 'velocityStretch must not be negative'),
+      assert(maxStretch >= 1, 'maxStretch must be at least 1'),
       assert(duration == null || duration > 0, 'duration must be positive'),
       assert(
         !loop || duration != null,

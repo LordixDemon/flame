@@ -41,8 +41,15 @@ class CallbackParticleRenderer(
 
 /// Base class for renderers that draw every particle as a transformed,
 /// tinted copy of a texture region, batched into one [Canvas.drawRawAtlas]
-/// call (or one [Canvas.drawVertices] call when anisotropic velocity stretch
-/// is active).
+/// call (or [Canvas.drawVertices] calls of up to 16383 quads when anisotropic
+/// velocity stretch is active).
+///
+/// Each particle is drawn centered on its position, rotated by its rotation,
+/// and scaled so that the texture region's width matches the particle's
+/// current size; the height follows the region's aspect ratio. Velocity
+/// stretch lengthens the particle along its width. This holds for every draw
+/// path, so a particle keeps its size when it starts or stops being
+/// stretched or is merged into a `ParticleBatchGroup`.
 abstract class TextureParticleRenderer({BlendMode? blendMode, Paint? paint})
     extends ParticleRenderer {
   /// Creates a texture renderer.
@@ -95,21 +102,23 @@ abstract class TextureParticleRenderer({BlendMode? blendMode, Paint? paint})
   /// `ParticleBatchGroup` `drawRawAtlas` call.
   @internal
   bool canBatchInAtlas(ParticleBuffer particles) =>
-      texture != null &&
-      !particles.hasStretch &&
-      paint.colorFilter == null &&
-      paint.imageFilter == null &&
-      paint.shader == null;
+      !particles.hasStretch && canBatchAsQuads(particles);
 
   /// Whether this renderer can merge its particles (including stretched or
   /// non-uniformly scaled/flipped particles) into a shared
   /// `ParticleBatchGroup` `Canvas.drawVertices` quad call.
+  ///
+  /// A shared batch reproduces the [paint]'s blend mode, filter quality and
+  /// opacity; a paint that carries anything else that changes the result (a
+  /// filter, a shader, inverted colors) keeps its emitter out of the batch.
   @internal
   bool canBatchAsQuads(ParticleBuffer particles) =>
       texture != null &&
       paint.colorFilter == null &&
       paint.imageFilter == null &&
-      paint.shader == null;
+      paint.maskFilter == null &&
+      paint.shader == null &&
+      !paint.invertColors;
 
   /// Returns a cached [ImageShader] bound to the current [texture] with zero
   /// per-frame allocations.
@@ -237,10 +246,11 @@ abstract class TextureParticleRenderer({BlendMode? blendMode, Paint? paint})
       final i = startParticle + k;
       final qSlot = startQuadSlot + k;
       final src = perParticle ? frameRectForParticle(particles, i) : defaultSrc;
-      final halfH = particles.size[i] * 0.5;
-      final stretch = max(1.0, particles.stretch[i]);
-      final halfW =
-          halfH * (src.height > 0 ? src.width / src.height : 1.0) * stretch;
+      // Same convention as the atlas path: the region's width equals the
+      // particle size, and stretch lengthens it along the width.
+      final halfSize = particles.size[i] * 0.5;
+      final halfW = halfSize * max(1.0, particles.stretch[i]);
+      final halfH = halfSize * (src.width > 0 ? src.height / src.width : 1.0);
       final rot = particles.rotation[i];
       final c = cos(rot);
       final s = sin(rot);
@@ -352,21 +362,23 @@ abstract class TextureParticleRenderer({BlendMode? blendMode, Paint? paint})
     );
   }
 
+  static const int _maxQuadsPerDraw = 16383;
+
   void _renderStretchedVertices(
     Canvas canvas,
     Image texture,
     ParticleBuffer particles,
     int count,
   ) {
-    final safeCount = min(count, 16383);
-    final vertCap = max(particles.capacity, safeCount) * 4;
-    if (_quadPositions.length < vertCap * 2) {
-      _quadPositions = Float32List(vertCap * 2);
-      _quadUvs = Float32List(vertCap * 2);
-      _quadColors = Int32List(vertCap);
-      final maxQuads = vertCap ~/ 4;
-      _quadIndices = Uint16List(maxQuads * 6);
-      for (var q = 0; q < maxQuads; q++) {
+    // 16-bit indices address at most 16383 quads, so larger particle counts
+    // are drawn in several calls.
+    final quadCap = min(max(particles.capacity, count), _maxQuadsPerDraw);
+    if (_quadColors.length < quadCap * 4) {
+      _quadPositions = Float32List(quadCap * 8);
+      _quadUvs = Float32List(quadCap * 8);
+      _quadColors = Int32List(quadCap * 4);
+      _quadIndices = Uint16List(quadCap * 6);
+      for (var q = 0; q < quadCap; q++) {
         final b = q * 4;
         final k = q * 6;
         _quadIndices[k] = b;
@@ -378,66 +390,40 @@ abstract class TextureParticleRenderer({BlendMode? blendMode, Paint? paint})
       }
     }
 
-    final perParticle = hasPerParticleRects;
-    final defaultSrc = srcRect;
-
-    for (var i = 0; i < safeCount; i++) {
-      final src = perParticle ? frameRectForParticle(particles, i) : defaultSrc;
-      final halfH = particles.size[i] * 0.5;
-      final stretch = max(1.0, particles.stretch[i]);
-      final halfW =
-          halfH * (src.height > 0 ? src.width / src.height : 1.0) * stretch;
-      final rot = particles.rotation[i];
-      final c = cos(rot);
-      final s = sin(rot);
-      final px = particles.posX[i];
-      final py = particles.posY[i];
-
-      final ux = c * halfW;
-      final uy = s * halfW;
-      final vx = -s * halfH;
-      final vy = c * halfH;
-
-      final pBase = i * 8;
-      _quadPositions[pBase] = px - ux - vx;
-      _quadPositions[pBase + 1] = py - uy - vy;
-      _quadPositions[pBase + 2] = px + ux - vx;
-      _quadPositions[pBase + 3] = py + uy - vy;
-      _quadPositions[pBase + 4] = px + ux + vx;
-      _quadPositions[pBase + 5] = py + uy + vy;
-      _quadPositions[pBase + 6] = px - ux + vx;
-      _quadPositions[pBase + 7] = py - uy + vy;
-
-      _quadUvs[pBase] = src.left;
-      _quadUvs[pBase + 1] = src.top;
-      _quadUvs[pBase + 2] = src.right;
-      _quadUvs[pBase + 3] = src.top;
-      _quadUvs[pBase + 4] = src.right;
-      _quadUvs[pBase + 5] = src.bottom;
-      _quadUvs[pBase + 6] = src.left;
-      _quadUvs[pBase + 7] = src.bottom;
-
-      final col = particles.color[i];
-      final cBase = i * 4;
-      _quadColors[cBase] = col;
-      _quadColors[cBase + 1] = col;
-      _quadColors[cBase + 2] = col;
-      _quadColors[cBase + 3] = col;
-    }
-
     final savedShader = paint.shader;
     paint.shader = ensureCachedImageShader(texture);
-    final vertices = Vertices.raw(
-      VertexMode.triangles,
-      Float32List.sublistView(_quadPositions, 0, safeCount * 8),
-      textureCoordinates: Float32List.sublistView(_quadUvs, 0, safeCount * 8),
-      colors: Int32List.sublistView(_quadColors, 0, safeCount * 4),
-      indices: Uint16List.sublistView(_quadIndices, 0, safeCount * 6),
-    );
     try {
-      canvas.drawVertices(vertices, BlendMode.modulate, paint);
+      for (var start = 0; start < count; start += quadCap) {
+        final chunk = min(quadCap, count - start);
+        appendToSharedQuads(
+          particles: particles,
+          startParticle: start,
+          particleCount: chunk,
+          outPositions: _quadPositions,
+          outUvs: _quadUvs,
+          outColors: _quadColors,
+          startQuadSlot: 0,
+          m00: 1,
+          m01: 0,
+          m10: 0,
+          m11: 1,
+          tx: 0,
+          ty: 0,
+        );
+        final vertices = Vertices.raw(
+          VertexMode.triangles,
+          Float32List.sublistView(_quadPositions, 0, chunk * 8),
+          textureCoordinates: Float32List.sublistView(_quadUvs, 0, chunk * 8),
+          colors: Int32List.sublistView(_quadColors, 0, chunk * 4),
+          indices: Uint16List.sublistView(_quadIndices, 0, chunk * 6),
+        );
+        try {
+          canvas.drawVertices(vertices, BlendMode.modulate, paint);
+        } finally {
+          vertices.dispose();
+        }
+      }
     } finally {
-      vertices.dispose();
       paint.shader = savedShader;
     }
   }

@@ -13,6 +13,19 @@ sealed class const ParticleForceField();
 /// Ideal for coin/mana/gem streams, energy homing orbs, and collectible
 /// pickups that burst outward before curving smoothly into a target character
 /// or HUD counter.
+///
+/// The target is [position], or the point returned by [positionProvider]
+/// when one is given; the provider is called once per simulation step. Both
+/// are in the emitter's local simulation space.
+///
+/// [strength] is the acceleration toward the target and [swirl] a tangential
+/// acceleration around it, both in local units per second squared.
+///
+/// A particle arrives when it enters [arrivalRadius]. With
+/// [consumeOnArrival] it is removed at that moment; otherwise it lives on,
+/// and counts as a new arrival only after it has left the radius and entered
+/// it again. [onParticlesArrived] is called at most once per simulation
+/// step, after the step, with the number of particles that arrived in it.
 class ParticleAttractor({
   Vector2? position,
   final Vector2 Function()? positionProvider,
