@@ -275,12 +275,31 @@ class AnimationClip3D({
   }
 
   /// Decodes a binary `DA3D` v1 buffer produced by [toBytes].
+  ///
+  /// Throws a [FormatException] when the header is not `DA3D` v1 or the
+  /// buffer ends before the clip does.
   factory AnimationClip3D.fromBytes(Uint8List bytes) {
+    try {
+      return AnimationClip3D._decode(bytes);
+    } on RangeError {
+      throw const FormatException('Truncated DA3D buffer');
+    }
+  }
+
+  factory AnimationClip3D._decode(Uint8List bytes) {
     final bd = ByteData.sublistView(bytes);
     var offset = 0;
 
     int readUint32() {
       final v = bd.getUint32(offset, Endian.little);
+      offset += 4;
+      return v;
+    }
+
+    // Track target indices are stored as two's-complement 32-bit values, so
+    // a name-only track (`targetIndex: -1`) survives the round trip.
+    int readInt32() {
+      final v = bd.getInt32(offset, Endian.little);
       offset += 4;
       return v;
     }
@@ -299,6 +318,9 @@ class AnimationClip3D({
     }
 
     Float32List readFloat32List(int count) {
+      if (count < 0 || offset + count * 4 > bytes.length) {
+        throw const FormatException('Truncated DA3D buffer');
+      }
       final out = Float32List(count);
       for (var i = 0; i < count; i++) {
         out[i] = bd.getFloat32(offset + i * 4, Endian.little);
@@ -325,7 +347,7 @@ class AnimationClip3D({
     final trackCount = readUint32();
     final tracks = <TransformTrack3D>[];
     for (var i = 0; i < trackCount; i++) {
-      final targetIndex = readUint32();
+      final targetIndex = readInt32();
       final targetName = readString();
       final keyCount = readUint32();
       final flags = readUint32();
@@ -350,7 +372,7 @@ class AnimationClip3D({
     final morphCount = readUint32();
     final morphTracks = <MorphWeightTrack3D>[];
     for (var i = 0; i < morphCount; i++) {
-      final targetIndex = readUint32();
+      final targetIndex = readInt32();
       final keyCount = readUint32();
       final times = readFloat32List(keyCount);
       final weights = readFloat32List(keyCount);
@@ -382,10 +404,44 @@ class AnimationClip3D({
   }
 }
 
+/// Local transform a [Node3D] had before an [AnimationMixer3D] first wrote to
+/// it, plus which channels the mixer is currently driving.
+class _NodeRest3D({
+  required final Node3D node,
+  required final int targetIndex,
+  required final String targetName,
+}) {
+  final double x = node.localX;
+  final double y = node.localY;
+  final double z = node.localZ;
+  final double sx = node.localScaleX;
+  final double sy = node.localScaleY;
+  final double sz = node.localScaleZ;
+  final bool hadQuaternion = node.hasLocalQuaternion;
+  final (double, double, double, double) quaternion = node.hasLocalQuaternion
+      ? node.localQuaternion
+      : Quaternion3D.fromEuler(
+          yawRad: node.localYawRad,
+          pitchRad: node.localPitchRad,
+          rollRad: node.localRollRad,
+        );
+
+  int stamp = 0;
+  bool droveTranslation = false;
+  bool droveRotation = false;
+  bool droveScale = false;
+}
+
 /// Real-time 3D animation controller driving [SkinnedMeshWorkspace3D],
 /// [Node3D] hierarchies, and [MorphMeshWorkspace3D] with smooth SLERP
 /// cross-fading (`crossFadeTo`), bone-masked secondary layers (`setLayerClip`),
 /// and frame-accurate [AnimationEvent3D] callbacks.
+///
+/// The mixer only owns what its clips animate. A bone, node channel or morph
+/// weight that the previous clip animated and the current one does not is
+/// returned to the pose it had before the mixer touched it (the bind pose for
+/// bones): blended there during a cross-fade, immediately on [play]. Targets
+/// no clip ever animated are left alone, so they can be posed by hand.
 class AnimationMixer3D({
   this.skinnedWorkspace,
   this.morphWorkspace,
@@ -405,12 +461,18 @@ class AnimationMixer3D({
   final List<Node3D>? _indexedNodes = indexedNodes;
 
   /// Optional callback invoked whenever the primary clip crosses an
-  /// [AnimationEvent3D].
+  /// [AnimationEvent3D]. An event placed at time `0` fires on the first
+  /// [update] after the clip starts (and again each time a looping clip
+  /// wraps).
   void Function(AnimationEvent3D event)? onEvent;
 
   AnimationClip3D? _currentClip;
   double _currentTime = 0.0;
   double _currentSpeed = 1.0;
+
+  /// Whether the primary clip has just (re)started, so the next advance must
+  /// include events sitting exactly on its start time.
+  bool _eventStartPending = false;
 
   AnimationClip3D? _fadeFromClip;
   double _fadeFromTime = 0.0;
@@ -423,6 +485,28 @@ class AnimationMixer3D({
   double _layerSpeed = 1.0;
   double _layerWeight = 0.0;
   Set<int>? _layerBoneMask;
+
+  /// Bones whose pose the mixer wrote from a clip on the last apply.
+  late final Uint8List _drivenBones = Uint8List(
+    skinnedWorkspace?.bones.length ?? 0,
+  );
+
+  /// Morph targets the mixer is driving, and the weights they had before.
+  late final Uint8List _drivenMorphs = Uint8List(
+    morphWorkspace?.targets.length ?? 0,
+  );
+  late final Float32List _morphRest = Float32List(
+    morphWorkspace?.targets.length ?? 0,
+  );
+  late final Int32List _morphStamp = Int32List(
+    morphWorkspace?.targets.length ?? 0,
+  );
+
+  /// Nodes the mixer is driving, with the transform they had before.
+  final Map<Node3D, _NodeRest3D> _nodeRest =
+      Map<Node3D, _NodeRest3D>.identity();
+  final List<Node3D> _releasedNodes = <Node3D>[];
+  int _applyStamp = 0;
 
   /// Currently playing primary clip (`null` if idle).
   AnimationClip3D? get currentClip => _currentClip;
@@ -447,15 +531,19 @@ class AnimationMixer3D({
     _currentClip = clip;
     _currentTime = 0.0;
     _currentSpeed = speed;
+    _eventStartPending = true;
     _fadeFromClip = null;
     _fadeDuration = 0.0;
     _fadeElapsed = 0.0;
     _applyAtCurrentState();
   }
 
-  /// Smoothly cross-fades from the active pose/clip into [nextClip] over
+  /// Smoothly cross-fades from the active clip into [nextClip] over
   /// [duration] seconds using linear translation/scale blend and shortest-arc
   /// quaternion SLERP.
+  ///
+  /// A non-positive [duration] (or no active clip) switches immediately, like
+  /// [play].
   void crossFadeTo(
     AnimationClip3D nextClip, {
     double duration = 0.25,
@@ -478,11 +566,13 @@ class AnimationMixer3D({
     _currentClip = nextClip;
     _currentTime = 0.0;
     _currentSpeed = speed;
+    _eventStartPending = true;
     _applyAtCurrentState();
   }
 
-  /// Configures an optional secondary override/additive blend layer (for
-  /// example an upper-body wave or aim clip restricted to [boneMask]).
+  /// Configures an optional secondary override blend layer (for example an
+  /// upper-body wave or aim clip restricted to [boneMask]). Passing `null`
+  /// removes the layer and releases the bones only it was posing.
   void setLayerClip(
     AnimationClip3D? clip, {
     double weight = 1.0,
@@ -494,9 +584,7 @@ class AnimationMixer3D({
     _layerWeight = weight.clamp(0.0, 1.0);
     _layerBoneMask = boneMask;
     _layerSpeed = speed;
-    if (_currentClip != null || clip != null) {
-      _applyAtCurrentState();
-    }
+    _applyAtCurrentState();
   }
 
   static double _advanceClipTime(
@@ -504,6 +592,7 @@ class AnimationMixer3D({
     double prevTime,
     double delta, {
     void Function(AnimationEvent3D event)? eventSink,
+    bool includeStart = false,
   }) {
     final dur = math.max(1e-6, clip.duration);
     final rawNext = prevTime + delta;
@@ -511,7 +600,10 @@ class AnimationMixer3D({
       final next = rawNext.clamp(0.0, dur);
       if (eventSink != null && clip.events.isNotEmpty && delta > 0.0) {
         for (final ev in clip.events) {
-          if (ev.time > prevTime && ev.time <= next) {
+          final afterStart = includeStart
+              ? ev.time >= prevTime
+              : ev.time > prevTime;
+          if (afterStart && ev.time <= next) {
             eventSink(ev);
           }
         }
@@ -524,17 +616,14 @@ class AnimationMixer3D({
       next += dur;
     }
     if (eventSink != null && clip.events.isNotEmpty && delta > 0.0) {
-      if (rawNext < dur) {
-        for (final ev in clip.events) {
-          if (ev.time > prevTime && ev.time <= next) {
-            eventSink(ev);
-          }
-        }
-      } else {
-        for (final ev in clip.events) {
-          if (ev.time > prevTime || ev.time <= next) {
-            eventSink(ev);
-          }
+      final wrapped = rawNext >= dur;
+      for (final ev in clip.events) {
+        final afterStart = includeStart
+            ? ev.time >= prevTime
+            : ev.time > prevTime;
+        final beforeEnd = ev.time <= next;
+        if (wrapped ? (afterStart || beforeEnd) : (afterStart && beforeEnd)) {
+          eventSink(ev);
         }
       }
     }
@@ -550,12 +639,17 @@ class AnimationMixer3D({
     }
 
     if (primary != null && dt != 0.0) {
+      final delta = dt * _currentSpeed;
       _currentTime = _advanceClipTime(
         primary,
         _currentTime,
-        dt * _currentSpeed,
+        delta,
         eventSink: onEvent,
+        includeStart: _eventStartPending,
       );
+      if (delta > 0.0) {
+        _eventStartPending = false;
+      }
     }
 
     if (_fadeFromClip != null) {
@@ -616,29 +710,64 @@ class AnimationMixer3D({
         ? (_fadeElapsed / _fadeDuration).clamp(0.0, 1.0)
         : 1.0;
 
+    _applySkin(primary, fromClip, fadeAlpha);
+    _applyNodes(primary, fromClip, fadeAlpha);
+    _applyMorphs(primary, fromClip, fadeAlpha);
+  }
+
+  void _applySkin(
+    AnimationClip3D? primary,
+    AnimationClip3D? fromClip,
+    double fadeAlpha,
+  ) {
     final skin = skinnedWorkspace;
-    if (skin != null) {
-      for (var b = 0; b < skin.bones.length; b++) {
-        final boneName = skin.bones[b].name;
-        final pTrack = primary != null
-            ? _findTrack(primary, b, boneName)
-            : null;
-        final fTrack = fromClip != null
-            ? _findTrack(fromClip, b, boneName)
-            : null;
-        final lTrack =
-            (_layerClip != null &&
-                _layerWeight > 0.0 &&
-                (_layerBoneMask == null || _layerBoneMask!.contains(b)))
-            ? _findTrack(_layerClip!, b, boneName)
-            : null;
+    if (skin == null) {
+      return;
+    }
+    for (var b = 0; b < skin.bones.length; b++) {
+      final boneName = skin.bones[b].name;
+      final pTrack = primary != null ? _findTrack(primary, b, boneName) : null;
+      final fTrack = fromClip != null
+          ? _findTrack(fromClip, b, boneName)
+          : null;
+      final lTrack =
+          (_layerClip != null &&
+              _layerWeight > 0.0 &&
+              (_layerBoneMask == null || _layerBoneMask!.contains(b)))
+          ? _findTrack(_layerClip!, b, boneName)
+          : null;
 
-        if (pTrack == null && fTrack == null && lTrack == null) {
-          continue;
+      if (pTrack == null && fTrack == null && lTrack == null) {
+        // No clip animates this bone any more. If the mixer posed it before
+        // (previous clip, finished cross-fade, removed layer), put it back
+        // into its bind pose instead of leaving it frozen mid-motion. Bones
+        // the mixer never drove keep whatever pose the caller gave them.
+        if (_drivenBones[b] != 0) {
+          _drivenBones[b] = 0;
+          skin.setBonePose(b);
         }
+        continue;
+      }
+      _drivenBones[b] = 1;
 
-        var pose = pTrack != null
-            ? pTrack.sample(_currentTime)
+      var pose = pTrack != null
+          ? pTrack.sample(_currentTime)
+          : (
+              dx: 0.0,
+              dy: 0.0,
+              dz: 0.0,
+              qx: 0.0,
+              qy: 0.0,
+              qz: 0.0,
+              qw: 1.0,
+              sx: 1.0,
+              sy: 1.0,
+              sz: 1.0,
+            );
+
+      if (fromClip != null && fadeAlpha < 1.0) {
+        final fp = fTrack != null
+            ? fTrack.sample(_fadeFromTime)
             : (
                 dx: 0.0,
                 dy: 0.0,
@@ -651,148 +780,273 @@ class AnimationMixer3D({
                 sy: 1.0,
                 sz: 1.0,
               );
-
-        if (fromClip != null && fadeAlpha < 1.0) {
-          final fp = fTrack != null
-              ? fTrack.sample(_fadeFromTime)
-              : (
-                  dx: 0.0,
-                  dy: 0.0,
-                  dz: 0.0,
-                  qx: 0.0,
-                  qy: 0.0,
-                  qz: 0.0,
-                  qw: 1.0,
-                  sx: 1.0,
-                  sy: 1.0,
-                  sz: 1.0,
-                );
-          final (qx, qy, qz, qw) = Quaternion3D.slerp(
-            (fp.qx, fp.qy, fp.qz, fp.qw),
-            (pose.qx, pose.qy, pose.qz, pose.qw),
-            fadeAlpha,
-          );
-          pose = (
-            dx: fp.dx + (pose.dx - fp.dx) * fadeAlpha,
-            dy: fp.dy + (pose.dy - fp.dy) * fadeAlpha,
-            dz: fp.dz + (pose.dz - fp.dz) * fadeAlpha,
-            qx: qx,
-            qy: qy,
-            qz: qz,
-            qw: qw,
-            sx: fp.sx + (pose.sx - fp.sx) * fadeAlpha,
-            sy: fp.sy + (pose.sy - fp.sy) * fadeAlpha,
-            sz: fp.sz + (pose.sz - fp.sz) * fadeAlpha,
-          );
-        }
-
-        if (lTrack != null) {
-          final lp = lTrack.sample(_layerTime);
-          final w = _layerWeight;
-          final (qx, qy, qz, qw) = Quaternion3D.slerp(
-            (pose.qx, pose.qy, pose.qz, pose.qw),
-            (lp.qx, lp.qy, lp.qz, lp.qw),
-            w,
-          );
-          pose = (
-            dx: pose.dx + (lp.dx - pose.dx) * w,
-            dy: pose.dy + (lp.dy - pose.dy) * w,
-            dz: pose.dz + (lp.dz - pose.dz) * w,
-            qx: qx,
-            qy: qy,
-            qz: qz,
-            qw: qw,
-            sx: pose.sx + (lp.sx - pose.sx) * w,
-            sy: pose.sy + (lp.sy - pose.sy) * w,
-            sz: pose.sz + (lp.sz - pose.sz) * w,
-          );
-        }
-
-        skin.setBonePose(
-          b,
-          dx: pose.dx,
-          dy: pose.dy,
-          dz: pose.dz,
-          qx: pose.qx,
-          qy: pose.qy,
-          qz: pose.qz,
-          qw: pose.qw,
-          sx: pose.sx,
-          sy: pose.sy,
-          sz: pose.sz,
+        final (qx, qy, qz, qw) = Quaternion3D.slerp(
+          (fp.qx, fp.qy, fp.qz, fp.qw),
+          (pose.qx, pose.qy, pose.qz, pose.qw),
+          fadeAlpha,
+        );
+        pose = (
+          dx: fp.dx + (pose.dx - fp.dx) * fadeAlpha,
+          dy: fp.dy + (pose.dy - fp.dy) * fadeAlpha,
+          dz: fp.dz + (pose.dz - fp.dz) * fadeAlpha,
+          qx: qx,
+          qy: qy,
+          qz: qz,
+          qw: qw,
+          sx: fp.sx + (pose.sx - fp.sx) * fadeAlpha,
+          sy: fp.sy + (pose.sy - fp.sy) * fadeAlpha,
+          sz: fp.sz + (pose.sz - fp.sz) * fadeAlpha,
         );
       }
-    }
 
-    if (primary != null && (rootNode != null || _indexedNodes != null)) {
+      if (lTrack != null) {
+        final lp = lTrack.sample(_layerTime);
+        final w = _layerWeight;
+        final (qx, qy, qz, qw) = Quaternion3D.slerp(
+          (pose.qx, pose.qy, pose.qz, pose.qw),
+          (lp.qx, lp.qy, lp.qz, lp.qw),
+          w,
+        );
+        pose = (
+          dx: pose.dx + (lp.dx - pose.dx) * w,
+          dy: pose.dy + (lp.dy - pose.dy) * w,
+          dz: pose.dz + (lp.dz - pose.dz) * w,
+          qx: qx,
+          qy: qy,
+          qz: qz,
+          qw: qw,
+          sx: pose.sx + (lp.sx - pose.sx) * w,
+          sy: pose.sy + (lp.sy - pose.sy) * w,
+          sz: pose.sz + (lp.sz - pose.sz) * w,
+        );
+      }
+
+      skin.setBonePose(
+        b,
+        dx: pose.dx,
+        dy: pose.dy,
+        dz: pose.dz,
+        qx: pose.qx,
+        qy: pose.qy,
+        qz: pose.qz,
+        qw: pose.qw,
+        sx: pose.sx,
+        sy: pose.sy,
+        sz: pose.sz,
+      );
+    }
+  }
+
+  void _applyNodes(
+    AnimationClip3D? primary,
+    AnimationClip3D? fromClip,
+    double fadeAlpha,
+  ) {
+    if (rootNode == null && _indexedNodes == null) {
+      return;
+    }
+    if (primary == null && _nodeRest.isEmpty) {
+      return;
+    }
+    final stamp = ++_applyStamp;
+    final fading = fromClip != null && fadeAlpha < 1.0;
+
+    if (primary != null) {
       for (final pTrack in primary.tracks) {
         final node = _resolveNode(pTrack);
         if (node == null) {
           continue;
         }
-        var pose = pTrack.sample(_currentTime);
-        if (fromClip != null && fadeAlpha < 1.0) {
-          final fTrack = _findTrack(
-            fromClip,
-            pTrack.targetIndex,
-            pTrack.targetName,
-          );
-          if (fTrack != null) {
-            final fp = fTrack.sample(_fadeFromTime);
-            final (qx, qy, qz, qw) = Quaternion3D.slerp(
-              (fp.qx, fp.qy, fp.qz, fp.qw),
-              (pose.qx, pose.qy, pose.qz, pose.qw),
-              fadeAlpha,
-            );
-            pose = (
-              dx: fp.dx + (pose.dx - fp.dx) * fadeAlpha,
-              dy: fp.dy + (pose.dy - fp.dy) * fadeAlpha,
-              dz: fp.dz + (pose.dz - fp.dz) * fadeAlpha,
-              qx: qx,
-              qy: qy,
-              qz: qz,
-              qw: qw,
-              sx: fp.sx + (pose.sx - fp.sx) * fadeAlpha,
-              sy: fp.sy + (pose.sy - fp.sy) * fadeAlpha,
-              sz: fp.sz + (pose.sz - fp.sz) * fadeAlpha,
-            );
-          }
+        final rest = _nodeRest[node] ??= _NodeRest3D(
+          node: node,
+          targetIndex: pTrack.targetIndex,
+          targetName: pTrack.targetName,
+        );
+        if (rest.stamp == stamp) {
+          // A second track of the same clip resolving to the same node.
+          continue;
         }
-        if (pTrack.translations != null) {
-          node
-            ..localX = pose.dx
-            ..localY = pose.dy
-            ..localZ = pose.dz;
-        }
-        if (pTrack.scales != null) {
-          node
-            ..localScaleX = pose.sx
-            ..localScaleY = pose.sy
-            ..localScaleZ = pose.sz;
-        }
-        if (pTrack.rotations != null) {
-          node.setLocalQuaternion(pose.qx, pose.qy, pose.qz, pose.qw);
-        }
+        rest.stamp = stamp;
+        final fTrack = fading
+            ? _findTrack(fromClip, pTrack.targetIndex, pTrack.targetName)
+            : null;
+        _writeNode(node, rest, pTrack, fTrack, fadeAlpha);
       }
-      rootNode?.updateWorldTransforms();
     }
 
-    final morph = morphWorkspace;
-    if (morph != null && primary != null) {
-      for (final mt in primary.morphTracks) {
-        var w = mt.sample(_currentTime);
-        if (fromClip != null && fadeAlpha < 1.0) {
-          var prevW = 0.0;
-          for (final fmt in fromClip.morphTracks) {
-            if (fmt.targetIndex == mt.targetIndex) {
-              prevW = fmt.sample(_fadeFromTime);
-              break;
-            }
-          }
-          w = prevW + (w - prevW) * fadeAlpha;
+    // Nodes the mixer drove before that the current clip does not animate:
+    // blend them back to their own transform while the old clip fades out,
+    // then release them.
+    if (_nodeRest.isNotEmpty) {
+      for (final rest in _nodeRest.values) {
+        if (rest.stamp == stamp) {
+          continue;
         }
-        morph.setWeight(mt.targetIndex, w);
+        final fTrack = fading
+            ? _findTrack(fromClip, rest.targetIndex, rest.targetName)
+            : null;
+        _writeNode(rest.node, rest, null, fTrack, fadeAlpha);
+        if (!rest.droveTranslation && !rest.droveRotation && !rest.droveScale) {
+          _releasedNodes.add(rest.node);
+        }
+      }
+      if (_releasedNodes.isNotEmpty) {
+        _releasedNodes.forEach(_nodeRest.remove);
+        _releasedNodes.clear();
       }
     }
+    rootNode?.updateWorldTransforms();
+  }
+
+  /// Writes the blended local transform of [node] for the channels the
+  /// current clip ([pTrack]) or the fading clip ([fTrack]) animate, and
+  /// restores the channels neither animates any more.
+  void _writeNode(
+    Node3D node,
+    _NodeRest3D rest,
+    TransformTrack3D? pTrack,
+    TransformTrack3D? fTrack,
+    double fadeAlpha,
+  ) {
+    final pose = pTrack?.sample(_currentTime);
+    final fp = fTrack?.sample(_fadeFromTime);
+    final a = fadeAlpha;
+
+    // Translation.
+    final pHasT = pTrack?.translations != null;
+    final fHasT = fTrack?.translations != null;
+    if (pHasT || fHasT || rest.droveTranslation) {
+      final tx = pHasT ? pose!.dx : rest.x;
+      final ty = pHasT ? pose!.dy : rest.y;
+      final tz = pHasT ? pose!.dz : rest.z;
+      if (fp != null) {
+        final fx = fHasT ? fp.dx : rest.x;
+        final fy = fHasT ? fp.dy : rest.y;
+        final fz = fHasT ? fp.dz : rest.z;
+        node
+          ..localX = fx + (tx - fx) * a
+          ..localY = fy + (ty - fy) * a
+          ..localZ = fz + (tz - fz) * a;
+      } else {
+        node
+          ..localX = tx
+          ..localY = ty
+          ..localZ = tz;
+      }
+      rest.droveTranslation = pHasT || fHasT;
+    }
+
+    // Scale.
+    final pHasS = pTrack?.scales != null;
+    final fHasS = fTrack?.scales != null;
+    if (pHasS || fHasS || rest.droveScale) {
+      final tx = pHasS ? pose!.sx : rest.sx;
+      final ty = pHasS ? pose!.sy : rest.sy;
+      final tz = pHasS ? pose!.sz : rest.sz;
+      if (fp != null) {
+        final fx = fHasS ? fp.sx : rest.sx;
+        final fy = fHasS ? fp.sy : rest.sy;
+        final fz = fHasS ? fp.sz : rest.sz;
+        node
+          ..localScaleX = fx + (tx - fx) * a
+          ..localScaleY = fy + (ty - fy) * a
+          ..localScaleZ = fz + (tz - fz) * a;
+      } else {
+        node
+          ..localScaleX = tx
+          ..localScaleY = ty
+          ..localScaleZ = tz;
+      }
+      rest.droveScale = pHasS || fHasS;
+    }
+
+    // Rotation.
+    final pHasR = pTrack?.rotations != null;
+    final fHasR = fTrack?.rotations != null;
+    if (pHasR || fHasR || rest.droveRotation) {
+      if (!pHasR && !fHasR) {
+        // Released: back to exactly the orientation the node had.
+        if (rest.hadQuaternion) {
+          final (qx, qy, qz, qw) = rest.quaternion;
+          node.setLocalQuaternion(qx, qy, qz, qw);
+        } else {
+          node.clearLocalQuaternion();
+        }
+      } else {
+        final target = pHasR
+            ? (pose!.qx, pose.qy, pose.qz, pose.qw)
+            : rest.quaternion;
+        if (fp != null) {
+          final from = fHasR ? (fp.qx, fp.qy, fp.qz, fp.qw) : rest.quaternion;
+          final (qx, qy, qz, qw) = Quaternion3D.slerp(from, target, a);
+          node.setLocalQuaternion(qx, qy, qz, qw);
+        } else {
+          final (qx, qy, qz, qw) = target;
+          node.setLocalQuaternion(qx, qy, qz, qw);
+        }
+      }
+      rest.droveRotation = pHasR || fHasR;
+    }
+  }
+
+  void _applyMorphs(
+    AnimationClip3D? primary,
+    AnimationClip3D? fromClip,
+    double fadeAlpha,
+  ) {
+    final morph = morphWorkspace;
+    if (morph == null) {
+      return;
+    }
+    final count = _drivenMorphs.length;
+    final stamp = _applyStamp + 1;
+    final fading = fromClip != null && fadeAlpha < 1.0;
+
+    if (primary != null) {
+      for (final mt in primary.morphTracks) {
+        final index = mt.targetIndex;
+        if (index < 0 || index >= count) {
+          continue;
+        }
+        if (_drivenMorphs[index] == 0) {
+          _drivenMorphs[index] = 1;
+          _morphRest[index] = morph.weightAt(index);
+        }
+        _morphStamp[index] = stamp;
+        var w = mt.sample(_currentTime);
+        if (fading) {
+          final prevW = _fadeMorphWeight(fromClip, index) ?? _morphRest[index];
+          w = prevW + (w - prevW) * fadeAlpha;
+        }
+        morph.setWeight(index, w);
+      }
+    }
+
+    // Weights the mixer drove before that the current clip does not animate:
+    // blend back to their own value while the old clip fades out, then
+    // release them.
+    for (var index = 0; index < count; index++) {
+      if (_drivenMorphs[index] == 0 || _morphStamp[index] == stamp) {
+        continue;
+      }
+      final rest = _morphRest[index];
+      final prevW = fading ? _fadeMorphWeight(fromClip, index) : null;
+      if (prevW != null) {
+        morph.setWeight(index, prevW + (rest - prevW) * fadeAlpha);
+      } else {
+        morph.setWeight(index, rest);
+        _drivenMorphs[index] = 0;
+      }
+    }
+    _applyStamp = stamp;
+  }
+
+  double? _fadeMorphWeight(AnimationClip3D fromClip, int targetIndex) {
+    for (final fmt in fromClip.morphTracks) {
+      if (fmt.targetIndex == targetIndex) {
+        return fmt.sample(_fadeFromTime);
+      }
+    }
+    return null;
   }
 }

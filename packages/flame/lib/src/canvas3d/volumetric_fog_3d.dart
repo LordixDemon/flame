@@ -12,7 +12,8 @@ import 'package:flame/src/game/game.dart';
 import 'package:flame/src/math/simplex_noise_2d.dart';
 import 'package:flutter/painting.dart';
 
-/// Zero-allocation 3D volumetric billowing fog and rolling cloud-bank engine.
+/// 3D volumetric billowing fog and rolling cloud-bank engine on pre-allocated
+/// Struct-of-Arrays buffers (no per-parcel allocations while simulating).
 ///
 /// Simulates up to [capacity] 3D turbulent cloud parcels in `(wx, wy, wz)`
 /// world space with:
@@ -20,13 +21,29 @@ import 'package:flutter/painting.dart';
 ///   [setApproachSpeedTowardCamera]),
 /// - 3D Simplex curl-like billowing turbulence and ground-hugging roll
 ///   vorticity (`wz >= groundFloorZ`),
-/// - True pinhole perspective swelling (`1 / camZ`) + Beer–Lambert near-lens
-///   transmittance fade (`[nearFadeStart .. nearFadeEnd]`) so giant clouds
-///   engulf the screen and pass smoothly through the lens without popping,
+/// - True pinhole perspective swelling (`1 / camZ`) + a smoothstep near-lens
+///   fade over `[nearFadeStart .. nearFadeEnd]` so giant clouds engulf the
+///   screen and pass smoothly through the lens without popping,
 /// - Height self-shadowing, directional sun crest scattering, and volumetric
 ///   in-scattering from `SceneEnvironment3D` `PointLight3D` torches/lanterns,
 /// - Back-to-front Ciura Shell depth sorting and **1 single GPU
 ///   `Canvas.drawRawAtlas` draw call**.
+///
+/// ## Recycling corridor
+///
+/// With [recycleLoop] enabled and a camera passed to [update], parcels are
+/// kept inside a camera-aligned corridor:
+/// - sideways it is [corridorHalfWidth] wide (plus a soft margin of a quarter
+///   of that width, at least `1.5` units);
+/// - while the bank **approaches** the camera (its advection has a component
+///   toward the lens), a parcel that reaches [nearFadeStart] or leaves the
+///   corridor sideways respawns at the far end ([farSpawnDepth]), where it is
+///   still invisible and rolls in again;
+/// - while the bank is **ambient** (no approach speed), the corridor is also
+///   bounded in depth by `[corridorMinDepth .. corridorMaxDepth]` (plus the
+///   same kind of margin). A parcel that drifts out on any side fades out,
+///   respawns at a random place inside that depth range, and fades back in,
+///   so the bank stays where it was populated instead of diffusing away.
 class VolumetricFogVolume3D({
   this.capacity = 320,
   int seed = 8841,
@@ -72,7 +89,9 @@ class VolumetricFogVolume3D({
     _projRadiusPx = Float32List(capacity);
     _projDepth = Float32List(capacity);
     _projColor = Int32List(capacity);
-    _sortIndices = Uint16List(capacity);
+    _sortIndices = Int32List(capacity);
+    _packedOrigParcel = Int32List(capacity);
+    _envelope = Float32List(capacity);
 
     _atlasTransforms = Float32List(capacity * 4);
     _atlasRects = Float32List(capacity * 4);
@@ -127,11 +146,12 @@ class VolumetricFogVolume3D({
   double ceilingZ;
 
   /// Camera-space distance at which a cloud parcel completes its near-lens
-  /// transmittance fade (`0` opacity) and recycles when [recycleLoop] is true.
+  /// fade (`0` opacity) and recycles when [recycleLoop] is true.
   double nearFadeStart;
 
-  /// Camera-space distance below which near-lens transmittance begins softening
-  /// cloud alpha so giant foreground puffs never pop abruptly.
+  /// Camera-space distance below which the near-lens fade (a smoothstep down
+  /// to [nearFadeStart]) begins softening cloud alpha so giant foreground
+  /// puffs never pop abruptly.
   double nearFadeEnd;
 
   /// Camera-space distance where far horizon fade-in starts.
@@ -143,8 +163,25 @@ class VolumetricFogVolume3D({
   /// Half-width in world units of the camera-aligned recycling corridor.
   double corridorHalfWidth;
 
-  /// Whether parcels passing closer than [nearFadeStart] automatically wrap
-  /// back to [farSpawnDepth] to sustain an endless rolling fog bank.
+  /// Nearest camera-space depth of the corridor an ambient bank (one with no
+  /// approach speed) is kept in. Set by [populateCorridor]; when `null` the
+  /// fully visible range starts at [nearFadeEnd].
+  double? corridorMinDepth;
+
+  /// Farthest camera-space depth of the corridor an ambient bank is kept in.
+  /// Set by [populateCorridor]; when `null` the fully visible range ends at
+  /// [farFadeStart].
+  double? corridorMaxDepth;
+
+  /// Whether [update] keeps parcels inside the camera-aligned corridor (see
+  /// the class documentation): an approaching bank wraps from the lens back
+  /// to [farSpawnDepth], an ambient bank respawns parcels that drift out of
+  /// the corridor sideways or in depth, sustaining an endless fog bank.
+  ///
+  /// When `false`, parcels are never moved. A parcel that the advection has
+  /// carried behind the lens (or, for a receding bank, beyond the far cull
+  /// depth) cannot become visible again and is removed, so
+  /// [activeParcelCount] drops as a one-shot wavefront passes.
   bool recycleLoop;
 
   /// Multiplier for volumetric internal glow from `SceneEnvironment3D`
@@ -281,7 +318,12 @@ class VolumetricFogVolume3D({
   late final Float32List _projRadiusPx;
   late final Float32List _projDepth;
   late final Int32List _projColor;
-  late final Uint16List _sortIndices;
+  late final Int32List _sortIndices;
+  late final Int32List _packedOrigParcel;
+
+  /// Per-parcel fade envelope (`0 .. 1`): falls while a parcel is outside the
+  /// recycling corridor and rises again after it respawns inside.
+  late final Float32List _envelope;
 
   late final Float32List _atlasTransforms;
   late final Float32List _atlasRects;
@@ -293,6 +335,24 @@ class VolumetricFogVolume3D({
 
   int _activeCount = 0;
   double _simTime = 0.0;
+
+  /// Caller's [ceilingZ] before [setApproachSpeedTowardCamera] raised it, and
+  /// the value it was raised to (`null` while no raise is in effect).
+  double? _ceilingBeforeApproach;
+  double _approachCeilingZ = 0.0;
+
+  /// Advection toward the lens (units/s) above which the bank counts as
+  /// approaching rather than ambient.
+  static const double _approachEpsilon = 0.05;
+
+  /// Overshoot above [ceilingZ] handled by the soft inversion bounce; a
+  /// parcel further above (the ceiling was lowered) sinks back instead.
+  static const double _softCeilingBand = 0.5;
+  static const double _settleSpeed = 1.6;
+
+  /// Envelope rates (1/s) for leaving and re-entering the corridor.
+  static const double _fadeOutRate = 1.0;
+  static const double _fadeInRate = 0.65;
 
   // Frame telemetry:
   int _lastRenderedCount = 0;
@@ -314,8 +374,9 @@ class VolumetricFogVolume3D({
   /// last [render] pass (decreases as fog billows approach the screen).
   double get nearestParcelCameraDepth => _nearestParcelDepth;
 
-  /// Largest projected screen-space cloud puff radius (in pixels) rendered in
-  /// the last [render] pass.
+  /// Largest projected cloud puff radius rendered in the last [render] pass,
+  /// in canvas pixels (the units [render] draws in, before any zoom the canvas
+  /// itself carries).
   double get maxScreenRadiusPx => _maxScreenRadiusPx;
 
   /// Estimated optical coverage (`0.0 .. 1.0`) accumulated near the viewport
@@ -337,6 +398,11 @@ class VolumetricFogVolume3D({
   /// ground drift (`0.0`) with the camera's 3D sightline (`1.0`) and ensures
   /// [ceilingZ] has enough vertical headroom for billowing clouds to reach an
   /// elevated perspective lens dead-center rather than passing underneath it.
+  ///
+  /// That headroom is temporary: calling this again with a [speed] of `0` (or
+  /// less, or with a blend of `0`) puts [ceilingZ] back to the value it had
+  /// before it was raised (unless it was changed by hand in the meantime), and
+  /// parcels left above it sink back under it.
   void setApproachSpeedTowardCamera(
     CameraRig3D camera,
     double speed, {
@@ -366,12 +432,23 @@ class VolumetricFogVolume3D({
     if (blend > 0.0 && speed > 0.0) {
       final eyeZ = camera.cameraDistance * vz * blend + 3.2;
       if (ceilingZ < eyeZ) {
+        _ceilingBeforeApproach ??= ceilingZ;
         ceilingZ = eyeZ;
+        _approachCeilingZ = eyeZ;
+      }
+    } else {
+      final restore = _ceilingBeforeApproach;
+      if (restore != null) {
+        if (ceilingZ == _approachCeilingZ) {
+          ceilingZ = restore;
+        }
+        _ceilingBeforeApproach = null;
       }
     }
   }
 
-  /// Spawns a single 3D cloud parcel at `(x, y, z)`.
+  /// Spawns a single 3D cloud parcel at `(x, y, z)` and returns its slot, or
+  /// `-1` when the volume already holds [capacity] parcels.
   int spawnParcel({
     required double x,
     required double y,
@@ -394,12 +471,17 @@ class VolumetricFogVolume3D({
     _spin[slot] = spin ?? ((_rng.nextDouble() - 0.5) * 0.35);
     _phase[slot] = _rng.nextDouble() * math.pi * 2.0;
     _variant[slot] = _rng.nextInt(_variantCount);
+    _envelope[slot] = 1.0;
     Game.notifyVisualMutation();
     return slot;
   }
 
-  /// Populates a camera-aligned 3D corridor from [minCamDepth] to [maxCamDepth]
-  /// with clustered billowing cloud banks.
+  /// Replaces all parcels with clustered billowing cloud banks filling a
+  /// camera-aligned 3D corridor from [minCamDepth] to [maxCamDepth].
+  ///
+  /// The depth range and [halfWidth] become the recycling corridor
+  /// ([corridorMinDepth], [corridorMaxDepth], [corridorHalfWidth]) that an
+  /// ambient bank is kept in.
   void populateCorridor(
     CameraRig3D camera, {
     int? count,
@@ -410,6 +492,32 @@ class VolumetricFogVolume3D({
     double maxZ = 2.6,
     double radiusMin = 1.35,
     double radiusMax = 2.85,
+  }) {
+    corridorMinDepth = math.min(minCamDepth, maxCamDepth);
+    corridorMaxDepth = math.max(minCamDepth, maxCamDepth);
+    _populate(
+      camera,
+      count: count,
+      minCamDepth: minCamDepth,
+      maxCamDepth: maxCamDepth,
+      halfWidth: halfWidth,
+      minZ: minZ,
+      maxZ: maxZ,
+      radiusMin: radiusMin,
+      radiusMax: radiusMax,
+    );
+  }
+
+  void _populate(
+    CameraRig3D camera, {
+    required int? count,
+    required double minCamDepth,
+    required double maxCamDepth,
+    required double? halfWidth,
+    required double minZ,
+    required double maxZ,
+    required double radiusMin,
+    required double radiusMax,
   }) {
     clear();
     final targetCount = (count ?? capacity).clamp(1, capacity);
@@ -471,9 +579,14 @@ class VolumetricFogVolume3D({
     }
   }
 
-  /// Spawns a dense, dramatic wall of billowing cloud clusters starting far in
-  /// the background (`[startCamDepth .. startCamDepth + thickness]`) ready to
-  /// roll straight toward the screen.
+  /// Replaces all parcels with a dense, dramatic wall of billowing cloud
+  /// clusters starting far in the background
+  /// (`[startCamDepth .. startCamDepth + thickness]`) and sets the advection
+  /// so it rolls straight toward the screen at [approachSpeed].
+  ///
+  /// The depth range an ambient bank returns to ([corridorMinDepth],
+  /// [corridorMaxDepth]) is left as it is: once the approach speed is set
+  /// back to `0`, the bank re-forms where [populateCorridor] last put it.
   void spawnApproachingWavefront(
     CameraRig3D camera, {
     int? count,
@@ -485,7 +598,7 @@ class VolumetricFogVolume3D({
     double approachSpeed = 4.6,
   }) {
     setApproachSpeedTowardCamera(camera, approachSpeed);
-    populateCorridor(
+    _populate(
       camera,
       count: count,
       minCamDepth: startCamDepth,
@@ -499,9 +612,14 @@ class VolumetricFogVolume3D({
   }
 
   /// Advances 3D advection, curl-like billowing turbulence, rolling vorticity,
-  /// and optional camera-corridor recycling.
+  /// and, when a [camera] is given, the recycling corridor described in the
+  /// class documentation ([recycleLoop]).
+  ///
+  /// Without a [camera] parcels are only advected: nothing is recycled or
+  /// removed.
   void update(double dt, {CameraRig3D? camera}) {
-    if (_activeCount == 0 || dt <= 0.0) {
+    // `!(dt > 0.0)` also rejects NaN.
+    if (_activeCount == 0 || !(dt > 0.0)) {
       return;
     }
     Game.notifyVisualMutation();
@@ -512,26 +630,61 @@ class VolumetricFogVolume3D({
     final cStrength = curlStrength;
     final tScroll = _simTime * curlTimeScale;
     final zSpan = math.max(0.25, ceilingZ - groundFloorZ);
+    final floorZ = groundFloorZ + 0.06;
 
+    // Camera frame (allocation-free copy of `CameraRig3D.worldToCameraSpace`:
+    // `camX = d . right`, `camZ = cameraDistance - d . view`).
     var tx = 0.0;
     var ty = 0.0;
     var fwdX = 0.70710678;
     var fwdY = 0.70710678;
     var hLen = 1.0;
-    if (camera != null && recycleLoop) {
+    var viewX = 0.0;
+    var viewY = 0.0;
+    var viewZ = 1.0;
+    var rightX = 1.0;
+    var rightY = 0.0;
+    var camDist = 0.0;
+    if (camera != null) {
       final gridTarget = camera.screenToGrid(
         Offset(camera.camWorldX, camera.camWorldY),
       );
       tx = gridTarget.$1;
       ty = gridTarget.$2;
-      final vx = camera.viewX;
-      final vy = camera.viewY;
-      hLen = math.max(1e-5, math.sqrt(vx * vx + vy * vy));
-      fwdX = vx / hLen;
-      fwdY = vy / hLen;
+      viewX = camera.viewX;
+      viewY = camera.viewY;
+      viewZ = camera.viewZ;
+      rightX = camera.rightX;
+      rightY = camera.rightY;
+      camDist = camera.cameraDistance;
+      hLen = math.max(1e-5, math.sqrt(viewX * viewX + viewY * viewY));
+      fwdX = viewX / hLen;
+      fwdY = viewY / hLen;
     }
+    final recycling = camera != null && recycleLoop;
 
-    for (var i = 0; i < _activeCount; i++) {
+    // Rate at which the mean flow carries parcels toward the lens.
+    final approach = advectVx * viewX + advectVy * viewY + advectVz * viewZ;
+    final ambient = approach <= _approachEpsilon;
+
+    // Corridor limits (see the class documentation).
+    final halfWidth = math.max(0.0, corridorHalfWidth);
+    final latLimit = halfWidth + math.max(1.5, halfWidth * 0.25);
+    final homeMin = math.max(
+      nearFadeStart + 1e-3,
+      math.min(corridorMinDepth ?? nearFadeEnd, farSpawnDepth),
+    );
+    final homeMax = math.max(
+      homeMin,
+      math.min(corridorMaxDepth ?? farFadeStart, farSpawnDepth),
+    );
+    final depthMargin = math.max(1.5, (homeMax - homeMin) * 0.25);
+    final depthLo = math.max(nearFadeStart, homeMin - depthMargin);
+    final depthHi = math.min(farSpawnDepth, homeMax + depthMargin);
+    final baseSpan = math.min(zSpan, 3.2);
+
+    var i = 0;
+    while (i < _activeCount) {
       var x = _wx[i];
       var y = _wy[i];
       var z = _wz[i];
@@ -558,10 +711,17 @@ class VolumetricFogVolume3D({
       z += vz * step;
 
       // Ground-hugging cushion and soft inversion ceiling:
-      if (z < groundFloorZ + 0.06) {
-        z = groundFloorZ + 0.06 + (groundFloorZ + 0.06 - z) * 0.25;
+      if (z < floorZ) {
+        z = floorZ + (floorZ - z) * 0.25;
       } else if (z > ceilingZ) {
-        z = ceilingZ - (z - ceilingZ) * 0.35;
+        final over = z - ceilingZ;
+        if (over <= _softCeilingBand) {
+          z = ceilingZ - over * 0.35;
+        } else {
+          // Far above the ceiling (it was lowered, or the parcel was spawned
+          // above it): sink back smoothly instead of teleporting down.
+          z -= math.min(over, _settleSpeed * step);
+        }
       }
 
       // Forward rolling shear (crests roll faster than ground belly):
@@ -569,26 +729,103 @@ class VolumetricFogVolume3D({
       _angle[i] +=
           (_spin[i] + billowRollSpeed * (0.35 + 0.65 * heightFrac)) * step;
 
-      if (camera != null && recycleLoop) {
-        final (_, _, camZ) = camera.worldToCameraSpace(x, y, z);
-        if (camZ <= nearFadeStart) {
-          final lat = (_rng.nextDouble() * 2.0 - 1.0) * corridorHalfWidth;
-          final baseSpan = math.min(zSpan, 3.2);
-          final respawnZ =
-              groundFloorZ + 0.12 + _rng.nextDouble() * (baseSpan * 0.78);
-          final respawnDepth = farSpawnDepth - _rng.nextDouble() * 2.8;
-          final along =
-              (camera.cameraDistance - respawnDepth - respawnZ * camera.viewZ) /
-              hLen;
-          x = tx + fwdX * along + camera.rightX * lat;
-          y = ty + fwdY * along + camera.rightY * lat;
-          z = respawnZ;
+      if (camera != null) {
+        final dx = x - tx;
+        final dy = y - ty;
+        final camZ = camDist - (dx * viewX + dy * viewY + z * viewZ);
+
+        if (!recycling) {
+          // Nothing brings a parcel back once the flow has carried it behind
+          // the lens (or, receding, beyond the far cull depth): stop
+          // simulating it.
+          if ((approach > _approachEpsilon && camZ <= nearFadeStart) ||
+              (approach < -_approachEpsilon && camZ >= farSpawnDepth + 2.0)) {
+            _removeParcel(i);
+            continue;
+          }
+        } else {
+          final lat = dx * rightX + dy * rightY;
+          var envelope = _envelope[i];
+          // 0 = stay, 1 = respawn at the far end, 2 = respawn inside the
+          // ambient corridor.
+          var respawn = 0;
+          if (camZ <= nearFadeStart) {
+            // Fully faded by the near-lens fade already.
+            respawn = ambient ? 2 : 1;
+          } else if (ambient && camZ >= farSpawnDepth) {
+            // Fully faded by the far fade already.
+            respawn = 2;
+          } else {
+            final outside =
+                lat > latLimit ||
+                lat < -latLimit ||
+                (ambient && (camZ < depthLo || camZ > depthHi));
+            // Per-parcel rate jitter so a whole bank never blinks in step.
+            final jitter = 0.7 + _phase[i] * (0.6 / (math.pi * 2.0));
+            if (outside) {
+              envelope -= step * _fadeOutRate * jitter;
+              if (envelope <= 0.0) {
+                respawn = ambient ? 2 : 1;
+              }
+            } else if (envelope < 1.0) {
+              envelope = math.min(1.0, envelope + step * _fadeInRate * jitter);
+            }
+          }
+
+          if (respawn != 0) {
+            final lat2 = (_rng.nextDouble() * 2.0 - 1.0) * halfWidth;
+            final double depth;
+            if (respawn == 1) {
+              // Far end of an approaching bank: invisible there, rolls in.
+              z = groundFloorZ + 0.12 + _rng.nextDouble() * (baseSpan * 0.78);
+              depth = farSpawnDepth - _rng.nextDouble() * 2.8;
+              envelope = 1.0;
+            } else {
+              // Ambient bank: anywhere in its own depth range, faded in.
+              depth = homeMin + _rng.nextDouble() * (homeMax - homeMin);
+              final alongRay = camDist - depth;
+              final sightLift = alongRay > 0.0 ? alongRay * viewZ * 0.82 : 0.0;
+              z = math.max(
+                floorZ,
+                math.min(
+                  ceilingZ,
+                  groundFloorZ +
+                      sightLift +
+                      0.12 +
+                      _rng.nextDouble() * (baseSpan * 0.78),
+                ),
+              );
+              envelope = 0.0;
+            }
+            final along = (camDist - depth - z * viewZ) / hLen;
+            x = tx + fwdX * along + rightX * lat2;
+            y = ty + fwdY * along + rightY * lat2;
+          }
+          _envelope[i] = envelope;
         }
       }
 
       _wx[i] = x;
       _wy[i] = y;
       _wz[i] = z;
+      i++;
+    }
+  }
+
+  /// Swap-removes parcel [index].
+  void _removeParcel(int index) {
+    final last = --_activeCount;
+    if (index != last) {
+      _wx[index] = _wx[last];
+      _wy[index] = _wy[last];
+      _wz[index] = _wz[last];
+      _baseRadius[index] = _baseRadius[last];
+      _parcelDensity[index] = _parcelDensity[last];
+      _angle[index] = _angle[last];
+      _spin[index] = _spin[last];
+      _phase[index] = _phase[last];
+      _variant[index] = _variant[last];
+      _envelope[index] = _envelope[last];
     }
   }
 
@@ -603,6 +840,14 @@ class VolumetricFogVolume3D({
 
   /// Projects, illuminates, depth-sorts, and draws the entire 3D volumetric
   /// fog volume in **1 `Canvas.drawRawAtlas` call**.
+  ///
+  /// Parcels are drawn in the same canvas pixels as
+  /// `CameraRig3D.projectWorldPoint` produces (minus [canvasOrigin]), i.e. the
+  /// canvas is expected to carry the 2D camera transform, as it does for a
+  /// component inside a `World`. [viewportSize] is the on-screen viewport in
+  /// logical pixels; it is divided by `camera.camZoom` to get the visible
+  /// extent in canvas pixels, so the off-screen cull keeps fog up to the
+  /// screen edges at any zoom.
   void render(
     Canvas canvas,
     CameraRig3D camera, {
@@ -650,12 +895,19 @@ class VolumetricFogVolume3D({
       sunScatterBoost = 0.20 + 0.55 * hg * hg * sunLight.diffuseIntensity;
     }
 
-    final vpW = viewportSize?.width ?? 1280.0;
-    final vpH = viewportSize?.height ?? 800.0;
+    // The viewport is given in screen pixels, projected positions are canvas
+    // pixels that the canvas scales by the 2D camera zoom: convert the
+    // viewport into canvas pixels before comparing the two.
+    final zoom = camera.camZoom > 1e-6 ? camera.camZoom : 1.0;
+    final vpW = (viewportSize?.width ?? 1280.0) / zoom;
+    final vpH = (viewportSize?.height ?? 800.0) / zoom;
     final centerScreenX = camera.camWorldX - canvasOrigin.dx;
     final centerScreenY = camera.camWorldY - canvasOrigin.dy;
     final cullHalfW = vpW * 0.85;
     final cullHalfH = vpH * 0.85;
+    // Largest puff radius worth drawing (a tiny or zero viewport must not
+    // invert the clamp range).
+    final maxRadiusPx = math.max(2.0, vpW * 0.95);
 
     final plCount = environment?.pointLightCount ?? 0;
     final plX = environment?.lightX;
@@ -680,7 +932,7 @@ class VolumetricFogVolume3D({
         continue;
       }
 
-      // Near-lens Beer-Lambert fade + far horizon fade:
+      // Near-lens fade + far horizon fade (both smoothsteps):
       final nearFade = _smoothstep(nearFadeStart, nearFadeEnd, camZ);
       final farFade = 1.0 - _smoothstep(farFadeStart, farSpawnDepth, camZ);
       final breath = 1.0 + 0.13 * math.sin(_simTime * 1.25 + _phase[i]);
@@ -693,12 +945,14 @@ class VolumetricFogVolume3D({
         final invZ = perspFocal / camZ;
         sx = camera.camWorldX + camX * invZ - canvasOrigin.dx;
         sy = camera.camWorldY + camY * invZ - canvasOrigin.dy;
-        radiusPx = (worldRad * invZ).clamp(2.0, vpW * 0.95);
+        radiusPx = (worldRad * invZ).clamp(2.0, maxRadiusPx);
       } else {
         final p = camera.projectWorldPoint(wx, wy, wz);
         sx = p.dx - canvasOrigin.dx;
         sy = p.dy - canvasOrigin.dy;
-        radiusPx = worldRad * axoFocal * camera.camZoom;
+        // One world unit is `focalScalePx` canvas pixels at every zoom: the
+        // zoom is applied once, by the canvas, to position and size alike.
+        radiusPx = worldRad * axoFocal;
       }
 
       // Frustum cull with generous cloud radius margin:
@@ -707,10 +961,13 @@ class VolumetricFogVolume3D({
         continue;
       }
 
-      final alpha = (density * _parcelDensity[i] * nearFade * farFade).clamp(
-        0.0,
-        0.92,
-      );
+      final envelope = _envelope[i];
+      final corridorFade = envelope >= 1.0
+          ? 1.0
+          : envelope * envelope * (3.0 - 2.0 * envelope);
+      final alpha =
+          (density * _parcelDensity[i] * nearFade * farFade * corridorFade)
+              .clamp(0.0, 0.92);
       final aByte = (alpha * 255.0).round();
       if (aByte <= 2) {
         continue;
@@ -789,7 +1046,6 @@ class VolumetricFogVolume3D({
       _projColor[visibleCount] =
           (aByte << 24) | (rByte << 16) | (gByte << 8) | bByte;
       _sortIndices[visibleCount] = i;
-      // Temporarily store compact visible slot order in `_sortIndices`:
       visibleCount++;
     }
 
@@ -797,14 +1053,9 @@ class VolumetricFogVolume3D({
       return;
     }
 
-    // Re-index `_sortIndices` to `0 .. visibleCount - 1` while preserving each
-    // visible parcel's original index via packed `(visibleSlot)` lookup. To
-    // keep `_angle` and `_variant` accessible without allocating, pack original
-    // parcel index in upper 16 bits? Capacity can exceed 256, so let's sort a
-    // compact permutation over `0 .. visibleCount - 1` where `_sortIndices`
-    // stores the original parcel index and `_proj*` is indexed by parcel `i`!
-    // Wait: let's write projected fields directly at parcel index `i` so
-    // `_sortIndices[0..visibleCount-1]` holds parcel index `i` directly!
+    // `_sortIndices[k]` holds the parcel index of visible item `k` and the
+    // `_proj*` buffers are indexed by `k`; the sort turns that into a
+    // back-to-front permutation.
     _sortProjectedByDescendingDepth(visibleCount);
 
     for (var s = 0; s < visibleCount; s++) {
@@ -846,8 +1097,6 @@ class VolumetricFogVolume3D({
     _lastDrawCalls = 1;
     _screenCenterCoverage = (1.0 - transmittanceCenter).clamp(0.0, 1.0);
   }
-
-  late final Uint16List _packedOrigParcel = Uint16List(capacity);
 
   void _sortProjectedByDescendingDepth(int count) {
     // At entry, `_sortIndices[k]` holds the original parcel index for visible

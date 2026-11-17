@@ -66,7 +66,11 @@ class ParticlePool3D({
   /// Spatial frequency of 3D Simplex turbulence.
   double turbulenceScale;
 
-  /// Optional deferred callback invoked when a particle impacts `z = 0`.
+  /// Optional deferred callback invoked once per bounce when a particle hits
+  /// `z = 0`, with the ground position and the speed at the moment of
+  /// contact. Particles that touch down slower than `0.18` units per second
+  /// settle without a call, so a particle lying on the ground stays silent at
+  /// any frame rate.
   void Function(double x, double y, double impactSpeed)? onGroundImpact;
 
   late final Float32List _wx = Float32List(capacity);
@@ -101,6 +105,10 @@ class ParticlePool3D({
   final math.Random _rng = math.Random(randomSeed);
   final SimplexNoise2D _noise = SimplexNoise2D(seed: randomSeed ^ 0x55aa);
 
+  /// Contact speed (world units per second) below which a particle settles
+  /// on the ground instead of bouncing.
+  static const double _restSpeed = 0.18;
+
   double _simTime = 0.0;
   int _activeCount = 0;
   int _cursor = 0;
@@ -121,6 +129,10 @@ class ParticlePool3D({
   }
 
   /// Spawns a single 3D particle in `(x, y, z)` world coordinates.
+  ///
+  /// When the pool is full the new particle overwrites an existing slot
+  /// (round-robin), so a burst is never dropped. A pool created with a
+  /// [capacity] of `0` ignores the call.
   void spawn({
     required double x,
     required double y,
@@ -138,6 +150,9 @@ class ParticlePool3D({
     double spin = 4.0,
     ParticleKind3D kind = ParticleKind3D.spark,
   }) {
+    if (capacity <= 0) {
+      return;
+    }
     final int slot;
     if (_activeCount < capacity) {
       slot = _activeCount++;
@@ -382,7 +397,9 @@ class ParticlePool3D({
   /// Advances 3D particle trajectories, wind, turbulence, drag, and `z = 0`
   /// ground collisions.
   void update(double dt) {
-    if (_activeCount == 0 || dt <= 0.0) {
+    // `!(dt > 0.0)` also rejects NaN (which `clamp` below would turn into a
+    // full 50 ms step).
+    if (_activeCount == 0 || !(dt > 0.0)) {
       return;
     }
     Game.notifyVisualMutation();
@@ -439,10 +456,17 @@ class ParticlePool3D({
       var wz = pz + vz * step;
 
       if (wz < 0.0) {
-        final impactSpd = -vz;
+        // Speed at the moment of contact, from the state at the start of the
+        // step (`v0^2 - 2 * a * z0`). Using the post-step velocity instead
+        // would count one whole step of gravity as an impact for a particle
+        // that is already lying on the ground, which makes resting particles
+        // bounce (and fire [onGroundImpact]) on every long frame.
+        final vz0 = _vz[idx];
+        final contactSq = vz0 * vz0 - 2.0 * az * pz;
+        final impactSpd = contactSq > 0.0 ? math.sqrt(contactSq) : 0.0;
         wz = 0.0;
-        if (vz < -0.18) {
-          vz = -vz * _bounce[idx];
+        if (impactSpd > _restSpeed) {
+          vz = impactSpd * _bounce[idx];
           vx *= 0.74;
           vy *= 0.74;
           if (impactCb != null && impactCount * 3 + 2 < _impactScratch.length) {
@@ -502,6 +526,12 @@ class ParticlePool3D({
 
   /// Projects and draws all active 3D particles + contact micro-shadows using
   /// [camera] in at most 3 batched `Canvas.drawVertices` calls.
+  ///
+  /// Particles and their ground shadows are projected exactly like
+  /// `CameraRig3D.projectWorldPoint` (grid-anchored ground position in
+  /// axonometric mode, pinhole projection in perspective mode), so a particle
+  /// spawned at a mesh's world position is drawn on that mesh for every orbit
+  /// and pitch delta of the camera.
   void render(
     Canvas canvas,
     CameraRig3D camera, {
@@ -517,7 +547,9 @@ class ParticlePool3D({
     final perspFocal = camera.perspectiveFocalLengthPx;
     final nearClip = camera.nearClip;
     final focal = camera.focalScalePx;
-    final centerY = camera.groundOriginY;
+    final cellHalfW = camera.cellHalfW;
+    final cellHalfH = camera.cellHalfH;
+    final originY = camera.groundOriginY;
     final perspStrength = camera.perspectiveStrength;
     final zPx = camera.zPixelsPerCell;
     final camX = camera.camWorldX;
@@ -559,8 +591,13 @@ class ParticlePool3D({
         gsx = gpsx;
         gsy = gpsy;
       } else {
-        gsx = (camera.rightX * wx + camera.rightY * wy) * focal;
-        gsy = centerY - (camera.upX * wx + camera.upY * wy) * focal;
+        // Same anchored convention as `CameraRig3D.projectWorldPoint` and the
+        // mesh renderers: the ground position is the fixed grid anchor
+        // (`gridToScreen`), only the height term follows the camera basis.
+        // Orbit / pitch deltas therefore move a particle exactly as they
+        // move a mesh standing on the same world point.
+        gsx = (wx - wy) * cellHalfW;
+        gsy = (wx + wy) * cellHalfH + originY;
         final persp = wz * perspStrength;
         sx = gsx + (gsx - camX) * persp;
         sy = gsy - zPx * wz + (gsy - camY) * persp * 0.55;

@@ -197,13 +197,15 @@ class const Raycaster3D._() {
     return (bestLocalT * s, bestFace);
   }
 
-  /// Finds the closest 3D mesh collider intersected by [worldRay].
+  /// Finds the closest 3D mesh collider intersected by [worldRay] (any
+  /// `MeshCollider3D.id`, negative ones included), or `null` on a miss.
   static RaycastHit3D? pickClosest(
     Ray3D worldRay,
     Iterable<MeshCollider3D> colliders, {
     bool cullBackfaces = true,
   }) {
     var bestT = double.infinity;
+    var found = false;
     var bestId = -1;
     var bestFace = -1;
 
@@ -215,13 +217,14 @@ class const Raycaster3D._() {
         cullBackfaces: cullBackfaces,
       );
       if (hit != null && hit.$1 < bestT) {
+        found = true;
         bestT = hit.$1;
         bestId = c.id;
         bestFace = hit.$2;
       }
     }
 
-    if (bestId < 0) {
+    if (!found) {
       return null;
     }
     final (hx, hy, hz) = worldRay.pointAt(bestT);

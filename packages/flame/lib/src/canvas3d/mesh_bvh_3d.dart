@@ -9,7 +9,9 @@ import 'package:flame/src/canvas3d/primitives_3d.dart';
 /// All internal and leaf nodes are packed into contiguous typed arrays
 /// ([nodeBounds], [leftOrFirst], [rightOrCount], [triIndices]) with `0`
 /// per-node Dart heap object allocations, and traversed iteratively using a
-/// fixed 64-entry integer stack (`0` per-ray allocations).
+/// fixed 128-entry integer stack (`0` per-ray allocations). The builder
+/// switches from spatial to median splits below depth `48`, which bounds the
+/// tree depth at `80` for any input, so the stack can never overflow.
 class MeshBvh3D._({
   required this.positions,
   required this.indices,
@@ -133,7 +135,7 @@ class MeshBvh3D._({
       rightOrCount = Int32List(nextCap)..setRange(0, usedNodes, rightOrCount);
     }
 
-    int buildNode(int start, int count) {
+    int buildNode(int start, int count, int depth) {
       ensureNodeCap(usedNodes + 1);
       final nodeIdx = usedNodes++;
 
@@ -225,8 +227,12 @@ class MeshBvh3D._({
         maxExt = extZ;
       }
 
+      // Spatial midpoint splits can peel off one triangle per level on
+      // adversarial inputs (centroids spread over many orders of magnitude).
+      // Past `_maxSpatialSplitDepth` fall back to the median split, which
+      // halves the count and so adds at most 32 more levels.
       var mid = start + (count >> 1);
-      if (maxExt > 1e-6) {
+      if (maxExt > 1e-6 && depth < _maxSpatialSplitDepth) {
         final splitPos = axis == 0
             ? (cMinX + cMaxX) * 0.5
             : (axis == 1 ? (cMinY + cMaxY) * 0.5 : (cMinZ + cMaxZ) * 0.5);
@@ -250,15 +256,15 @@ class MeshBvh3D._({
 
       final leftCount = mid - start;
       final rightCount = count - leftCount;
-      final leftChild = buildNode(start, leftCount);
-      final rightChild = buildNode(mid, rightCount);
+      final leftChild = buildNode(start, leftCount, depth + 1);
+      final rightChild = buildNode(mid, rightCount, depth + 1);
       leftOrFirst[nodeIdx] = leftChild;
       // Negative encoding marks internal node pointing to `rightChild > 0`.
       rightOrCount[nodeIdx] = -rightChild;
       return nodeIdx;
     }
 
-    buildNode(0, faceCount);
+    buildNode(0, faceCount, 0);
 
     return MeshBvh3D._(
       positions: positions,
@@ -296,6 +302,11 @@ class MeshBvh3D._({
   /// Total BVH nodes allocated.
   final int nodeCount;
 
+  /// Depth below which the builder stops using spatial midpoint splits.
+  static const int _maxSpatialSplitDepth = 48;
+
+  /// Traversal stack: tree depth is at most `_maxSpatialSplitDepth + 32`, and
+  /// a depth-first walk needs at most `depth + 1` entries.
   final Int32List _stack = Int32List(128);
   int _lastNodesVisited = 0;
   int _lastTrianglesTested = 0;
@@ -314,9 +325,12 @@ class MeshBvh3D._({
   /// returning `(localDistance, faceIndex)` for the closest hit in
   /// `(1e-5 .. maxLocalDistance)` or `null` on a miss.
   ///
-  /// When [flipWinding] is `true` (used automatically when an ancestor
-  /// transform has negative determinant / mirrored scale), backface culling
-  /// tests `-det` instead of `+det`.
+  /// When [flipWinding] is `true`, backface culling treats clockwise
+  /// triangles as front-facing (it tests `-det` instead of `+det`). Use it
+  /// when the vertex data itself is mirrored relative to its winding.
+  /// `Raycaster3D.raycastMeshTransform` does not need it: transforming the ray
+  /// into mesh-local space by a mirrored (negative-determinant) scale mirrors
+  /// the ray together with the mesh, so outward faces stay front-facing.
   (double distance, int faceIndex)? raycastLocal(
     Ray3D localRay, {
     double maxLocalDistance = double.infinity,

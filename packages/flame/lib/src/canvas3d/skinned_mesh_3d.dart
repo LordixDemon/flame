@@ -33,6 +33,11 @@ class Bone3D({
 /// influences per vertex + per-bone squash/stretch scale) workspace
 /// transforming a [Mesh3D] by an animated [Bone3D] hierarchy directly into
 /// `BatchMeshRenderer3D.enqueueSkinnedMesh`.
+///
+/// Weights are normalised per vertex: with only `boneWeights0` the second
+/// influence gets `1 - w0`; with any of `boneWeights1..3` the four weights
+/// are rescaled to sum to `1`. The constructor throws a [RangeError] when a
+/// weighted influence names a bone that is not in `bones`.
 class SkinnedMeshWorkspace3D({
   required final Mesh3D baseMesh,
   required final List<Bone3D> bones,
@@ -133,8 +138,34 @@ class SkinnedMeshWorkspace3D({
       _bindInvZ[b] = -_worldTx[b * 3 + 2];
     }
 
+    // Every influence that carries weight must name an existing bone;
+    // otherwise `evaluateIfDirty` would fail later with an out-of-range read
+    // deep inside the skinning loop. Influences with zero weight are never
+    // read (apart from the primary one) and may hold any index.
+    for (var v = 0; v < vCount; v++) {
+      _checkBoneIndex(boneIndices0[v], bCount, v, 0);
+      if (_boneW1[v] > 1e-6) {
+        _checkBoneIndex(_boneIdx1[v], bCount, v, 1);
+      }
+      if (_boneW2[v] > 1e-6) {
+        _checkBoneIndex(_boneIdx2[v], bCount, v, 2);
+      }
+      if (_boneW3[v] > 1e-6) {
+        _checkBoneIndex(_boneIdx3[v], bCount, v, 3);
+      }
+    }
+
     skinnedPositions.setAll(0, baseMesh.positions);
     skinnedNormals.setAll(0, baseMesh.normals);
+  }
+
+  static void _checkBoneIndex(int bone, int boneCount, int vertex, int slot) {
+    if (bone >= boneCount) {
+      throw RangeError(
+        'boneIndices$slot[$vertex] = $bone, but the skeleton has only '
+        '$boneCount bones',
+      );
+    }
   }
 
   /// Skinned vertex positions (`vertexCount * 3`).

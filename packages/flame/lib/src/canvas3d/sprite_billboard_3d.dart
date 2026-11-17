@@ -234,18 +234,19 @@ class SpriteBillboard3D({
     final y0 = -(1.0 - anchorY) * height;
     final y1 = anchorY * height;
 
-    void writeVert(int slot, double sRight, double sUp) {
-      final p = slot * 3;
-      _positions[p] = rx * sRight + ux * sUp;
-      _positions[p + 1] = ry * sRight + uy * sUp;
-      _positions[p + 2] = rz * sRight + uz * sUp;
-    }
-
     // v0: bottom-left, v1: bottom-right, v2: top-right, v3: top-left
-    writeVert(0, x0, y0);
-    writeVert(1, x1, y0);
-    writeVert(2, x1, y1);
-    writeVert(3, x0, y1);
+    _positions[0] = rx * x0 + ux * y0;
+    _positions[1] = ry * x0 + uy * y0;
+    _positions[2] = rz * x0 + uz * y0;
+    _positions[3] = rx * x1 + ux * y0;
+    _positions[4] = ry * x1 + uy * y0;
+    _positions[5] = rz * x1 + uz * y0;
+    _positions[6] = rx * x1 + ux * y1;
+    _positions[7] = ry * x1 + uy * y1;
+    _positions[8] = rz * x1 + uz * y1;
+    _positions[9] = rx * x0 + ux * y1;
+    _positions[10] = ry * x0 + uy * y1;
+    _positions[11] = rz * x0 + uz * y1;
 
     // 4. Lighting normal facing camera blended slightly toward +Z:
     final upBias = normalUpBias.clamp(0.0, 1.0);
