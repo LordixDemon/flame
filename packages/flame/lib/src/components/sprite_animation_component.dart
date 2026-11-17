@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:flame/components.dart';
+import 'package:flame/src/game/game.dart';
 import 'package:flame/src/sprite_animation_ticker.dart';
 import 'package:meta/meta.dart';
 
@@ -125,6 +126,26 @@ class SpriteAnimationComponent({
       }
       _resizeToSprite();
       updateRetainedImages();
+      _reportFrameChange();
+    }
+  }
+
+  /// The ticker and the frame that were last reported as the picture of this
+  /// component.
+  SpriteAnimationTicker? _reportedTicker;
+  int _reportedFrame = -1;
+
+  /// Reports a visual change when another frame is shown than the last time
+  /// this was called, no matter what moved the ticker (playback in [update],
+  /// a new animation, or the ticker being changed from the outside).
+  void _reportFrameChange() {
+    final ticker = animationTicker;
+    final frame = ticker?.currentIndex ?? -1;
+    if (!identical(ticker, _reportedTicker) || frame != _reportedFrame) {
+      _reportedTicker = ticker;
+      _reportedFrame = frame;
+      markSubtreeDirty();
+      Game.notifyVisualMutation();
     }
   }
 
@@ -145,16 +166,10 @@ class SpriteAnimationComponent({
   @override
   void update(double dt) {
     if (playing) {
-      final ticker = _animationTicker;
-      if (ticker != null) {
-        final prevIndex = ticker.currentIndex;
-        ticker.update(dt);
-        if (ticker.currentIndex != prevIndex) {
-          markSubtreeDirty();
-        }
-      }
+      _animationTicker?.update(dt);
       _resizeToSprite();
     }
+    _reportFrameChange();
     if (removeOnFinish && (_animationTicker?.done() ?? false)) {
       removeFromParent();
     }

@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:flame/components.dart';
+import 'package:flame/src/game/game.dart';
 import 'package:meta/meta.dart';
 
 export '../sprite.dart';
@@ -105,6 +106,9 @@ class SpriteComponent({
     _sprite = value;
     _resizeToSprite();
     updateRetainedImages();
+    // The picture changes even when the size does not.
+    markSubtreeDirty();
+    Game.notifyVisualMutation();
   }
 
   @override

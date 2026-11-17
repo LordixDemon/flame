@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:flame/components.dart';
+import 'package:flame/src/game/game.dart';
 import 'package:flutter/foundation.dart';
 
 export '../sprite_animation.dart';
@@ -67,8 +68,16 @@ class SpriteGroupComponent<T>({
     _current = value;
     _resizeToSprite();
     if (changed) {
+      _markVisualChange();
       _currentSpriteNotifier?.value = value;
     }
+  }
+
+  /// Reports that a different sprite is drawn, which does not necessarily
+  /// change the size or any other part of the transform.
+  void _markVisualChange() {
+    markSubtreeDirty();
+    Game.notifyVisualMutation();
   }
 
   /// Returns current value of auto resize flag.
@@ -88,6 +97,7 @@ class SpriteGroupComponent<T>({
       _sprites = value;
       _resizeToSprite();
       updateRetainedImages();
+      _markVisualChange();
     }
   }
 
@@ -105,6 +115,7 @@ class SpriteGroupComponent<T>({
     _sprites?[key] = sprite;
     _resizeToSprite();
     updateRetainedImages();
+    _markVisualChange();
   }
 
   /// Sets the given value of autoResize flag.

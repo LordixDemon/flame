@@ -20,8 +20,24 @@ mixin HasPaint<T extends Object> on Component
     implements OpacityProvider, PaintProvider, HueProvider {
   late final Map<T, Paint> _paints = {};
 
+  Paint _paint = BasicPalette.white.paint();
+
+  /// The main paint of this component.
+  ///
+  /// Assigning a paint marks the component as visually changed, also when it
+  /// is the same object, so that `paint = paint..color = ...` is picked up.
+  /// Properties that are changed directly on the paint object
+  /// (`paint.color = ...`) cannot be observed; use [setColor], [setOpacity]
+  /// and the other helpers of this mixin, or reassign the paint.
   @override
-  Paint paint = BasicPalette.white.paint();
+  Paint get paint => _paint;
+
+  @override
+  set paint(Paint value) {
+    _paint = value;
+    markSubtreeDirty();
+    Game.notifyVisualMutation();
+  }
 
   double _hue = 0.0;
 

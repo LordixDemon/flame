@@ -7,6 +7,7 @@ import 'package:collection/collection.dart';
 import 'package:flame/components.dart';
 import 'package:flame/extensions.dart';
 import 'package:flame/palette.dart';
+import 'package:flame/src/game/game.dart';
 import 'package:flame/text.dart';
 import 'package:flutter/widgets.dart' hide Image;
 import 'package:meta/meta.dart';
@@ -397,6 +398,10 @@ class TextBoxComponent<T extends TextRenderer>({
     }
     cache = await _fullRenderAsImage(newSize);
     size = newSize;
+    // The box draws a new image now (more typed characters, another text or
+    // configuration), whether or not its size changed with it.
+    markSubtreeDirty();
+    Game.notifyVisualMutation();
   }
 
   /// Dispose of [image] best-effort, swallowing the two errors that mean

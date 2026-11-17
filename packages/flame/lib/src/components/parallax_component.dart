@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flame/camera.dart';
 import 'package:flame/components.dart';
@@ -73,6 +74,43 @@ class ParallaxComponent<T extends FlameGame>({
     _parallax = p;
     _parallax?.resize(size);
     updateRetainedImages();
+    _reportLayerChanges();
+  }
+
+  /// The scroll offset (x, y) and the image of every layer as they were last
+  /// reported, to detect when the parallax draws something else than before.
+  Float64List _reportedOffsets = Float64List(0);
+  List<Image?> _reportedImages = const [];
+
+  /// Reports a visual change when a layer has scrolled, or shows another
+  /// image, since the last time this was called. A parallax scrolls without
+  /// touching the transform of its component, so nothing else reports it.
+  void _reportLayerChanges() {
+    final layers = _parallax?.layers;
+    final count = layers?.length ?? 0;
+    var changed = false;
+    if (_reportedImages.length != count) {
+      _reportedOffsets = Float64List(count * 2);
+      _reportedImages = List<Image?>.filled(count, null);
+      changed = true;
+    }
+    for (var i = 0; i < count; i++) {
+      final layer = layers![i];
+      final offset = layer.currentOffset();
+      final image = layer.parallaxRenderer.image;
+      if (offset.x != _reportedOffsets[i * 2] ||
+          offset.y != _reportedOffsets[i * 2 + 1] ||
+          !identical(image, _reportedImages[i])) {
+        _reportedOffsets[i * 2] = offset.x;
+        _reportedOffsets[i * 2 + 1] = offset.y;
+        _reportedImages[i] = image;
+        changed = true;
+      }
+    }
+    if (changed) {
+      markSubtreeDirty();
+      Game.notifyVisualMutation();
+    }
   }
 
   @override
@@ -119,6 +157,7 @@ class ParallaxComponent<T extends FlameGame>({
   @override
   void update(double dt) {
     parallax?.update(dt);
+    _reportLayerChanges();
   }
 
   @mustCallSuper
