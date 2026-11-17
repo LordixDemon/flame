@@ -7,16 +7,25 @@ import 'package:flutter/painting.dart' show Alignment;
 /// Base visual transition compositing an outgoing camera snapshot (`ui.Image`)
 /// over the live incoming scene across [duration] seconds without requiring
 /// per-frame `Canvas.saveLayer` allocations.
+///
+/// The snapshot is captured at [capturePixelRatio] texels per logical viewport
+/// pixel. Leave it `null` (the default) to capture at the game's effective
+/// device pixel ratio, so the outgoing frame is exactly as sharp as the live
+/// scene it replaces; pass an explicit value (for example `1.0`) to trade
+/// sharpness for a smaller texture.
+///
+/// When [aboveViewportHud] is `true` the snapshot includes the viewport (HUD)
+/// components and is drawn above them; otherwise it only covers the world.
 abstract class const SceneTransition({
   final double duration = 0.4,
   final Curve curve = Curves.easeInOutCubic,
-  final double capturePixelRatio = 1.0,
+  final double? capturePixelRatio,
   final bool aboveViewportHud = false,
 }) {
   this
     : assert(duration >= 0, 'duration must be non-negative: $duration'),
       assert(
-        capturePixelRatio > 0,
+        capturePixelRatio == null || capturePixelRatio > 0,
         'capturePixelRatio must be positive: $capturePixelRatio',
       );
 
@@ -36,7 +45,7 @@ abstract class const SceneTransition({
 class const CrossFadeSceneTransition({
   super.duration = 0.4,
   super.curve = Curves.easeInOutCubic,
-  super.capturePixelRatio = 1.0,
+  super.capturePixelRatio,
   super.aboveViewportHud = false,
   final ui.Color? flashTint,
 }) extends SceneTransition {
@@ -80,7 +89,7 @@ class const CrossFadeSceneTransition({
 class CircularRevealSceneTransition({
   super.duration = 0.5,
   super.curve = Curves.easeOutCubic,
-  super.capturePixelRatio = 1.0,
+  super.capturePixelRatio,
   super.aboveViewportHud = false,
   final Alignment center = Alignment.center,
   final ui.Color? ringColor,
@@ -155,7 +164,7 @@ class ShaderSceneTransition({
   configureShader,
   super.duration = 0.45,
   super.curve = Curves.easeInOutCubic,
-  super.capturePixelRatio = 1.0,
+  super.capturePixelRatio,
   super.aboveViewportHud = false,
 }) extends SceneTransition {
   final ui.Paint _shaderPaint = ui.Paint();

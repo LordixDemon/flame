@@ -6,6 +6,7 @@ import 'package:flame/src/camera/behaviors/viewport_aware_bounds_behavior.dart';
 import 'package:flame/src/camera/viewport.dart';
 import 'package:flame/src/camera/viewports/fixed_resolution_viewport.dart';
 import 'package:flame/src/effects/provider_interfaces.dart';
+import 'package:flame/src/game/game.dart';
 import 'package:flame/src/game/notifying_vector2.dart';
 import 'package:flame/src/game/transform2d.dart';
 import 'package:meta/meta.dart';
@@ -316,11 +317,18 @@ class Viewfinder({
   }
 
   /// Immediately resets [trauma], [shakeOffset], and [shakeRoll] to zero.
+  ///
+  /// If a shake was displacing the picture, a repaint is requested so that
+  /// on-demand rendering does not leave the last shaken frame on screen.
   void clearTrauma() {
+    final wasShaking = hasActiveShake;
     _trauma = 0.0;
     _shakeTime = 0.0;
     _shakeOffset.setZero();
     _shakeRoll = 0.0;
+    if (wasShaking) {
+      Game.notifyVisualMutation();
+    }
   }
 
   void _recomputeShake() {
@@ -345,9 +353,14 @@ class Viewfinder({
         _trauma = max(0.0, _trauma - traumaDecay * dt);
       }
       if (_trauma <= 0.0) {
+        // The shake has run out: one more frame has to be painted without it.
+        final wasShaking = hasActiveShake;
         _trauma = 0.0;
         _shakeOffset.setZero();
         _shakeRoll = 0.0;
+        if (wasShaking) {
+          Game.notifyVisualMutation();
+        }
       } else {
         _recomputeShake();
       }

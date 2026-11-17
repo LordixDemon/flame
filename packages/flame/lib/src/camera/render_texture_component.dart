@@ -17,6 +17,11 @@ import 'package:flame/src/game/game.dart';
 /// minimap-only markers or main-camera-only VFX stay strictly isolated per
 /// camera. Supports optional [refreshFps] throttling (`null` = every frame) and
 /// deterministic native `ui.Image.dispose()` cleanup on unmount.
+///
+/// Whenever a capture becomes due the component marks its subtree dirty, so it
+/// keeps refreshing inside a `CameraLayerCacheMode.splitRetained` layer: with a
+/// throttled [refreshFps] the layer is re-recorded at that rate, with
+/// `refreshFps == null` on every frame.
 class RenderTextureComponent({
   required var CameraComponent sourceCamera,
   var double pixelRatio = 1.0,
@@ -62,12 +67,24 @@ class RenderTextureComponent({
   /// Synchronously captures [sourceCamera] into [texture] immediately,
   /// disposing the previous [ui.Image] handle.
   void refreshNow() {
+    if (_capture()) {
+      // The picture of this component changed outside of its own `render`:
+      // retained layers and on-demand rendering have to pick it up.
+      Game.notifyVisualMutation();
+      markSubtreeDirty();
+    }
+  }
+
+  /// Captures [sourceCamera] into [texture] and returns whether a new image
+  /// was produced. Does not dirty the tree: [render] calls it right before it
+  /// draws the fresh texture, so the frame being recorded is already current.
+  bool _capture() {
     if (_isCapturing || size.x <= 0 || size.y <= 0) {
-      return;
+      return false;
     }
     final world = sourceCamera.world;
     if (world == null || !world.isMounted) {
-      return;
+      return false;
     }
     final pr = pixelRatio.clamp(0.125, 4.0);
     final w = math.max(1, (size.x * pr).round());
@@ -91,8 +108,7 @@ class RenderTextureComponent({
     _texture = nextImage;
     _forceCapture = false;
     _captureCount++;
-    Game.notifyVisualMutation();
-    markSubtreeDirty();
+    return true;
   }
 
   @override
@@ -103,7 +119,12 @@ class RenderTextureComponent({
     }
     final fps = refreshFps;
     if (fps == null) {
+      // A capture is due on every rendered frame. Marking the subtree dirty
+      // makes a retained camera layer that contains this component re-record
+      // (and thereby call `render`); without it the layer would replay its
+      // old picture and the texture would never be captured again.
       _forceCapture = true;
+      markSubtreeDirty();
       return;
     }
     if (fps <= 0.0) {
@@ -114,6 +135,7 @@ class RenderTextureComponent({
     if (_accumulator >= interval) {
       _accumulator %= interval;
       _forceCapture = true;
+      markSubtreeDirty();
       Game.notifyVisualMutation();
     }
   }
@@ -124,7 +146,7 @@ class RenderTextureComponent({
       return;
     }
     if (_forceCapture) {
-      refreshNow();
+      _capture();
     }
     final img = _texture;
     if (img == null) {

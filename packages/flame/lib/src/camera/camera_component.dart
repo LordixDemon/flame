@@ -54,6 +54,13 @@ enum CameraLayerCacheMode() {
   /// (when `postProcess == null` and no [SceneTransition] is active), and
   /// `viewport` HUD, re-recording ONLY layers whose `Component.subtreeVersion`
   /// or camera transform changed since the previous paint.
+  ///
+  /// A layer is also re-recorded when the component it was recorded from is
+  /// replaced (`camera.backdrop`, `camera.viewport`, `camera.viewfinder`,
+  /// `camera.world`) or when `renderPasses` or the upscale settings change.
+  /// A component whose picture changes without a transform, structure, paint
+  /// or text mutation (for example a custom `render` driven by elapsed time)
+  /// has to call `Component.markSubtreeDirty()` itself.
   splitRetained,
 }
 
@@ -155,6 +162,8 @@ class CameraComponent({
     _viewport = newViewport;
     add(_viewport);
     _viewfinder.updateTransform();
+    _disposeCachedViewportPicture();
+    _disposeCachedWorldPicture();
   }
 
   Viewport _viewport = (viewport ?? MaxViewport())..addAll(hudComponents ?? []);
@@ -172,6 +181,7 @@ class CameraComponent({
     _viewfinder.removeFromParent();
     _viewfinder = newViewfinder;
     add(_viewfinder);
+    _disposeCachedWorldPicture();
   }
 
   Viewfinder _viewfinder = viewfinder ?? Viewfinder();
@@ -186,6 +196,7 @@ class CameraComponent({
     _backdrop.removeFromParent();
     add(newBackdrop);
     _backdrop = newBackdrop;
+    _disposeCachedBackdropPicture();
   }
 
   /// The axis-aligned bounding rectangle of a [world] region which is currently
@@ -216,8 +227,10 @@ class CameraComponent({
 
   /// Renders the [world] as seen through this camera.
   ///
-  /// If the world is not mounted yet, only the viewport and viewfinder elements
-  /// will be rendered.
+  /// Nothing is rendered while the world is not mounted, with one exception:
+  /// while a [SceneTransition] waits for its incoming world to finish loading
+  /// (see [transitionToWorld]), the backdrop, the captured outgoing frame and
+  /// the viewport elements keep being drawn so the screen never goes blank.
   @override
   void renderTree(Canvas canvas) {
     _lastFrameCulledCount = 0;
@@ -301,6 +314,50 @@ class CameraComponent({
         _renderActiveTransition(canvas);
       }
       canvas.restore();
+    } else if (_holdsOutgoingFrame && currentCameras.length < maxCamerasDepth) {
+      _renderOutgoingFrame(canvas);
+    }
+    canvas.restore();
+  }
+
+  /// Whether [world] has been attached to the tree but has not finished
+  /// loading and mounting yet.
+  bool get _isIncomingWorldPending {
+    final pending = world;
+    return pending != null && !pending.isMounted && pending.parent != null;
+  }
+
+  /// Whether a [SceneTransition] is waiting for its incoming [world] to mount
+  /// and therefore has to keep the captured outgoing frame on screen.
+  bool get _holdsOutgoingFrame =>
+      _activeTransition != null &&
+      _transitionSnapshot != null &&
+      _isIncomingWorldPending;
+
+  /// Draws the backdrop, the captured outgoing frame and the viewport
+  /// elements while the incoming world of a transition is still loading.
+  void _renderOutgoingFrame(Canvas canvas) {
+    final useRetained = _layerCacheMode == CameraLayerCacheMode.splitRetained;
+    final vSize = viewport.virtualSize;
+    final aboveHud = _activeTransition!.aboveViewportHud;
+    canvas.save();
+    viewport.clip(canvas);
+    viewport.transformCanvas(canvas);
+    if (useRetained && vSize.x > 0 && vSize.y > 0) {
+      _renderRetainedBackdrop(canvas, vSize.x, vSize.y);
+    } else {
+      backdrop.renderTree(canvas);
+    }
+    if (!aboveHud) {
+      _renderActiveTransition(canvas);
+    }
+    if (useRetained && vSize.x > 0 && vSize.y > 0) {
+      _renderRetainedViewport(canvas, vSize.x, vSize.y);
+    } else {
+      viewport.renderTree(canvas);
+    }
+    if (aboveHud) {
+      _renderActiveTransition(canvas);
     }
     canvas.restore();
   }
@@ -323,6 +380,7 @@ class CameraComponent({
   }
 
   ui.Picture? _cachedBackdropPicture;
+  Component? _cachedBackdropRef;
   int _cachedBackdropVersion = -1;
   double _cachedBackdropW = -1.0;
   double _cachedBackdropH = -1.0;
@@ -331,6 +389,13 @@ class CameraComponent({
 
   ui.Picture? _cachedWorldPicture;
   World? _cachedWorldRef;
+  Viewfinder? _cachedViewfinderRef;
+  List<RenderPass>? _cachedWorldPassesRef;
+  int _cachedWorldPassCount = -1;
+  ui.FilterQuality _cachedWorldUpscaleQuality = ui.FilterQuality.medium;
+  double _cachedWorldUpscaleSharpness = -1.0;
+  ui.FragmentShader? _cachedWorldUpscaleShader;
+  int _cachedWorldMaxTextureDimension = -1;
   int _cachedWorldSubtreeVersion = -1;
   int _cachedViewfinderSubtreeVersion = -1;
   int _cachedViewfinderTxVersion = -1;
@@ -347,6 +412,7 @@ class CameraComponent({
   int _worldCacheRebuildCount = 0;
 
   ui.Picture? _cachedViewportPicture;
+  Viewport? _cachedViewportRef;
   int _cachedViewportVersion = -1;
   double _cachedViewportW = -1.0;
   double _cachedViewportH = -1.0;
@@ -376,18 +442,9 @@ class CameraComponent({
   /// and resets their version keys (preserving hit/rebuild telemetry counters
   /// unless [resetCounters] is `true`).
   void invalidateLayerCaches({bool resetCounters = false}) {
-    _cachedBackdropPicture?.dispose();
-    _cachedBackdropPicture = null;
-    _cachedBackdropVersion = -1;
-
-    _cachedWorldPicture?.dispose();
-    _cachedWorldPicture = null;
-    _cachedWorldRef = null;
-    _cachedWorldSubtreeVersion = -1;
-
-    _cachedViewportPicture?.dispose();
-    _cachedViewportPicture = null;
-    _cachedViewportVersion = -1;
+    _disposeCachedBackdropPicture();
+    _disposeCachedWorldPicture();
+    _disposeCachedViewportPicture();
 
     if (resetCounters) {
       _backdropCacheHitCount = 0;
@@ -399,9 +456,35 @@ class CameraComponent({
     }
   }
 
+  void _disposeCachedBackdropPicture() {
+    _cachedBackdropPicture?.dispose();
+    _cachedBackdropPicture = null;
+    _cachedBackdropRef = null;
+    _cachedBackdropVersion = -1;
+  }
+
+  void _disposeCachedWorldPicture() {
+    _cachedWorldPicture?.dispose();
+    _cachedWorldPicture = null;
+    _cachedWorldRef = null;
+    _cachedViewfinderRef = null;
+    _cachedWorldPassesRef = null;
+    _cachedWorldUpscaleShader = null;
+    _cachedWorldSubtreeVersion = -1;
+  }
+
+  void _disposeCachedViewportPicture() {
+    _cachedViewportPicture?.dispose();
+    _cachedViewportPicture = null;
+    _cachedViewportRef = null;
+    _cachedViewportVersion = -1;
+  }
+
   void _renderRetainedBackdrop(ui.Canvas canvas, double w, double h) {
-    final ver = backdrop.subtreeVersion;
+    final activeBackdrop = backdrop;
+    final ver = activeBackdrop.subtreeVersion;
     if (_cachedBackdropPicture != null &&
+        identical(_cachedBackdropRef, activeBackdrop) &&
         _cachedBackdropVersion == ver &&
         _cachedBackdropW == w &&
         _cachedBackdropH == h) {
@@ -414,9 +497,10 @@ class CameraComponent({
     final recCanvas = TelemetryCanvas.wrapOffscreenIfActive(
       ui.Canvas(recorder, ui.Rect.fromLTWH(0, 0, w, h)),
     );
-    backdrop.renderTree(recCanvas);
+    activeBackdrop.renderTree(recCanvas);
     final pic = recorder.endRecording();
     _cachedBackdropPicture = pic;
+    _cachedBackdropRef = activeBackdrop;
     _cachedBackdropVersion = ver;
     _cachedBackdropW = w;
     _cachedBackdropH = h;
@@ -431,9 +515,16 @@ class CameraComponent({
     FlameGame? game,
   ) {
     final activeWorld = world!;
+    final activeViewfinder = viewfinder;
     final worldVer = activeWorld.subtreeVersion;
-    final vfSubVer = viewfinder.subtreeVersion;
-    final vfTxVer = viewfinder.transform.version;
+    final vfSubVer = activeViewfinder.subtreeVersion;
+    final vfTxVer = activeViewfinder.transform.version;
+    final passes = renderPasses;
+    final passCount = passes?.length ?? 0;
+    final upscaleQuality = upscaleFilterQuality;
+    final sharpness = upscaleSharpness;
+    final shader = upscaleShader;
+    final maxDim = maxRenderTextureDimension;
     final scale = effectiveWorldRenderScale;
     final cMask = cameraMask;
     final lMask = layerMask;
@@ -449,6 +540,13 @@ class CameraComponent({
 
     if (_cachedWorldPicture != null &&
         identical(_cachedWorldRef, activeWorld) &&
+        identical(_cachedViewfinderRef, activeViewfinder) &&
+        identical(_cachedWorldPassesRef, passes) &&
+        _cachedWorldPassCount == passCount &&
+        _cachedWorldUpscaleQuality == upscaleQuality &&
+        _cachedWorldUpscaleSharpness == sharpness &&
+        identical(_cachedWorldUpscaleShader, shader) &&
+        _cachedWorldMaxTextureDimension == maxDim &&
         _cachedWorldSubtreeVersion == worldVer &&
         _cachedViewfinderSubtreeVersion == vfSubVer &&
         _cachedViewfinderTxVersion == vfTxVer &&
@@ -475,6 +573,13 @@ class CameraComponent({
     final pic = recorder.endRecording();
     _cachedWorldPicture = pic;
     _cachedWorldRef = activeWorld;
+    _cachedViewfinderRef = activeViewfinder;
+    _cachedWorldPassesRef = passes;
+    _cachedWorldPassCount = passCount;
+    _cachedWorldUpscaleQuality = upscaleQuality;
+    _cachedWorldUpscaleSharpness = sharpness;
+    _cachedWorldUpscaleShader = shader;
+    _cachedWorldMaxTextureDimension = maxDim;
     _cachedWorldSubtreeVersion = worldVer;
     _cachedViewfinderSubtreeVersion = vfSubVer;
     _cachedViewfinderTxVersion = vfTxVer;
@@ -492,8 +597,10 @@ class CameraComponent({
   }
 
   void _renderRetainedViewport(ui.Canvas canvas, double w, double h) {
-    final ver = viewport.subtreeVersion;
+    final activeViewport = viewport;
+    final ver = activeViewport.subtreeVersion;
     if (_cachedViewportPicture != null &&
+        identical(_cachedViewportRef, activeViewport) &&
         _cachedViewportVersion == ver &&
         _cachedViewportW == w &&
         _cachedViewportH == h) {
@@ -506,9 +613,10 @@ class CameraComponent({
     final recCanvas = TelemetryCanvas.wrapOffscreenIfActive(
       ui.Canvas(recorder, ui.Rect.fromLTWH(0, 0, w, h)),
     );
-    viewport.renderTree(recCanvas);
+    activeViewport.renderTree(recCanvas);
     final pic = recorder.endRecording();
     _cachedViewportPicture = pic;
+    _cachedViewportRef = activeViewport;
     _cachedViewportVersion = ver;
     _cachedViewportW = w;
     _cachedViewportH = h;
@@ -1820,6 +1928,10 @@ class CameraComponent({
   /// `transition.duration` seconds, deterministically disposing the GPU image
   /// when finished or cancelled.
   ///
+  /// The frame is captured at `transition.capturePixelRatio` texels per
+  /// logical pixel, which defaults to the game's effective device pixel ratio
+  /// so the outgoing frame is as sharp as the live one.
+  ///
   /// Call this immediately *before* mutating world state (e.g. changing biomes,
   /// swapping levels, or teleporting the camera) to get a seamless visual
   /// cross-fade/iris/shader transition without `saveLayer` overhead.
@@ -1836,7 +1948,7 @@ class CameraComponent({
       return Future<void>.value();
     }
     _transitionSnapshot = renderToImageSync(
-      pixelRatio: transition.capturePixelRatio,
+      pixelRatio: _resolveCapturePixelRatio(transition),
       includeViewport: transition.aboveViewportHud,
     );
     _activeTransition = transition;
@@ -1847,8 +1959,30 @@ class CameraComponent({
     return completer.future;
   }
 
+  /// Texels per logical viewport pixel used for the outgoing snapshot of
+  /// [transition]: its explicit `capturePixelRatio`, or the game's effective
+  /// device pixel ratio, limited so that neither side of the snapshot exceeds
+  /// [maxRenderTextureDimension].
+  double _resolveCapturePixelRatio(SceneTransition transition) {
+    final requested = transition.capturePixelRatio ?? effectiveDevicePixelRatio;
+    final vSize = viewport.virtualSize;
+    final fSize = viewport.size;
+    final baseW = vSize.x > 0 ? vSize.x : fSize.x;
+    final baseH = vSize.y > 0 ? vSize.y : fSize.y;
+    final longest = math.max(baseW, baseH);
+    if (longest <= 0) {
+      return requested;
+    }
+    final limit = math.max(16, maxRenderTextureDimension) / longest;
+    return math.min(requested, limit);
+  }
+
   /// Captures the outgoing world view, switches to [nextWorld], and plays
   /// [transition] smoothly across `transition.duration` seconds.
+  ///
+  /// While [nextWorld] is still loading, the captured outgoing frame stays on
+  /// screen and the transition clock is paused; the transition starts playing
+  /// on the first frame in which [nextWorld] is mounted.
   Future<void> transitionToWorld(
     World nextWorld, {
     SceneTransition transition = const CrossFadeSceneTransition(),
@@ -1907,10 +2041,13 @@ class CameraComponent({
     super.update(dt);
     final active = _activeTransition;
     if (active != null) {
-      _transitionElapsed += dt;
       findGame()?.notifyActivity();
-      if (_transitionElapsed >= active.duration) {
-        cancelSceneTransition();
+      // The clock only runs while there is an incoming scene to reveal.
+      if (!_isIncomingWorldPending) {
+        _transitionElapsed += dt;
+        if (_transitionElapsed >= active.duration) {
+          cancelSceneTransition();
+        }
       }
     }
   }
