@@ -12,8 +12,7 @@ class SeededRng([int seed = 0x5EED1234]) implements math.Random {
     reseed(seed);
   }
 
-  /// Restores a generator directly from a 16-byte snapshot produced by
-  /// [saveState].
+  /// Restores a generator directly from a snapshot produced by [saveState].
   factory SeededRng.fromStateBytes(Uint8List bytes) {
     final rng = SeededRng(1)..restoreState(bytes);
     return rng;
@@ -39,18 +38,32 @@ class SeededRng([int seed = 0x5EED1234]) implements math.Random {
     }
   }
 
-  /// Exports the exact 16-byte internal state (plus cached normal-distribution
-  /// flag cleared on restore) for deterministic savegames, lockstep, or replay.
+  /// Exports the exact internal state for deterministic savegames, lockstep,
+  /// or replay: a generator restored from the snapshot continues with the very
+  /// same values as this one, whichever methods are called on it.
+  ///
+  /// The snapshot is the 16 bytes of the four generator lanes. [gaussian]
+  /// produces its samples in pairs and keeps the second one for its next
+  /// call; while such a sample is pending, it is appended as 8 more bytes, so
+  /// the snapshot is 24 bytes long.
   Uint8List saveState() {
-    final out = Uint8List(16);
+    final spare = _spareGaussian;
+    final out = Uint8List(spare == null ? 16 : 24);
     final view = ByteData.sublistView(out);
     for (var i = 0; i < 4; i++) {
       view.setUint32(i * 4, _s[i], Endian.little);
     }
+    if (spare != null) {
+      view.setFloat64(16, spare, Endian.little);
+    }
     return out;
   }
 
-  /// Restores the exact 16-byte state previously captured via [saveState].
+  /// Restores the exact state previously captured via [saveState].
+  ///
+  /// [stateBytes] holds the 16 bytes of the generator lanes, optionally
+  /// followed by the 8 bytes of a pending [gaussian] sample; a snapshot of 16
+  /// to 23 bytes restores a generator with no such sample pending.
   void restoreState(Uint8List stateBytes) {
     if (stateBytes.length < 16) {
       throw ArgumentError.value(
@@ -59,8 +72,10 @@ class SeededRng([int seed = 0x5EED1234]) implements math.Random {
         'Expected at least 16 bytes for SeededRng state',
       );
     }
-    _spareGaussian = null;
     final view = ByteData.sublistView(stateBytes);
+    _spareGaussian = stateBytes.length >= 24
+        ? view.getFloat64(16, Endian.little)
+        : null;
     for (var i = 0; i < 4; i++) {
       _s[i] = view.getUint32(i * 4, Endian.little);
     }

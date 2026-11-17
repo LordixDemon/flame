@@ -2,6 +2,10 @@ import 'dart:typed_data';
 
 /// Seeded, zero-allocation 2D Simplex noise generator with fractal Brownian
 /// motion (`fbm`) support.
+///
+/// The permutation table is derived from the low 32 bits of the seed with
+/// 32-bit integer arithmetic only, so a seed yields the same noise field on
+/// the Dart VM, in AOT builds and when compiled to JavaScript or Wasm.
 class SimplexNoise2D({int seed = 1337}) {
   this {
     final perm = Uint8List(256);
@@ -12,8 +16,8 @@ class SimplexNoise2D({int seed = 1337}) {
     for (var i = 255; i > 0; i--) {
       state = (state + 0x6D2B79F5) & 0xFFFFFFFF;
       var z = state;
-      z = ((z ^ (z >>> 15)) * (z | 1)) & 0xFFFFFFFF;
-      z ^= (z + (((z ^ (z >>> 7)) * (z | 61)) & 0xFFFFFFFF)) & 0xFFFFFFFF;
+      z = _imul32(z ^ (z >>> 15), z | 1);
+      z = (z ^ (z + _imul32(z ^ (z >>> 7), z | 61))) & 0xFFFFFFFF;
       final rand = (z ^ (z >>> 14)) & 0xFFFFFFFF;
       final j = rand % (i + 1);
       final tmp = perm[i];
@@ -25,6 +29,17 @@ class SimplexNoise2D({int seed = 1337}) {
       _perm[i] = p;
       _permMod12[i] = p % 12;
     }
+  }
+
+  /// Low 32 bits of `a * b` for 32-bit operands, computed in 16-bit halves so
+  /// that no intermediate exceeds the 53 bits a JavaScript number holds
+  /// exactly.
+  static int _imul32(int a, int b) {
+    final ah = (a >>> 16) & 0xFFFF;
+    final al = a & 0xFFFF;
+    final bh = (b >>> 16) & 0xFFFF;
+    final bl = b & 0xFFFF;
+    return ((al * bl) + (((ah * bl + al * bh) & 0xFFFF) << 16)) & 0xFFFFFFFF;
   }
 
   static const double _f2 = 0.3660254037844386; // 0.5 * (sqrt(3) - 1)

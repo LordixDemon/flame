@@ -240,10 +240,11 @@ void main() {
       for (var i = 0; i < 25; i++) {
         rng.nextUint32();
       }
-      // Prime spare Gaussian before snapshot to verify clean cache reset.
+      // Prime the spare Gaussian: the snapshot carries it after the 16 lane
+      // bytes.
       rng.gaussian();
       final snap = rng.saveState();
-      expect(snap.length, 16);
+      expect(snap.length, 24);
 
       // Forking must NOT mutate parent stream!
       final childLoot = rng.fork('loot');
@@ -256,6 +257,7 @@ void main() {
       for (var i = 0; i < 100; i++) {
         expect(rng.nextUint32(), restored.nextUint32());
       }
+      expect(rng.gaussian(), restored.gaussian());
 
       // All-zero state bytes recover safely to non-zero Xoshiro lane.
       final zeroRng = SeededRng(1)..restoreState(Uint8List(16));
