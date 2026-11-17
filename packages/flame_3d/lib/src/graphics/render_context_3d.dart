@@ -171,7 +171,9 @@ class RenderContext3D(super.device) extends RenderContext {
       _inverseView.storage[13],
       _inverseView.storage[14],
     );
-    _frustum.setFromMatrix(_viewProjectionMatrix);
+    // Planes for Impeller's clip space, where depth runs from 0 at the near
+    // plane to 1 at the far plane.
+    _frustum.setFromViewProjection(_viewProjectionMatrix);
 
     final m = _viewProjectionMatrix.storage;
     // Row 3 (clip w) depends on the position for perspective projections.

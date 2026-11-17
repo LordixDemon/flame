@@ -186,7 +186,11 @@ Future<_Pixels> _render(
         for (final (center, size, color) in boxes)
           MeshComponent(
             position: center,
-            mesh: CuboidMesh(size: size, material: _FlatMaterial(color)),
+            mesh: CuboidMesh(
+              size: size,
+              material: UnlitMaterial(albedoColor: color)
+                ..renderState = RenderState.opaque,
+            ),
           ),
       ],
     ),
@@ -234,34 +238,5 @@ class _Pixels(final ByteData bytes) {
       return _blue;
     }
     return null;
-  }
-}
-
-/// An unlit material with a flat color, loading the unlit shader bundle by
-/// the asset key it has inside this package's own tests.
-class _FlatMaterial(final ui.Color color) extends Material {
-  this
-    : super(
-        vertexShader: VertexShader.fromAsset(
-          _bundle,
-          slots: ['VertexInfo', 'JointMatrices'],
-        ),
-        fragmentShader: FragmentShader.fromAsset(
-          _bundle,
-          slots: ['albedoTexture', 'Material'],
-        ),
-      );
-
-  static const _bundle = 'assets/shaders/unlit_material.shaderbundle';
-
-  @override
-  void apply(covariant RenderContext3D context) {
-    vertexShader
-      ..setMatrix4('VertexInfo.model', context.model)
-      ..setMatrix4('VertexInfo.view', context.view)
-      ..setMatrix4('VertexInfo.projection', context.projection);
-    fragmentShader
-      ..setTexture('albedoTexture', Texture.standard)
-      ..setColor('Material.albedoColor', color);
   }
 }

@@ -216,16 +216,9 @@ String _preprocess(String glsl, String stage) {
     );
   }
 
-  if (stage == 'vert') {
-    // `vector_math`'s perspective matrix is GL-style so it outputs clip-space
-    // z in [-1, 1]. WebGPU (like Vulkan/Metal) expects [0, 1] and clips
-    // z < 0. Remap it after `main` has finished writing `gl_Position`.
-    final close = result.lastIndexOf('}');
-    result =
-        '${result.substring(0, close)}'
-        '  gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;\n'
-        '${result.substring(close)}';
-  }
+  // The camera's projections already put clip-space depth in [0, 1], the
+  // range WebGPU expects (like Metal and Vulkan), so the vertex output needs
+  // no remapping.
   return result;
 }
 
