@@ -57,6 +57,43 @@ abstract final class LightingKernel3D._() {
     );
   }
 
+  /// Largest share of a mesh's visible projected area that
+  /// `minTrianglePixelArea` culling may remove.
+  static const double microTriangleAreaBudget = 0.05;
+
+  /// Twice the canvas-space triangle area below which a triangle counts as a
+  /// micro-triangle for [minTrianglePixelArea] (`0.0` when disabled).
+  ///
+  /// [minTrianglePixelArea] is in screen pixels, while projected vertices are
+  /// in canvas units that the 2D camera then scales by `camera.camZoom`.
+  static double microTriangleThreshold2(
+    double minTrianglePixelArea,
+    CameraRig3D camera,
+  ) {
+    if (minTrianglePixelArea <= 0.0) {
+      return 0.0;
+    }
+    final zoom = camera.camZoom;
+    final zoom2 = zoom > 1e-6 ? zoom * zoom : 1.0;
+    return 2.0 * minTrianglePixelArea / zoom2;
+  }
+
+  /// Whether the micro-triangles of one mesh may be dropped: either the whole
+  /// visible mesh is smaller than one threshold triangle, or its
+  /// micro-triangles together cover at most [microTriangleAreaBudget] of it.
+  ///
+  /// Dropping them in any other case would open holes: on a densely
+  /// tessellated mesh every triangle is small at the same time, yet together
+  /// they still cover the pixels of the object. All areas are doubled.
+  static bool shouldCullMicroTriangles({
+    required double visibleArea2,
+    required double microArea2,
+    required double minArea2,
+  }) {
+    return visibleArea2 < minArea2 ||
+        microArea2 <= visibleArea2 * microTriangleAreaBudget;
+  }
+
   /// Fast, transcendental-free approximation to `(1 - vz)^2.2` on `[0, 1]`
   /// (`< 0.003` max error vs `math.pow`, zero `exp`/`log` overhead).
   static double fastRimCurve(double clampedVz) {

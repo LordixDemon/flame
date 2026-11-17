@@ -50,8 +50,9 @@ void main() {
           isNull,
         );
 
-        // Sub-pixel micro-triangle culling when minTrianglePixelArea is active.
-        camera.update(camX: 0, camY: 0, zoom: 0.15);
+        // Sub-pixel micro-triangle culling when minTrianglePixelArea is active:
+        // at zoom 0.03 the whole sphere covers less than 8 px^2 on screen.
+        camera.update(camX: 0, camY: 0, zoom: 0.03);
         final rec = PictureRecorder();
         batcher
           ..minTrianglePixelArea = 8.0
@@ -60,6 +61,18 @@ void main() {
           ..flushBatch(Canvas(rec));
         rec.endRecording().dispose();
         expect(batcher.lastCulledMicroTriangles, greaterThan(0));
+
+        // At zoom 0.15 it is still about 11 px wide: every triangle is tiny,
+        // but dropping them would erase a visible object, so none is culled.
+        camera.update(camX: 0, camY: 0, zoom: 0.15);
+        final rec2 = PictureRecorder();
+        batcher
+          ..beginBatch()
+          ..enqueueMesh(high, camera: camera, worldX: 0, worldY: 0)
+          ..flushBatch(Canvas(rec2));
+        rec2.endRecording().dispose();
+        expect(batcher.lastCulledMicroTriangles, 0);
+        expect(batcher.lastFlushTriangles, greaterThan(100));
       },
     );
 

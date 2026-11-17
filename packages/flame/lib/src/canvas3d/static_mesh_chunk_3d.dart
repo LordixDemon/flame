@@ -9,6 +9,7 @@ import 'package:flame/src/canvas3d/mesh_3d.dart';
 import 'package:flame/src/canvas3d/primitives_3d.dart';
 import 'package:flame/src/canvas3d/scene_environment_3d.dart';
 import 'package:flame/src/game/game.dart';
+import 'package:meta/meta.dart';
 
 /// Descriptor for a single static 3D mesh placement inside a
 /// [StaticMeshChunk3D].
@@ -116,16 +117,26 @@ class StaticMeshChunk3D() {
   double _boundCenterY = 0.0;
   double _boundCenterZ = 0.0;
   double _boundRadius = 0.0;
+  double _shadowCasterHeight = 0.0;
 
+  // Inputs of the geometry + lighting bake.
+  WeakReference<CameraRig3D>? _cachedCamera;
   int _cachedBasisVersion = -1;
   int _cachedLightVersion = -1;
   int _cachedEnvSignature = -1;
-  int _cachedShadowSignature = -1;
+  bool? _cachedShadowsEnabled;
+  double _cachedShadowOpacityScale = double.nan;
+  bool? _cachedCullBackfaceShadows;
+  double _cachedShadowHeightFalloff = double.nan;
+
+  // Inputs of the screen projection bake.
   bool? _cachedBackfaceCulling;
-  double _cachedMinTriangleArea = -1.0;
+  TriangleDepthMode3D? _cachedDepthMode;
+  double _cachedMicroThreshold2 = -1.0;
   double _cachedCamX = double.nan;
   double _cachedCamY = double.nan;
   double _cachedPersp = double.nan;
+  double _cachedFocalPx = double.nan;
   Offset _cachedOrigin = const Offset(double.nan, double.nan);
 
   int _geometryBakeCount = 0;
@@ -160,11 +171,9 @@ class StaticMeshChunk3D() {
   Int32List _vertColor = Int32List(0);
 
   // Raw triangle indices into chunk vertices + per-triangle material index
-  int _rawTriCount = 0;
   Int32List _rawTriA = Int32List(0);
   Int32List _rawTriB = Int32List(0);
   Int32List _rawTriC = Int32List(0);
-  Int32List _rawTriOwnerSlot = Int32List(0);
   Uint16List _rawTriMatIdx = Uint16List(0);
   final List<Material3D?> _chunkMaterials = <Material3D?>[null];
 
@@ -236,6 +245,7 @@ class StaticMeshChunk3D() {
       _boundCenterY = 0.0;
       _boundCenterZ = 0.0;
       _boundRadius = 0.0;
+      _shadowCasterHeight = 0.0;
       return;
     }
     var loX = double.infinity;
@@ -245,6 +255,7 @@ class StaticMeshChunk3D() {
     var hiY = double.negativeInfinity;
     var hiZ = double.negativeInfinity;
     var anyVisible = false;
+    var casterHeight = 0.0;
     for (var i = 0; i < _instances.length; i++) {
       final inst = _instances[i];
       if (!inst.visible || inst.opacity <= 0.0) {
@@ -274,7 +285,14 @@ class StaticMeshChunk3D() {
       if (inst.worldZ + r > hiZ) {
         hiZ = inst.worldZ + r;
       }
+      if (inst.castGroundShadow) {
+        final h = inst.worldZ + r - inst.groundZ;
+        if (h > casterHeight) {
+          casterHeight = h;
+        }
+      }
     }
+    _shadowCasterHeight = casterHeight;
     if (!anyVisible) {
       _boundMinX = 0.0;
       _boundMinY = 0.0;
@@ -308,6 +326,16 @@ class StaticMeshChunk3D() {
   (double cx, double cy, double cz, double radius) get worldBoundingSphere {
     _ensureBounds();
     return (_boundCenterX, _boundCenterY, _boundCenterZ, _boundRadius);
+  }
+
+  /// Greatest height above its shadow plane (`groundZ`) that any visible
+  /// shadow-casting instance can reach (`0.0` when none casts a shadow).
+  ///
+  /// The shadows are not part of [worldBoundingSphere]; frustum culling uses
+  /// this to keep a chunk whose shadows are still on screen.
+  double get shadowCasterHeight {
+    _ensureBounds();
+    return _shadowCasterHeight;
   }
 
   /// Appends [instance] to this chunk, marks geometry dirty, and returns its
@@ -381,7 +409,6 @@ class StaticMeshChunk3D() {
       ..clear()
       ..add(null);
     _totalVertices = 0;
-    _rawTriCount = 0;
     visibleTriCount = 0;
     projectedShadowTriCount = 0;
     _geometryDirty = true;
@@ -398,6 +425,15 @@ class StaticMeshChunk3D() {
 
   /// Ensures world lighting and 2D screen projections are up to date for
   /// [camera], [light], and [environment].
+  ///
+  /// The geometry + lighting bake is reused until the camera instance or its
+  /// `basisVersion`, the light, the environment near the chunk, or a shadow
+  /// setting changes. The cheaper screen projection bake is reused until the
+  /// camera focus, zoom-dependent projection scale, [canvasOrigin],
+  /// [backfaceCulling], [depthMode] or [minTrianglePixelArea] changes.
+  ///
+  /// [depthMode] selects the sort depth written to [visibleTriDepth]; pass the
+  /// mode of the renderer the chunk is drawn with.
   void prepare({
     required CameraRig3D camera,
     required DirectionalLight3D light,
@@ -409,6 +445,7 @@ class StaticMeshChunk3D() {
     double minTrianglePixelArea = 0.0,
     Offset canvasOrigin = Offset.zero,
     bool backfaceCulling = true,
+    TriangleDepthMode3D depthMode = TriangleDepthMode3D.centroid,
   }) {
     if (_instances.isEmpty) {
       _totalVertices = 0;
@@ -430,18 +467,22 @@ class StaticMeshChunk3D() {
             maxZ: _boundMaxZ,
           )
         : 0;
-    final shadowSig = shadowsEnabled
-        ? (1000 +
-              (shadowOpacityMultiplier.clamp(0.0, 2.0) * 500.0).round() * 31 +
-              (cullBackfaceShadows ? 17 : 3) +
-              (shadowHeightFalloff * 1000.0).round() * 7)
-        : 0;
+    // With shadows off the other shadow settings do not reach the bake.
+    final shadowScale = shadowsEnabled
+        ? shadowOpacityMultiplier.clamp(0.0, 2.0)
+        : 0.0;
+    final shadowCull = shadowsEnabled && cullBackfaceShadows;
+    final shadowFalloff = shadowsEnabled ? shadowHeightFalloff : 0.0;
 
     if (_geometryDirty ||
+        !identical(_cachedCamera?.target, camera) ||
         _cachedBasisVersion != camera.basisVersion ||
         _cachedLightVersion != lightVer ||
         _cachedEnvSignature != envSig ||
-        _cachedShadowSignature != shadowSig) {
+        _cachedShadowsEnabled != shadowsEnabled ||
+        _cachedShadowOpacityScale != shadowScale ||
+        _cachedCullBackfaceShadows != shadowCull ||
+        _cachedShadowHeightFalloff != shadowFalloff) {
       _bakeGeometryAndLighting(
         camera: camera,
         light: light,
@@ -452,10 +493,16 @@ class StaticMeshChunk3D() {
         shadowHeightFalloff: shadowHeightFalloff,
       );
       _dirtySlots.clear();
+      if (!identical(_cachedCamera?.target, camera)) {
+        _cachedCamera = WeakReference<CameraRig3D>(camera);
+      }
       _cachedBasisVersion = camera.basisVersion;
       _cachedLightVersion = lightVer;
       _cachedEnvSignature = envSig;
-      _cachedShadowSignature = shadowSig;
+      _cachedShadowsEnabled = shadowsEnabled;
+      _cachedShadowOpacityScale = shadowScale;
+      _cachedCullBackfaceShadows = shadowCull;
+      _cachedShadowHeightFalloff = shadowFalloff;
       _geometryDirty = false;
       _projectionDirty = true;
     } else if (_dirtySlots.isNotEmpty) {
@@ -477,24 +524,39 @@ class StaticMeshChunk3D() {
     }
 
     final persp = camera.perspectiveStrength;
+    // The pinhole focal length follows `camZoom` when a field of view is set,
+    // which `perspectiveStrength` does not track.
+    final focalPx = camera.projectionMode == CameraProjectionMode3D.perspective
+        ? camera.perspectiveFocalLengthPx
+        : 0.0;
+    final microThreshold2 = LightingKernel3D.microTriangleThreshold2(
+      minTrianglePixelArea,
+      camera,
+    );
     if (_projectionDirty ||
         _cachedBackfaceCulling != backfaceCulling ||
-        (minTrianglePixelArea - _cachedMinTriangleArea).abs() > 1e-4 ||
+        _cachedDepthMode != depthMode ||
+        (microThreshold2 - _cachedMicroThreshold2).abs() >
+            1e-4 * math.max(1.0, microThreshold2) ||
         (camera.camWorldX - _cachedCamX).abs() > 1e-3 ||
         (camera.camWorldY - _cachedCamY).abs() > 1e-3 ||
         (persp - _cachedPersp).abs() > 1e-6 ||
+        (focalPx - _cachedFocalPx).abs() > 1e-6 * math.max(1.0, focalPx) ||
         canvasOrigin != _cachedOrigin) {
       _bakeScreenProjection(
         camera: camera,
         canvasOrigin: canvasOrigin,
         backfaceCulling: backfaceCulling,
-        minTrianglePixelArea: minTrianglePixelArea,
+        depthMode: depthMode,
+        minArea2: microThreshold2,
       );
       _cachedBackfaceCulling = backfaceCulling;
-      _cachedMinTriangleArea = minTrianglePixelArea;
+      _cachedDepthMode = depthMode;
+      _cachedMicroThreshold2 = microThreshold2;
       _cachedCamX = camera.camWorldX;
       _cachedCamY = camera.camWorldY;
       _cachedPersp = persp;
+      _cachedFocalPx = focalPx;
       _cachedOrigin = canvasOrigin;
       _projectionDirty = false;
     }
@@ -567,7 +629,6 @@ class StaticMeshChunk3D() {
       _rawTriA = Int32List(tTotal);
       _rawTriB = Int32List(tTotal);
       _rawTriC = Int32List(tTotal);
-      _rawTriOwnerSlot = Int32List(tTotal);
       _rawTriMatIdx = Uint16List(tTotal);
       visibleTriA = Int32List(tTotal);
       visibleTriB = Int32List(tTotal);
@@ -588,7 +649,6 @@ class StaticMeshChunk3D() {
     }
 
     _totalVertices = vTotal;
-    _rawTriCount = tTotal;
 
     for (var i = 0; i < iCount; i++) {
       _bakeSingleSlot(
@@ -745,7 +805,6 @@ class StaticMeshChunk3D() {
         _rawTriB[tSlot] = baseVert + indices[idxBase + 1];
         _rawTriC[tSlot] = baseVert + indices[idxBase + 2];
       }
-      _rawTriOwnerSlot[tSlot] = slot;
       _rawTriMatIdx[tSlot] = matIdx;
     }
 
@@ -808,7 +867,8 @@ class StaticMeshChunk3D() {
     required CameraRig3D camera,
     required Offset canvasOrigin,
     required bool backfaceCulling,
-    required double minTrianglePixelArea,
+    required TriangleDepthMode3D depthMode,
+    required double minArea2,
   }) {
     _projectionBakeCount++;
     _lastCulledMicroTriangles = 0;
@@ -839,37 +899,62 @@ class StaticMeshChunk3D() {
     }
 
     var visCount = 0;
-    for (var t = 0; t < _rawTriCount; t++) {
-      final owner = _rawTriOwnerSlot[t];
-      if (_slotTriActive[owner] == 0) {
+    for (var s = 0; s < iCount; s++) {
+      if (_slotTriActive[s] == 0) {
         continue;
       }
-      final a = _rawTriA[t];
-      final b = _rawTriB[t];
-      final c = _rawTriC[t];
-      final ax = projectedVertX[a];
-      final ay = projectedVertY[a];
-      final cross =
-          (projectedVertX[b] - ax) * (projectedVertY[c] - ay) -
-          (projectedVertY[b] - ay) * (projectedVertX[c] - ax);
-      if (backfaceCulling && cross <= 1e-3) {
-        continue;
+      final tStart = _slotTriStart[s];
+      final tEnd = tStart + _slotTriCap[s];
+
+      // Micro-triangles are judged per instance, exactly as
+      // `BatchMeshRenderer3D` judges them per mesh.
+      var cullMicro = false;
+      if (minArea2 > 0.0) {
+        var visibleArea2 = 0.0;
+        var microArea2 = 0.0;
+        for (var t = tStart; t < tEnd; t++) {
+          final cross = _projectedCross(t);
+          if (backfaceCulling && cross <= 1e-3) {
+            continue;
+          }
+          final area2 = cross.abs();
+          visibleArea2 += area2;
+          if (area2 < minArea2) {
+            microArea2 += area2;
+          }
+        }
+        cullMicro =
+            microArea2 > 0.0 &&
+            LightingKernel3D.shouldCullMicroTriangles(
+              visibleArea2: visibleArea2,
+              microArea2: microArea2,
+              minArea2: minArea2,
+            );
       }
-      if (minTrianglePixelArea > 0.0 &&
-          cross.abs() * 0.5 < minTrianglePixelArea) {
-        _lastCulledMicroTriangles++;
-        continue;
+
+      for (var t = tStart; t < tEnd; t++) {
+        final cross = _projectedCross(t);
+        if (backfaceCulling && cross <= 1e-3) {
+          continue;
+        }
+        if (cullMicro && cross.abs() < minArea2) {
+          _lastCulledMicroTriangles++;
+          continue;
+        }
+        final a = _rawTriA[t];
+        final b = _rawTriB[t];
+        final c = _rawTriC[t];
+        visibleTriA[visCount] = a;
+        visibleTriB[visCount] = b;
+        visibleTriC[visCount] = c;
+        visibleTriMatIdx[visCount] = _rawTriMatIdx[t];
+        visibleTriDepth[visCount] = depthMode.depthOf(
+          projectedVertDepth[a],
+          projectedVertDepth[b],
+          projectedVertDepth[c],
+        );
+        visCount++;
       }
-      visibleTriA[visCount] = a;
-      visibleTriB[visCount] = b;
-      visibleTriC[visCount] = c;
-      visibleTriMatIdx[visCount] = _rawTriMatIdx[t];
-      visibleTriDepth[visCount] =
-          (projectedVertDepth[a] +
-              projectedVertDepth[b] +
-              projectedVertDepth[c]) /
-          3.0;
-      visCount++;
     }
     visibleTriCount = visCount;
 
@@ -906,6 +991,41 @@ class StaticMeshChunk3D() {
     }
     projectedShadowTriCount = shOut;
   }
+
+  /// Doubled signed screen area of raw triangle [t] (positive = front-facing).
+  double _projectedCross(int t) {
+    final a = _rawTriA[t];
+    final ax = projectedVertX[a];
+    final ay = projectedVertY[a];
+    final b = _rawTriB[t];
+    final c = _rawTriC[t];
+    return (projectedVertX[b] - ax) * (projectedVertY[c] - ay) -
+        (projectedVertY[b] - ay) * (projectedVertX[c] - ax);
+  }
+
+  /// Baked MatCap `u` coordinates per chunk vertex.
+  @internal
+  Float32List get bakedMatCapU => _vertU;
+
+  /// Baked MatCap `v` coordinates per chunk vertex.
+  @internal
+  Float32List get bakedMatCapV => _vertV;
+
+  /// Baked texture `u` coordinates per chunk vertex.
+  @internal
+  Float32List get bakedTexU => _vertTexU;
+
+  /// Baked texture `v` coordinates per chunk vertex.
+  @internal
+  Float32List get bakedTexV => _vertTexV;
+
+  /// Per chunk vertex: `1` when the baked texture coordinates are in pixels.
+  @internal
+  Uint8List get bakedTexPixelSpace => _vertTexPixelSpace;
+
+  /// Baked lit ARGB colour per chunk vertex.
+  @internal
+  Int32List get bakedVertColor => _vertColor;
 
   /// Internal accessor exposing cached UVs/colors/shadow count to
   /// `BatchMeshRenderer3D`.

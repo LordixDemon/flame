@@ -276,5 +276,15 @@ enum TriangleDepthMode3D() {
   nearestVertex,
 
   /// Farthest vertex from the camera (`min(d0, d1, d2)`).
-  farthestVertex,
+  farthestVertex;
+
+  /// Sort depth of a triangle whose vertices have view depths [d0], [d1] and
+  /// [d2] (larger = closer to the camera).
+  double depthOf(double d0, double d1, double d2) {
+    return switch (this) {
+      TriangleDepthMode3D.centroid => (d0 + d1 + d2) * (1.0 / 3.0),
+      TriangleDepthMode3D.nearestVertex => math.max(d0, math.max(d1, d2)),
+      TriangleDepthMode3D.farthestVertex => math.min(d0, math.min(d1, d2)),
+    };
+  }
 }
