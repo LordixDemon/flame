@@ -10,6 +10,7 @@ in vec2 fragTexCoord;
 in vec4 fragColor;
 in vec3 fragPosition;
 smooth in vec3 fragNormal;
+in vec4 fragInstanceColor;
 
 out vec4 outColor;
 
@@ -117,7 +118,7 @@ void main() {
   vec3 normal = normalize(fragNormal);
   vec3 viewDir = normalize(camera.position - fragPosition);
 
-  vec3 baseColor = material.albedoColor.rgb;
+  vec3 baseColor = material.albedoColor.rgb * fragInstanceColor.rgb;
   baseColor *= texture(albedoTexture, fragTexCoord).rgb;
 
   vec3 f0 = vec3(0.04);

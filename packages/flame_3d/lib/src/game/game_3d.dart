@@ -11,6 +11,10 @@ mixin Game3D on Game {
   @internal
   late final RenderContext3D context = RenderContext3D(device);
 
+  /// The GPU statistics of the last rendered frame: draw calls, instances,
+  /// triangles, pipeline and state changes, uploads.
+  RenderStats get renderStats => device.lastFrameStats;
+
   @override
   void render(Canvas canvas) {
     device.begin();

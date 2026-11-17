@@ -26,39 +26,67 @@ enum GpuPixelFormat() {
 }
 
 /// Width of the integers stored in an index buffer.
-enum GpuIndexType() {
+enum GpuIndexType(
+  /// The size of a single index, in bytes.
+  final int bytesPerIndex,
+) {
   /// 16-bit unsigned indices.
-  uint16,
+  uint16(2),
 
   /// 32-bit unsigned indices.
-  uint32,
+  uint32(4),
 }
 
-/// Color blending mode for a render pass output.
+/// How the color a draw outputs is combined with the color already in the
+/// render target.
+///
+/// `src` is the fragment's output, `dst` the color in the render target.
 enum BlendState() {
-  /// No blending, source overwrites destination.
+  /// No blending, the source overwrites the destination.
   opaque,
 
-  /// Standard premultiplied-alpha blending:
-  /// `color = src * 1 + dst * (1 - srcAlpha)`.
-  alphaBlend,
+  /// Straight (non-premultiplied) alpha blending:
+  /// `color = src * srcAlpha + dst * (1 - srcAlpha)`,
+  /// `alpha = srcAlpha + dstAlpha * (1 - srcAlpha)`.
+  alpha,
 
-  /// Additive blending: `color = src * 1 + dst * 1`.
+  /// Premultiplied alpha blending, for colors already multiplied by their
+  /// alpha: `color = src + dst * (1 - srcAlpha)`.
+  premultipliedAlpha,
+
+  /// Additive blending: `color = src + dst`.
   additive,
 }
 
-/// Depth buffer behavior for a render pass.
-enum DepthStencilState() {
-  /// Depth test and write enabled (normal opaque 3D rendering).
-  /// Fragments closer than the stored depth pass and update the buffer.
-  standard,
+/// A comparison between an incoming value and a stored one, used for the
+/// depth test.
+///
+/// A fragment passes when `incoming <op> stored` holds.
+enum CompareFunction() {
+  /// The comparison never passes.
+  never,
 
-  /// Depth test enabled, write disabled (transparent objects).
-  /// Fragments are tested against existing depth but don't update it.
-  depthRead,
+  /// Passes when the incoming value is less than the stored one.
+  less,
 
-  /// No depth testing, all fragments pass regardless of depth.
-  none,
+  /// Passes when both values are equal.
+  equal,
+
+  /// Passes when the incoming value is less than or equal to the stored one.
+  lessEqual,
+
+  /// Passes when the incoming value is greater than the stored one.
+  greater,
+
+  /// Passes when both values differ.
+  notEqual,
+
+  /// Passes when the incoming value is greater than or equal to the stored
+  /// one.
+  greaterEqual,
+
+  /// The comparison always passes.
+  always,
 }
 
 /// Face culling mode. Controls which triangle faces are discarded before
@@ -72,4 +100,14 @@ enum CullMode() {
 
   /// Cull back-facing triangles (render only front faces).
   backFace,
+}
+
+/// The vertex order, as seen on screen, that makes a triangle front-facing.
+enum WindingOrder() {
+  /// Triangles whose vertices appear clockwise on screen are front-facing.
+  clockwise,
+
+  /// Triangles whose vertices appear counter-clockwise on screen are
+  /// front-facing.
+  counterClockwise,
 }

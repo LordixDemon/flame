@@ -20,6 +20,8 @@ class ModelComponent({
   @override
   Aabb3? computeLocalAabb() => model.aabb;
 
+  final Matrix4 _nodeTransform = Matrix4.identity();
+
   @override
   void draw(covariant RenderContext3D context) {
     final nodes = model.processNodes(_animation);
@@ -30,12 +32,15 @@ class ModelComponent({
 
       final mesh = node.node.mesh;
       if (mesh != null) {
-        context
-          ..jointsInfo.jointTransformsPerSurface = node.jointTransforms
-          ..model.setFrom(
-            worldTransformMatrix.multiplied(node.combinedTransform),
-          )
-          ..drawMesh(mesh);
+        // The context copies the transform when the draw is recorded.
+        _nodeTransform
+          ..setFrom(worldTransformMatrix)
+          ..multiply(node.combinedTransform);
+        context.drawMesh(
+          mesh,
+          transform: _nodeTransform,
+          jointTransforms: node.jointTransforms,
+        );
       }
     }
   }
@@ -78,9 +83,9 @@ class ModelComponent({
   }
 
   @override
-  bool isVisible(CameraComponent3D camera) {
+  bool isVisible(Frustum frustum) {
     // TODO(luan): this actually does not work because of animations
     // it might end up culling something that is actually visible
-    return camera.frustum.intersectsWithAabb3(aabb);
+    return frustum.intersectsWithAabb3(aabb);
   }
 }

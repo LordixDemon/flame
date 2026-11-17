@@ -155,7 +155,9 @@ extension type GPURenderPassEncoder._(JSObject _) implements JSObject {
     int size,
   );
 
-  external void drawIndexed(int indexCount);
+  external void draw(int vertexCount, [int instanceCount]);
+
+  external void drawIndexed(int indexCount, [int instanceCount]);
 
   external void end();
 }

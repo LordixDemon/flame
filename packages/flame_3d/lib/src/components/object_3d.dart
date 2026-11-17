@@ -32,16 +32,18 @@ abstract class Object3D({
 
   @override
   void renderTree(Canvas canvas) {
-    final camera = CameraComponent3D.currentCamera;
     assert(
-      camera != null,
+      CameraComponent3D.currentCamera != null,
       '''Component is either not part of a World3D or the render is being called outside of the camera rendering''',
     );
+    final context = worldRef.context;
+    // The frustum of the pass, computed once by the context.
+    final frustum = context.frustum;
 
     // If ancestor is inside, so are we, otherwise test.
     final cullResult = _ancestorFullyInside
         ? CullResult.inside
-        : aabb.frustumCullTest(camera!.frustum);
+        : aabb.frustumCullTest(frustum);
 
     // Result is fully outside, skip children and self.
     if (cullResult == CullResult.outside) {
@@ -56,19 +58,24 @@ abstract class Object3D({
     super.renderTree(canvas);
     _ancestorFullyInside = wasAncestorFullyInside;
 
-    if (cullResult == CullResult.inside || isVisible(camera!)) {
-      worldRef.context.submitDraw(this, worldTransformMatrix);
+    if (cullResult == CullResult.inside || isVisible(frustum)) {
+      draw(context);
     }
   }
 
+  /// Records the draws of this object into [context], see
+  /// [RenderContext3D.drawMesh] and [RenderContext3D.drawSurface].
+  ///
+  /// It is called while the world is traversed; the recorded draws reach the
+  /// GPU when the context is flushed at the end of the pass.
   void draw(RenderContext context);
 
   /// Whether this component itself should be drawn when its [aabb] is not
-  /// fully inside the [camera]'s frustum.
+  /// fully inside the camera's [frustum].
   ///
   /// The default implementation checks whether the world-space [aabb]
   /// intersects the frustum, so a partially visible component is drawn.
-  bool isVisible(CameraComponent3D camera) {
-    return camera.frustum.intersectsWithAabb3(aabb);
+  bool isVisible(Frustum frustum) {
+    return frustum.intersectsWithAabb3(aabb);
   }
 }

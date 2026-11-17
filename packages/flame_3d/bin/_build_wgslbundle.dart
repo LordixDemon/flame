@@ -27,10 +27,15 @@ void build(
       stdout.writeln('Computing web shader bundle "$name"');
       final vertex = _compileStage(shaders, tmp, name, 'vert', includeDirs);
       final fragment = _compileStage(shaders, tmp, name, 'frag', includeDirs);
+      final vertexSource = _resolveIncludes(
+        File('${shaders.path}/$name.vert').readAsStringSync(),
+        includeDirs,
+      );
       final bundle = {
         'vertex': vertex,
         'fragment': fragment,
         'slots': {..._reflect(vertex), ..._reflect(fragment)},
+        'inputs': reflectInputs(vertexSource),
       };
       File.fromUri(
         assets.uri.resolve('$name.wgslbundle'),
@@ -102,6 +107,31 @@ String _resolveIncludes(
       '${includeDirs.map((d) => d.path).join(', ')}',
     );
   });
+}
+
+/// The vertex inputs of a resolved GLSL vertex stage, with the locations
+/// [_preprocess] assigns them (declaration order).
+List<Map<String, Object>> reflectInputs(String glsl) {
+  final input = RegExp(
+    r'^\s*(?:smooth\s+)?in\s+(\w+)\s+(\w+);',
+    multiLine: true,
+  );
+  var location = 0;
+  return [
+    for (final match in input.allMatches(glsl))
+      {
+        'name': match.group(2)!,
+        'location': location++,
+        // Only float inputs can be fed by vertex layouts; 0 marks the rest.
+        'components': switch (match.group(1)!) {
+          'float' => 1,
+          'vec2' => 2,
+          'vec3' => 3,
+          'vec4' => 4,
+          _ => 0,
+        },
+      },
+  ];
 }
 
 /// Fails fast on uniform-block array members WGSL can't represent.

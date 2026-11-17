@@ -42,6 +42,16 @@ abstract base class GpuBackend() {
   /// Initialize the [GpuBackend].
   static Future<void> initialize() => backend.GpuBackend.initialize();
 
+  /// Whether the platform's GPU backend can be used in this process.
+  ///
+  /// It is `false` when Flutter GPU (on native platforms) or WebGPU (on the
+  /// web) is unavailable, for example when Impeller is disabled.
+  static bool get isAvailable => backend.GpuBackend.isAvailable;
+
+  /// The alignment, in bytes, that the offset of a uniform block binding must
+  /// have within a [GpuBuffer].
+  int get uniformAlignment => 256;
+
   /// Creates a [GpuTexture].
   GpuTexture createTexture({
     required GpuStorageMode storageMode,
@@ -51,6 +61,8 @@ abstract base class GpuBackend() {
   });
 
   /// Creates a [GpuBuffer] of [sizeInBytes] bytes.
+  ///
+  /// The buffer can be bound as vertex, index and uniform data.
   GpuBuffer createBuffer({
     required GpuStorageMode storageMode,
     required int sizeInBytes,
@@ -59,10 +71,27 @@ abstract base class GpuBackend() {
   /// Loads a [GpuShaderLibrary] from the asset at [assetName].
   GpuShaderLibrary loadShaderLibrary(String assetName);
 
-  /// Links [vertexShader] and [fragmentShader] into a [GpuPipeline].
+  /// Registers the shader library [bytes] (the contents of a shader bundle
+  /// asset in this backend's format) under [assetName], so that
+  /// [loadShaderLibrary] can return it.
+  ///
+  /// This allows shaders that are not declared as assets, for example ones
+  /// downloaded or compiled at run time.
+  Future<void> registerShaderLibrary(String assetName, ByteData bytes) {
+    throw UnsupportedError(
+      '$runtimeType cannot register shader libraries at run time.',
+    );
+  }
+
+  /// Links [vertexShader] and [fragmentShader] into a [GpuPipeline] that reads
+  /// its vertex inputs as described by [vertexLayout].
+  ///
+  /// When [vertexLayout] is `null` the backend's default layout for the
+  /// vertex shader is used.
   GpuPipeline createPipeline({
     required GpuShader vertexShader,
     required GpuShader fragmentShader,
+    GpuVertexLayout? vertexLayout,
   });
 
   /// Creates a [GpuRenderTarget] of [width]x[height], cleared to [clearValue]
@@ -80,44 +109,77 @@ abstract base class GpuBackend() {
 
 /// A single frame of rendering.
 ///
-/// Owns the transient uniform storage shared across the frame's render passes.
 /// Obtain one via [GpuBackend.beginFrame] and finalize it with [end].
 abstract interface class GpuFrame() {
-  /// Begins a render pass that draws into [target] using [blend] and
-  /// [depthStencil] state.
-  GpuRenderPass beginRenderPass(
-    GpuRenderTarget target, {
-    required BlendState blend,
-    required DepthStencilState depthStencil,
-  });
+  /// Begins a render pass that draws into [target].
+  ///
+  /// Every pass starts with the default render state: no blending, depth test
+  /// with [CompareFunction.less], depth writes on, no culling and
+  /// [WindingOrder.counterClockwise] front faces.
+  GpuRenderPass beginRenderPass(GpuRenderTarget target);
 
-  /// Finalizes the frame, releasing its transient storage.
+  /// Finalizes the frame.
   void end();
 }
 
-/// Records the bind and draw commands of a single render pass.
+/// Records the bind, state and draw commands of a single render pass.
+///
+/// Bindings persist from one draw to the next until [clearBindings] is called
+/// or a different pipeline is bound with [bindPipeline], so unchanged resources
+/// need not be bound again.
 ///
 /// Obtain one via [GpuFrame.beginRenderPass] and submit it with [submit].
 abstract interface class GpuRenderPass() {
-  /// Binds the render [pipeline] and applies [cullMode].
-  void bindPipeline(GpuPipeline pipeline, CullMode cullMode);
-
-  /// Binds [view] as the vertex buffer, [vertexCount] vertices will be drawn.
-  void bindVertexBuffer(GpuBufferView view, int vertexCount);
-
-  /// Binds [view] as the index buffer of [indexType]; [indexCount] indices
-  /// will be drawn.
-  void bindIndexBuffer(
-    GpuBufferView view,
-    GpuIndexType indexType,
-    int indexCount,
-  );
-
-  /// Binds transient uniform [data] to [slot].
+  /// Binds the render [pipeline].
   ///
-  /// The [data] gets copied into the frame's transient storage, so the buffer
-  /// can be reused afterwards.
-  void bindUniform(GpuUniformSlot slot, ByteData data);
+  /// Callers must call [clearBindings] before binding a pipeline whose shaders
+  /// differ from the current one, and bind its resources again.
+  void bindPipeline(GpuPipeline pipeline);
+
+  /// Sets how the color output of the following draws is blended.
+  void setBlendState(BlendState blend);
+
+  /// Sets the depth test of the following draws: [compare] is
+  /// [CompareFunction.always] to disable the test.
+  void setDepthState({
+    required CompareFunction compare,
+    required bool writeEnabled,
+  });
+
+  /// Sets which faces the following draws cull.
+  void setCullMode(CullMode cullMode);
+
+  /// Sets which winding order is front-facing for the following draws.
+  void setWindingOrder(WindingOrder windingOrder);
+
+  /// Binds [lengthInBytes] bytes of [buffer] starting at [offsetInBytes] to
+  /// the vertex buffer [slot].
+  void bindVertexBuffer(
+    GpuBuffer buffer, {
+    required int offsetInBytes,
+    required int lengthInBytes,
+    int slot = 0,
+  });
+
+  /// Binds [lengthInBytes] bytes of [buffer] starting at [offsetInBytes] as
+  /// the index buffer, holding indices of [indexType].
+  void bindIndexBuffer(
+    GpuBuffer buffer, {
+    required int offsetInBytes,
+    required int lengthInBytes,
+    required GpuIndexType indexType,
+  });
+
+  /// Binds [lengthInBytes] bytes of [buffer] starting at [offsetInBytes] to
+  /// the uniform block [slot].
+  ///
+  /// [offsetInBytes] must be a multiple of [GpuBackend.uniformAlignment].
+  void bindUniform(
+    GpuUniformSlot slot,
+    GpuBuffer buffer, {
+    required int offsetInBytes,
+    required int lengthInBytes,
+  });
 
   /// Binds [texture] to the sampler [slot].
   void bindTexture(GpuUniformSlot slot, GpuTexture texture);
@@ -125,9 +187,18 @@ abstract interface class GpuRenderPass() {
   /// Clears all resources bound to this pass.
   void clearBindings();
 
-  /// Issues a draw call for the currently bound geometry.
-  void draw();
+  /// Draws [vertexCount] vertices of the bound vertex buffers, [instanceCount]
+  /// times.
+  void draw(int vertexCount, {int instanceCount = 1});
 
-  /// Finalizes the pass and submits its commands to the GPU.
-  void submit();
+  /// Draws [indexCount] indices of the bound index buffer, [instanceCount]
+  /// times.
+  void drawIndexed(int indexCount, {int instanceCount = 1});
+
+  /// Finalizes the pass, submits its commands to the GPU and returns the
+  /// rendered color as an [Image].
+  ///
+  /// [onCompleted] is called once the GPU no longer reads any buffer bound
+  /// during the pass, after which their contents may be overwritten.
+  Image submit({void Function()? onCompleted});
 }
