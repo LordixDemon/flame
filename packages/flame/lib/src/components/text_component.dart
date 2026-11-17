@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flame/components.dart';
@@ -65,6 +66,13 @@ class TextComponent<T extends TextRenderer>({
   late InlineTextElement _textElement;
   bool _hasElement = false;
 
+  /// How far the offscreen layer of the fast paint modulation reaches beyond
+  /// the text box, so that the shadows of the text style (which are painted
+  /// outside of it) fade with the text instead of being cut off.
+  double _modulationLayerPadding = _minModulationLayerPadding;
+
+  static const double _minModulationLayerPadding = 2.0;
+
   void _updateElement() {
     final previous = _hasElement ? _textElement : null;
     _elementDisposed = false;
@@ -74,6 +82,25 @@ class TextComponent<T extends TextRenderer>({
     // Released only after the new element exists, so that a painter that both
     // share stays alive.
     previous?.dispose();
+    _modulationLayerPadding = _computeModulationLayerPadding();
+  }
+
+  double _computeModulationLayerPadding() {
+    var padding = _minModulationLayerPadding;
+    final renderer = _textRenderer;
+    final shadows = renderer is TextPaint ? renderer.style.shadows : null;
+    if (shadows != null) {
+      for (final shadow in shadows) {
+        final reach =
+            _minModulationLayerPadding +
+            math.max(shadow.offset.dx.abs(), shadow.offset.dy.abs()) +
+            3.0 * shadow.blurSigma;
+        if (reach > padding) {
+          padding = reach;
+        }
+      }
+    }
+    return padding;
   }
 
   @internal
@@ -151,8 +178,9 @@ class TextComponent<T extends TextRenderer>({
         ..colorFilter = p.colorFilter
         ..imageFilter = p.imageFilter
         ..blendMode = p.blendMode;
+      final pad = _modulationLayerPadding;
       canvas.saveLayer(
-        Rect.fromLTWH(-2.0, -2.0, size.x + 4.0, size.y + 4.0),
+        Rect.fromLTRB(-pad, -pad, size.x + pad, size.y + pad),
         layerPaint,
       );
       _textElement.draw(canvas);

@@ -23,6 +23,13 @@ mixin HasTimeScale on CustomTraversal {
   double _pulseRampDuration = 0.0;
   double _pulseElapsed = 0.0;
 
+  /// Whether [updateSubtree] is currently running the subtree.
+  bool _updatingSubtree = false;
+
+  /// Set when a pulse is applied from inside the subtree update: the frame in
+  /// which that happens was not slowed down yet, so it does not count.
+  bool _pulseStartsNextFrame = false;
+
   /// Returns the current time scale.
   double get timeScale => _timeScale;
 
@@ -49,6 +56,11 @@ mixin HasTimeScale on CustomTraversal {
   /// Because the pulse timer advances using unscaled real `dt`, even a `0.0`
   /// freeze-frame hit-stop automatically unfreezes itself without external
   /// timers.
+  ///
+  /// With a [realDuration] of zero the pulse starts at [scale] and ramps back
+  /// right away. A pulse that is applied by a component of this subtree during
+  /// its update starts to count with the next frame, the first one that it
+  /// slows down.
   void applyTimePulse({
     required double scale,
     required double realDuration,
@@ -76,7 +88,8 @@ mixin HasTimeScale on CustomTraversal {
     _pulseRampDuration = rampBackDuration;
     _pulseElapsed = 0.0;
     _pulseActive = true;
-    _timeScale = realDuration > 0.0 ? scale : _pulseBaselineScale;
+    _pulseStartsNextFrame = _updatingSubtree;
+    _timeScale = scale;
   }
 
   /// Cancels any active [applyTimePulse] and restores the pre-pulse baseline
@@ -119,9 +132,16 @@ mixin HasTimeScale on CustomTraversal {
   void updateSubtree(double dt) {
     final activeScale = _timeScale;
     if (activeScale > 0.0) {
-      super.updateSubtree(dt * activeScale);
+      _updatingSubtree = true;
+      try {
+        super.updateSubtree(dt * activeScale);
+      } finally {
+        _updatingSubtree = false;
+      }
     }
-    if (_pulseActive && dt > 0.0) {
+    if (_pulseStartsNextFrame) {
+      _pulseStartsNextFrame = false;
+    } else if (_pulseActive && dt > 0.0) {
       _advancePulse(dt);
     }
   }

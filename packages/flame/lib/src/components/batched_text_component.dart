@@ -12,7 +12,7 @@ import 'package:flame/src/text/renderers/raster_font_atlas.dart';
 /// [BatchedTextComponent]s sharing the same [atlas] are merged into a single
 /// `Canvas.drawRawAtlas` call per frame.
 class BatchedTextComponent({
-  required var RasterFontAtlas atlas,
+  required RasterFontAtlas atlas,
   String text = '',
   Color color = const Color(0xFFFFFFFF),
   double letterSpacing = 0.0,
@@ -34,8 +34,22 @@ class BatchedTextComponent({
     initialGlyphCapacity: 64,
   );
 
+  RasterFontAtlas _atlas = atlas;
   String _text = text;
   Color _color = color;
+
+  /// Font atlas the glyphs of [text] are taken from. Assigning another atlas
+  /// re-measures the component.
+  RasterFontAtlas get atlas => _atlas;
+  set atlas(RasterFontAtlas value) {
+    if (!identical(_atlas, value)) {
+      _atlas = value;
+      _recomputeSize();
+      markSubtreeDirty();
+      Game.notifyVisualMutation();
+    }
+  }
+
   double _letterSpacing = letterSpacing;
   double _opacity = 1.0;
 
@@ -146,6 +160,17 @@ class GlyphBatchLayer({
 
   @override
   void renderTree(Canvas canvas) {
+    // This override replaces [Component.renderTree], so it has to apply the
+    // same graphics tier and camera mask gates, to itself and to the children
+    // it draws without going through their own `renderTree`.
+    if (!isActiveForCurrentGraphicsTier) {
+      return;
+    }
+    final activeCamera = CameraComponent.currentCamera;
+    final activeMask = activeCamera?.cameraMask;
+    if (activeMask != null && (cameraMask & activeMask) == 0) {
+      return;
+    }
     render(canvas);
     if (!hasChildren) {
       _lastBatchedComponentCount = 0;
@@ -182,6 +207,10 @@ class GlyphBatchLayer({
 
     for (final child in children) {
       if (child is HasVisibility && !child.isVisible) {
+        continue;
+      }
+      if (!child.isActiveForCurrentGraphicsTier ||
+          (activeMask != null && (child.cameraMask & activeMask) == 0)) {
         continue;
       }
       if (child is BatchedTextComponent &&

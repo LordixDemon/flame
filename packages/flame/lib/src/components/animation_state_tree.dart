@@ -48,9 +48,15 @@ class AnimationStateTree<S>({required S initialState, this.onAnimationEvent}) {
   }
 
   /// Plays non-looping [oneShotState] immediately and automatically returns to
-  /// [returnTo] (defaults to the previous [currentState]) upon completion.
+  /// [returnTo] upon completion.
+  ///
+  /// [returnTo] defaults to the state that was current before the call. When
+  /// that state is itself a one-shot that is still playing, its own return
+  /// state is used instead, so that a one-shot which interrupts another one
+  /// ends in the state the first one was going to return to, not on the last
+  /// frame of the interrupted one-shot.
   void playOneShot(S oneShotState, {S? returnTo}) {
-    final fallback = returnTo ?? _currentState;
+    final fallback = returnTo ?? _returnToAfterOneShot ?? _currentState;
     _currentState = oneShotState;
     _returnToAfterOneShot = fallback;
     _tickers[oneShotState]?.reset();

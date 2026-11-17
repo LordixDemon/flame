@@ -119,6 +119,7 @@ class SpriteAnimationTicker(final SpriteAnimation spriteAnimation) {
     currentIndex = 0;
     _done = false;
     _started = false;
+    _frameEmittedBeforeStart = false;
     _paused = false;
 
     // Reset completeCompleter if it's already completed
@@ -131,15 +132,23 @@ class SpriteAnimationTicker(final SpriteAnimation spriteAnimation) {
   }
 
   /// Jumps directly to [index] (`0 <= index < spriteAnimation.frames.length`),
-  /// resetting the intra-frame `clock` to `0` and clearing completion state.
+  /// resetting the intra-frame `clock` to `0`, moving [elapsed] to the start
+  /// of that frame and clearing completion state.
   /// When [emitEvents] is `true`, invokes `onFrame` and any registered
-  /// [onEvent] hooks for [index].
+  /// [onEvent] hooks for [index]; the first [update] of a ticker that has not
+  /// started yet then does not report that same frame a second time.
   void jumpToFrame(int index, {bool emitEvents = false}) {
     RangeError.checkValidIndex(index, spriteAnimation.frames, 'index');
     final changed = currentIndex != index;
     currentIndex = index;
     clock = 0.0;
+    var elapsedAtFrameStart = 0.0;
+    for (var i = 0; i < index; i++) {
+      elapsedAtFrameStart += spriteAnimation.frames[i].stepTime;
+    }
+    elapsed = elapsedAtFrameStart;
     _done = false;
+    _frameEmittedBeforeStart = emitEvents && !_started;
     if (completeCompleter?.isCompleted ?? false) {
       completeCompleter = null;
     }
@@ -191,6 +200,10 @@ class SpriteAnimationTicker(final SpriteAnimation spriteAnimation) {
   /// calls to [onStart].
   bool _started = false;
 
+  /// Whether [jumpToFrame] already reported the current frame of a ticker
+  /// that has not started yet.
+  bool _frameEmittedBeforeStart = false;
+
   /// Updates this animation, if not paused, ticking the lifeTime by an amount
   /// [dt] (in seconds).
   void update(double dt) {
@@ -204,7 +217,11 @@ class SpriteAnimationTicker(final SpriteAnimation spriteAnimation) {
     }
     if (!_started) {
       onStart?.call();
-      _emitFrame(currentIndex);
+      if (_frameEmittedBeforeStart) {
+        _frameEmittedBeforeStart = false;
+      } else {
+        _emitFrame(currentIndex);
+      }
       _started = true;
     }
 
