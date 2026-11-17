@@ -3,6 +3,7 @@ import 'dart:collection';
 
 import 'package:flame/src/game/game.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
 /// Signature for building an overlay widget rendered on top of a [Game].
@@ -214,6 +215,10 @@ class const _RegisteredOverlayEntry({
       (reverseTransitionDuration != null &&
           reverseTransitionDuration! > Duration.zero) ||
       transitionBuilder != null;
+
+  /// The duration of the exit transition.
+  Duration get effectiveReverseDuration =>
+      reverseTransitionDuration ?? transitionDuration;
 }
 
 @immutable
@@ -278,7 +283,14 @@ class _OverlayHostState() extends State<OverlayHost> {
     if (!mounted) {
       return;
     }
-    if (_buildDepth > 0) {
+    // While the frame is being built, laid out and painted, this host or one
+    // of its descendants may be in the middle of a rebuild (an overlay builder
+    // that changes the overlays, or an exit transition that completes as soon
+    // as it starts), and Flutter does not allow an ancestor to be marked dirty
+    // from there. Rebuild right after the frame instead.
+    if (_buildDepth > 0 ||
+        SchedulerBinding.instance.schedulerPhase ==
+            SchedulerPhase.persistentCallbacks) {
       if (!_pendingMicrotaskRebuild) {
         _pendingMicrotaskRebuild = true;
         Future.microtask(() {
@@ -288,9 +300,9 @@ class _OverlayHostState() extends State<OverlayHost> {
           }
         });
       }
-    } else {
-      setState(() {});
+      return;
     }
+    setState(() {});
   }
 
   void _handleAnimatedExitComplete(String name) {
@@ -320,7 +332,12 @@ class _OverlayHostState() extends State<OverlayHost> {
       _activeAnimatedPriorities.forEach((name, priority) {
         if (!currentActiveNames.contains(name)) {
           removedAnimated.add(name);
-          if (manager._entries.containsKey(name)) {
+          final entry = manager._entries[name];
+          // Without an exit transition there is nothing to wait for: the
+          // overlay leaves the tree in this build.
+          if (entry != null &&
+              entry.isAnimated &&
+              entry.effectiveReverseDuration > Duration.zero) {
             _exitingAnimatedPriorities[name] = priority;
           }
         }
@@ -430,9 +447,7 @@ class _AnimatedOverlaySlotState()
     _controller = AnimationController(
       vsync: this,
       duration: widget.entry.transitionDuration,
-      reverseDuration:
-          widget.entry.reverseTransitionDuration ??
-          widget.entry.transitionDuration,
+      reverseDuration: widget.entry.effectiveReverseDuration,
     )..addStatusListener(_onStatusChanged);
 
     if (widget.isActive) {
@@ -451,9 +466,7 @@ class _AnimatedOverlaySlotState()
   void didUpdateWidget(_AnimatedOverlaySlot oldWidget) {
     super.didUpdateWidget(oldWidget);
     _controller.duration = widget.entry.transitionDuration;
-    _controller.reverseDuration =
-        widget.entry.reverseTransitionDuration ??
-        widget.entry.transitionDuration;
+    _controller.reverseDuration = widget.entry.effectiveReverseDuration;
     if (widget.isActive != oldWidget.isActive) {
       if (widget.isActive) {
         if (widget.entry.transitionDuration == Duration.zero) {
@@ -462,9 +475,7 @@ class _AnimatedOverlaySlotState()
           _controller.forward();
         }
       } else {
-        final rev =
-            widget.entry.reverseTransitionDuration ??
-            widget.entry.transitionDuration;
+        final rev = widget.entry.effectiveReverseDuration;
         if (rev == Duration.zero) {
           _controller.value = 0.0;
           widget.onExitComplete(widget.name);
@@ -483,18 +494,24 @@ class _AnimatedOverlaySlotState()
 
   @override
   void dispose() {
+    _defaultFadeCurve?.dispose();
     _controller.dispose();
     super.dispose();
   }
 
-  static Widget _defaultFadeTransition(
+  /// The curve of the default fade transition. It listens to [_controller],
+  /// so it is created once and disposed with this state instead of being
+  /// created on every build.
+  CurvedAnimation? _defaultFadeCurve;
+
+  Widget _defaultFadeTransition(
     BuildContext context,
     Animation<double> animation,
     Widget child,
   ) {
     return FadeTransition(
-      opacity: CurvedAnimation(
-        parent: animation,
+      opacity: _defaultFadeCurve ??= CurvedAnimation(
+        parent: _controller,
         curve: Curves.easeOutCubic,
         reverseCurve: Curves.easeInCubic,
       ),
