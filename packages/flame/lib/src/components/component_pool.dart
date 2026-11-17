@@ -11,6 +11,10 @@ import 'package:flame/components.dart';
 /// [RecyclableComponent.onAcquire] and [RecyclableComponent.onRelease]
 /// callbacks.
 ///
+/// A component that leaves the tree because one of its ancestors is removed
+/// is returned as well, unless it is being re-parented in the same tick
+/// (`component.parent = other`): a component that is moved stays checked out.
+///
 /// Example usage:
 /// ```dart
 /// final bulletPool = ComponentPool<MyBullet>(
@@ -79,6 +83,11 @@ class ComponentPool<T extends Component>({
     } else {
       component = _available.removeLast()..isInComponentPool = false;
     }
+    assert(
+      !component.isMounted && component.parent == null,
+      'The pool is about to hand out a component that is still part of a '
+      'component tree: $component',
+    );
     component.poolReturnHook = _releaseFromTree;
     _inUseCount++;
     if (component is RecyclableComponent) {
@@ -114,6 +123,10 @@ class ComponentPool<T extends Component>({
     if (_available.length < maxSize) {
       component.isInComponentPool = true;
       _available.add(component);
+    } else {
+      // The pool is full: the component is dropped and no longer belongs to
+      // this pool, whatever its owner does with it afterwards.
+      component.poolReturnHook = null;
     }
   }
 
@@ -121,7 +134,9 @@ class ComponentPool<T extends Component>({
   /// components that are currently in use.
   void clear() {
     for (final item in _available) {
-      item.isInComponentPool = false;
+      item
+        ..isInComponentPool = false
+        ..poolReturnHook = null;
     }
     _available.clear();
   }

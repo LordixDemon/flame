@@ -11,9 +11,10 @@ part of 'component.dart';
 /// [Component.remove] and their related methods to change which components
 /// are in the list. Removing a component while iterating the list is allowed,
 /// the removed component is simply no longer visited. Reordering the list
-/// while iterating it (through [Component.rebalanceChildren], or by an
-/// addition that does not end up at the end of the list) makes live iterators
-/// throw a [ConcurrentModificationError].
+/// while iterating it (through [Component.rebalanceChildren], by an addition
+/// that does not end up at the end of the list, or by a pending
+/// [Component.sortKey] reorder that another read of the list applies) makes
+/// live iterators throw a [ConcurrentModificationError].
 ///
 /// Components of a specific type can be retrieved in constant time with
 /// [query], once the type has been registered with [register].
@@ -46,6 +47,12 @@ class ComponentList({
   /// Whether one or more elements changed their [Component.sortKey] since the
   /// last render or ordered read.
   bool _sortKeysDirty = false;
+
+  /// The number of engine traversals (update recursion, render pass) that are
+  /// currently looping over [_elements] directly. The lazy [Component.sortKey]
+  /// reorder is postponed while this is non-zero, because it would permute
+  /// the list under those loops.
+  int _traversalDepth = 0;
   static int _sortKeyVersion = 0;
 
   void _markSortKeysDirty() {
@@ -56,8 +63,12 @@ class ComponentList({
   /// Restores secondary [Component.sortKey] ordering in-place via zero-alloc
   /// stable insertion sort (`O(N)` on nearly sorted arrays) without bumping
   /// [_structureVersion].
+  ///
+  /// Does nothing while an engine traversal is looping over the list (see
+  /// [_traversalDepth]); the sort then happens on the first ordered read
+  /// after that traversal.
   void _ensureSortKeysOrdered() {
-    if (!_sortKeysDirty) {
+    if (!_sortKeysDirty || _traversalDepth > 0) {
       return;
     }
     _sortKeysDirty = false;
@@ -328,7 +339,9 @@ class ComponentList({
   /// most once per parent per game tick when priorities of mounted components
   /// change. The sort is stable: components with equal priority keep their
   /// relative order.
-  void _rebalance() {
+  ///
+  /// Returns whether the order of the elements changed.
+  bool _rebalance() {
     _sortKeysDirty = false;
     // Removes all tombstones, which makes the `element!` accesses safe.
     _compact();
@@ -341,7 +354,7 @@ class ComponentList({
       }
     }
     if (isSorted) {
-      return;
+      return false;
     }
     _shiftCount++;
     _structureVersion++;
@@ -363,6 +376,7 @@ class ComponentList({
         cache.resort();
       }
     }
+    return true;
   }
 
   /// Rewrites the backing list without its tombstones, restoring exact

@@ -222,8 +222,9 @@ class Component({
   }
 
   /// Monotonically increasing counter incremented whenever this component or
-  /// any mounted descendant mutates its transform, structure, sort key, or
-  /// calls [markSubtreeDirty]. Used by `CameraComponent` retained layer caching
+  /// any mounted descendant mutates its transform, structure (children added,
+  /// removed or re-ordered by a [priority] change), sort key, or calls
+  /// [markSubtreeDirty]. Used by `CameraComponent` retained layer caching
   /// (`CameraLayerCacheMode.splitRetained`) for `O(1)` dirty detection.
   int get subtreeVersion => _subtreeVersion;
 
@@ -267,7 +268,8 @@ class Component({
   }
 
   /// Optional minimum [GraphicsQualityTier] required for this component (and
-  /// its subtree) to participate in `updateTree` and `renderTree`.
+  /// its subtree) to participate in `updateTree`, `renderTree` and hit-testing
+  /// ([componentsAtLocation]).
   ///
   /// When `null` (default), the component is active at all quality tiers with
   /// zero runtime overhead.
@@ -279,6 +281,7 @@ class Component({
     _minQualityTier = value;
     if (isMounted) {
       ComponentList._structureVersion++;
+      markSubtreeDirty();
       findGame()?.markSceneDirty();
     }
   }
@@ -534,7 +537,12 @@ class Component({
   /// [createComponentList]) reads values that changed, but not while
   /// iterating the [children], since reordering the list invalidates live
   /// iterators.
-  void rebalanceChildren() => _children?._rebalance();
+  void rebalanceChildren() {
+    if (_children?._rebalance() ?? false) {
+      // The draw order of the children changed.
+      markSubtreeDirty();
+    }
+  }
 
   /// The children components of this component.
   ///
@@ -892,11 +900,14 @@ class Component({
   }
 
   /// Populates [out] with active ticking components (and [CustomTraversal]
-  /// barriers) and [fixedOut] with mounted [HasFixedUpdate] components in
-  /// pre-order priority order.
+  /// barriers), [fixedOut] with mounted [HasFixedUpdate] components in
+  /// pre-order priority order, and [worldsOut] with every [World] that is
+  /// updated through the flat list (and therefore never reaches
+  /// [postDefaultUpdateSubtree]).
   void _collectFlatListsInto(
     List<Component> out,
     List<HasFixedUpdate> fixedOut,
+    List<World> worldsOut,
   ) {
     final children = _children;
     if (children == null) {
@@ -917,7 +928,10 @@ class Component({
         if (child.ticksEnabled) {
           out.add(child);
         }
-        child._collectFlatListsInto(out, fixedOut);
+        if (child is World) {
+          worldsOut.add(child);
+        }
+        child._collectFlatListsInto(out, fixedOut, worldsOut);
       }
     }
   }
@@ -953,8 +967,17 @@ class Component({
       // The update pass doubles as the safe point where tombstones left by
       // removals since the last tick are compacted away.
       children._compact();
-      for (final child in children._elements) {
-        child?.updateTree(dt);
+      // While this loop runs over the backing list, a pending `sortKey`
+      // reorder must not be applied by a read of [children] from inside an
+      // `update` callback: it would make the loop visit one child twice and
+      // skip another.
+      children._traversalDepth++;
+      try {
+        for (final child in children._elements) {
+          child?.updateTree(dt);
+        }
+      } finally {
+        children._traversalDepth--;
       }
     }
     postDefaultUpdateSubtree();
@@ -962,7 +985,9 @@ class Component({
 
   /// Internal post-subtree hook (overridden by `World` to drain queued
   /// `WorldEventBus` events when `world.updateTree(dt)` is called standalone
-  /// without turning `World` into a `CustomTraversal` flat-list barrier).
+  /// or from below a `CustomTraversal` barrier, without turning `World` into
+  /// a flat-list barrier itself). A world that is updated through the root's
+  /// flat list is drained by `ComponentTreeRoot.updateChildrenFlat` instead.
   @internal
   void postDefaultUpdateSubtree() {}
 
@@ -1030,11 +1055,17 @@ class Component({
         }
       } else {
         children._ensureSortKeysOrdered();
-        for (final child in children._elements) {
-          if (child != null &&
-              (spatialPass == null || spatialPass.shouldRenderChild(child))) {
-            renderChild(canvas, child);
+        // See [_defaultUpdateSubtree]: no reorder under the running loop.
+        children._traversalDepth++;
+        try {
+          for (final child in children._elements) {
+            if (child != null &&
+                (spatialPass == null || spatialPass.shouldRenderChild(child))) {
+              renderChild(canvas, child);
+            }
           }
+        } finally {
+          children._traversalDepth--;
         }
       }
       afterChildrenRendered(canvas);
@@ -1220,7 +1251,10 @@ class Component({
           root._enqueueRemove(child, this);
           child._setRemovingBit();
         }
-      } else if (!child.isRemoved) {
+      } else if (!child.isRemoved || root._hasPendingAdd(child, this)) {
+        // The child is waiting to be mounted. A child that was mounted and
+        // removed before keeps its `removed` state until it mounts again, so
+        // that state alone does not tell whether an ADD event is pending.
         root._dequeueAdd(child, this);
         child._parent = null;
         child.poolReturnHook?.call(child);
@@ -1325,6 +1359,11 @@ class Component({
     T? Function(CoordinateTransform, T) transformContext,
     bool Function(Component, T) checkContains,
   ) sync* {
+    // A component that is not ticked and not drawn at the current graphics
+    // tier must not receive events either.
+    if (!isActiveForCurrentGraphicsTier) {
+      return;
+    }
     final activeCamera = CameraComponent.currentCamera;
     if (activeCamera != null && (_cameraMask & activeCamera.cameraMask) == 0) {
       return;
@@ -1402,9 +1441,19 @@ class Component({
   /// group.
   ///
   /// Unlike [priority], updating [sortKey] on smoothly moving isometric or
-  /// 2.5D/3D entities performs a lazy zero-allocation insertion sort before
-  /// rendering or hit-testing without enqueueing lifecycle rebalance events or
-  /// invalidating the root's flattened update list.
+  /// 2.5D/3D entities performs a lazy zero-allocation insertion sort without
+  /// enqueueing lifecycle rebalance events or invalidating the root's
+  /// flattened update list (the update order keeps following [priority] and
+  /// the order in which the components were added).
+  ///
+  /// The sort is applied by the next ordered read of the parent's [children]:
+  /// before rendering, before hit-testing, and whenever the list is iterated
+  /// or queried. It is held back while the engine itself is walking that
+  /// list (the update of a `CustomTraversal` subtree and the render pass), so
+  /// a `sortKey` that changes inside `update` or `render` never makes a
+  /// sibling run twice or not at all. As with any reorder, an iterator that
+  /// user code holds over the list (`for (final c in parent.children)`) is
+  /// invalidated once the pending sort has been applied by another read.
   double get sortKey => _sortKey;
   double _sortKey = sortKey ?? 0.0;
   set sortKey(double newSortKey) {
@@ -1449,10 +1498,15 @@ class Component({
   }
 
   _LifecycleEventStatus _handleLifecycleEventRemove(Component parent) {
-    if (_parent == null) {
+    final currentParent = _parent;
+    if (currentParent == null) {
       parent._children?._remove(this);
     } else {
-      _remove(parent);
+      // The event remembers the parent the component had when the removal
+      // was requested. A MOVE event that was queued before it may have
+      // re-parented the component in the meantime, so it has to be taken out
+      // of the parent that holds it now.
+      _remove(currentParent);
       assert(_parent == null);
     }
     return _LifecycleEventStatus.done;
@@ -1461,9 +1515,24 @@ class Component({
   _LifecycleEventStatus _handleLifecycleEventMove(Component newParent) {
     final parent = _parent;
     if (parent != null) {
-      _remove(parent, notifyPool: false);
+      if (isMounted) {
+        _remove(parent, notifyPool: false);
+      } else {
+        // The component is not in the live tree: either an ancestor was
+        // removed earlier in this pass (which already ran the removal
+        // callbacks of this component), or it is still waiting to be mounted
+        // under its old parent. Detach it without running `onRemove` again
+        // and drop the stale ADD event, so that it mounts only once, under
+        // its new parent.
+        parent._children?._remove(this);
+        (parent.findGame() ?? newParent.findGame())?._dequeueAddIfPending(
+          this,
+          parent,
+        );
+        _parent = null;
+      }
     }
-    if (newParent.isMounted) {
+    if (newParent.isMounted && isLoaded) {
       _parent = newParent;
       _mount();
     } else {
@@ -1758,12 +1827,22 @@ class Component({
         .._removeCompleter = null
         .._parent!.onChildrenChanged(component, ChildrenChangeType.removed);
       parentWorld?.handleDescendantRemoved(component);
+      if (component is World) {
+        component.handleWorldUnmounted();
+      }
     }
     _parent = null;
     if (notifyPool) {
+      final root = parent.findGame();
       for (final component in removedSubtree) {
         final hook = component.poolReturnHook;
         if (hook != null) {
+          if (root != null && root._hasPendingMove(component)) {
+            // The component is about to be mounted under another parent by
+            // a MOVE event that is still in the queue: it stays checked out
+            // of its pool, exactly as if the move had been processed first.
+            continue;
+          }
           if (!identical(component, this) && component._parent != null) {
             component._parent!._children?._remove(component);
             component._parent = null;
