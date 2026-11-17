@@ -98,6 +98,7 @@ final class _FakeBackend(final List<_FakeUniformSlot> slots)
     required int width,
     required int height,
     required GpuPixelFormat format,
+    int mipLevelCount = 1,
   }) => throw UnimplementedError();
 
   @override

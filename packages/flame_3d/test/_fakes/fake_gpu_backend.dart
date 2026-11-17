@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flame_3d/graphics.dart';
+import 'package:flame_3d/resources.dart';
 
 /// A [GpuBackend] that records what is created, bound and drawn, for tests
 /// that do not need pixels.
@@ -37,6 +38,10 @@ final class FakeGpuBackend({
 
   /// Where each uniform slot was last bound, by slot name.
   final Map<String, (FakeBuffer, int, int)> uniformBindings = {};
+
+  /// The texture and sampler each sampler slot was last bound to, by slot
+  /// name.
+  final Map<String, (FakeTexture, TextureSampler)> textureBindings = {};
 
   /// The data most recently bound to each uniform slot, by slot name.
   ///
@@ -75,13 +80,28 @@ final class FakeGpuBackend({
     return _libraries.putIfAbsent(assetName, () => FakeShaderLibrary(this));
   }
 
+  /// Every texture created.
+  final List<FakeTexture> textures = [];
+
   @override
   GpuTexture createTexture({
     required GpuStorageMode storageMode,
     required int width,
     required int height,
     required GpuPixelFormat format,
-  }) => FakeTexture();
+    int mipLevelCount = 1,
+  }) {
+    final texture = FakeTexture(width, height, mipLevelCount);
+    textures.add(texture);
+    return texture;
+  }
+
+  /// What [maxMipLevelCount] returns, or `null` for the default.
+  int? maxMipLevels;
+
+  @override
+  int maxMipLevelCount(int width, int height) =>
+      maxMipLevels ?? super.maxMipLevelCount(width, height);
 
   @override
   GpuBuffer createBuffer({
@@ -204,12 +224,26 @@ class FakeUniformSlot(
   }
 }
 
-class FakeTexture() implements GpuTexture {
+class FakeTexture(
+  final int width,
+  final int height,
+  @override final int mipLevelCount,
+) implements GpuTexture {
+  /// Every write, as (mip level, bytes).
+  final List<(int, Uint8List)> writes = [];
+
   @override
   Image asImage() => throw UnimplementedError();
 
   @override
-  void write(ByteData data) {}
+  void write(ByteData data, {int mipLevel = 0}) {
+    writes.add((
+      mipLevel,
+      Uint8List.fromList(
+        data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+      ),
+    ));
+  }
 }
 
 class FakeBuffer(@override final int sizeInBytes) implements GpuBuffer {
@@ -327,8 +361,14 @@ class FakeRenderPass(final FakeGpuBackend backend) implements GpuRenderPass {
   }
 
   @override
-  void bindTexture(GpuUniformSlot slot, GpuTexture texture) =>
-      _commands.add('bindTexture ${slot.name}');
+  void bindTexture(
+    GpuUniformSlot slot,
+    GpuTexture texture, {
+    TextureSampler sampler = TextureSampler.nearest,
+  }) {
+    backend.textureBindings[slot.name] = (texture as FakeTexture, sampler);
+    _commands.add('bindTexture ${slot.name}');
+  }
 
   @override
   void clearBindings() => _commands.add('clearBindings');

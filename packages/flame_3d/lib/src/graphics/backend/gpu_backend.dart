@@ -6,6 +6,7 @@ import 'package:flame_3d/src/graphics/backend/flutter_gpu/gpu_backend.dart'
     as backend;
 import 'package:flame_3d/src/graphics/backend/gpu_enums.dart';
 import 'package:flame_3d/src/graphics/backend/gpu_handles.dart';
+import 'package:flame_3d/src/resources/texture/texture_sampler.dart';
 
 /// {@template gpu_backend}
 /// A rendering backend: the abstraction over a concrete low-level GPU API.
@@ -52,13 +53,26 @@ abstract base class GpuBackend() {
   /// have within a [GpuBuffer].
   int get uniformAlignment => 256;
 
-  /// Creates a [GpuTexture].
+  /// Creates a [GpuTexture] with [mipLevelCount] mip levels (at most
+  /// [maxMipLevelCount]).
   GpuTexture createTexture({
     required GpuStorageMode storageMode,
     required int width,
     required int height,
     required GpuPixelFormat format,
+    int mipLevelCount = 1,
   });
+
+  /// The largest number of mip levels a [width]x[height] texture can have,
+  /// or `1` when this backend cannot sample mip levels uploaded by hand.
+  int maxMipLevelCount(int width, int height) {
+    final largest = width > height ? width : height;
+    return largest < 1 ? 1 : largest.bitLength;
+  }
+
+  /// A [GpuTexture] that shares the GPU memory of [image] without copying it,
+  /// or `null` when this backend cannot wrap it.
+  GpuTexture? createTextureFromImage(Image image) => null;
 
   /// Creates a [GpuBuffer] of [sizeInBytes] bytes.
   ///
@@ -181,8 +195,15 @@ abstract interface class GpuRenderPass() {
     required int lengthInBytes,
   });
 
-  /// Binds [texture] to the sampler [slot].
-  void bindTexture(GpuUniformSlot slot, GpuTexture texture);
+  /// Binds [texture] to the sampler [slot], sampled as [sampler] says.
+  ///
+  /// Backends create one sampler object per distinct [sampler] value (see
+  /// [TextureSampler.key]) and reuse it.
+  void bindTexture(
+    GpuUniformSlot slot,
+    GpuTexture texture, {
+    TextureSampler sampler = TextureSampler.nearest,
+  });
 
   /// Clears all resources bound to this pass.
   void clearBindings();

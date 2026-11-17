@@ -331,9 +331,10 @@ class GraphicsDevice({
     );
   }
 
-  /// Bind a uniform [slot] to the [texture].
+  /// Bind a uniform [slot] to the [texture], sampled with its
+  /// [Texture.sampler].
   void bindTexture(GpuUniformSlot slot, Texture texture) {
-    _pass.bindTexture(slot, texture.resource);
+    _pass.bindTexture(slot, texture.resource, sampler: texture.sampler);
   }
 
   _TransientBlock _uploadUniform(Uint8List data) {

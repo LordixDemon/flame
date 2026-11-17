@@ -3,8 +3,14 @@ import 'dart:ui';
 
 /// Handle to a GPU texture.
 abstract interface class GpuTexture() {
-  /// Uploads [data] to the texture.
-  void write(ByteData data);
+  /// The number of mip levels of the texture, `1` without mipmaps.
+  int get mipLevelCount;
+
+  /// Uploads [data] to the mip level [mipLevel] of the texture.
+  ///
+  /// [data] holds tightly packed rows of the level's pixels; a level is half
+  /// the size of the previous one (rounded down, at least one pixel).
+  void write(ByteData data, {int mipLevel = 0});
 
   /// Returns the texture's contents as an [Image].
   Image asImage();

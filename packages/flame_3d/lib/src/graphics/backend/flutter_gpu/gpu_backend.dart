@@ -7,6 +7,7 @@ import 'package:flame_3d/src/graphics/backend/flutter_gpu/shader_bundle_reflecti
 import 'package:flame_3d/src/graphics/backend/gpu_backend.dart' as base;
 import 'package:flame_3d/src/graphics/backend/gpu_enums.dart';
 import 'package:flame_3d/src/graphics/backend/gpu_handles.dart';
+import 'package:flame_3d/src/resources/texture/texture_sampler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_gpu/gpu.dart' as gpu;
 
@@ -46,6 +47,7 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
     required int width,
     required int height,
     required GpuPixelFormat format,
+    int mipLevelCount = 1,
   }) {
     return _FlutterGpuTexture(
       _context.createTexture(
@@ -53,8 +55,32 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
         width,
         height,
         format: _pixelFormat(format),
+        mipLevelCount: mipLevelCount,
       ),
     );
+  }
+
+  @override
+  int maxMipLevelCount(int width, int height) {
+    // Mip levels uploaded by hand sample as black on some OpenGL ES devices.
+    if (!_supportsManualMipmaps) {
+      return 1;
+    }
+    return gpu.Texture.fullMipCount(width, height);
+  }
+
+  late final bool _supportsManualMipmaps =
+      _context.doesSupportManuallyMippedTextures;
+
+  @override
+  GpuTexture? createTextureFromImage(Image image) {
+    try {
+      return _FlutterGpuTexture(gpu.Texture.fromImage(_context, image));
+      // Flutter GPU reports images without a compatible texture with a plain
+      // Exception.
+    } on Exception {
+      return null;
+    }
   }
 
   @override
@@ -256,7 +282,12 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
 
 class const _FlutterGpuTexture(final gpu.Texture raw) implements GpuTexture {
   @override
-  void write(ByteData data) => raw.overwrite(data);
+  int get mipLevelCount => raw.mipLevelCount;
+
+  @override
+  void write(ByteData data, {int mipLevel = 0}) {
+    raw.overwrite(data, mipLevel: mipLevel);
+  }
 
   @override
   Image asImage() => raw.asImage();
@@ -509,16 +540,52 @@ class _FlutterGpuRenderPass(
   }
 
   @override
-  void bindTexture(GpuUniformSlot slot, GpuTexture texture) {
+  void bindTexture(
+    GpuUniformSlot slot,
+    GpuTexture texture, {
+    TextureSampler sampler = TextureSampler.nearest,
+  }) {
     _renderPass.bindTexture(
       (slot as _FlutterGpuUniformSlot).raw,
       (texture as _FlutterGpuTexture).raw,
       // Passed explicitly: `flutter_gpu` allocates default options otherwise.
-      sampler: _defaultSampler,
+      sampler: _samplerFor(sampler),
     );
   }
 
-  static final _defaultSampler = gpu.SamplerOptions();
+  // The sampler options of every distinct sampler, by key, created once.
+  static final _samplers = List<gpu.SamplerOptions?>.filled(
+    TextureSampler.keyCount,
+    null,
+  );
+
+  static gpu.SamplerOptions _samplerFor(TextureSampler sampler) {
+    return _samplers[sampler.key] ??= gpu.SamplerOptions(
+      minFilter: _filter(sampler.minFilter),
+      magFilter: _filter(sampler.magFilter),
+      mipFilter: switch (sampler.mipFilter) {
+        TextureFilter.nearest => gpu.MipFilter.nearest,
+        TextureFilter.linear => gpu.MipFilter.linear,
+      },
+      widthAddressMode: _addressMode(sampler.wrapU),
+      heightAddressMode: _addressMode(sampler.wrapV),
+    );
+  }
+
+  static gpu.MinMagFilter _filter(TextureFilter filter) {
+    return switch (filter) {
+      TextureFilter.nearest => gpu.MinMagFilter.nearest,
+      TextureFilter.linear => gpu.MinMagFilter.linear,
+    };
+  }
+
+  static gpu.SamplerAddressMode _addressMode(TextureWrap wrap) {
+    return switch (wrap) {
+      TextureWrap.clamp => gpu.SamplerAddressMode.clampToEdge,
+      TextureWrap.repeat => gpu.SamplerAddressMode.repeat,
+      TextureWrap.mirror => gpu.SamplerAddressMode.mirror,
+    };
+  }
 
   @override
   void clearBindings() => _renderPass.clearBindings();
