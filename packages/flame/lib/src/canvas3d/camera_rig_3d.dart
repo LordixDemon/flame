@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flame/src/canvas3d/primitives_3d.dart';
+import 'package:flame/src/game/game.dart';
 
 /// 3D projection mode for [CameraRig3D].
 enum CameraProjectionMode3D() {
@@ -19,11 +20,39 @@ enum CameraProjectionMode3D() {
 /// true perspective 3D worlds rendered onto Flutter's 2D `Canvas`.
 ///
 /// At rest (`orbitYawDeltaRad == 0`, `pitchDeltaRad == 0`), the orthonormal
-/// basis reproduces exact `2:1` isometric projection while supporting smooth
-/// 3D elevation tilt, azimuth orbit, true pinhole
-/// [CameraProjectionMode3D.perspective] with configurable [fovYRad] /
-/// [cameraDistance] / [nearClip], and exact 2D-to-3D ray unprojection
-/// (`unprojectWorldRay`).
+/// basis reproduces exact `2:1` isometric projection. On top of that the rig
+/// offers a smooth elevation tilt and azimuth turn of every drawn object, a
+/// true pinhole [CameraProjectionMode3D.perspective] with configurable
+/// [fovYRad] / [cameraDistance] / [nearClip], and 2D-to-3D ray unprojection
+/// ([unprojectWorldRay]).
+///
+/// ## Axonometric convention: anchors stay on the lattice, deltas tilt objects
+///
+/// In [CameraProjectionMode3D.axonometric] every drawn object has a ground
+/// *anchor* `(worldX, worldY)`. Anchors always project through the fixed
+/// `2:1` lattice of [gridToScreen], whatever [orbitYawDeltaRad] and
+/// [pitchDeltaRad] are. The deltas only rotate the camera basis that
+/// [projectAnchored] applies to offsets *relative to the anchor* (and
+/// [pitchDeltaRad] also changes how many pixels one unit of height is worth).
+///
+/// So each object turns and tilts in place about its own anchor. The scene as
+/// a whole does not orbit and the ground lattice does not move: with non-zero
+/// deltas this is a tilt of every object, not an orbit of the camera. It also
+/// means the projection is not a function of the world point alone. One world
+/// point reached as "anchor A plus offset" and as "anchor B plus offset" lands
+/// on two different pixels, a long mesh swings about its anchor while the
+/// lattice under it stays put, and [projectWorldPoint], which treats a point
+/// as its own anchor, does not react to [orbitYawDeltaRad] at all. Keep the
+/// deltas small (the rig clamps them, see [update]) and use them as a sway.
+///
+/// For a camera that really orbits the scene, use
+/// [CameraProjectionMode3D.perspective]: there every world point goes through
+/// one pinhole camera, the deltas turn the whole scene about the look-at
+/// target, and [unprojectWorldRay] is the exact inverse of
+/// [projectWorldPoint].
+///
+/// The rig calls `Game.notifyVisualMutation` whenever a property that changes
+/// the picture really changes, so on-demand rendering repaints.
 class CameraRig3D({
   this.cellHalfW = 44.0,
   this.cellHalfH = 22.0,
@@ -65,6 +94,7 @@ class CameraRig3D({
     if (_projectionMode != value) {
       _projectionMode = value;
       _basisVersion++;
+      Game.notifyVisualMutation();
     }
   }
 
@@ -76,6 +106,7 @@ class CameraRig3D({
     if ((_cameraDistance - clamped).abs() > 1e-6) {
       _cameraDistance = clamped;
       _basisVersion++;
+      Game.notifyVisualMutation();
     }
   }
 
@@ -88,6 +119,7 @@ class CameraRig3D({
     if (_fovYRad != value) {
       _fovYRad = value;
       _basisVersion++;
+      Game.notifyVisualMutation();
     }
   }
 
@@ -101,6 +133,7 @@ class CameraRig3D({
         _cameraDistance = _nearClip + 0.05;
       }
       _basisVersion++;
+      Game.notifyVisualMutation();
     }
   }
 
@@ -118,20 +151,84 @@ class CameraRig3D({
   /// Focal scale (`cellHalfW * sqrt(2)`) mapping unit 3D basis to pixels.
   late final double focalScalePx = cellHalfW * math.sqrt2;
 
+  /// Largest azimuth delta in radians, either way, that the rig accepts.
+  static const double maxOrbitYawDeltaRad = 0.45;
+
+  /// Lowest elevation delta in radians that the rig accepts.
+  static const double minPitchDeltaRad = -0.24;
+
+  /// Highest elevation delta in radians that the rig accepts.
+  static const double maxPitchDeltaRad = 0.28;
+
+  double _camWorldX = 0.0;
+  late double _camWorldY = groundOriginY;
+  double _camZoom = 1.0;
+  double _orbitYawDeltaRad = 0.0;
+  double _pitchDeltaRad = 0.0;
+
   /// Current 2D camera look-at X in world coordinates.
-  double camWorldX = 0.0;
+  double get camWorldX => _camWorldX;
+  set camWorldX(double value) {
+    if (_camWorldX != value) {
+      _camWorldX = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Current 2D camera look-at Y in world coordinates.
-  late double camWorldY = groundOriginY;
+  double get camWorldY => _camWorldY;
+  set camWorldY(double value) {
+    if (_camWorldY != value) {
+      _camWorldY = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
-  /// Current 2D camera zoom factor.
-  double camZoom = 1.0;
+  /// Current 2D camera zoom factor: how many screen pixels one canvas unit of
+  /// the projected output covers.
+  double get camZoom => _camZoom;
+  set camZoom(double value) {
+    if (_camZoom != value) {
+      _camZoom = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
-  /// Smooth 3D azimuth offset around Z in radians.
-  double orbitYawDeltaRad = 0.0;
+  /// Azimuth offset around Z in radians, clamped to
+  /// `+-`[maxOrbitYawDeltaRad]. See the class documentation for what it turns
+  /// in each projection mode.
+  double get orbitYawDeltaRad => _orbitYawDeltaRad;
+  set orbitYawDeltaRad(double value) {
+    if (_setAngleDeltas(value, _pitchDeltaRad)) {
+      Game.notifyVisualMutation();
+    }
+  }
 
-  /// Smooth 3D elevation pitch offset in radians.
-  double pitchDeltaRad = 0.0;
+  /// Elevation offset in radians, clamped to
+  /// `[`[minPitchDeltaRad]` .. `[maxPitchDeltaRad]`]`. The resulting elevation
+  /// (`baseElevationRad + pitchDeltaRad`) is further kept within
+  /// `[0.18 .. 1.15]` radians.
+  double get pitchDeltaRad => _pitchDeltaRad;
+  set pitchDeltaRad(double value) {
+    if (_setAngleDeltas(_orbitYawDeltaRad, value)) {
+      Game.notifyVisualMutation();
+    }
+  }
+
+  bool _setAngleDeltas(double orbitYawDelta, double pitchDelta) {
+    final clampedYaw = orbitYawDelta.clamp(
+      -maxOrbitYawDeltaRad,
+      maxOrbitYawDeltaRad,
+    );
+    final clampedPitch = pitchDelta.clamp(minPitchDeltaRad, maxPitchDeltaRad);
+    if (clampedYaw == _orbitYawDeltaRad && clampedPitch == _pitchDeltaRad) {
+      return false;
+    }
+    _orbitYawDeltaRad = clampedYaw;
+    _pitchDeltaRad = clampedPitch;
+    _recomputeBasis();
+    return true;
+  }
 
   double _rightX = math.sqrt1_2;
   double _rightY = -math.sqrt1_2;
@@ -175,7 +272,10 @@ class CameraRig3D({
       (0.022 + (camZoom - 1.0).clamp(0.0, 1.8) * 0.015).clamp(0.018, 0.048);
 
   /// Updates camera focus, zoom, and 3D orbit/pitch deltas, recomputing the
-  /// orthonormal basis only when angles change.
+  /// orthonormal basis (and bumping [basisVersion]) only when angles change.
+  ///
+  /// [orbitYawDelta] is clamped to `+-`[maxOrbitYawDeltaRad] and [pitchDelta]
+  /// to `[`[minPitchDeltaRad]` .. `[maxPitchDeltaRad]`]`.
   void update({
     required double camX,
     required double camY,
@@ -183,21 +283,30 @@ class CameraRig3D({
     double orbitYawDelta = 0.0,
     double pitchDelta = 0.0,
   }) {
-    camWorldX = camX;
-    camWorldY = camY;
-    camZoom = zoom;
-    final clampedYaw = orbitYawDelta.clamp(-0.45, 0.45);
-    final clampedPitch = pitchDelta.clamp(-0.24, 0.28);
-    if (clampedYaw != orbitYawDeltaRad || clampedPitch != pitchDeltaRad) {
-      orbitYawDeltaRad = clampedYaw;
-      pitchDeltaRad = clampedPitch;
-      _recomputeBasis();
+    var changed = false;
+    if (_camWorldX != camX) {
+      _camWorldX = camX;
+      changed = true;
+    }
+    if (_camWorldY != camY) {
+      _camWorldY = camY;
+      changed = true;
+    }
+    if (_camZoom != zoom) {
+      _camZoom = zoom;
+      changed = true;
+    }
+    if (_setAngleDeltas(orbitYawDelta, pitchDelta)) {
+      changed = true;
+    }
+    if (changed) {
+      Game.notifyVisualMutation();
     }
   }
 
   void _recomputeBasis() {
-    final az = baseAzimuthRad + orbitYawDeltaRad;
-    final el = (baseElevationRad + pitchDeltaRad).clamp(0.18, 1.15);
+    final az = baseAzimuthRad + _orbitYawDeltaRad;
+    final el = (baseElevationRad + _pitchDeltaRad).clamp(0.18, 1.15);
     final ca = math.cos(az);
     final sa = math.sin(az);
     final cp = math.cos(el);
@@ -323,12 +432,35 @@ class CameraRig3D({
     return (vx, vy, vz);
   }
 
-  /// Unprojects a 2D world tap [worldTap] into an exact [Ray3D] accounting for
-  /// camera elevation, azimuth, and active [projectionMode] (`axonometric` or
-  /// pinhole `perspective`).
+  /// Unprojects a 2D world tap [worldTap] into a [Ray3D].
+  ///
+  /// In [CameraProjectionMode3D.perspective] the ray leaves the pinhole eye
+  /// and is the exact inverse of [projectWorldPoint]; [anchorWorld] is not
+  /// needed and is ignored.
+  ///
+  /// In [CameraProjectionMode3D.axonometric] the answer depends on what the
+  /// tapped pixel shows (see the class documentation):
+  ///
+  /// - Without [anchorWorld] the ray inverts [projectWorldPoint]: it runs
+  ///   through the world points that, taken as their own anchors, are drawn
+  ///   at [worldTap]. It follows [pitchDeltaRad]; [orbitYawDeltaRad] does not
+  ///   move such points and so does not move this ray.
+  /// - With [anchorWorld] (the [gridToScreen] position of an object's anchor)
+  ///   the ray inverts [projectAnchored] for that anchor: it runs through the
+  ///   points of that object that are drawn at [worldTap], following both
+  ///   deltas. Use it to pick an object that was drawn about that anchor.
+  ///
+  /// The axonometric height parallax is not a straight-line projection, so
+  /// no ray can invert it at every height: this one is exact at `z = 0` and
+  /// `z = 1` and drifts by roughly `0.6 * z * (z - 1)` pixels elsewhere at
+  /// rest zoom (about a pixel at `z = 2`).
+  ///
+  /// The ray starts [cameraDistance] (default: this rig's distance) before the
+  /// ground point along its direction.
   Ray3D unprojectWorldRay(
     Offset worldTap, {
     double? cameraDistance,
+    Offset? anchorWorld,
   }) {
     final effDist = cameraDistance ?? _cameraDistance;
     if (_projectionMode == CameraProjectionMode3D.perspective) {
@@ -354,15 +486,36 @@ class CameraRig3D({
       return Ray3D(ox: ox, oy: oy, oz: oz, dx: dirX, dy: dirY, dz: dirZ);
     }
 
-    final (groundX, groundY) = screenToGrid(worldTap);
+    // Where a point at height 1 must sit, before the height parallax and
+    // lift are applied, to be drawn at the tap.
     final p1 = perspectiveStrength;
     final invX1 = 1.0 / (1.0 + p1);
     final invY1 = 1.0 / (1.0 + p1 * 0.55);
-
     final gx1 = (worldTap.dx + camWorldX * p1) * invX1;
     final gy1 =
         (worldTap.dy - _downZ * focalScalePx + camWorldY * p1 * 0.55) * invY1;
-    final (xAtZ1, yAtZ1) = screenToGrid(Offset(gx1, gy1));
+
+    final double groundX;
+    final double groundY;
+    final double xAtZ1;
+    final double yAtZ1;
+    if (anchorWorld != null) {
+      // Solve the rotated camera basis for the offsets from the anchor.
+      final (ax, ay) = screenToGrid(anchorWorld);
+      final invDet =
+          1.0 / ((_rightX * _downY - _rightY * _downX) * focalScalePx);
+      final u0 = worldTap.dx - anchorWorld.dx;
+      final v0 = worldTap.dy - anchorWorld.dy;
+      groundX = ax + (u0 * _downY - _rightY * v0) * invDet;
+      groundY = ay + (_rightX * v0 - _downX * u0) * invDet;
+      final u1 = gx1 - anchorWorld.dx;
+      final v1 = gy1 - anchorWorld.dy;
+      xAtZ1 = ax + (u1 * _downY - _rightY * v1) * invDet;
+      yAtZ1 = ay + (_rightX * v1 - _downX * u1) * invDet;
+    } else {
+      (groundX, groundY) = screenToGrid(worldTap);
+      (xAtZ1, yAtZ1) = screenToGrid(Offset(gx1, gy1));
+    }
 
     var dirX = groundX - xAtZ1;
     var dirY = groundY - yAtZ1;

@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flame/src/canvas3d/batch_mesh_renderer_3d.dart';
@@ -52,7 +53,9 @@ class Decal3D({
   /// Roll rotation around `+X` in radians.
   double rollRad;
 
-  /// Small `+Z`/normal lift preventing coplanar triangle sort flicker.
+  /// Small lift along the decal's own normal (world `+Z` for a flat decal,
+  /// the tilted normal once [pitchRad] or [rollRad] is set) preventing
+  /// coplanar triangle sort flicker.
   double normalBias;
 
   /// Explicit draw-order bucket (`1` by default so floor decals always draw on
@@ -87,12 +90,27 @@ class Decal3D({
     if (opacity <= 0.0 || sizeX <= 0.0 || sizeY <= 0.0) {
       return;
     }
+    // Surface normal: the third column of `Rz(yaw) * Ry(pitch) * Rx(roll)`.
+    var normalX = 0.0;
+    var normalY = 0.0;
+    var normalZ = 1.0;
+    if (pitchRad != 0.0 || rollRad != 0.0) {
+      final cy = math.cos(yawRad);
+      final sy = math.sin(yawRad);
+      final cp = math.cos(pitchRad);
+      final sp = math.sin(pitchRad);
+      final cr = math.cos(rollRad);
+      final sr = math.sin(rollRad);
+      normalX = cy * sp * cr + sy * sr;
+      normalY = sy * sp * cr - cy * sr;
+      normalZ = cp * cr;
+    }
     renderer.enqueueMesh(
       _unitQuad,
       camera: camera,
-      worldX: worldX,
-      worldY: worldY,
-      worldZ: worldZ + normalBias,
+      worldX: worldX + normalX * normalBias,
+      worldY: worldY + normalY * normalBias,
+      worldZ: worldZ + normalZ * normalBias,
       canvasOrigin: canvasOrigin,
       scaleX: sizeX,
       scaleY: sizeY,

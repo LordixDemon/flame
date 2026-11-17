@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
 
@@ -17,92 +18,238 @@ import 'package:flame/src/game/game.dart';
 /// [setLocalQuaternion]), and scale without per-frame heap allocations, and
 /// submits its entire subtree into a [BatchMeshRenderer3D] in a single
 /// traversal.
+///
+/// A node's world transform is the exact matrix product
+/// `parent * translation * rotation * scale`. A rotated child of a
+/// non-uniformly scaled parent is therefore stretched along the parent's axes
+/// (it shears), which [worldLinearMatrix] captures; [worldRotationMatrix] and
+/// [worldScaleX] / [worldScaleY] / [worldScaleZ] are the separate rotation and
+/// per-axis scale products, which describe the same transform only while no
+/// rotation sits between two different non-uniform scales.
+///
+/// Every property that changes what is drawn calls
+/// `Game.notifyVisualMutation` when its value really changes, so on-demand
+/// rendering repaints.
 class Node3D({
   this.name = '',
-  this.mesh,
-  this.material,
-  this.localX = 0.0,
-  this.localY = 0.0,
-  this.localZ = 0.0,
-  this.localYawRad = 0.0,
-  this.localPitchRad = 0.0,
-  this.localRollRad = 0.0,
-  this.localScaleX = 1.0,
-  this.localScaleY = 1.0,
-  this.localScaleZ = 1.0,
-  this.tint = const Color(0xFFFFFFFF),
-  this.opacity = 1.0,
-  this.emissive = 0.0,
-  this.uvRectPx,
-  this.sortOrder = 0,
-  this.depthBias = 0.0,
-  this.castGroundShadow = false,
-  this.visible = true,
+  Mesh3D? mesh,
+  Material3D? material,
+  double localX = 0.0,
+  double localY = 0.0,
+  double localZ = 0.0,
+  double localYawRad = 0.0,
+  double localPitchRad = 0.0,
+  double localRollRad = 0.0,
+  double localScaleX = 1.0,
+  double localScaleY = 1.0,
+  double localScaleZ = 1.0,
+  Color tint = const Color(0xFFFFFFFF),
+  double opacity = 1.0,
+  double emissive = 0.0,
+  Rect? uvRectPx,
+  int sortOrder = 0,
+  double depthBias = 0.0,
+  bool castGroundShadow = false,
+  bool visible = true,
 }) {
   /// Optional debug or lookup label (e.g. `'blade_hub'`, `'minute_hand'`).
   final String name;
 
+  Mesh3D? _mesh = mesh;
+  Material3D? _material = material;
+  double _localX = localX;
+  double _localY = localY;
+  double _localZ = localZ;
+  double _localYawRad = localYawRad;
+  double _localPitchRad = localPitchRad;
+  double _localRollRad = localRollRad;
+  double _localScaleX = localScaleX;
+  double _localScaleY = localScaleY;
+  double _localScaleZ = localScaleZ;
+  Color _tint = tint;
+  double _opacity = opacity;
+  double _emissive = emissive;
+  Rect? _uvRectPx = uvRectPx;
+  int _sortOrder = sortOrder;
+  double _depthBias = depthBias;
+  bool _castGroundShadow = castGroundShadow;
+  bool _visible = visible;
+
   /// Optional 3D mesh attached to this node (`null` for pure pivot nodes).
-  Mesh3D? mesh;
+  Mesh3D? get mesh => _mesh;
+  set mesh(Mesh3D? value) {
+    if (!identical(_mesh, value)) {
+      _mesh = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Optional per-node [Material3D] override inside `BatchMeshRenderer3D`.
-  Material3D? material;
+  Material3D? get material => _material;
+  set material(Material3D? value) {
+    if (_material != value) {
+      _material = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Local X offset in parent coordinates.
-  double localX;
+  double get localX => _localX;
+  set localX(double value) {
+    if (_localX != value) {
+      _localX = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Local Y offset in parent coordinates.
-  double localY;
+  double get localY => _localY;
+  set localY(double value) {
+    if (_localY != value) {
+      _localY = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Local Z offset in parent coordinates.
-  double localZ;
+  double get localZ => _localZ;
+  set localZ(double value) {
+    if (_localZ != value) {
+      _localZ = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Local yaw around `+Z` in radians (used when [hasLocalQuaternion] is
   /// `false`).
-  double localYawRad;
+  double get localYawRad => _localYawRad;
+  set localYawRad(double value) {
+    if (_localYawRad != value) {
+      _localYawRad = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Local pitch around `+Y` in radians (used when [hasLocalQuaternion] is
   /// `false`).
-  double localPitchRad;
+  double get localPitchRad => _localPitchRad;
+  set localPitchRad(double value) {
+    if (_localPitchRad != value) {
+      _localPitchRad = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Local roll around `+X` in radians (used when [hasLocalQuaternion] is
   /// `false`).
-  double localRollRad;
+  double get localRollRad => _localRollRad;
+  set localRollRad(double value) {
+    if (_localRollRad != value) {
+      _localRollRad = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Local X scale multiplier.
-  double localScaleX;
+  double get localScaleX => _localScaleX;
+  set localScaleX(double value) {
+    if (_localScaleX != value) {
+      _localScaleX = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Local Y scale multiplier.
-  double localScaleY;
+  double get localScaleY => _localScaleY;
+  set localScaleY(double value) {
+    if (_localScaleY != value) {
+      _localScaleY = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Local Z scale multiplier.
-  double localScaleZ;
+  double get localScaleZ => _localScaleZ;
+  set localScaleZ(double value) {
+    if (_localScaleZ != value) {
+      _localScaleZ = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Base diffuse color tint for [mesh].
-  Color tint;
+  Color get tint => _tint;
+  set tint(Color value) {
+    if (_tint != value) {
+      _tint = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Opacity multiplier (`0.0 .. 1.0`), propagated multiplicatively down child
   /// nodes.
-  double opacity;
+  double get opacity => _opacity;
+  set opacity(double value) {
+    if (_opacity != value) {
+      _opacity = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Self-illumination term (`0.0 .. 1.0`).
-  double emissive;
+  double get emissive => _emissive;
+  set emissive(double value) {
+    if (_emissive != value) {
+      _emissive = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Optional atlas pixel UV sub-rectangle mapped over `mesh.uvs`.
-  Rect? uvRectPx;
+  Rect? get uvRectPx => _uvRectPx;
+  set uvRectPx(Rect? value) {
+    if (_uvRectPx != value) {
+      _uvRectPx = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Explicit render pass sort order inside `BatchMeshRenderer3D` (smaller
   /// draws behind; larger draws on top).
-  int sortOrder;
+  int get sortOrder => _sortOrder;
+  set sortOrder(int value) {
+    if (_sortOrder != value) {
+      _sortOrder = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Per-node depth sort bias added to view-space triangle depth.
-  double depthBias;
+  double get depthBias => _depthBias;
+  set depthBias(double value) {
+    if (_depthBias != value) {
+      _depthBias = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Whether this node's [mesh] casts a ground shadow.
-  bool castGroundShadow;
+  bool get castGroundShadow => _castGroundShadow;
+  set castGroundShadow(bool value) {
+    if (_castGroundShadow != value) {
+      _castGroundShadow = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Whether this node and its subtree are visible.
-  bool visible;
+  bool get visible => _visible;
+  set visible(bool value) {
+    if (_visible != value) {
+      _visible = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   bool _useQuaternion = false;
   double _qx = 0.0;
@@ -116,7 +263,6 @@ class Node3D({
   double _worldX = 0.0;
   double _worldY = 0.0;
   double _worldZ = 0.0;
-  double _worldYawRad = 0.0;
   double _worldScaleX = 1.0;
   double _worldScaleY = 1.0;
   double _worldScaleZ = 1.0;
@@ -126,6 +272,10 @@ class Node3D({
     ..[4] = 1.0
     ..[8] = 1.0;
   final Float32List _worldRot = Float32List(9)
+    ..[0] = 1.0
+    ..[4] = 1.0
+    ..[8] = 1.0;
+  final Float32List _worldLinear = Float32List(9)
     ..[0] = 1.0
     ..[4] = 1.0
     ..[8] = 1.0;
@@ -143,6 +293,9 @@ class Node3D({
   /// `(qx, qy, qz, qw)`.
   void setLocalQuaternion(double qx, double qy, double qz, double qw) {
     final (nx, ny, nz, nw) = Quaternion3D.normalize(qx, qy, qz, qw);
+    if (_useQuaternion && _qx == nx && _qy == ny && _qz == nz && _qw == nw) {
+      return;
+    }
     _qx = nx;
     _qy = ny;
     _qz = nz;
@@ -175,20 +328,41 @@ class Node3D({
   /// Computed world Z after [updateWorldTransforms].
   double get worldZ => _worldZ;
 
-  /// Computed world yaw (radians) after [updateWorldTransforms].
-  double get worldYawRad => _worldYawRad;
+  /// Heading of this node around world `+Z` in radians, in `(-pi, pi]`, after
+  /// [updateWorldTransforms]: the direction its local `+X` axis points to in
+  /// the ground plane.
+  ///
+  /// It reflects the whole world rotation, however it was composed (Euler
+  /// angles or quaternions, on this node or on its ancestors). It is `0.0`
+  /// when the local `+X` axis points straight up or down.
+  double get worldYawRad => math.atan2(_worldRot[3], _worldRot[0]);
 
-  /// Computed world X scale after [updateWorldTransforms].
+  /// Product of the X scales from the root down to this node, after
+  /// [updateWorldTransforms].
   double get worldScaleX => _worldScaleX;
 
-  /// Computed world Y scale after [updateWorldTransforms].
+  /// Product of the Y scales from the root down to this node, after
+  /// [updateWorldTransforms].
   double get worldScaleY => _worldScaleY;
 
-  /// Computed world Z scale after [updateWorldTransforms].
+  /// Product of the Z scales from the root down to this node, after
+  /// [updateWorldTransforms].
   double get worldScaleZ => _worldScaleZ;
 
-  /// Row-major `3x3` world rotation matrix computed by [updateWorldTransforms].
+  /// Row-major `3x3` world rotation matrix computed by [updateWorldTransforms]:
+  /// the product of the rotations from the root down to this node, without
+  /// any scale.
   Float32List get worldRotationMatrix => _worldRot;
+
+  /// Row-major `3x3` linear part of the exact world transform computed by
+  /// [updateWorldTransforms]: rotation and scale of this node and of all its
+  /// ancestors, including the shear a rotated child gets from a
+  /// non-uniformly scaled parent.
+  ///
+  /// Pass it as `rotationMatrix3` (with scale `1`) to
+  /// `BatchMeshRenderer3D.enqueueMesh` to draw a mesh exactly where
+  /// [worldPointForLocal] puts its vertices.
+  Float32List get worldLinearMatrix => _worldLinear;
 
   /// Transforms a point `(lx, ly, lz)` in this node's local space into 3D world
   /// coordinates `(wx, wy, wz)` using the latest [updateWorldTransforms].
@@ -197,13 +371,11 @@ class Node3D({
     double ly,
     double lz,
   ) {
-    final sx = lx * _worldScaleX;
-    final sy = ly * _worldScaleY;
-    final sz = lz * _worldScaleZ;
+    final m = _worldLinear;
     return (
-      _worldX + _worldRot[0] * sx + _worldRot[1] * sy + _worldRot[2] * sz,
-      _worldY + _worldRot[3] * sx + _worldRot[4] * sy + _worldRot[5] * sz,
-      _worldZ + _worldRot[6] * sx + _worldRot[7] * sy + _worldRot[8] * sz,
+      _worldX + m[0] * lx + m[1] * ly + m[2] * lz,
+      _worldY + m[3] * lx + m[4] * ly + m[5] * lz,
+      _worldZ + m[6] * lx + m[7] * ly + m[8] * lz,
     );
   }
 
@@ -247,39 +419,47 @@ class Node3D({
       Quaternion3D.writeMatrix3(_qx, _qy, _qz, _qw, _localRot);
     } else {
       Quaternion3D.writeEulerMatrix3(
-        yawRad: localYawRad,
-        pitchRad: localPitchRad,
-        rollRad: localRollRad,
+        yawRad: _localYawRad,
+        pitchRad: _localPitchRad,
+        rollRad: _localRollRad,
         out: _localRot,
       );
     }
 
     final p = _parent;
     if (p == null) {
-      _worldX = localX;
-      _worldY = localY;
-      _worldZ = localZ;
-      _worldYawRad = localYawRad;
-      _worldScaleX = localScaleX;
-      _worldScaleY = localScaleY;
-      _worldScaleZ = localScaleZ;
-      _worldOpacity = opacity.clamp(0.0, 1.0);
+      _worldX = _localX;
+      _worldY = _localY;
+      _worldZ = _localZ;
+      _worldScaleX = _localScaleX;
+      _worldScaleY = _localScaleY;
+      _worldScaleZ = _localScaleZ;
+      _worldOpacity = _opacity.clamp(0.0, 1.0);
       _worldRot.setRange(0, 9, _localRot);
+      _worldLinear.setRange(0, 9, _localRot);
     } else {
-      final sx = localX * p._worldScaleX;
-      final sy = localY * p._worldScaleY;
-      final sz = localZ * p._worldScaleZ;
-      final pr = p._worldRot;
-      _worldX = p._worldX + pr[0] * sx + pr[1] * sy + pr[2] * sz;
-      _worldY = p._worldY + pr[3] * sx + pr[4] * sy + pr[5] * sz;
-      _worldZ = p._worldZ + pr[6] * sx + pr[7] * sy + pr[8] * sz;
-      _worldYawRad = p._worldYawRad + localYawRad;
-      _worldScaleX = p._worldScaleX * localScaleX;
-      _worldScaleY = p._worldScaleY * localScaleY;
-      _worldScaleZ = p._worldScaleZ * localScaleZ;
-      _worldOpacity = (p._worldOpacity * opacity).clamp(0.0, 1.0);
-      Quaternion3D.multiplyMatrix3(pr, 0, _localRot, 0, _worldRot, 0);
+      final pl = p._worldLinear;
+      _worldX = p._worldX + pl[0] * _localX + pl[1] * _localY + pl[2] * _localZ;
+      _worldY = p._worldY + pl[3] * _localX + pl[4] * _localY + pl[5] * _localZ;
+      _worldZ = p._worldZ + pl[6] * _localX + pl[7] * _localY + pl[8] * _localZ;
+      _worldScaleX = p._worldScaleX * _localScaleX;
+      _worldScaleY = p._worldScaleY * _localScaleY;
+      _worldScaleZ = p._worldScaleZ * _localScaleZ;
+      _worldOpacity = (p._worldOpacity * _opacity).clamp(0.0, 1.0);
+      Quaternion3D.multiplyMatrix3(p._worldRot, 0, _localRot, 0, _worldRot, 0);
+      Quaternion3D.multiplyMatrix3(pl, 0, _localRot, 0, _worldLinear, 0);
     }
+    // Local scale acts in this node's own axes: it scales the columns.
+    final m = _worldLinear;
+    m[0] *= _localScaleX;
+    m[3] *= _localScaleX;
+    m[6] *= _localScaleX;
+    m[1] *= _localScaleY;
+    m[4] *= _localScaleY;
+    m[7] *= _localScaleY;
+    m[2] *= _localScaleZ;
+    m[5] *= _localScaleZ;
+    m[8] *= _localScaleZ;
 
     for (var i = 0; i < _children.length; i++) {
       _children[i].updateWorldTransforms();
@@ -311,10 +491,10 @@ class Node3D({
     required Offset canvasOrigin,
     required double groundZ,
   }) {
-    if (!visible || _worldOpacity <= 0.0) {
+    if (!_visible || _worldOpacity <= 0.0) {
       return;
     }
-    final m = mesh;
+    final m = _mesh;
     if (m != null) {
       renderer.enqueueMesh(
         m,
@@ -323,18 +503,16 @@ class Node3D({
         worldY: _worldY,
         worldZ: _worldZ,
         canvasOrigin: canvasOrigin,
-        scaleX: _worldScaleX,
-        scaleY: _worldScaleY,
-        scaleZ: _worldScaleZ,
-        rotationMatrix3: _worldRot,
-        tint: tint,
+        // The linear matrix already holds every scale of the chain.
+        rotationMatrix3: _worldLinear,
+        tint: _tint,
         opacity: _worldOpacity,
-        emissive: emissive,
-        uvRectPx: uvRectPx,
-        material: material,
-        sortOrder: sortOrder,
-        depthBias: depthBias,
-        castGroundShadow: castGroundShadow,
+        emissive: _emissive,
+        uvRectPx: _uvRectPx,
+        material: _material,
+        sortOrder: _sortOrder,
+        depthBias: _depthBias,
+        castGroundShadow: _castGroundShadow,
         groundZ: groundZ,
       );
     }

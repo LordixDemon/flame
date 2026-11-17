@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' show Color;
 
+import 'package:flame/src/game/game.dart';
 import 'package:meta/meta.dart';
 
 /// Immutable 3D ray in world coordinates `(x, y, z)` with unit direction
@@ -210,24 +211,88 @@ class const MeshCollider3D({
 
 /// Hemisphere + directional sun lighting configuration for
 /// `BatchMeshRenderer3D` and `StaticMeshChunk3D`.
+///
+/// Every setter (and [setDirection]) calls `Game.notifyVisualMutation` when
+/// the value really changes, so on-demand rendering repaints, and changes
+/// [computeSignature], so `StaticMeshChunk3D` re-bakes its lighting.
 class DirectionalLight3D({
   double sunDirX = -0.45,
   double sunDirY = -0.35,
   double sunDirZ = 0.82,
-  var Color sunColor = const Color(0xFFFFF4DC),
-  var Color skyColor = const Color(0xFFD6ECFF),
-  var Color groundColor = const Color(0xFF6D5D53),
-  var double ambientIntensity = 0.44,
-  var double diffuseIntensity = 0.66,
-  var double rimIntensity = 0.16,
+  Color sunColor = const Color(0xFFFFF4DC),
+  Color skyColor = const Color(0xFFD6ECFF),
+  Color groundColor = const Color(0xFF6D5D53),
+  double ambientIntensity = 0.44,
+  double diffuseIntensity = 0.66,
+  double rimIntensity = 0.16,
 }) {
   this {
-    setDirection(sunDirX, sunDirY, sunDirZ);
+    _setDirection(sunDirX, sunDirY, sunDirZ);
   }
 
   double _lx = -0.45;
   double _ly = -0.35;
   double _lz = 0.82;
+  Color _sunColor = sunColor;
+  Color _skyColor = skyColor;
+  Color _groundColor = groundColor;
+  double _ambientIntensity = ambientIntensity;
+  double _diffuseIntensity = diffuseIntensity;
+  double _rimIntensity = rimIntensity;
+
+  /// Colour of the directional (sun) light.
+  Color get sunColor => _sunColor;
+  set sunColor(Color value) {
+    if (_sunColor != value) {
+      _sunColor = value;
+      Game.notifyVisualMutation();
+    }
+  }
+
+  /// Hemisphere colour reaching surfaces that face up.
+  Color get skyColor => _skyColor;
+  set skyColor(Color value) {
+    if (_skyColor != value) {
+      _skyColor = value;
+      Game.notifyVisualMutation();
+    }
+  }
+
+  /// Hemisphere colour reaching surfaces that face down.
+  Color get groundColor => _groundColor;
+  set groundColor(Color value) {
+    if (_groundColor != value) {
+      _groundColor = value;
+      Game.notifyVisualMutation();
+    }
+  }
+
+  /// Strength of the hemisphere (ambient) term.
+  double get ambientIntensity => _ambientIntensity;
+  set ambientIntensity(double value) {
+    if (_ambientIntensity != value) {
+      _ambientIntensity = value;
+      Game.notifyVisualMutation();
+    }
+  }
+
+  /// Strength of the Lambertian sun term.
+  double get diffuseIntensity => _diffuseIntensity;
+  set diffuseIntensity(double value) {
+    if (_diffuseIntensity != value) {
+      _diffuseIntensity = value;
+      Game.notifyVisualMutation();
+    }
+  }
+
+  /// Strength of the sky-coloured view-angle rim term.
+  double get rimIntensity => _rimIntensity;
+  set rimIntensity(double value) {
+    if (_rimIntensity != value) {
+      _rimIntensity = value;
+      Game.notifyVisualMutation();
+    }
+  }
 
   /// Unit vector X pointing towards the directional light source.
   double get dirX => _lx;
@@ -240,12 +305,26 @@ class DirectionalLight3D({
 
   /// Normalizes and updates the directional light vector `(x, y, z)`.
   void setDirection(double x, double y, double z) {
-    final len = math.sqrt(x * x + y * y + z * z);
-    if (len > 1e-7) {
-      _lx = x / len;
-      _ly = y / len;
-      _lz = z / len;
+    if (_setDirection(x, y, z)) {
+      Game.notifyVisualMutation();
     }
+  }
+
+  bool _setDirection(double x, double y, double z) {
+    final len = math.sqrt(x * x + y * y + z * z);
+    if (len <= 1e-7) {
+      return false;
+    }
+    final nx = x / len;
+    final ny = y / len;
+    final nz = z / len;
+    if (nx == _lx && ny == _ly && nz == _lz) {
+      return false;
+    }
+    _lx = nx;
+    _ly = ny;
+    _lz = nz;
+    return true;
   }
 
   /// Computes a fast 31-bit state signature across light direction, colors, and
@@ -256,12 +335,12 @@ class DirectionalLight3D({
     h = 0x1fffffff & (h * 31 + (_lx * 10000).round());
     h = 0x1fffffff & (h * 31 + (_ly * 10000).round());
     h = 0x1fffffff & (h * 31 + (_lz * 10000).round());
-    h = 0x1fffffff & (h * 31 + sunColor.toARGB32());
-    h = 0x1fffffff & (h * 31 + skyColor.toARGB32());
-    h = 0x1fffffff & (h * 31 + groundColor.toARGB32());
-    h = 0x1fffffff & (h * 31 + (ambientIntensity * 1000).round());
-    h = 0x1fffffff & (h * 31 + (diffuseIntensity * 1000).round());
-    h = 0x1fffffff & (h * 31 + (rimIntensity * 1000).round());
+    h = 0x1fffffff & (h * 31 + _sunColor.toARGB32());
+    h = 0x1fffffff & (h * 31 + _skyColor.toARGB32());
+    h = 0x1fffffff & (h * 31 + _groundColor.toARGB32());
+    h = 0x1fffffff & (h * 31 + (_ambientIntensity * 1000).round());
+    h = 0x1fffffff & (h * 31 + (_diffuseIntensity * 1000).round());
+    h = 0x1fffffff & (h * 31 + (_rimIntensity * 1000).round());
     return h;
   }
 }
