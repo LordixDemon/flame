@@ -25,6 +25,11 @@ class AStarGridPathfinder({
   int _currentStamp = 0;
   int _heapSize = 0;
 
+  /// The lowest weight of any cell, which scales the heuristic so that it
+  /// never overestimates the cost of the cheapest possible step.
+  double _minWeight = 1.0;
+  bool _minWeightDirty = false;
+
   static const double _sqrt2 = 1.4142135623730951;
 
   /// Whether `(col, row)` lies inside `[0, width) * [0, height)`.
@@ -44,9 +49,14 @@ class AStarGridPathfinder({
 
   /// Sets positive traversal cost multiplier (`>= 1.0` for mud/forest, `< 1.0`
   /// for roads) at `(col, row)`.
+  ///
+  /// Paths stay shortest for any mix of weights. The search is guided by the
+  /// lowest weight on the grid, so a grid with a few very cheap cells explores
+  /// more cells per search than one with uniform weights.
   void setCellWeight(int col, int row, double weight) {
     if (inBounds(col, row) && weight > 0.0) {
       _weights[row * width + col] = weight;
+      _minWeightDirty = true;
     }
   }
 
@@ -54,6 +64,23 @@ class AStarGridPathfinder({
   void resetGrid() {
     _blocked.fillRange(0, _blocked.length, 0);
     _weights.fillRange(0, _weights.length, 1.0);
+    _minWeight = 1.0;
+    _minWeightDirty = false;
+  }
+
+  void _refreshMinWeight() {
+    if (!_minWeightDirty) {
+      return;
+    }
+    var lowest = double.infinity;
+    for (var i = 0; i < _weights.length; i++) {
+      final weight = _weights[i];
+      if (weight < lowest) {
+        lowest = weight;
+      }
+    }
+    _minWeight = lowest.isFinite ? lowest : 1.0;
+    _minWeightDirty = false;
   }
 
   /// Computes a shortest path from [start] to [goal] (including both endpoints)
@@ -83,6 +110,8 @@ class AStarGridPathfinder({
       outPath.add(start);
       return true;
     }
+
+    _refreshMinWeight();
 
     // Advance stamp by 2: `stamp + 1` = open, `stamp + 2` = closed.
     _currentStamp += 2;
@@ -212,14 +241,17 @@ class AStarGridPathfinder({
     }
   }
 
+  /// A lower bound of the cost from `(x0, y0)` to `(x1, y1)`: the number of
+  /// steps on an empty grid, each at the lowest weight there is. Being a lower
+  /// bound (and consistent) is what makes the first path found the shortest.
   double _heuristic(int x0, int y0, int x1, int y1) {
     final dx = (x0 - x1).abs().toDouble();
     final dy = (y0 - y1).abs().toDouble();
     if (!allowDiagonal) {
-      return dx + dy;
+      return (dx + dy) * _minWeight;
     }
     // Octile heuristic.
-    return (dx + dy) + (_sqrt2 - 2.0) * math.min(dx, dy);
+    return ((dx + dy) + (_sqrt2 - 2.0) * math.min(dx, dy)) * _minWeight;
   }
 
   void _reconstructPath(int goalIdx, int elevation, List<GridCell> out) {
