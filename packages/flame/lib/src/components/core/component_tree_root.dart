@@ -83,6 +83,31 @@ class ComponentTreeRoot({
     _notifyLifecycleEventMutation();
   }
 
+  /// Whether an ADD event for [child] into [parent] is waiting in the queue.
+  ///
+  /// Safe to call while [processLifecycleEvents] is iterating over the queue.
+  bool _hasPendingAdd(Component child, Component parent) {
+    return queue.firstWhereOrNull(
+          (event) =>
+              event.kind == LifecycleEventKind.add &&
+              event.child == child &&
+              event.parent == parent,
+        ) !=
+        null;
+  }
+
+  /// Cancels the pending ADD event for [child] into [parent], if there is
+  /// one; returns whether an event was cancelled.
+  ///
+  /// Safe to call while [processLifecycleEvents] is iterating over the queue.
+  bool _dequeueAddIfPending(Component child, Component parent) {
+    if (!_hasPendingAdd(child, parent)) {
+      return false;
+    }
+    _dequeueAdd(child, parent);
+    return true;
+  }
+
   void _enqueueRemove(Component child, Component parent) {
     queue.addLast()
       ..kind = LifecycleEventKind.remove
@@ -139,7 +164,28 @@ class ComponentTreeRoot({
       ..kind = LifecycleEventKind.move
       ..child = child
       ..parent = newParent;
+    _pendingMoveEvents++;
     _notifyLifecycleEventMutation();
+  }
+
+  /// The number of MOVE events that are waiting in the queue. Lets
+  /// [_hasPendingMove] answer without scanning the queue in the common case
+  /// where nothing is being re-parented.
+  int _pendingMoveEvents = 0;
+
+  /// Whether a MOVE event for [child] is waiting in the queue, in other words
+  /// whether [child] is about to be mounted under a new parent.
+  ///
+  /// Safe to call while [processLifecycleEvents] is iterating over the queue.
+  bool _hasPendingMove(Component child) {
+    if (_pendingMoveEvents == 0) {
+      return false;
+    }
+    return queue.firstWhereOrNull(
+          (event) =>
+              event.kind == LifecycleEventKind.move && event.child == child,
+        ) !=
+        null;
   }
 
   void _enqueuePriorityChange(
@@ -163,6 +209,10 @@ class ComponentTreeRoot({
   /// Mounted [HasFixedUpdate] components with [Component.ticksEnabled] set.
   final List<HasFixedUpdate> _fixedUpdateList = [];
 
+  /// The [World]s whose subtree is updated through [_flatUpdateList]. Their
+  /// event buses are drained at the end of [updateChildrenFlat].
+  final List<World> _flatWorlds = [];
+
   /// The [ComponentList._structureVersion] that [_flatUpdateList] was built
   /// against.
   int _flatVersion = -1;
@@ -184,6 +234,7 @@ class ComponentTreeRoot({
       final comp = _fixedUpdateList[i];
       if (comp is FixedTransformInterpolation &&
           comp.ticksEnabled &&
+          comp.wasSteppedInFixedPass(_fixedUpdatePassCount) &&
           comp.hasPendingFixedInterpolationDelta) {
         return true;
       }
@@ -207,9 +258,20 @@ class ComponentTreeRoot({
       _flatRebuildCount++;
       _flatUpdateList.clear();
       _fixedUpdateList.clear();
-      _collectFlatListsInto(_flatUpdateList, _fixedUpdateList);
+      _flatWorlds.clear();
+      _collectFlatListsInto(_flatUpdateList, _fixedUpdateList, _flatWorlds);
     }
   }
+
+  int _fixedUpdatePassCount = 0;
+
+  /// The number of fixed-step passes that [runFixedUpdatePass] has run so far.
+  ///
+  /// `FixedTransformInterpolation` compares it with the pass in which a
+  /// component last stepped, to tell a body that is moving from one whose
+  /// fixed step is currently skipped.
+  @internal
+  int get fixedUpdatePassCount => _fixedUpdatePassCount;
 
   /// Runs one deterministic fixed-step simulation pass of [fixedDt] seconds
   /// across all active [HasFixedUpdate] components, scaling `fixedDt` by any
@@ -218,12 +280,13 @@ class ComponentTreeRoot({
   @internal
   void runFixedUpdatePass(double fixedDt) {
     ensureFlatUpdateLists();
+    _fixedUpdatePassCount++;
     for (final component in _fixedUpdateList) {
       if (component.ticksEnabled) {
         final scale = _subtreeTimeScaleBelowRoot(component);
         if (scale > 0.0) {
           if (component is FixedTransformInterpolation) {
-            component.capturePreFixedState();
+            component.capturePreFixedState(_fixedUpdatePassCount);
           }
           component.fixedUpdate(fixedDt * scale);
         }
@@ -250,10 +313,18 @@ class ComponentTreeRoot({
   /// Updates every active component below this root using the flattened
   /// traversal list, rebuilding the list first when the tree structure has
   /// possibly changed since the previous tick.
+  ///
+  /// Afterwards the deferred events of every [World] in that list are
+  /// delivered, which is the end of the update of those worlds.
   @internal
   void updateChildrenFlat(double dt) {
     ensureFlatUpdateLists();
     Component._updateFlatList(_flatUpdateList, dt);
+    // Indexed loop: a listener may change the tree, but the list itself is
+    // only rebuilt by the next [ensureFlatUpdateLists].
+    for (var i = 0; i < _flatWorlds.length; i++) {
+      _flatWorlds[i].flushEventBusIfPending();
+    }
   }
 
   /// A future that will complete once all lifecycle events have been
@@ -337,7 +408,8 @@ class ComponentTreeRoot({
           continue;
         }
 
-        final status = switch (event.kind) {
+        final kind = event.kind;
+        final status = switch (kind) {
           LifecycleEventKind.add => child._handleLifecycleEventAdd(parent),
           LifecycleEventKind.remove => child._handleLifecycleEventRemove(
             parent,
@@ -346,6 +418,12 @@ class ComponentTreeRoot({
           LifecycleEventKind.rebalance => handleReorderEvent(parent),
           LifecycleEventKind.unknown => _LifecycleEventStatus.done,
         };
+        if (kind == LifecycleEventKind.move) {
+          // A move is always carried out on the spot, see
+          // [Component._handleLifecycleEventMove].
+          assert(status == _LifecycleEventStatus.done);
+          _pendingMoveEvents--;
+        }
 
         switch (status) {
           case _LifecycleEventStatus.done:

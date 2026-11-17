@@ -48,6 +48,14 @@ class const StateTransitionRule<S, E>({
 /// Hierarchical & pushdown Finite State Machine (`HFSM`) supporting explicit
 /// `onEnter` / `onUpdate` / `onExit` hooks, parent state chains, guarded event
 /// transitions, and a push/pop state stack (e.g. `Moving -> Stunned -> Moving`).
+///
+/// Transitions run to completion. A transition that is requested from inside
+/// an `onEnter` or `onExit` hook, or from the [onStateChanged] observer, does
+/// not interrupt the one in progress: it is queued and carried out right
+/// after it, before the outermost [transitionTo], [dispatch], [pushState],
+/// [popState] or [start] call returns. Every state that is entered is
+/// therefore exited before another branch is entered, and [onStateChanged]
+/// reports the changes in the order in which they happen.
 class StateMachine<S, E>({
   required S initialState,
   Iterable<StateNode<S>> states = const [],
@@ -71,6 +79,17 @@ class StateMachine<S, E>({
   S _current = initialState;
   double _stateElapsed = 0.0;
   bool _started = false;
+
+  /// Whether the hooks of a transition (or of [start]) are running.
+  bool _inTransition = false;
+
+  /// Transitions requested while [_inTransition], oldest first.
+  final List<(S, bool)> _pendingTransitions = <(S, bool)>[];
+
+  /// Upper bound for the transitions that hooks may chain onto one request,
+  /// so that two states which keep redirecting to each other fail loudly
+  /// instead of spinning forever.
+  static const int _maxChainedTransitions = 256;
 
   /// Active leaf state identifier.
   S get currentState => _current;
@@ -104,21 +123,26 @@ class StateMachine<S, E>({
   }
 
   /// Ensures `onEnter` has fired for the initial state chain.
+  ///
+  /// A transition that one of those hooks requests is carried out once the
+  /// whole chain, from the root ancestor down to the initial state, has been
+  /// entered.
   void start() {
     if (_started) {
       return;
     }
     _started = true;
     _stateElapsed = 0.0;
-    final bootState = _current;
-    _collectAncestors(bootState, _startAncestorsScratch);
-    // Enter from root ancestor down to leaf (aborting chain if an onEnter
-    // hook immediately triggers a nested transition).
-    for (var i = _startAncestorsScratch.length - 1; i >= 0; i--) {
-      if (_current != bootState) {
-        break;
+    _collectAncestors(_current, _startAncestorsScratch);
+    _inTransition = true;
+    try {
+      for (var i = _startAncestorsScratch.length - 1; i >= 0; i--) {
+        _states[_startAncestorsScratch[i]]?.onEnter?.call(null);
       }
-      _states[_startAncestorsScratch[i]]?.onEnter?.call(null);
+      _drainPendingTransitions();
+    } finally {
+      _inTransition = false;
+      _pendingTransitions.clear();
     }
   }
 
@@ -129,21 +153,58 @@ class StateMachine<S, E>({
       return true;
     }
     var cursor = _states[_current]?.parent;
-    while (cursor != null) {
+    var guard = 0;
+    while (cursor != null && guard < _maxDepth) {
       if (cursor == state) {
         return true;
       }
       cursor = _states[cursor]?.parent;
+      guard++;
     }
     return false;
   }
 
   /// Transitions to [nextState], exiting only the non-shared branch and
   /// entering only the newly activated branch of a hierarchical state tree.
+  ///
+  /// Returns whether the state changed (or, with [allowSelfTransition], was
+  /// re-entered). When called while another transition is in progress (from
+  /// one of its hooks or from [onStateChanged]) the request is queued, runs
+  /// right after that transition and `true` is returned.
   bool transitionTo(S nextState, {bool allowSelfTransition = false}) {
     if (!_started) {
       start();
     }
+    if (_inTransition) {
+      _pendingTransitions.add((nextState, allowSelfTransition));
+      return true;
+    }
+    _inTransition = true;
+    try {
+      final changed = _performTransition(nextState, allowSelfTransition);
+      _drainPendingTransitions();
+      return changed;
+    } finally {
+      _inTransition = false;
+      _pendingTransitions.clear();
+    }
+  }
+
+  void _drainPendingTransitions() {
+    var chained = 0;
+    while (_pendingTransitions.isNotEmpty) {
+      if (++chained > _maxChainedTransitions) {
+        throw StateError(
+          'More than $_maxChainedTransitions transitions were chained from '
+          'state hooks: the hooks keep redirecting to each other',
+        );
+      }
+      final (next, allowSelf) = _pendingTransitions.removeAt(0);
+      _performTransition(next, allowSelf);
+    }
+  }
+
+  bool _performTransition(S nextState, bool allowSelfTransition) {
     if (_current == nextState && !allowSelfTransition) {
       return false;
     }
@@ -256,11 +317,15 @@ class StateMachine<S, E>({
     }
   }
 
+  /// Deepest parent chain that is followed, which also bounds the walk over
+  /// a parent chain that (by mistake) forms a cycle.
+  static const int _maxDepth = 32;
+
   void _collectAncestors(S leaf, List<S> out) {
     out.clear();
     S? cursor = leaf;
     var guard = 0;
-    while (cursor != null && guard < 32) {
+    while (cursor != null && guard < _maxDepth) {
       out.add(cursor);
       cursor = _states[cursor]?.parent;
       guard++;

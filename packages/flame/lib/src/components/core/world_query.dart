@@ -2,6 +2,7 @@ import 'dart:collection';
 
 import 'package:flame/src/components/core/component.dart';
 import 'package:flame/src/components/mixins/has_tags.dart';
+import 'package:meta/meta.dart';
 
 /// Cached, multi-constraint reactive entity query (`O(1)` read access,
 /// incremental `O(1)` membership maintenance on child add/remove) supporting
@@ -124,6 +125,17 @@ class WorldQuery<T extends Component>({
     } else if (child is T && _matchedSet.remove(child)) {
       _matched.remove(child);
       onUnmatched?.call(child);
+    }
+  }
+
+  /// Drops every matched component, firing [onUnmatched] for each of them.
+  /// Used when the world that feeds this query is removed from the tree.
+  @internal
+  void handleSourceUnmounted() {
+    for (var i = _matched.length - 1; i >= 0; i--) {
+      final dropped = _matched.removeAt(i);
+      _matchedSet.remove(dropped);
+      onUnmatched?.call(dropped);
     }
   }
 

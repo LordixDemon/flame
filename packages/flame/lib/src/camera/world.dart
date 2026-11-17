@@ -80,8 +80,11 @@ class World({
   }
 
   /// Scoped typed event bus for components inside this world. Any events queued
-  /// via [WorldEventBus.enqueue] are automatically drained at the end of
-  /// [updateTree].
+  /// via [WorldEventBus.enqueue] are automatically drained at the end of the
+  /// update of this world: after the game's update pass for a world that is
+  /// mounted in the game (the primary world as well as any additional one),
+  /// or at the end of [updateTree] for a world that is updated on its own or
+  /// from below a `CustomTraversal` component.
   WorldEventBus get eventBus => _eventBus ??= WorldEventBus();
 
   /// Registers and populates a reactive [WorldQuery] maintained incrementally
@@ -184,6 +187,21 @@ class World({
         if (q.includeSubtree || isDirect) {
           q.handleChildChanged(descendant, ChildrenChangeType.added);
         }
+      }
+    }
+  }
+
+  /// Internal lifecycle notification invoked when this world itself leaves
+  /// the component tree: its descendants are unmounted with it, so they drop
+  /// out of every registered [WorldQuery] (and match again when the world is
+  /// mounted back).
+  @internal
+  void handleWorldUnmounted() {
+    _spatialIndex?.markMembershipDirty();
+    final queries = _queries;
+    if (queries != null) {
+      for (var i = 0; i < queries.length; i++) {
+        queries[i].handleSourceUnmounted();
       }
     }
   }

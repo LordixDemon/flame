@@ -10,6 +10,11 @@ class _ListenableBinding({
   required final bool fireImmediately,
   required final bool coalescePerFrame,
   required final bool notifyGameActivity,
+
+  /// Whether the binding was registered while its owner was mounting (from
+  /// `onMount`): such a binding lasts until the owner is removed and is
+  /// registered anew by the next `onMount`.
+  required final bool mountScoped,
 }) {
   VoidCallback? _attachedListener;
   bool _dirtyThisFrame = false;
@@ -59,14 +64,23 @@ class _ListenableBinding({
 /// Lifecycle-safe reactive subscription mixin for Flame [Component]s.
 ///
 /// Automatically attaches registered [Listenable] / [ValueListenable]
-/// listeners on [onMount] (or immediately if already mounted), detaches every
-/// listener deterministically in [onRemove] so components can be mounted,
-/// removed, and re-mounted without leaking callbacks, optionally coalesces
-/// rapid multiple mutations within a frame into a single callback invocation,
-/// and wakes adaptive game loops via `findGame()?.notifyActivity()`.
+/// listeners on [onMount] (or immediately if the component is mounted or in
+/// the middle of mounting, so `listenTo` may be called from `onMount` as
+/// well), detaches every listener deterministically in [onRemove] so
+/// components can be mounted, removed, and re-mounted without leaking
+/// callbacks, optionally coalesces rapid multiple mutations within a frame
+/// into a single callback invocation, and wakes adaptive game loops via
+/// `findGame()?.notifyActivity()`.
+///
+/// A subscription that is registered from the constructor, from `onLoad` or
+/// while the component is mounted lives as long as the component: it is
+/// re-attached on every mount. A subscription that is registered from
+/// `onMount` lasts until the component is removed, and is registered again by
+/// the next `onMount`.
 mixin HasListenableSubscriptions on Component {
   final List<_ListenableBinding> _bindings = <_ListenableBinding>[];
-  final List<_ListenableBinding> _coalescedPending = <_ListenableBinding>[];
+  List<_ListenableBinding> _coalescedPending = <_ListenableBinding>[];
+  List<_ListenableBinding> _coalescedFlushing = <_ListenableBinding>[];
   bool _postFrameScheduled = false;
 
   /// Number of active listener subscriptions currently attached to their
@@ -89,7 +103,8 @@ mixin HasListenableSubscriptions on Component {
   ///   as soon as the component mounts (or immediately if already mounted).
   /// - [coalescePerFrame]: batches multiple notifications within the same frame
   ///   into a single [onChanged] call flushed via [flushCoalescedSubscriptions]
-  ///   (and automatically on the next frame boundary).
+  ///   (and automatically on the next frame boundary). Off by default: every
+  ///   notification then invokes [onChanged] synchronously.
   /// - [notifyGameActivity]: calls `findGame()?.notifyActivity()` so
   ///   idle-throttled adaptive game loops wake immediately on state changes.
   void listenTo<T>(
@@ -105,9 +120,12 @@ mixin HasListenableSubscriptions on Component {
       fireImmediately: fireImmediately,
       coalescePerFrame: coalescePerFrame,
       notifyGameActivity: notifyGameActivity,
+      mountScoped: isMounting,
     );
     _bindings.add(binding);
-    if (isMounted) {
+    // `isMounting` covers a registration made from `onMount`: the mounted
+    // state is only set after `onMount` has returned.
+    if (isMounted || isMounting) {
       binding.attach(this);
     }
   }
@@ -128,9 +146,12 @@ mixin HasListenableSubscriptions on Component {
       fireImmediately: fireImmediately,
       coalescePerFrame: coalescePerFrame,
       notifyGameActivity: notifyGameActivity,
+      mountScoped: isMounting,
     );
     _bindings.add(binding);
-    if (isMounted) {
+    // `isMounting` covers a registration made from `onMount`: the mounted
+    // state is only set after `onMount` has returned.
+    if (isMounted || isMounting) {
       binding.attach(this);
     }
   }
@@ -155,11 +176,16 @@ mixin HasListenableSubscriptions on Component {
     if (_coalescedPending.isEmpty) {
       return;
     }
-    final count = _coalescedPending.length;
-    for (var i = 0; i < count; i++) {
-      _coalescedPending[i].flushIfDirty();
+    // The batch is swapped out before it is delivered: a callback may notify
+    // again (queued for the next flush), clear the subscriptions or get this
+    // component removed without disturbing the loop.
+    final batch = _coalescedPending;
+    _coalescedPending = _coalescedFlushing;
+    _coalescedFlushing = batch;
+    for (var i = 0; i < batch.length; i++) {
+      batch[i].flushIfDirty();
     }
-    _coalescedPending.removeRange(0, count);
+    batch.clear();
   }
 
   /// Detaches and removes all registered subscriptions permanently.
@@ -169,6 +195,7 @@ mixin HasListenableSubscriptions on Component {
     }
     _bindings.clear();
     _coalescedPending.clear();
+    _coalescedFlushing.clear();
   }
 
   @mustCallSuper
@@ -192,9 +219,14 @@ mixin HasListenableSubscriptions on Component {
   @mustCallSuper
   @override
   void onRemove() {
+    var kept = 0;
     for (var i = 0; i < _bindings.length; i++) {
-      _bindings[i].detach();
+      final binding = _bindings[i]..detach();
+      if (!binding.mountScoped) {
+        _bindings[kept++] = binding;
+      }
     }
+    _bindings.length = kept;
     _coalescedPending.clear();
     super.onRemove();
   }

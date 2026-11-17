@@ -13,6 +13,11 @@ class _DeferredBusBinding<T extends Object>(
 
 /// Lifecycle-safe mixin attaching [Signal] and [WorldEventBus] listeners in
 /// [onMount] and automatically cancelling them in [onRemove].
+///
+/// A subscription that is requested before the component mounts (from its
+/// constructor or from `onLoad`) is attached on every mount. One that is
+/// requested while the component is mounting or mounted (from `onMount` or
+/// later) is attached at once and lasts until the component is removed.
 mixin HasEventBusSubscriptions on Component {
   final List<SignalSubscription> _activeSubs = <SignalSubscription>[];
   final List<_DeferredBusBinding<dynamic>> _deferredBindings =
@@ -27,6 +32,10 @@ mixin HasEventBusSubscriptions on Component {
 
   /// Subscribes to `T` on [bus] (or the enclosing `World.eventBus` when [bus]
   /// is omitted). Safe to call in constructors, `onLoad`, or `onMount`.
+  ///
+  /// Without a [bus], a component that is not inside a `World` when the
+  /// subscription is attached has no bus to listen to, and nothing is
+  /// subscribed.
   void listenEvent<T extends Object>(
     void Function(T event) listener, {
     WorldEventBus? bus,
