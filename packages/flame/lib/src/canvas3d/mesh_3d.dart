@@ -1364,8 +1364,8 @@ class Mesh3D({
       throw ArgumentError.value(
         value,
         name,
-        'Mesh3D.$generator needs a finite ${allowNegative ? '' : 'non-negative '}'
-        'value',
+        'Mesh3D.$generator needs a finite '
+        '${allowNegative ? '' : 'non-negative '}value',
       );
     }
   }

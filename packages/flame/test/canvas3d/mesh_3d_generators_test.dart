@@ -71,7 +71,8 @@ void _expectUvsInUnitSquare(Mesh3D m) {
   }
 }
 
-/// Every vertex normal points away from [axisPointOf]'s interior point.
+/// Every vertex normal points away from the interior point returned by
+/// [interiorPointOf].
 void _expectPointsAwayFrom(
   Mesh3D m,
   List<double> Function(double x, double y, double z) interiorPointOf,
@@ -197,7 +198,7 @@ void main() {
 
   group('Mesh3D.cylinder', () {
     test('counts, bounds and uvs', () {
-      final m = Mesh3D.cylinder(radiusTop: 0.4, radiusBottom: 0.5, baseZ: 1);
+      final m = Mesh3D.cylinder(radiusTop: 0.4, baseZ: 1);
       expect(m.vertexCount, 2 * 17 + 17 + 17);
       expect(m.triangleCount, 4 * 16);
       expect(m.minX, closeTo(-0.5, 1e-6));
@@ -260,7 +261,7 @@ void main() {
 
   group('Mesh3D.cone', () {
     test('counts and bounds', () {
-      final m = Mesh3D.cone(radius: 0.5, height: 2, segments: 10, baseZ: -1);
+      final m = Mesh3D.cone(height: 2, segments: 10, baseZ: -1);
       expect(m.vertexCount, 11 + 10 + 11);
       expect(m.triangleCount, 20);
       expect(m.minZ, closeTo(-1, 1e-6));
