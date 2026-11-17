@@ -28,11 +28,21 @@ mixin CameraBillboard on PositionComponent {
   /// Maximum world-space inverse scale factor applied around [position].
   double maxBillboardScale = 2.5;
 
-  /// When `true`, counter-rotates by `-camera.viewfinder.angle` around
-  /// [position] so labels always stay upright on screen.
+  /// When `true`, cancels the camera rotation around [position] so labels
+  /// always stay upright on screen.
+  ///
+  /// The world is drawn rotated by `-camera.viewfinder.angle`, so the
+  /// billboard rotates its own canvas by `+camera.viewfinder.angle`.
   bool compensateCameraRotation = true;
 
   double _lastBillboardScale = 1.0;
+
+  // Scale and rotation that this mixin currently applies around [position]
+  // while its subtree renders (identity outside of [renderTree]). Read by
+  // [ViewportClampedPin] when it is mixed in before [CameraBillboard] and so
+  // renders inside the billboard's frame.
+  double _appliedBillboardScale = 1.0;
+  double _appliedBillboardAngle = 0.0;
 
   /// World-space inverse scale factor computed during the most recent render.
   double get lastBillboardScale => _lastBillboardScale;
@@ -71,20 +81,39 @@ mixin CameraBillboard on PositionComponent {
     canvas.save();
     canvas.translate(px, py);
     if (camAngle.abs() >= 1e-5) {
-      canvas.rotate(-camAngle);
+      // `viewfinder.angle` is the negated canvas rotation of the world, so
+      // the same (positive) angle undoes it.
+      canvas.rotate(camAngle);
     }
     if ((invScale - 1.0).abs() >= 1e-5) {
       canvas.scale(invScale, invScale);
     }
     canvas.translate(-px, -py);
-    super.renderTree(canvas);
-    canvas.restore();
+    _appliedBillboardScale = invScale;
+    _appliedBillboardAngle = camAngle;
+    try {
+      super.renderTree(canvas);
+    } finally {
+      _appliedBillboardScale = 1.0;
+      _appliedBillboardAngle = 0.0;
+      canvas.restore();
+    }
   }
 }
 
-/// Keeps a world-space [PositionComponent] (such as a rooftop tooltip, hover
-/// inspect card, or offscreen objective indicator) clamped inside the active
-/// camera's visible world viewport inset by [viewportPinMargin].
+/// Keeps a world-anchored [PositionComponent] (such as a rooftop tooltip,
+/// hover inspect card, or offscreen objective indicator) clamped inside the
+/// active camera's visible world viewport inset by [viewportPinMargin].
+///
+/// The pin may be a direct child of the `World` or hang off any chain of
+/// positioned, scaled or rotated [PositionComponent] ancestors (for example a
+/// speech bubble that is a child of a moving character): its box is measured
+/// in world coordinates and the correction is converted back into the frame
+/// the pin is drawn in. Only rendering is shifted; [position] and hit-testing
+/// are left untouched.
+///
+/// Combined with [CameraBillboard] the two mixins can be applied in either
+/// order.
 mixin ViewportClampedPin on PositionComponent {
   /// Whether viewport clamping is active during rendering.
   bool viewportPinEnabled = true;
@@ -141,6 +170,17 @@ mixin ViewportClampedPin on PositionComponent {
     return Offset(dx, dy);
   }
 
+  PositionComponent? _nearestPositionAncestor() {
+    var cursor = parent;
+    while (cursor != null) {
+      if (cursor is PositionComponent) {
+        return cursor;
+      }
+      cursor = cursor.parent;
+    }
+    return null;
+  }
+
   @override
   void renderTree(Canvas canvas) {
     final camera = CameraComponent.currentCamera;
@@ -160,13 +200,29 @@ mixin ViewportClampedPin on PositionComponent {
         camera.viewfinder.zoom,
       );
     }
-    final effW = size.x * scale.x.abs() * extraScale;
-    final effH = size.y * scale.y.abs() * extraScale;
-    final worldRect = Rect.fromLTWH(
-      position.x - anchor.x * effW,
-      position.y - anchor.y * effH,
-      effW,
-      effH,
+
+    // The box this pin covers in WORLD coordinates. `position` lives in the
+    // frame of the nearest positioned ancestor, so it goes through that
+    // ancestor's world matrix; a billboard additionally grows or shrinks the
+    // box around the anchor point.
+    final ancestor = _nearestPositionAncestor();
+    final frame = ancestor?.worldTransformMatrix;
+    final m00 = frame?.m00 ?? 1.0;
+    final m01 = frame?.m01 ?? 0.0;
+    final m10 = frame?.m10 ?? 0.0;
+    final m11 = frame?.m11 ?? 1.0;
+    final anchorWorldX = frame == null
+        ? position.x
+        : frame.transformX(position.x, position.y);
+    final anchorWorldY = frame == null
+        ? position.y
+        : frame.transformY(position.x, position.y);
+    final box = toAbsoluteRect();
+    final worldRect = Rect.fromLTRB(
+      anchorWorldX + (box.left - anchorWorldX) * extraScale,
+      anchorWorldY + (box.top - anchorWorldY) * extraScale,
+      anchorWorldX + (box.right - anchorWorldX) * extraScale,
+      anchorWorldY + (box.bottom - anchorWorldY) * extraScale,
     );
 
     final delta = computeClampOffset(
@@ -180,8 +236,38 @@ mixin ViewportClampedPin on PositionComponent {
       return;
     }
 
+    // Bring the world-space correction into the frame the canvas is in right
+    // now: first the parent frame (inverse of its linear part) ...
+    var localDx = delta.dx;
+    var localDy = delta.dy;
+    final det = m00 * m11 - m01 * m10;
+    if (frame != null && det.abs() > 1e-15) {
+      final invDet = 1.0 / det;
+      localDx = (delta.dx * m11 - delta.dy * m10) * invDet;
+      localDy = (delta.dy * m00 - delta.dx * m01) * invDet;
+    }
+    // ... then, when a `CameraBillboard` mixed in after this mixin has already
+    // scaled and rotated the canvas around `position`, its frame as well.
+    if (this is CameraBillboard) {
+      final billboard = this as CameraBillboard;
+      final appliedScale = billboard._appliedBillboardScale;
+      final appliedAngle = billboard._appliedBillboardAngle;
+      if (appliedAngle != 0.0) {
+        final cosA = math.cos(appliedAngle);
+        final sinA = math.sin(appliedAngle);
+        final rx = localDx * cosA + localDy * sinA;
+        final ry = localDy * cosA - localDx * sinA;
+        localDx = rx;
+        localDy = ry;
+      }
+      if (appliedScale != 1.0 && appliedScale > 1e-9) {
+        localDx /= appliedScale;
+        localDy /= appliedScale;
+      }
+    }
+
     canvas.save();
-    canvas.translate(delta.dx, delta.dy);
+    canvas.translate(localDx, localDy);
     super.renderTree(canvas);
     canvas.restore();
   }

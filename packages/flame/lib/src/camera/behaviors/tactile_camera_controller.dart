@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flame/camera.dart';
@@ -122,11 +123,16 @@ class TactileCameraController({
 
   /// Advances spring snap-back by [dt] seconds when [reset] has been requested
   /// and no gesture is active.
+  ///
+  /// Pan and zoom decay towards neutral as `exp(-returnSpringRate * t)`,
+  /// independently of how the elapsed time is split into frames.
   void update(double dt) {
     if (!_returning || _gestureActive || dt <= 0.0) {
       return;
     }
-    final k = (dt * returnSpringRate).clamp(0.0, 1.0);
+    // Exact exponential decay: the same curve at any frame rate, and a long
+    // frame never overshoots or teleports the camera home.
+    final k = 1.0 - math.exp(-dt * returnSpringRate);
     _panX += (0.0 - _panX) * k;
     _panY += (0.0 - _panY) * k;
     _zoomFactor += (1.0 - _zoomFactor) * k;
