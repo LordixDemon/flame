@@ -119,8 +119,8 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
   `ColorGradingPostProcess` & `OutlineDecorator`**: Ready-to-use `PostProcessStage` implementations
   and selection silhouette decorator requiring zero external `.frag` shader asset files.
 - **`Mesh3D` UV Coordinates, `Node3D` & `Decal3D`**: Textured `Mesh3D` UV channels (`plane`, `box`,
-  `fromDMeshBytes` `DM3D` v1/v2) batched through `BatchMeshRenderer3D` (`textureShader` +
-  `uvRectPx`), hierarchical TRS `Node3D` scene transforms, and projected ground `Decal3D` quads.
+  `uvSphere`, `cylinder`, `cone`, `torus`, `extrudePolygon`) batched through `BatchMeshRenderer3D`
+  (`textureShader` + `uvRectPx`), hierarchical TRS `Node3D` scene transforms, and projected ground `Decal3D` quads.
 
 ---
 

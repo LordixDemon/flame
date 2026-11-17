@@ -16,39 +16,68 @@ import 'package:flame/canvas3d.dart';
 ## CameraRig3D and DirectionalLight3D
 
 `CameraRig3D` projects 3D world coordinates `(x, y, z)` (with `Z` up) onto Flame's 2D world canvas
-via orthographic/axonometric tilt (`pitchDeg`, `yawDeg`, `pixelsPerUnit`) with optional perspective
-foreshortening (`perspective`), and unprojects 2D canvas coordinates back into `Ray3D` world rays.
+and unprojects 2D canvas points back into `Ray3D` world rays. It has two modes
+(`CameraProjectionMode3D`):
 
-`CameraRig3D.basisVersion` increments only when camera orientation, scale, or perspective changes
-(never on pure 2D camera pans `camWorldX` / `camWorldY`), while `DirectionalLight3D.version`
-increments whenever light direction, intensity, ambient, or hemisphere parameters change.
+- `axonometric` (default): the fixed `2:1` isometric lattice of `gridToScreen`. Every drawn object
+  has a ground anchor on that lattice; `orbitYawDeltaRad` and `pitchDeltaRad` (set through
+  `update(orbitYawDelta:, pitchDelta:)`, clamped to small ranges) tilt each object about its own
+  anchor. The ground lattice itself does not move, so these deltas are a sway, not an orbit.
+- `perspective`: a true pinhole camera (`fovYRad`, `cameraDistance`, `nearClip`) in which the deltas
+  turn the whole scene about the look-at target, and `unprojectWorldRay` is the exact inverse of
+  `projectWorldPoint`.
+
+`CameraRig3D.basisVersion` increments only when the projection mode, orientation, field of view,
+distance, or near clip changes, never on pure 2D camera pans (`camWorldX` / `camWorldY`) or on
+`camZoom`. `StaticMeshChunk3D` tracks pan and zoom separately. `DirectionalLight3D` has no version
+counter: `computeSignature()` hashes its direction, colors, and intensities, and changes to it make
+`StaticMeshChunk3D` re-bake its lighting.
 
 ```dart
-final camera3d = CameraRig3D(
-  pitchDeg: 55.0,
-  yawDeg: -45.0,
-  pixelsPerUnit: 32.0,
-  perspective: 0.0012,
+final camera3d = CameraRig3D(); // axonometric, 2:1 isometric at rest
+
+final perspectiveCamera = CameraRig3D(
+  projectionMode: CameraProjectionMode3D.perspective,
+  fovYRad: 45 * math.pi / 180,
+  cameraDistance: 18.0,
+  nearClip: 0.25,
 );
 
+camera3d.update(camX: 0, camY: 0, zoom: 1.0, orbitYawDelta: 0.1, pitchDelta: 0.05);
+
 final sunLight = DirectionalLight3D(
-  dirX: -0.45,
-  dirY: -0.60,
-  dirZ: 0.66,
-  intensity: 1.15,
-  ambient: 0.35,
+  sunDirX: -0.45,
+  sunDirY: -0.35,
+  sunDirZ: 0.82,
+  ambientIntensity: 0.44,
+  diffuseIntensity: 0.66,
+  rimIntensity: 0.16,
 );
 ```
 
+The lighting model per vertex is a Lambertian directional term, a sky/ground hemisphere ambient
+term, a view-angle Fresnel-style rim term, optional `PointLight3D` contributions and fog. There is
+no specular term.
 
-## Mesh3D and Procedural / Binary `.dmesh` Geometry
 
-`Mesh3D` stores indexed 3D triangle geometry in flat `Float32List` / `Uint16List` buffers with
-automatic smooth or flat face normals and precomputed local `Aabb3D` bounds:
+## Mesh3D and Procedural Geometry
 
-- Built-in generators: `Mesh3D.box(...)`, `Mesh3D.cylinder(...)`, `Mesh3D.cone(...)`,
-  `Mesh3D.uvSphere(...)`, `Mesh3D.torus(...)`, and `Mesh3D.extrudePolygon(...)`.
-- Binary loader: `Mesh3D.fromDMeshBytes(Uint8List bytes)` parses compact `.dmesh` binary assets.
+`Mesh3D` stores indexed 3D triangle geometry in flat `Float32List` (positions, normals, optional
+UVs and ambient occlusion) and `Uint16List` (indices) buffers, with precomputed local bounds
+(`minX` .. `maxZ`) and `boundingRadius`. Triangles are counter-clockwise when seen from outside,
+so back-face culling keeps the outside. `Mesh3D.fromRaw` computes smooth normals when you omit
+them.
+
+- Generators: `Mesh3D.plane`, `box`, `pyramid`, `octahedron`, `prism`, `uvSphere`, `cylinder`,
+  `cone`, `torus`, and `extrudePolygon`.
+- `box`, `plane`, `uvSphere`, `cylinder`, `cone`, `torus`, and `extrudePolygon` carry UVs
+  (`uvs`); `prism` does not.
+- Indices are 16-bit, so one mesh holds at most `Mesh3D.maxVertexCount` (`65,535`) vertices. Every
+  generator throws an `ArgumentError` rather than wrap when a tessellation would exceed that.
+  Build bigger geometry with `Uint32List` indices and split it with
+  `Mesh3D.partitionByVertexLimit` (or `mesh.splitByVertexLimit()`), or stream it into
+  `BatchMeshRenderer3D.enqueueLargeBuffers32`.
+- There is no binary mesh loader: build a `Mesh3D` from your own buffers with `Mesh3D.fromRaw`.
 
 ```dart
 final towerMesh = Mesh3D.cylinder(
@@ -57,82 +86,97 @@ final towerMesh = Mesh3D.cylinder(
   height: 2.4,
   segments: 16,
 );
+final ring = Mesh3D.torus(majorRadius: 1.0, minorRadius: 0.2);
+final wall = Mesh3D.extrudePolygon(
+  outline: const [0, 0, 4, 0, 4, 1, 1, 1, 1, 3, 0, 3], // x, y pairs; may be concave
+  height: 2.0,
+);
 ```
 
 
 ## MatCapShader3D and BatchMeshRenderer3D
 
-`MatCapShader3D` generates a procedural sphere-mapped metallic/ceramic/toon lookup texture once on
-the GPU (`ensureInitialized()` / `dispose()`), mapping view-space surface normals to `(u, v)`
-coordinates.
+`MatCapShader3D` bakes two procedural sphere-mapped lookup textures (`MatCapPreset3D.metallicGold`
+and `MatCapPreset3D.glossyLacquer`) once (`ensureInitialized()` / `dispose()`). A mesh uses one
+through its `Material3D.matCap(preset)`.
 
-`BatchMeshRenderer3D` transforms, back-face culls, shades (Lambertian + Blinn-Phong + hemisphere
-fill + view-angle Fresnel rim highlight), depth-sorts by painter centroid across *all* enqueued
-meshes in a pass, and issues **a single `Canvas.drawVertices(Vertices.raw(...))` draw call**:
+`BatchMeshRenderer3D` transforms, back-face culls, lights (see above), and depth-sorts triangles
+across *all* meshes enqueued in a pass. It then draws them with `Canvas.drawVertices(Vertices.raw(...))`,
+one call for each run of consecutive triangles that share a material (and for each `21,840`
+triangles), plus one for the ground shadows. The `depthMode` of the renderer
+(`TriangleDepthMode3D.centroid`, `nearestVertex`, or `farthestVertex`) decides which depth
+represents a triangle; the sort is stable, so equal-depth triangles keep their submission order.
 
 ```dart
-final matCap = MatCapShader3D.gold()..ensureInitialized();
-final batcher = BatchMeshRenderer3D();
+final matCap = MatCapShader3D()..ensureInitialized();
+final batcher = BatchMeshRenderer3D(light: sunLight);
 
 // Inside render(Canvas canvas):
-batcher.beginFrame(camera: camera3d, light: sunLight);
-
 batcher.enqueueMesh(
-  mesh: towerMesh,
+  towerMesh,
+  camera: camera3d,
   worldX: 4.0,
   worldY: -2.0,
   worldZ: 0.0,
   yawRad: 0.35,
-  baseColor: const Color(0xFFE8EEF5),
+  tint: const Color(0xFFE8EEF5),
   rimColor: const Color(0xFFFFD54F),
   rimHighlightIntensity: isHovered ? 0.65 : 0.0,
-  rimPower: 2.4,
+  material: const Material3D.matCap(MatCapPreset3D.metallicGold),
+  castGroundShadow: true,
 );
 
-batcher.flush(
-  canvas,
-  shader: matCap.shader,
-  blendMode: BlendMode.modulate,
-);
+batcher.flushBatch(canvas, matCapShader: matCap); // shadows, then geometry
 ```
 
-Telemetry counters (`lastFlushedTriangleCount`, `lastFlushedMeshCount`, `lastDrawCallCount`) are
-updated on every `flush()` with zero per-frame heap allocations.
+`flushBatch` is `flushShadows(canvas)` followed by `flushGeometry(canvas, ...)`; call those two
+yourself to draw other things between the ground shadows and the geometry. Each flush clears what
+it drew unless you pass `clear: false`; `beginBatch()` discards everything queued.
+
+Telemetry getters (`lastFlushTriangles`, `lastFlushShadowTriangles`, `lastFlushDrawCalls`,
+`lastFlushMaterialSwitches`, `lastFrustumCulledMeshes`, `lastCulledMicroTriangles`,
+`lastNearPlaneClippedTriangles`) are updated on every flush without per-frame heap allocation.
 
 
 ## StaticMeshChunk3D (Cached World Chunks)
 
 For static or semi-static 3D scenery (board tiles, walls, pillars, trees, beacons),
-`StaticMeshChunk3D` caches back-face culling, normal transformation, Lambert/rim vertex colors,
-and camera-space depth centroids across frames:
+`StaticMeshChunk3D` caches back-face culling, normal transformation, lit vertex colors, projected
+shadows, and camera-space depths across frames. The cache is keyed on the camera (identity and
+`basisVersion`, plus `camZoom` in perspective mode), the light's `computeSignature()`, the
+environment, the shadow settings, and the renderer's `depthMode`:
 
-- **Stationary camera & light**: `0` lighting computations and `0` projections per frame (`O(1)`
-  memcpy into the active `BatchMeshRenderer3D` buffers).
-- **Pure 2D camera pan (`camWorldX` / `camWorldY` changed, `basisVersion` & `light.version`
-  unchanged)**: cached lighting colors and normals are preserved; only the 2D screen offset is
-  shifted!
+- **Stationary camera & light**: no lighting and no projection work per frame; the baked arrays are
+  copied into the active `BatchMeshRenderer3D` buffers.
+- **Pure 2D camera pan (`camWorldX` / `camWorldY` changed, `basisVersion` and the light unchanged)**:
+  the lighting and normals stay cached and only the 2D projection is redone
+  (`geometryBakeCount` stays, `projectionBakeCount` grows).
 
 ```dart
-final chunk = StaticMeshChunk3D()
-  ..addInstance(
+final chunk = StaticMeshChunk3D();
+final slot = chunk.addInstance(
+  StaticMeshInstance3D(
     mesh: pillarMesh,
     worldX: -6.0,
     worldY: -6.0,
-    worldZ: 0.0,
-    baseColor: const Color(0xFFCFD8DC),
-  )
-  ..addInstance(
+    tint: const Color(0xFFCFD8DC),
+  ),
+);
+chunk.addInstance(
+  StaticMeshInstance3D(
     mesh: pillarMesh,
     worldX: 6.0,
     worldY: -6.0,
-    worldZ: 0.0,
-    baseColor: const Color(0xFFCFD8DC),
-  );
+    tint: const Color(0xFFCFD8DC),
+  ),
+);
+
+// Later, change one instance without rebuilding the others:
+chunk.setInstanceVisible(slot, visible: false);
 
 // Inside render(Canvas canvas):
-batcher.beginFrame(camera: camera3d, light: sunLight);
-batcher.enqueueStaticChunk(chunk);
-batcher.flush(canvas, shader: matCap.shader);
+batcher.enqueueStaticChunk(chunk, camera: camera3d);
+batcher.flushBatch(canvas, matCapShader: matCap);
 ```
 
 
@@ -181,6 +225,10 @@ Without a `World`-mounted component, `Raycaster3D` offers the same tests directl
 (closest visible mesh in a `Node3D` tree), and `raycastCollider` / `pickClosest` for lists of
 `MeshCollider3D` (any `id`, negative ones included).
 
+In axonometric mode a pixel does not identify one world point: pass `anchorWorld` (the
+`gridToScreen` position of the object's anchor) to `unprojectWorldRay` to unproject for a particular
+object when `orbitYawDeltaRad` or `pitchDeltaRad` is non-zero.
+
 
 ## ParticlePool3D
 
@@ -224,30 +272,36 @@ particles.render(canvas, camera3d);
   `minTrianglePixelArea`)**: Build multi-tier `MeshLodChain3D.progressive(...)` chains and call
   `batcher.enqueueLodMesh(chain, camera: camera3d, worldX: x, worldY: y)` to automatically select
   the optimal `Mesh3D` tier (or cull tiny distant props) based on projected screen pixel diameter
-  and `lodBias`. Set `batcher.minTrianglePixelArea` (e.g. `1.5`) to discard sub-pixel micro-triangles
-  before vertex lighting.
+  and `lodBias`. Set `batcher.minTrianglePixelArea` (e.g. `1.5`, in screen pixels at the current
+  `camZoom`) to drop sub-pixel micro-triangles after the mesh has been lit and projected. It is
+  applied per mesh and only where it cannot open holes: a mesh whose visible area is below the
+  threshold, or whose micro-triangles together cover at most 5 % of it. A densely tessellated mesh
+  that is still visible keeps all its triangles; thin those out with a `MeshLodChain3D`.
 - **`SceneEnvironment3D` (Zero-Allocation SoA `PointLight3D` Pool, Atmospheric Fog & Frustum
   Culling)**: Attach a `SceneEnvironment3D` to `BatchMeshRenderer3D(environment: env, cullScreenBounds: ...)`:
   - **Dynamic `PointLight3D` Pool**: Contiguous SoA point lights with smooth quadratic distance
-    attenuation (`addPointLight`, `updatePointLight`) accumulated alongside directional lighting.
+    attenuation (`addPointLight`, `addPointLightDescriptor`) accumulated alongside directional
+    lighting. The pool has no fixed cap and grows on demand; move a light by calling
+    `clearPointLights()` and adding the lights again.
   - **Distance & Height Atmospheric Fog**: Blends vertex colors smoothly toward `fogColor` by view
     depth (`fogStartDepth`..`fogEndDepth`) and elevation (`heightFogBaseZ`, `heightFogDensity`),
     remaining invariant under pure 2D camera pans so `StaticMeshChunk3D` caches stay valid.
   - **3D Bounding-Sphere Frustum Culling & Spatial Light Signatures**: Rejects off-screen dynamic
-    meshes and static chunks in `O(1)` before vertex transformation (`lastFrustumCulledMeshes`), and
+    meshes and static chunks in `O(1)` before vertex transformation (`lastFrustumCulledMeshes`;
+    the bounding sphere is conservative under perspective, pitch, and roll), and
     hashes only point lights intersecting each `StaticMeshChunk3D`'s world AABB
     (`computeSignatureForBounds`) so distant moving lights never trigger unnecessary chunk rebakes.
 
 
 ## SceneEnvironment3D, PointLight3D, Distance Fog & MeshLodChain3D
 
-- **`SceneEnvironment3D` & `PointLight3D`**: Pass `environment: sceneEnv` to
-  `BatchMeshRenderer3D.beginFrame(...)` to combine up to `N` dynamic local point lights (smooth
-  quadratic attenuation in a zero-alloc SoA pool, capped automatically by
-  `GraphicsProfile.maxPointLights`), ambient hemisphere tint, and linear/exponential distance fog
-  (`fogDensity`, `fogStart`, `fogEnd`, `fogColor`). `StaticMeshChunk3D` computes a spatial
-  `computeLocalSignature(...)` over overlapping point-light spheres so distant light movement causes
-  **`0` chunk rebakes**.
+- **`SceneEnvironment3D` & `PointLight3D`**: Pass `environment: sceneEnv` to the
+  `BatchMeshRenderer3D` constructor (or set its `environment`) to combine dynamic local point
+  lights (smooth quadratic attenuation in a zero-alloc SoA pool) with distance fog
+  (`fogEnabled`, `fogStartDepth`, `fogEndDepth`, `fogMaxOpacity`, `fogColor`) and height fog
+  (`heightFogBaseZ`, `heightFogFalloff`, `heightFogDensity`). `StaticMeshChunk3D` hashes only the
+  point lights that overlap its bounds (`computeSignatureForBounds(...)`) so distant light movement
+  causes **`0` chunk rebakes**.
 - **`MeshLodChain3D`**: Selects `high` / `medium` / `low` `Mesh3D` levels by projected screen radius
   (or generates decimated chains via `MeshLodChain3D.progressive(...)`), cutting triangle counts
   automatically during zoomed-out overview framing.
@@ -256,7 +310,7 @@ particles.render(canvas, camera3d);
 ## Multi-Material Global Z-Sorting, Quaternions, Deformable Meshes, Surgical Chunks & Decoupled Shadows
 
 - **Multi-Material, Multi-Texture & Multi-BlendMode Global Z-Sorting (`Material3D`)**: Assign
-  `Material3D.matCap(...)`, `Material3D.texture(imageShader, width:, height:)`, or
+  `Material3D.matCap(preset)`, `Material3D.texture(imageShader, width:, height:)`, or
   `Material3D.unshaded(blendMode:)` per `enqueueMesh`, `Node3D`, or `StaticMeshInstance3D`.
   `BatchMeshRenderer3D` globally depth-sorts all triangles across materials first and then emits
   contiguous material runs (`lastFlushMaterialSwitches`), preserving exact 3D occlusion across
@@ -265,7 +319,10 @@ particles.render(canvas, camera3d);
   - `Quaternion3D` (`normalize`, `fromAxisAngle`, `fromEuler`, `multiply`, shortest-arc `slerp`,
     `writeMatrix3`, `multiplyMatrix3`), `rotationQuat` / `rotationMatrix3` on `enqueueMesh`, and
     true `3x3` parent pitch/roll/quaternion matrix composition across `Node3D` hierarchies
-    (`setLocalQuaternion`, `worldPointForLocal`).
+    (`setLocalQuaternion`, `worldPointForLocal`). A node's world transform is the exact matrix
+    product `parent * translation * rotation * scale`, so a rotated child of a non-uniformly scaled
+    parent shears (`worldLinearMatrix`). Changing any `Node3D` property notifies
+    `Game.notifyVisualMutation`, so on-demand rendering repaints.
   - `MorphTarget3D` & `MorphMeshWorkspace3D` (`enqueueMorphMesh`) for zero-GC blendshape animation
     with automatic normal renormalization, plus `Bone3D` & `SkinnedMeshWorkspace3D`
     (`enqueueSkinnedMesh`) for Linear Blend Skinning with up to 4 bone influences per vertex.
@@ -287,17 +344,19 @@ particles.render(canvas, camera3d);
 
 ## True Pinhole Perspective + Near-Plane Clipping, 65k+ Vertex Partitioning, 4-Bone `AnimationMixer3D` & `MeshBvh3D`
 
-- **Explicit Sort Keys, `TriangleDepthMode3D` (`centroid` / `nearest` / `farthest`) & `> 65,535`
+- **Explicit Sort Keys, `TriangleDepthMode3D` (`centroid` / `nearestVertex` / `farthestVertex`) & `> 65,535`
   Vertex Meshes**:
-  - Pass `sortOrder`, `depthBias`, and `depthMode` (`TriangleDepthMode3D.centroid`, `nearest`, or
-    `farthest`) to `BatchMeshRenderer3D.enqueueMesh` / `Node3D` to eliminate painter's-algorithm
-    popping where tall walls meet large ground planes.
+  - Pass `sortOrder` and `depthBias` to `BatchMeshRenderer3D.enqueueMesh` (or set them on a `Node3D`),
+    and choose the renderer-wide `depthMode` (`TriangleDepthMode3D.centroid`, `nearestVertex`, or
+    `farthestVertex`) in the `BatchMeshRenderer3D` constructor. It applies to every mesh and
+    `StaticMeshChunk3D` enqueued while it is set. Together they reduce painter's-algorithm popping
+    where tall walls meet large ground planes.
   - Partition arbitrary 32-bit `Uint32List` high-poly meshes into `Uint16List`-safe submeshes via
     `Mesh3D.partitionByVertexLimit` / `Mesh3D.splitByVertexLimit`, or stream `Uint32List` buffers
     directly into `BatchMeshRenderer3D.enqueueLargeBuffers32` (auto-splitting `Vertices.raw` chunks
     at `65,535` vertices).
 - **True Pinhole `CameraProjectionMode3D.perspective` & Sutherland–Hodgman Near-Plane Clipping**:
-  - Set `CameraRig3D(projectionMode: CameraProjectionMode3D.perspective, fovYDeg: 45, nearClip: 0.25)`
+  - Set `CameraRig3D(projectionMode: CameraProjectionMode3D.perspective, fovYRad: 0.785, nearClip: 0.25)`
     for exact pinhole perspective projection (`tan(fovY / 2)` focal scaling) and perspective-aware
     divergent `unprojectWorldRay` rays.
   - `BatchMeshRenderer3D` clips every world-space triangle straddling `z_cam <= nearClip` via exact
