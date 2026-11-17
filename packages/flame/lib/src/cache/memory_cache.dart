@@ -1,21 +1,37 @@
 import 'dart:collection';
 
-/// Simple class to cache values with size based eviction and optional
-/// disposal callback [onEvict].
+/// A bounded least-recently-used (LRU) cache with an optional disposal
+/// callback [onEvict].
+///
+/// The cache holds at most [cacheSize] entries. An entry counts as used when
+/// it is written with [setValue] or read with [getValue], and when the cache
+/// is full the entry that has gone unused the longest is evicted. Reading
+/// and writing are both `O(1)`.
+///
+/// When [onEvict] is given, the cache owns its values: the callback is
+/// invoked for every value that leaves the cache (eviction, replacement,
+/// [clear] and [clearCache]), which is where native resources should be
+/// released. A value that is still referenced elsewhere must not be released
+/// from [onEvict] unless the callback can tell that it is no longer in use.
 class MemoryCache<K, V>({
   final int cacheSize = 10,
   final void Function(K key, V value)? onEvict,
 }) {
+  this : assert(cacheSize >= 0, 'cacheSize must be >= 0: $cacheSize');
+
+  /// Entries ordered from the least to the most recently used.
   final LinkedHashMap<K, V> _cache = LinkedHashMap();
 
-  /// Adds the [value] to the cache under [key].
+  /// Adds the [value] to the cache under [key] and marks it as the most
+  /// recently used entry.
   ///
   /// If that [key] is already used, updates the value and invokes [onEvict] on
-  /// the displaced entry if it is a distinct instance.
+  /// the displaced entry if it is a distinct instance. If the cache then holds
+  /// more than [cacheSize] entries, the least recently used ones are evicted,
+  /// which with a [cacheSize] of `0` is the value that was just added.
   void setValue(K key, V value) {
-    final preexisting = _cache.containsKey(key);
-    if (preexisting) {
-      final previous = _cache[key] as V;
+    if (_cache.containsKey(key)) {
+      final previous = _cache.remove(key) as V;
       _cache[key] = value;
       if (!identical(previous, value)) {
         onEvict?.call(key, previous);
@@ -52,15 +68,28 @@ class MemoryCache<K, V>({
     }
   }
 
-  /// Gets the value under [key].
-  V? getValue(K key) => _cache[key];
+  /// Gets the value under [key] and marks it as the most recently used entry,
+  /// or returns `null` when there is none.
+  V? getValue(K key) {
+    if (!_cache.containsKey(key)) {
+      return null;
+    }
+    final value = _cache.remove(key) as V;
+    _cache[key] = value;
+    return value;
+  }
 
-  /// Checks whether the cache has any value under [key].
+  /// Checks whether the cache has any value under [key], without counting as
+  /// a use of that entry.
   bool containsKey(K key) => _cache.containsKey(key);
 
   /// Returns the number of values saved in this memory cache.
   int get size => _cache.length;
 
-  /// Iterates over all existing keys with values.
-  Iterable<K> get keys => _cache.keys;
+  /// The keys that currently have values, from the least to the most recently
+  /// used.
+  ///
+  /// This is a snapshot, so that the cache can be read with [getValue] (which
+  /// reorders the entries) while iterating over it.
+  Iterable<K> get keys => List<K>.unmodifiable(_cache.keys);
 }

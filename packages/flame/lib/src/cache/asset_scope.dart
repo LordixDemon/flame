@@ -126,19 +126,21 @@ class AssetScope({
         }
         final spec = sorted[idx];
         final resolvedKey = spec.resolvedKey;
-        final img = spec.generator != null
-            ? await images.fetchOrGenerate(resolvedKey, spec.generator!)
-            : await images.load(
-                spec.path,
-                key: spec.key,
-                package: spec.package,
-              );
-        if (_isDisposed) {
-          return;
-        }
+        // An entry that this scope already holds (a repeated preload, or two
+        // entries with the same key) is not fetched again.
         if (!_retained.containsKey(resolvedKey)) {
+          final img = await _fetch(spec, resolvedKey);
+          if (_isDisposed) {
+            return;
+          }
           images.retain(img);
-          _retained[resolvedKey] = img;
+          if (_retained.containsKey(resolvedKey)) {
+            // Another worker loaded the same key in the meantime and the
+            // scope holds it already: one hold per key is enough.
+            images.release(img);
+          } else {
+            _retained[resolvedKey] = img;
+          }
         }
         completed++;
         _progress.value = completed / total;
@@ -152,6 +154,31 @@ class AssetScope({
     }
   }
 
+  /// Loads the image of [spec] and returns it once it is an image that
+  /// [images] still holds.
+  ///
+  /// The cache can drop an image between the moment a load completes and the
+  /// moment this scope retains it (an explicit `Images.clear`, or a budget
+  /// eviction), in which case the image is loaded again instead of keeping a
+  /// disposed one.
+  Future<Image> _fetch(ScopedAssetEntry spec, String resolvedKey) async {
+    const maxAttempts = 3;
+    for (var attempt = 1; ; attempt++) {
+      final img = spec.generator != null
+          ? await images.fetchOrGenerate(resolvedKey, spec.generator!)
+          : await images.load(
+              spec.path,
+              key: spec.key,
+              package: spec.package,
+            );
+      if (_isDisposed ||
+          identical(Images.ownerOf(img), images) ||
+          attempt == maxAttempts) {
+        return img;
+      }
+    }
+  }
+
   /// Retrieves a retained [Image] by its resolved key.
   Image getImage(String key) {
     final img = _retained[key];
@@ -162,10 +189,15 @@ class AssetScope({
   }
 
   /// Releases all retained images and owned disposables. When
-  /// [evictZeroRefImmediately] is `true`, images whose reference count drops to
-  /// `0` are immediately disposed from [images], freeing VRAM while preserving
-  /// shared textures retained by other active [AssetScope]s! Returns freed
-  /// image bytes.
+  /// [evictZeroRefImmediately] is `true`, images that nothing else uses are
+  /// immediately disposed from [images] with `Images.clearIfUnretained`,
+  /// freeing VRAM. Returns the freed image bytes.
+  ///
+  /// An image is kept when something else still needs it: another
+  /// [AssetScope] or a mounted component retains it, another scope is
+  /// preloading it right now, or it was loaded within `Images.gracePeriod` by
+  /// a component that has not been mounted yet. Such an image stays in
+  /// [images] under the regular eviction rules.
   int dispose({bool evictZeroRefImmediately = true}) {
     if (_isDisposed) {
       return 0;

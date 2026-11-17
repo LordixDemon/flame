@@ -44,12 +44,22 @@ class ComputeCancellationToken() {
 
   /// Registers [listener] to run when [cancel] is called (or immediately if
   /// already cancelled).
+  ///
+  /// The token keeps the listener, and everything it captures, until it is
+  /// cancelled or the listener is taken off again with [removeOnCancel].
   void onCancel(void Function() listener) {
     if (_cancelled) {
       listener();
       return;
     }
     (_listeners ??= <void Function()>[]).add(listener);
+  }
+
+  /// Unregisters a [listener] that was registered with [onCancel], so that a
+  /// long-lived token does not keep finished work alive. Does nothing when the
+  /// listener is not registered.
+  void removeOnCancel(void Function() listener) {
+    _listeners?.remove(listener);
   }
 }
 
@@ -65,6 +75,12 @@ typedef ComputeTaskCallback<P, R> = FutureOr<R> Function(P payload);
 /// instant queued-task cancellation, single-threaded inline fallback
 /// (`workerCount: 0`), and zero-copy [TransferableTypedData] typed-array
 /// helpers.
+///
+/// Every future returned by [schedule] settles: with the task's result, with
+/// the error the task threw, with [ComputeCancelledException] when it is
+/// cancelled or the pool is disposed, or with a [RemoteError] when the worker
+/// isolate that ran it terminated. A worker that terminates is replaced, so
+/// the pool keeps [workerCount] workers.
 class EngineComputePool({
   final int workerCount = 2,
 }) {
@@ -77,7 +93,13 @@ class EngineComputePool({
   final List<_IsolateWorkerSlot> _workers = <_IsolateWorkerSlot>[];
   final Map<int, _ComputeTaskEntry> _inFlight = <int, _ComputeTaskEntry>{};
 
-  Future<void>? _warmUpFuture;
+  /// The number of worker isolates that are being spawned right now.
+  int _spawning = 0;
+  Completer<void>? _spawnsSettled;
+  Object? _spawnError;
+  StackTrace? _spawnStackTrace;
+  int _nextWorkerIndex = 0;
+
   bool _disposed = false;
   bool _inlineBusy = false;
   int _nextTaskId = 1;
@@ -101,36 +123,75 @@ class EngineComputePool({
   /// Eagerly spawns all [workerCount] background isolates and awaits their
   /// initial port handshakes. Safe to call multiple times; [schedule] also
   /// invokes this automatically on demand.
-  Future<void> warmUp() {
+  ///
+  /// The returned future fails when the pool is disposed, or when a worker
+  /// could not be spawned.
+  Future<void> warmUp() async {
     if (_disposed) {
-      return Future<void>.error(StateError('EngineComputePool is disposed.'));
+      throw StateError('EngineComputePool is disposed.');
     }
     if (workerCount == 0) {
-      return Future<void>.value();
-    }
-    return _warmUpFuture ??= _spawnWorkers();
-  }
-
-  Future<void> _spawnWorkers() async {
-    final futures = <Future<_IsolateWorkerSlot>>[];
-    for (var i = 0; i < workerCount; i++) {
-      futures.add(_spawnSingleWorker(i));
-    }
-    final spawned = await Future.wait(futures);
-    if (_disposed) {
-      for (final slot in spawned) {
-        slot.dispose();
-      }
       return;
     }
-    _workers.addAll(spawned);
-    _pumpQueue();
+    _ensureWorkers();
+    while (_spawning > 0) {
+      await (_spawnsSettled ??= Completer<void>()).future;
+    }
+    final error = _spawnError;
+    if (!_disposed && _workers.length < workerCount && error != null) {
+      Error.throwWithStackTrace(error, _spawnStackTrace ?? StackTrace.current);
+    }
   }
 
-  Future<_IsolateWorkerSlot> _spawnSingleWorker(int index) async {
-    final slot = _IsolateWorkerSlot(index: index, onReply: _handleWorkerReply);
-    await slot.start();
-    return slot;
+  /// Starts spawning as many workers as are missing to reach [workerCount].
+  void _ensureWorkers() {
+    if (_disposed) {
+      return;
+    }
+    while (_workers.length + _spawning < workerCount) {
+      _spawning++;
+      unawaited(_spawnWorker());
+    }
+  }
+
+  /// Spawns one worker. Never completes with an error: a failed spawn is
+  /// recorded in [_spawnError], and fails the queued tasks when it leaves the
+  /// pool without any worker that could run them.
+  Future<void> _spawnWorker() async {
+    final slot = _IsolateWorkerSlot(
+      index: _nextWorkerIndex++,
+      onReply: _handleWorkerReply,
+      onExit: _handleWorkerExit,
+    );
+    Object? error;
+    StackTrace? stackTrace;
+    try {
+      await slot.start();
+    } on Object catch (e, s) {
+      error = e;
+      stackTrace = s;
+    }
+    _spawning--;
+    if (error != null) {
+      slot.dispose();
+      _spawnError = error;
+      _spawnStackTrace = stackTrace;
+      if (!_disposed && _workers.isEmpty && _spawning == 0) {
+        _failQueued(error, stackTrace);
+      }
+    } else if (_disposed) {
+      slot.dispose();
+    } else {
+      _spawnError = null;
+      _spawnStackTrace = null;
+      _workers.add(slot);
+      _pumpQueue();
+    }
+    if (_spawning == 0) {
+      final settled = _spawnsSettled;
+      _spawnsSettled = null;
+      settled?.complete();
+    }
   }
 
   /// Schedules [callback] with [payload] onto the pool at [priority].
@@ -139,6 +200,10 @@ class EngineComputePool({
   /// priority queued tasks whenever a worker becomes free. If [cancelToken] is
   /// cancelled before execution completes, the returned [Future] fails
   /// immediately with [ComputeCancelledException].
+  ///
+  /// The returned future always settles, see the class documentation. A
+  /// [callback] or [payload] that can not be sent to a worker isolate fails
+  /// the future with the error of the failed send.
   Future<R> schedule<P, R>(
     ComputeTaskCallback<P, R> callback,
     P payload, {
@@ -160,14 +225,17 @@ class EngineComputePool({
     );
 
     if (cancelToken != null) {
-      cancelToken.onCancel(() {
-        if (task.cancelled || task.completer.isCompleted) {
+      void cancelTask() {
+        if (task.cancelled || task.isCompleted) {
           return;
         }
-        task.cancelled = true;
         _removeFromQueues(task);
-        task.completer.completeError(const ComputeCancelledException());
-      });
+        task.cancelWithError(const ComputeCancelledException());
+      }
+
+      cancelToken.onCancel(cancelTask);
+      // A token usually outlives its tasks: do not let it keep them.
+      task.onSettled = () => cancelToken.removeOnCancel(cancelTask);
     }
 
     switch (priority) {
@@ -181,10 +249,9 @@ class EngineComputePool({
 
     if (workerCount == 0) {
       _pumpInline();
-    } else if (_workers.length == workerCount) {
-      _pumpQueue();
     } else {
-      unawaited(warmUp().catchError(task.failIfPending));
+      _ensureWorkers();
+      _pumpQueue();
     }
 
     return task.completer.future;
@@ -223,6 +290,17 @@ class EngineComputePool({
     return null;
   }
 
+  /// Fails every queued task with [error], for when nothing can run them.
+  void _failQueued(Object error, StackTrace? stackTrace) {
+    for (
+      var task = _dequeueNextValid();
+      task != null;
+      task = _dequeueNextValid()
+    ) {
+      task.failIfPending(error, stackTrace);
+    }
+  }
+
   void _pumpInline() {
     if (_inlineBusy || _disposed) {
       return;
@@ -232,6 +310,8 @@ class EngineComputePool({
       return;
     }
     _inlineBusy = true;
+    // Tracked like a task on a worker, so that [dispose] fails it too.
+    _inFlight[next.id] = next;
     scheduleMicrotask(() async {
       try {
         if (!next.cancelled && !_disposed) {
@@ -244,6 +324,7 @@ class EngineComputePool({
       } on Object catch (error, stackTrace) {
         next.failIfPending(error, stackTrace);
       } finally {
+        _inFlight.remove(next.id);
         _inlineBusy = false;
         if (!_disposed) {
           _pumpInline();
@@ -258,21 +339,21 @@ class EngineComputePool({
     }
     for (var i = 0; i < _workers.length; i++) {
       final worker = _workers[i];
-      if (worker.busy) {
-        continue;
-      }
-      final next = _dequeueNextValid();
-      if (next == null) {
-        return;
-      }
-      worker.busy = true;
-      _inFlight[next.id] = next;
-      try {
-        next.sendTo(worker.sendPort);
-      } on Object catch (error, stackTrace) {
-        worker.busy = false;
-        _inFlight.remove(next.id);
-        next.failIfPending(error, stackTrace);
+      // A task that can not be sent leaves the worker free for the next one.
+      while (!worker.busy) {
+        final next = _dequeueNextValid();
+        if (next == null) {
+          return;
+        }
+        try {
+          next.sendTo(worker.sendPort);
+        } on Object catch (error, stackTrace) {
+          next.failIfPending(error, stackTrace);
+          continue;
+        }
+        worker.busy = true;
+        worker.currentTaskId = next.id;
+        _inFlight[next.id] = next;
       }
     }
   }
@@ -285,11 +366,16 @@ class EngineComputePool({
     required bool ok,
   }) {
     worker.busy = false;
+    worker.currentTaskId = null;
     final task = _inFlight.remove(taskId);
     if (task != null && !task.cancelled && !task.isCompleted) {
       if (ok) {
-        _completedTaskCount++;
-        task.completeValue(valueOrError);
+        try {
+          task.completeValue(valueOrError);
+          _completedTaskCount++;
+        } on Object catch (error, stackTrace) {
+          task.failIfPending(error, stackTrace);
+        }
       } else {
         task.failIfPending(
           RemoteError(
@@ -304,9 +390,35 @@ class EngineComputePool({
     }
   }
 
+  /// Called when the isolate of [worker] terminated on its own: it exited, was
+  /// killed, or hit an uncaught error.
+  void _handleWorkerExit(_IsolateWorkerSlot worker) {
+    final wasLive = _workers.remove(worker);
+    worker.dispose();
+    if (_disposed || !wasLive) {
+      return;
+    }
+    final taskId = worker.currentTaskId;
+    if (taskId != null) {
+      _inFlight
+          .remove(taskId)
+          ?.failIfPending(
+            RemoteError(
+              worker.lastError ??
+                  'The compute worker isolate terminated before the task '
+                      'completed.',
+              worker.lastErrorStackTrace ?? '',
+            ),
+          );
+    }
+    _ensureWorkers();
+    _pumpQueue();
+  }
+
   /// Terminates all background isolates immediately, closes communication
   /// ports, and fails any pending/in-flight tasks with
-  /// [ComputeCancelledException].
+  /// [ComputeCancelledException]. That includes the task that the inline mode
+  /// (`workerCount: 0`) has taken off the queue but not finished.
   Future<void> dispose() async {
     if (_disposed) {
       return;
@@ -325,10 +437,11 @@ class EngineComputePool({
     cancelQueue(_normalQueue);
     cancelQueue(_lowQueue);
 
-    for (final t in _inFlight.values) {
+    final inFlight = _inFlight.values.toList(growable: false);
+    _inFlight.clear();
+    for (final t in inFlight) {
       t.cancelWithError(err);
     }
-    _inFlight.clear();
 
     for (final worker in _workers) {
       worker.dispose();
@@ -394,6 +507,9 @@ final class _QueuedComputeTask<P, R>({
 }) extends _ComputeTaskEntry {
   final Completer<R> completer = Completer<R>();
 
+  /// Invoked once, when [completer] has been completed in any way.
+  void Function()? onSettled;
+
   @override
   bool get isCompleted => completer.isCompleted;
 
@@ -408,12 +524,14 @@ final class _QueuedComputeTask<P, R>({
   @override
   void completeValue(Object? rawValue) {
     completer.complete(rawValue as R);
+    _settled();
   }
 
   @override
   void failIfPending(Object error, [StackTrace? stackTrace]) {
     if (!cancelled && !completer.isCompleted) {
       completer.completeError(error, stackTrace);
+      _settled();
     }
   }
 
@@ -422,7 +540,14 @@ final class _QueuedComputeTask<P, R>({
     cancelled = true;
     if (!completer.isCompleted) {
       completer.completeError(error);
+      _settled();
     }
+  }
+
+  void _settled() {
+    final onSettled = this.onSettled;
+    this.onSettled = null;
+    onSettled?.call();
   }
 }
 
@@ -436,17 +561,34 @@ class _IsolateWorkerSlot({
     required bool ok,
   })
   onReply,
+  required final void Function(_IsolateWorkerSlot worker) onExit,
 }) {
   late final RawReceivePort _rawPort = RawReceivePort(
     null,
     'EngineComputePool-$index',
   );
+
+  /// Receives the uncaught errors and the exit notification of the isolate.
+  late final RawReceivePort _lifecyclePort = RawReceivePort(
+    null,
+    'EngineComputePool-$index-lifecycle',
+  );
   Isolate? _isolate;
   late final SendPort sendPort;
   bool busy = false;
+  bool _disposed = false;
+
+  /// The task that was sent to the isolate and has not been answered.
+  int? currentTaskId;
+
+  /// The uncaught error that the isolate reported before it terminated.
+  String? lastError;
+  String? lastErrorStackTrace;
 
   Future<void> start() async {
     final handshake = Completer<SendPort>();
+    // The failure of a start-up is delivered through the await below.
+    handshake.future.ignore();
     _rawPort.handler = (Object? message) {
       if (!handshake.isCompleted) {
         if (message is SendPort) {
@@ -462,17 +604,41 @@ class _IsolateWorkerSlot({
         onReply(this, taskId, valueOrError, stackStr, ok: ok);
       }
     };
+    _lifecyclePort.handler = (Object? message) {
+      if (_disposed) {
+        return;
+      }
+      if (message is List<Object?> && message.length == 2) {
+        // An uncaught error, which is fatal: the exit notification follows.
+        lastError = message[0]?.toString();
+        lastErrorStackTrace = message[1]?.toString();
+        return;
+      }
+      if (!handshake.isCompleted) {
+        handshake.completeError(
+          StateError(
+            lastError ?? 'The compute worker isolate exited during start-up.',
+          ),
+        );
+        return;
+      }
+      onExit(this);
+    };
 
     _isolate = await Isolate.spawn<SendPort>(
       _computePoolWorkerEntryPoint,
       _rawPort.sendPort,
       debugName: 'FlameComputeWorker-$index',
+      onExit: _lifecyclePort.sendPort,
+      onError: _lifecyclePort.sendPort,
     );
     sendPort = await handshake.future;
   }
 
   void dispose() {
+    _disposed = true;
     _rawPort.close();
+    _lifecyclePort.close();
     _isolate?.kill(priority: Isolate.immediate);
     _isolate = null;
   }

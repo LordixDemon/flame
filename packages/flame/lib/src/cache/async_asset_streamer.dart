@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:isolate';
+import 'dart:typed_data';
 
 import 'package:flame/src/game/frame_budget_scheduler.dart';
 import 'package:flutter/services.dart';
@@ -47,6 +48,9 @@ class AsyncAssetStreamer({
   /// Parses [jsonText] on a background worker isolate (`Isolate.run` when
   /// length >= [isolateThresholdChars]) and optionally commits the parsed value
   /// within [scheduler]'s frame budget.
+  ///
+  /// Only [jsonText] is sent to the worker isolate. [mapper] runs on the
+  /// calling isolate and can use any main-thread state.
   Future<R> parseJsonInBackground<R>(
     String jsonText,
     R Function(Object? decodedJson) mapper, {
@@ -57,7 +61,7 @@ class AsyncAssetStreamer({
     _checkCancelled(cancelToken);
     final Object? decoded;
     if (jsonText.length >= isolateThresholdChars) {
-      decoded = await Isolate.run(() => jsonDecode(jsonText));
+      decoded = await _decodeJsonInIsolate(jsonText);
     } else {
       decoded = jsonDecode(jsonText);
     }
@@ -83,6 +87,11 @@ class AsyncAssetStreamer({
   /// Transforms a raw binary payload on a background isolate (sending a
   /// transferable copy) and commits the resulting main-thread object via
   /// [finalizeOnMainThread].
+  ///
+  /// Only [isolateWorker] and the bytes are sent to the worker isolate, so
+  /// [isolateWorker] must be a top-level function, a `static` method, or a
+  /// closure that captures nothing unsendable. [finalizeOnMainThread] never
+  /// leaves the calling isolate and can use any main-thread state.
   Future<R> transformBytesInBackground<T, R>(
     Uint8List rawBytes,
     T Function(Uint8List bytes) isolateWorker,
@@ -91,8 +100,7 @@ class AsyncAssetStreamer({
     StreamCancellationToken? cancelToken,
   }) async {
     _checkCancelled(cancelToken);
-    final copy = Uint8List.fromList(rawBytes);
-    final workerResult = await Isolate.run(() => isolateWorker(copy));
+    final workerResult = await _transformInIsolate<T>(isolateWorker, rawBytes);
     _checkCancelled(cancelToken);
 
     final sched = scheduler;
@@ -127,6 +135,26 @@ class AsyncAssetStreamer({
       mapper,
       priority: priority,
       cancelToken: cancelToken,
+    );
+  }
+
+  // The closures that run on the worker isolate are created in these static
+  // helpers on purpose: a closure is sent together with every variable of the
+  // scope it was created in, so creating them inside the methods above would
+  // also send the caller's main-thread callbacks and whatever they capture.
+
+  static Future<Object?> _decodeJsonInIsolate(String jsonText) {
+    return Isolate.run<Object?>(() => jsonDecode(jsonText));
+  }
+
+  static Future<T> _transformInIsolate<T>(
+    T Function(Uint8List bytes) isolateWorker,
+    Uint8List rawBytes,
+  ) {
+    // Copied once here and handed over to the worker without another copy.
+    final transferable = TransferableTypedData.fromList(<TypedData>[rawBytes]);
+    return Isolate.run<T>(
+      () => isolateWorker(transferable.materialize().asUint8List()),
     );
   }
 

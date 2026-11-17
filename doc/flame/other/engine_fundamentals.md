@@ -10,7 +10,8 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
 
 - **`AssetScope` & `Images.clearIfUnretained`**: Reference-counted scene/route asset bundles with
   weighted loading progress (`0.0..1.0`) and deterministic GPU `ui.Image` eviction on `dispose()`
-  that preserves textures still retained by other active scopes.
+  that preserves textures still retained by other active scopes or loaded by another loader within
+  the `Images.gracePeriod` and not yet retained.
 - **`MaxRectsBinPacker`, `DynamicSpriteAtlas` & `DynamicSpriteAtlasBuilder`**: Runtime MaxRects
   (Best-Short-Side-Fit) bin packing with extruded edge + 4-corner border gutters (`extrudePadding`)
   around every packed sprite to eliminate bilinear/scale bleeding across tiles and sprites.
@@ -68,12 +69,13 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
 - **32-bit `collisionLayer` & `collisionMask`**: O(1) bitmask filtering (`canCollideWithMask`) on
   `Hitbox` / `ShapeHitbox` integrated directly into both `Sweep` and `QuadTreeBroadphase`.
 - **`CollisionManifold2D` & `ShapeCast2D`**: Zero-allocation Minimum Translation Vector (MTV)
-  contact normals, penetration depth, and contact points (`circleVsCircle`, `aabbVsAabb`,
-  `circleVsRect`), plus swept time-of-impact (`toi` in `[0, 1]`) ray/circle/AABB casts that prevent
+  contact normals, penetration depth, and contact points (`circleVsCircle`, `aabbVsAabb` /
+  `rectVsRect` along the axis of least penetration, `circleVsRect`), plus swept time-of-impact (`toi` in `[0, 1]`) ray/circle/AABB casts that prevent
   fast-projectile thin-wall tunneling.
 - **`KinematicBodyComponent`**: Arcade character & token controller with iterative `moveAndSlide`,
   configurable `maxSlides`, `floorMaxAngle`, `bounciness`, and `isOnFloor` / `isOnWall` /
-  `isOnCeiling` contact flags.
+  `isOnCeiling` contact flags; a body in exact contact with an obstacle can still move along or
+  away from it, and only motion into the surface is an impact.
 - **`TriggerZoneComponent`**: Spatial sensor regions (`circle` / `rect`) powered by
   `WorldSpatialIndex` with `onEntityEntered`, `onEntityStay`, and `onEntityExited` callbacks.
 
@@ -85,7 +87,8 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
   Bidirectional `cellToWorld` / `worldToCell` projection, cube-coordinate hex rounding, axial ring &
   spiral iterators, Bresenham line-of-sight, and 4-bit / 8-bit Wang corner-gated auto-tile masks.
 - **`AStarGridPathfinder`, `GraphPathfinder<N>` & `FlowField2D`**: Zero-allocation binary-heap A*
-  on weighted/blocked grids (with optional corner-cutting prevention) and arbitrary waypoint graphs
+  on weighted/blocked grids (optimal for any positive weight, including weights below `1`, with
+  optional corner-cutting prevention) and arbitrary waypoint graphs
   (board loops, branching forks), plus Dijkstra integration + normalized flow fields for steering
   hundreds of units simultaneously.
 - **`FormationSlots` & `SeparationSteering2D`**: Multi-unit tile/party slot offsets (`ring`, `grid`,
@@ -195,6 +198,8 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
   - `ScrollContainerComponent` (`package:flame/layout.dart`) provides clipped vertical/horizontal/2D
     scrolling with mouse-wheel/trackpad handling, touch/mouse drag inertia, rubber-band overscroll,
     and automatic offscreen item render skipping (`lastVisibleChildCount`, `lastCulledChildCount`).
+    `setContentSize(size)` sets an explicit content extent at any time and `setContentSize(null)`
+    reverts to measuring the content children.
   - `AffineMatrix2D` (`6` inline `double`s) and `PositionComponent.worldTransformMatrix` cache lazy
     ancestor-version-tracked `2x3` world transforms (`O(1)` amortized `absolutePosition`,
     `toAbsoluteRect`, and `containsGlobalPoint`).
@@ -210,12 +215,15 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
 - **Broadphase-Accelerated 2D Raycasts + Static-Sleeping `Sweep`, `SdfFontAtlas` &
   `EngineComputePool`**:
   - `CollisionDetection.raycast` / `raycastAll` / `raytrace` accept `collisionMask` and prune via
-    `Broadphase.queryRay` (`Sweep` X-interval binary/early-out scan + `QuadTreeBroadphase` recursive
-    Liang–Barsky slab traversal, `lastRayBroadphaseCandidates`), while `Sweep` skips `O(N log N)`
+    `Broadphase.queryRayCandidates` (`Sweep` linear scan of its X-sorted buckets with an early
+    exit, `O(N)` worst case, + `QuadTreeBroadphase` recursive Liang–Barsky slab traversal that skips
+    whole quadrants, `lastRayBroadphaseCandidates`), while `Sweep` skips `O(N log N)`
     passive/static re-sorts on calm frames (`passiveSortCount`, `skippedPassiveSortCount`).
   - `SdfFontAtlas.bake` (exact linear-time `O(W * H)` Felzenszwalb–Huttenlocher 2D Euclidean Distance
     Transform) + `SdfTextComponent` render crisp zoom-invariant text, outlines, glows, and shadows
     via `Canvas.drawRawAtlas`.
   - `EngineComputePool` (`package:flame/cache.dart`) manages a persistent multi-isolate worker pool
     with `ComputePriority` (`high`, `normal`, `low`), `ComputeTaskToken` cancellation, and zero-spawn
-    inline test mode (`workerCount: 0`).
+    inline test mode (`workerCount: 0`). Every scheduled task ends with a completed or failed
+    future: `dispose()`, an unsendable payload or a worker isolate that dies fail the tasks they
+    strand instead of leaving them pending.

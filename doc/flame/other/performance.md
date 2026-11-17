@@ -271,8 +271,10 @@ for (final tileId in scratchIds) {
 
 ## Zero-Allocation Built-In Caches, Effects, Culling, and Batches
 
-- **Bounded `O(1)` LRU `MemoryCache(maxEntries: ...)`**: `MemoryCache` evicts least-recently-used
-  entries in `O(1)` when `maxEntries` is set, preventing unbounded cache growth in long sessions.
+- **Bounded `O(1)` LRU `MemoryCache(cacheSize: ...)`**: `MemoryCache` keeps at most `cacheSize`
+  entries and evicts the least-recently-used one (reads and writes both count as a use) in `O(1)`,
+  calling `onEvict` for every value that leaves, which prevents unbounded cache growth in long
+  sessions.
 - **Zero-Allocation `SpriteBatch` & Effects**: `SpriteBatch` / `SpriteBatchComponent` reuse
   contiguous `RSTransform` / `Float32List` buffers on flush, while `ColorEffect` and `GlowEffect`
   cache `ColorFilter` / `MaskFilter` instances whenever quantized opacity/sigma is unchanged.

@@ -37,6 +37,12 @@ import 'package:flutter/services.dart';
 /// images with [load] rather than [fromCache], since [load] decodes the image
 /// again when it is missing and [fromCache] fails. Images that your own code
 /// keeps outside of a retaining component must be retained manually.
+///
+/// [clearIfUnretained] removes one image right away instead of waiting for
+/// the grace period. It still honors what the grace period is for: an image
+/// that was handed out by [load], [fetchOrGenerate], [fromBase64] or
+/// [fromCache] within [gracePeriod], to a caller that has not retained it
+/// yet, is kept, and so is an image that is still loading.
 class Images({AssetBundle? bundle, int? maxSizeBytes}) {
   static final Expando<_ImageAsset> _assetsByImage = Expando<_ImageAsset>(
     'Images',
@@ -112,6 +118,7 @@ class Images({AssetBundle? bundle, int? maxSizeBytes}) {
       return;
     }
     asset.refCount++;
+    asset.claimFetch();
     asset.lastUsed = clock.now();
   }
 
@@ -202,12 +209,28 @@ class Images({AssetBundle? bundle, int? maxSizeBytes}) {
     removedAsset?.dispose();
   }
 
-  /// Disposes and removes [name] immediately **only** when its [retainCount] is
-  /// `0`, returning the estimated freed bytes (`0` when still retained or
-  /// absent).
+  /// Disposes and removes [name] immediately when nothing uses it, returning
+  /// the estimated freed bytes, or `0` when the image was kept.
+  ///
+  /// The image is kept, and stays subject to the regular eviction of
+  /// [evictUnused] and [maxSizeBytes], when any of these holds:
+  ///
+  /// - it is retained ([retainCount] is not `0`);
+  /// - it is still loading, since whoever awaits the load needs it;
+  /// - it was handed out by [load], [fetchOrGenerate], [fromBase64] or
+  ///   [fromCache] within [gracePeriod] and no [retain] has followed that
+  ///   hand-out yet, which is the gap between loading an image and mounting
+  ///   the component that retains it.
+  ///
+  /// Unlike [evictUnused], a recent [release] does not keep the image: an
+  /// owner that releases its last hold and calls this frees the image at
+  /// once.
   int clearIfUnretained(String name) {
     final asset = _assets[name];
-    if (asset == null || asset.refCount > 0) {
+    if (asset == null || asset.refCount > 0 || asset.image == null) {
+      return 0;
+    }
+    if (asset.hasUnclaimedFetch(clock.now(), gracePeriod)) {
       return 0;
     }
     final freed = asset.sizeBytes;
@@ -250,7 +273,7 @@ class Images({AssetBundle? bundle, int? maxSizeBytes}) {
       'Tried to access an image "$name" before it was loaded. Make sure to '
       'await the future from load() before using this method',
     );
-    asset!.lastUsed = clock.now();
+    asset!.noteFetched(gracePeriod);
     return asset.image!;
   }
 
@@ -338,11 +361,12 @@ class Images({AssetBundle? bundle, int? maxSizeBytes}) {
   Future<Image> _fetch(String key, Future<Image> Function() generator) {
     final existing = _assets[key];
     if (existing != null) {
-      existing.lastUsed = clock.now();
+      existing.noteFetched(gracePeriod);
       return existing.retrieveAsync();
     }
     _evictedKeys.remove(key);
     final asset = _assets[key] = _ImageAsset.future(this, key, generator());
+    asset.noteFetched(gracePeriod);
     return asset.retrieveAsync();
   }
 
@@ -449,6 +473,39 @@ class _ImageAsset {
   int refCount = 0;
   DateTime lastUsed = clock.now();
 
+  /// When the image was last handed out by a load, a fetch or `fromCache`.
+  DateTime lastFetched = clock.now();
+
+  /// How many of the hand-outs since [lastFetched] started counting have not
+  /// been followed by a retain, see [noteFetched] and [claimFetch].
+  int unclaimedFetches = 0;
+
+  /// Records that the image is handed out to a caller, who is expected to
+  /// retain it if it keeps it.
+  void noteFetched(Duration gracePeriod) {
+    final now = clock.now();
+    if (now.difference(lastFetched) >= gracePeriod) {
+      // Earlier hand-outs that were never retained are no longer protected.
+      unclaimedFetches = 0;
+    }
+    unclaimedFetches++;
+    lastFetched = now;
+    lastUsed = now;
+  }
+
+  /// Records that a caller retained the image, which settles one hand-out.
+  void claimFetch() {
+    if (unclaimedFetches > 0) {
+      unclaimedFetches--;
+    }
+  }
+
+  /// Whether the image was handed out within [gracePeriod] before [now] to a
+  /// caller that has not retained it.
+  bool hasUnclaimedFetch(DateTime now, Duration gracePeriod) {
+    return unclaimedFetches > 0 && now.difference(lastFetched) < gracePeriod;
+  }
+
   Image? get image => _image;
   Image? _image;
 
@@ -467,6 +524,9 @@ class _ImageAsset {
   void _track() {
     Images._assetsByImage[_image!] = this;
     lastUsed = clock.now();
+    // The grace period of whoever awaits a load starts when the image is
+    // delivered, not when the load began.
+    lastFetched = lastUsed;
   }
 
   bool _disposed = false;
