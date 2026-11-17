@@ -90,8 +90,16 @@ class CompiledFormula._({
 /// - Functions: `abs`, `floor`, `ceil`, `round`, `sqrt`, `min`, `max`, `pow`,
 ///   `clamp`, `lerp`, `if(cond, thenExpr, elseExpr)`
 /// - Safe division/modulo by zero (`0.0`) and `NaN`/`Infinity` clamping.
+///
+/// [evaluate] can be called again from inside the lookups it makes (a world
+/// variable or a stat that is itself computed by a formula on the same VM):
+/// each evaluation works on its own part of the shared value stack.
 class FormulaVM({int stackCapacity = 64}) {
   Float64List _stack = Float64List(math.max(16, stackCapacity));
+
+  /// The first free slot of [_stack], above the operands of every evaluation
+  /// that is in progress.
+  int _stackTop = 0;
 
   /// Compiles [expression] into a reusable [CompiledFormula], throwing
   /// [FormatException] on syntax or arity errors.
@@ -243,6 +251,9 @@ class FormulaVM({int stackCapacity = 64}) {
 
   /// Evaluates [formula] with zero heap allocations.
   ///
+  /// The lookups ([attacker], [defender], [worldVariableLookup] and
+  /// [contextVars]) may evaluate other formulas on this same VM.
+  ///
   /// When [variance] `> 0.0` and [rng] is supplied, applies uniform RPG Maker
   /// damage spread in `[1.0 - variance, 1.0 + variance]`.
   double evaluate(
@@ -263,7 +274,10 @@ class FormulaVM({int stackCapacity = 64}) {
     final consts = formula._constants;
     final syms = formula._symbols;
 
-    var sp = 0;
+    // An evaluation started by one of the lookups below works above the
+    // operands that this one has pushed so far.
+    final base = _stackTop;
+    var sp = base;
     void push(double v) {
       if (sp >= _stack.length) {
         final grown = Float64List(_stack.length * 2)
@@ -273,122 +287,130 @@ class FormulaVM({int stackCapacity = 64}) {
       _stack[sp++] = (v.isNaN || v.isInfinite) ? 0.0 : v;
     }
 
-    for (var ip = 0; ip < ops.length; ip++) {
-      final op = ops[ip];
-      final arg = args[ip];
-      switch (op) {
-        case 0:
-          push(consts[arg]);
-        case 1:
-          push(attacker?.get(syms[arg]) ?? 0.0);
-        case 2:
-          push(defender?.get(syms[arg]) ?? 0.0);
-        case 3:
-          push(worldVariableLookup?.call(arg) ?? 0.0);
-        case 4:
-          push(contextVars?[syms[arg]] ?? 0.0);
-        case 5:
-          _stack[sp - 1] = -_stack[sp - 1];
-        case 6:
-          _stack[sp - 1] = _stack[sp - 1] == 0.0 ? 1.0 : 0.0;
-        case 7:
-          final b = _stack[--sp];
-          _stack[sp - 1] = _sanitize(_stack[sp - 1] + b);
-        case 8:
-          final b = _stack[--sp];
-          _stack[sp - 1] = _sanitize(_stack[sp - 1] - b);
-        case 9:
-          final b = _stack[--sp];
-          _stack[sp - 1] = _sanitize(_stack[sp - 1] * b);
-        case 10:
-          final b = _stack[--sp];
-          _stack[sp - 1] = b.abs() <= 1e-12
-              ? 0.0
-              : _sanitize(_stack[sp - 1] / b);
-        case 11:
-          final b = _stack[--sp];
-          _stack[sp - 1] = b.abs() <= 1e-12
-              ? 0.0
-              : _sanitize(_stack[sp - 1] % b);
-        case 12:
-          final b = _stack[--sp];
-          _stack[sp - 1] = _stack[sp - 1] < b ? 1.0 : 0.0;
-        case 13:
-          final b = _stack[--sp];
-          _stack[sp - 1] = _stack[sp - 1] <= b ? 1.0 : 0.0;
-        case 14:
-          final b = _stack[--sp];
-          _stack[sp - 1] = _stack[sp - 1] > b ? 1.0 : 0.0;
-        case 15:
-          final b = _stack[--sp];
-          _stack[sp - 1] = _stack[sp - 1] >= b ? 1.0 : 0.0;
-        case 16:
-          final b = _stack[--sp];
-          _stack[sp - 1] = (_stack[sp - 1] - b).abs() <= 1e-9 ? 1.0 : 0.0;
-        case 17:
-          final b = _stack[--sp];
-          _stack[sp - 1] = (_stack[sp - 1] - b).abs() > 1e-9 ? 1.0 : 0.0;
-        case 18:
-          final b = _stack[--sp];
-          _stack[sp - 1] = (_stack[sp - 1] != 0.0 && b != 0.0) ? 1.0 : 0.0;
-        case 19:
-          final b = _stack[--sp];
-          _stack[sp - 1] = (_stack[sp - 1] != 0.0 || b != 0.0) ? 1.0 : 0.0;
-        case 20:
-          _stack[sp - 1] = _stack[sp - 1].abs();
-        case 21:
-          _stack[sp - 1] = _stack[sp - 1].floorToDouble();
-        case 22:
-          _stack[sp - 1] = _stack[sp - 1].ceilToDouble();
-        case 23:
-          _stack[sp - 1] = _stack[sp - 1].roundToDouble();
-        case 24:
-          final x = _stack[sp - 1];
-          _stack[sp - 1] = x <= 0.0 ? 0.0 : _sanitize(math.sqrt(x));
-        case 25:
-          final b = _stack[--sp];
-          _stack[sp - 1] = math.min(_stack[sp - 1], b);
-        case 26:
-          final b = _stack[--sp];
-          _stack[sp - 1] = math.max(_stack[sp - 1], b);
-        case 27:
-          final b = _stack[--sp];
-          _stack[sp - 1] = _sanitize(math.pow(_stack[sp - 1], b).toDouble());
-        case 28:
-          final hi = _stack[--sp];
-          final lo = _stack[--sp];
-          final effLo = math.min(lo, hi);
-          final effHi = math.max(lo, hi);
-          _stack[sp - 1] = _stack[sp - 1].clamp(effLo, effHi);
-        case 29:
-          final t = _stack[--sp];
-          final b = _stack[--sp];
-          final a = _stack[sp - 1];
-          _stack[sp - 1] = _sanitize(a + (b - a) * t);
-        case 30:
-          final elseVal = _stack[--sp];
-          final thenVal = _stack[--sp];
-          final cond = _stack[sp - 1];
-          _stack[sp - 1] = cond != 0.0 ? thenVal : elseVal;
+    try {
+      for (var ip = 0; ip < ops.length; ip++) {
+        final op = ops[ip];
+        final arg = args[ip];
+        switch (op) {
+          case 0:
+            push(consts[arg]);
+          case 1:
+            _stackTop = sp;
+            push(attacker?.get(syms[arg]) ?? 0.0);
+          case 2:
+            _stackTop = sp;
+            push(defender?.get(syms[arg]) ?? 0.0);
+          case 3:
+            _stackTop = sp;
+            push(worldVariableLookup?.call(arg) ?? 0.0);
+          case 4:
+            _stackTop = sp;
+            push(contextVars?[syms[arg]] ?? 0.0);
+          case 5:
+            _stack[sp - 1] = -_stack[sp - 1];
+          case 6:
+            _stack[sp - 1] = _stack[sp - 1] == 0.0 ? 1.0 : 0.0;
+          case 7:
+            final b = _stack[--sp];
+            _stack[sp - 1] = _sanitize(_stack[sp - 1] + b);
+          case 8:
+            final b = _stack[--sp];
+            _stack[sp - 1] = _sanitize(_stack[sp - 1] - b);
+          case 9:
+            final b = _stack[--sp];
+            _stack[sp - 1] = _sanitize(_stack[sp - 1] * b);
+          case 10:
+            final b = _stack[--sp];
+            _stack[sp - 1] = b.abs() <= 1e-12
+                ? 0.0
+                : _sanitize(_stack[sp - 1] / b);
+          case 11:
+            final b = _stack[--sp];
+            _stack[sp - 1] = b.abs() <= 1e-12
+                ? 0.0
+                : _sanitize(_stack[sp - 1] % b);
+          case 12:
+            final b = _stack[--sp];
+            _stack[sp - 1] = _stack[sp - 1] < b ? 1.0 : 0.0;
+          case 13:
+            final b = _stack[--sp];
+            _stack[sp - 1] = _stack[sp - 1] <= b ? 1.0 : 0.0;
+          case 14:
+            final b = _stack[--sp];
+            _stack[sp - 1] = _stack[sp - 1] > b ? 1.0 : 0.0;
+          case 15:
+            final b = _stack[--sp];
+            _stack[sp - 1] = _stack[sp - 1] >= b ? 1.0 : 0.0;
+          case 16:
+            final b = _stack[--sp];
+            _stack[sp - 1] = (_stack[sp - 1] - b).abs() <= 1e-9 ? 1.0 : 0.0;
+          case 17:
+            final b = _stack[--sp];
+            _stack[sp - 1] = (_stack[sp - 1] - b).abs() > 1e-9 ? 1.0 : 0.0;
+          case 18:
+            final b = _stack[--sp];
+            _stack[sp - 1] = (_stack[sp - 1] != 0.0 && b != 0.0) ? 1.0 : 0.0;
+          case 19:
+            final b = _stack[--sp];
+            _stack[sp - 1] = (_stack[sp - 1] != 0.0 || b != 0.0) ? 1.0 : 0.0;
+          case 20:
+            _stack[sp - 1] = _stack[sp - 1].abs();
+          case 21:
+            _stack[sp - 1] = _stack[sp - 1].floorToDouble();
+          case 22:
+            _stack[sp - 1] = _stack[sp - 1].ceilToDouble();
+          case 23:
+            _stack[sp - 1] = _stack[sp - 1].roundToDouble();
+          case 24:
+            final x = _stack[sp - 1];
+            _stack[sp - 1] = x <= 0.0 ? 0.0 : _sanitize(math.sqrt(x));
+          case 25:
+            final b = _stack[--sp];
+            _stack[sp - 1] = math.min(_stack[sp - 1], b);
+          case 26:
+            final b = _stack[--sp];
+            _stack[sp - 1] = math.max(_stack[sp - 1], b);
+          case 27:
+            final b = _stack[--sp];
+            _stack[sp - 1] = _sanitize(math.pow(_stack[sp - 1], b).toDouble());
+          case 28:
+            final hi = _stack[--sp];
+            final lo = _stack[--sp];
+            final effLo = math.min(lo, hi);
+            final effHi = math.max(lo, hi);
+            _stack[sp - 1] = _stack[sp - 1].clamp(effLo, effHi);
+          case 29:
+            final t = _stack[--sp];
+            final b = _stack[--sp];
+            final a = _stack[sp - 1];
+            _stack[sp - 1] = _sanitize(a + (b - a) * t);
+          case 30:
+            final elseVal = _stack[--sp];
+            final thenVal = _stack[--sp];
+            final cond = _stack[sp - 1];
+            _stack[sp - 1] = cond != 0.0 ? thenVal : elseVal;
+        }
       }
-    }
 
-    var result = sp > 0 ? _sanitize(_stack[0]) : 0.0;
-    if (isCritical) {
-      result = _sanitize(result * criticalMultiplier);
+      var result = sp > base ? _sanitize(_stack[base]) : 0.0;
+      if (isCritical) {
+        result = _sanitize(result * criticalMultiplier);
+      }
+      if (variance > 0.0 && rng != null) {
+        final v = variance.clamp(0.0, 1.0);
+        final factor = 1.0 - v + rng.nextDouble() * (2.0 * v);
+        result = _sanitize(result * factor);
+      }
+      if (minResult != null && result < minResult) {
+        result = minResult;
+      }
+      if (maxResult != null && result > maxResult) {
+        result = maxResult;
+      }
+      return _sanitize(result);
+    } finally {
+      _stackTop = base;
     }
-    if (variance > 0.0 && rng != null) {
-      final v = variance.clamp(0.0, 1.0);
-      final factor = 1.0 - v + rng.nextDouble() * (2.0 * v);
-      result = _sanitize(result * factor);
-    }
-    if (minResult != null && result < minResult) {
-      result = minResult;
-    }
-    if (maxResult != null && result > maxResult) {
-      result = maxResult;
-    }
-    return _sanitize(result);
   }
 
   static double _sanitize(double v) => (v.isNaN || v.isInfinite) ? 0.0 : v;

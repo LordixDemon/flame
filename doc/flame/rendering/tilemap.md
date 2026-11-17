@@ -30,6 +30,9 @@ relational database loader pipeline.
   - Pre-bakes separate `RSTransform` / UV frame banks per `A1` animation frame so animated water
     cycles across the entire map in `O(1)` bank switches with **`0` chunk geometry rebuilds**
     (`chunkRebuildCount == 0`).
+  - A map without animated tiles never marks itself dirty or reports a visual mutation while idle;
+    only maps with animated tiles in view do, once per animation step. Replaced `ui.Vertices` are
+    disposed.
   - `setTileGid(col, row, gid)` rebuilds only the touched chunk (plus neighbor chunk on autotile
     seam boundaries).
 - **`YSortLayerComponent`**: Dynamic Y+elevation-sorted scene layer (`ySortKey` + `elevationZ`) with

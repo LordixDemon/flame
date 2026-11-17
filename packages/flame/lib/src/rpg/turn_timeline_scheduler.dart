@@ -144,6 +144,23 @@ class TurnTimelineScheduler({
 
   bool _canAct(TurnCombatantState c) => c.isAlive && !c.isStunned;
 
+  final List<TurnCombatantState> _filledThisTick = <TurnCombatantState>[];
+  final List<double> _fillTimeThisTick = <double>[];
+
+  /// Whether a gauge that fills after [timeA] goes before one that fills
+  /// after [timeB]: the earlier one, and for a tie the lower `tieBreakOrder`.
+  static bool _fillsBefore(
+    double timeA,
+    TurnCombatantState a,
+    double timeB,
+    TurnCombatantState b,
+  ) {
+    if (timeA < timeB - 1e-9) {
+      return true;
+    }
+    return (timeA - timeB).abs() <= 1e-9 && a.tieBreakOrder < b.tieBreakOrder;
+  }
+
   /// Advances real-time ATB gauges by [dt] seconds (no-op in non-ATB modes or
   /// while frozen in `waitMode && isCommandMenuOpen`).
   void updateAtb(double dt) {
@@ -155,6 +172,8 @@ class TurnTimelineScheduler({
     }
     _timelineClock += dt;
 
+    _filledThisTick.clear();
+    _fillTimeThisTick.clear();
     for (var i = 0; i < _combatants.length; i++) {
       final c = _combatants[i];
       if (!_canAct(c)) {
@@ -165,16 +184,37 @@ class TurnTimelineScheduler({
       }
       // Sublinear sqrt scaling keeps high-agility characters fast without
       // starving slower party members.
-      final speedScale = math.sqrt(c.agility / 10.0);
-      c.atbGauge = math.min(
-        maxAtbGauge,
-        c.atbGauge + atbBaseFillRate * speedScale * dt,
-      );
+      final rate = atbBaseFillRate * math.sqrt(c.agility / 10.0);
+      final before = c.atbGauge;
+      c.atbGauge = math.min(maxAtbGauge, before + rate * dt);
       if (c.atbGauge >= maxAtbGauge - 1e-9) {
         c.atbGauge = maxAtbGauge;
-        _readyQueue.addLast(c.id);
+        // Several gauges can fill within one tick. They become ready in the
+        // order in which they filled, not in registration order, so that the
+        // turn order does not depend on the frame rate and is the one that
+        // [previewTurnOrder] forecasts.
+        final fillTime = rate > 0.0
+            ? math.max(0.0, maxAtbGauge - before) / rate
+            : 0.0;
+        var at = _filledThisTick.length;
+        while (at > 0 &&
+            _fillsBefore(
+              fillTime,
+              c,
+              _fillTimeThisTick[at - 1],
+              _filledThisTick[at - 1],
+            )) {
+          at--;
+        }
+        _filledThisTick.insert(at, c);
+        _fillTimeThisTick.insert(at, fillTime);
       }
     }
+    for (var i = 0; i < _filledThisTick.length; i++) {
+      _readyQueue.addLast(_filledThisTick[i].id);
+    }
+    _filledThisTick.clear();
+    _fillTimeThisTick.clear();
 
     if (_activeActorId == null) {
       _popValidReadyActor();

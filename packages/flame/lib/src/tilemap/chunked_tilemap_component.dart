@@ -88,6 +88,10 @@ class ChunkedTilemapComponent({
   double _animAccum = 0.0;
   int _animStep = 0;
 
+  /// How many of the chunks drawn in the most recent [render] pass contain
+  /// animated autotiles, which is what makes an animation step visible.
+  int _lastRenderedAnimatedChunkCount = 0;
+
   int _lastRenderedChunkCount = 0;
   int _lastChunkRebuildCount = 0;
   int _lastDrawCallCount = 0;
@@ -121,6 +125,10 @@ class ChunkedTilemapComponent({
   }
 
   /// Current monotonic animation step index for `A1` animated autotiles.
+  ///
+  /// The index always advances with time. The component only marks itself
+  /// dirty for a step when animated autotiles were drawn in its last
+  /// [render] pass.
   int get animationStep => _animStep;
 
   /// Number of chunks rendered during the most recent [render] pass.
@@ -210,9 +218,29 @@ class ChunkedTilemapComponent({
       final steps = (_animAccum / animationStepDuration).floor();
       _animAccum -= steps * animationStepDuration;
       _animStep = (_animStep + steps) & 0x3FFFFFFF;
-      markSubtreeDirty();
-      Game.notifyVisualMutation();
+      // The step only changes the picture when animated tiles were drawn: a
+      // map without any (or with none in view) stays clean, so that retained
+      // layers keep their cache and an idle game stays idle.
+      if (_lastRenderedAnimatedChunkCount > 0) {
+        markSubtreeDirty();
+        Game.notifyVisualMutation();
+      }
     }
+  }
+
+  @override
+  void onRemove() {
+    // The vertex buffers are native objects. The chunks are built again when
+    // the component is rendered the next time.
+    for (var i = 0; i < _chunks.length; i++) {
+      final chunk = _chunks[i];
+      chunk.mirroredVertices?.dispose();
+      chunk.mirroredVertices = null;
+      chunk.mirroredVertexCount = 0;
+      chunk.dirty = true;
+    }
+    _lastRenderedAnimatedChunkCount = 0;
+    super.onRemove();
   }
 
   @override
@@ -220,6 +248,7 @@ class ChunkedTilemapComponent({
     _lastRenderedChunkCount = 0;
     _lastChunkRebuildCount = 0;
     _lastDrawCallCount = 0;
+    _lastRenderedAnimatedChunkCount = 0;
     if (_opacity <= 1e-4) {
       return;
     }
@@ -256,6 +285,7 @@ class ChunkedTilemapComponent({
     var rebuilt = 0;
     var rendered = 0;
     var draws = 0;
+    var animated = 0;
 
     for (var cy = minCy; cy <= maxCy; cy++) {
       for (var cx = minCx; cx <= maxCx; cx++) {
@@ -302,10 +332,12 @@ class ChunkedTilemapComponent({
             _atlasPaint,
           );
           draws++;
+          animated++;
         }
       }
     }
 
+    _lastRenderedAnimatedChunkCount = animated;
     _lastChunkRebuildCount = rebuilt;
     _lastRenderedChunkCount = rendered;
     _lastDrawCallCount = draws;
@@ -471,6 +503,8 @@ class ChunkedTilemapComponent({
         ? Float32List(0)
         : Float32List.fromList(staticRx);
 
+    // The buffer of the previous build is a native object that is replaced.
+    chunk.mirroredVertices?.dispose();
     if (mirrorPos.isNotEmpty) {
       chunk.mirroredVertexCount = mirrorPos.length ~/ 2;
       chunk.mirroredVertices = ui.Vertices.raw(

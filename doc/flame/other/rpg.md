@@ -58,7 +58,10 @@ Flame includes a modular, opt-in suite of RPG, Tactical RPG, and Visual Novel pr
     `SeededRng` variance, critical multiplier, and `NaN`/`/0` guards).
 - **`TurnTimelineScheduler` (`package:flame/rpg.dart`)**: Supports `roundPriority`, `activeTimeBattle`
   (with sub-menu `waitMode` freeze), and `conditionalTurnBased` (`CTB`) with non-destructive
-  `previewTurnOrder` for hypothetical quick vs heavy skill previews.
+  `previewTurnOrder` for hypothetical quick vs heavy skill previews (in `activeTimeBattle`, actors whose gauges fill within one
+  tick become ready in the order in which they filled, ties by `tieBreakOrder`, in the live order as
+  in the preview, independent of the frame rate).
+  `FormulaVM.evaluate` is re-entrant, so a world-variable lookup may evaluate another formula.
 - **`TacticalRangeSolver` & `GridAreaTemplate` (`package:flame/navigation.dart`)**: Zero-allocation
   binary-heap Dijkstra solver with enemy Zone-of-Control (`ZOC`) pinning, ally pass-through without
   stacking, asymmetric `maxClimb`/`maxDrop` cliffs, and red attack-threat fringes, paired with wall-aware
