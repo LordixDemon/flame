@@ -29,7 +29,9 @@ typedef PassUniformWriter = void Function(
 ///   consecutive opaque draws of the same [Surface] and [Material] become a
 ///   single instanced draw when the material's vertex shader reads its model
 ///   matrix from the instance data (see `shaders/flame_3d/instancing.glsl`);
-/// - translucent draws follow, back to front, one draw each.
+/// - translucent draws follow, back to front; consecutive translucent draws
+///   of the same [Surface] and [Material] become one instanced draw, whose
+///   instances are drawn in that order.
 ///
 /// Front faces are counter-clockwise on screen. The winding flips when the
 /// camera mirrors the scene (see [isMirrored]) and for objects whose model
@@ -40,7 +42,7 @@ typedef PassUniformWriter = void Function(
 /// the bound material changes (and before every draw of a material whose
 /// shader reads its model matrix from uniforms), so materials must not change
 /// their values between draws of one frame to vary objects: use the
-/// per-instance color, or distinct materials.
+/// per-instance color and data, or distinct materials.
 ///
 /// Uniform blocks registered with [registerPassUniform] (the camera matrices
 /// and the ambient, point, directional and hemisphere lights by default) are
@@ -226,7 +228,8 @@ class RenderContext3D(super.device) extends RenderContext {
   }
 
   /// Records a draw of every surface of [mesh] with the model matrix
-  /// [transform] (defaults to [model]) and the per-instance [color].
+  /// [transform] (defaults to [model]), the per-instance [color] and the
+  /// per-instance [instanceData] (zero when `null`).
   ///
   /// [jointTransforms] holds, by surface index, the joint matrices of skinned
   /// surfaces.
@@ -234,24 +237,34 @@ class RenderContext3D(super.device) extends RenderContext {
     Mesh mesh, {
     Matrix4? transform,
     Color color = const Color(0xFFFFFFFF),
+    Vector4? instanceData,
     Map<int, List<Matrix4>>? jointTransforms,
   }) {
     mesh.draw(
       this,
       transform: transform,
       color: color,
+      instanceData: instanceData,
       jointTransforms: jointTransforms,
     );
   }
 
   /// Records a draw of [surface] with its material (or [material]), the model
-  /// matrix [transform] (defaults to [model]) and the per-instance [color].
+  /// matrix [transform] (defaults to [model]), the per-instance [color] and
+  /// the per-instance [instanceData] (zero when `null`).
+  ///
+  /// The color and the instance data reach the material's vertex shader as
+  /// `instanceColor` and `instanceData` (see
+  /// `shaders/flame_3d/instancing.glsl`); what the instance data means is up
+  /// to the material. Both are copied when the draw is recorded, so draws
+  /// that differ only in them still batch.
   ///
   /// [jointTransforms] are the joint matrices of a skinned surface.
   void drawSurface(
     Surface surface, {
     Matrix4? transform,
     Color color = const Color(0xFFFFFFFF),
+    Vector4? instanceData,
     List<Matrix4>? jointTransforms,
     Material? material,
   }) {
@@ -284,6 +297,20 @@ class RenderContext3D(super.device) extends RenderContext {
     instances[base + 17] = color.g;
     instances[base + 18] = color.b;
     instances[base + 19] = color.a;
+    if (instanceData == null) {
+      instances
+        ..[base + 20] = 0
+        ..[base + 21] = 0
+        ..[base + 22] = 0
+        ..[base + 23] = 0;
+    } else {
+      final data = instanceData.storage;
+      instances
+        ..[base + 20] = data[0]
+        ..[base + 21] = data[1]
+        ..[base + 22] = data[2]
+        ..[base + 23] = data[3];
+    }
 
     // Depth of the center of the surface's bounds.
     final aabb = surface.aabb;
@@ -350,21 +377,10 @@ class RenderContext3D(super.device) extends RenderContext {
     _boundMaterial = null;
     _bindingEpoch = -1;
 
-    var start = 0;
-    while (start < opaqueCount) {
-      final first = _opaque[start];
-      var end = start + 1;
-      if (_pipelines[first]!.instanced && _joints[first] == null) {
-        while (end < opaqueCount && _batchesWith(first, _opaque[end])) {
-          end++;
-        }
-      }
-      _submit(_opaque, start, end - start);
-      start = end;
-    }
-    for (var i = 0; i < translucentCount; i++) {
-      _submit(_translucent, i, 1);
-    }
+    _submitBatches(_opaque, opaqueCount);
+    // Back to front: only draws that are consecutive in that order batch, and
+    // the instances of a batch are drawn in that order.
+    _submitBatches(_translucent, translucentCount);
 
     // Release the references to what was drawn.
     for (var i = 0; i < count; i++) {
@@ -377,6 +393,23 @@ class RenderContext3D(super.device) extends RenderContext {
     _jointTransforms = null;
     _lastDrawCount = count;
     _count = 0;
+  }
+
+  /// Submits the first [count] draws of [order], merging consecutive draws
+  /// that batch into instanced draws.
+  void _submitBatches(Int32List order, int count) {
+    var start = 0;
+    while (start < count) {
+      final first = order[start];
+      var end = start + 1;
+      if (_pipelines[first]!.instanced && _joints[first] == null) {
+        while (end < count && _batchesWith(first, order[end])) {
+          end++;
+        }
+      }
+      _submit(order, start, end - start);
+      start = end;
+    }
   }
 
   bool _batchesWith(int first, int other) {

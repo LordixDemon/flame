@@ -26,7 +26,9 @@ class Mesh() extends Resource<void> {
   int get vertexCount => _surfaces.fold(0, (p, e) => p + e.vertexCount);
 
   /// Records a draw of every surface with the model matrix [transform]
-  /// (defaults to [RenderContext3D.model]) and the per-instance [color].
+  /// (defaults to [RenderContext3D.model]), the per-instance [color] and the
+  /// per-instance [instanceData] (zero when `null`), see
+  /// [RenderContext3D.drawSurface].
   ///
   /// [jointTransforms] holds, by surface index, the joint matrices of skinned
   /// surfaces.
@@ -34,6 +36,7 @@ class Mesh() extends Resource<void> {
     RenderContext3D context, {
     Matrix4? transform,
     Color color = const Color(0xFFFFFFFF),
+    Vector4? instanceData,
     Map<int, List<Matrix4>>? jointTransforms,
   }) {
     for (var index = 0; index < _surfaces.length; index++) {
@@ -41,6 +44,7 @@ class Mesh() extends Resource<void> {
         _surfaces[index],
         transform: transform,
         color: color,
+        instanceData: instanceData,
         jointTransforms: jointTransforms?[index],
       );
     }

@@ -94,26 +94,49 @@ void main() {
       expect(frame.stats.pipelineChanges, 1);
     });
 
-    testGpuEngine('never batches translucent draws', () async {
+    testGpuEngine('batches translucent draws back to front', () async {
       final surface = quad(
-        UnlitMaterial(albedoColor: const Color(0x80FF0000))
+        UnlitMaterial(albedoColor: const Color(0x80FFFFFF))
           ..renderState = RenderState.alphaBlend,
-        halfSize: 0.05,
+        halfSize: 0.3,
       );
+      // Overlapping panes recorded front to back, so that the blend shows
+      // whether they are drawn back to front.
+      const panes = [
+        (-3.0, Color(0xFF0000FF)),
+        (-5.0, Color(0xFF00FF00)),
+        (-7.0, Color(0xFFFF0000)),
+      ];
 
       final frame = await renderFrame(
         draw: (context) {
-          for (var i = 0; i < 10; i++) {
+          for (final (z, color) in panes) {
             context.drawSurface(
               surface,
-              transform: Matrix4.translationValues(-0.9 + i * 0.2, 0, -5),
+              transform: Matrix4.translationValues(0, 0, z),
+              color: color,
             );
           }
         },
       );
 
-      expect(frame.stats.drawCalls, 10);
-      expect(frame.stats.instances, 10);
+      expect(frame.stats.drawCalls, 1);
+      expect(frame.stats.instances, 3);
+      // Straight alpha blending, from the farthest pane to the nearest.
+      const alpha = 128 / 255;
+      var (r, g, b, a) = (0.0, 0.0, 0.0, 0.0);
+      for (final (_, color) in panes.reversed) {
+        r = color.r * alpha + r * (1 - alpha);
+        g = color.g * alpha + g * (1 - alpha);
+        b = color.b * alpha + b * (1 - alpha);
+        a = alpha + a * (1 - alpha);
+      }
+      final (px, py) = pixelAt(0, 0);
+      final pixel = frame.pixels.at(px, py);
+      expect(pixel.$1, closeTo(r * 255, 1.5));
+      expect(pixel.$2, closeTo(g * 255, 1.5));
+      expect(pixel.$3, closeTo(b * 255, 1.5));
+      expect(pixel.$4, closeTo(a * 255, 1.5));
     });
 
     testGpuEngine('never batches skinned draws', () async {

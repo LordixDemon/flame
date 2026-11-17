@@ -60,6 +60,35 @@ class World3D({
   /// [renderScale] is not `1`.
   FilterQuality scaledFilterQuality = FilterQuality.low;
 
+  /// The union of the world-space bounds ([Component3D.aabb]) of the
+  /// [Component3D]s of this world, lights excepted, or `null` when there are
+  /// none.
+  ///
+  /// It is kept up to date incrementally: reading it visits only the
+  /// components whose bounds changed since the last read (because they or
+  /// one of their descendants moved, were added or were removed), at a cost
+  /// of up to `log2(n)` unions each for `n` components, and nothing when
+  /// none changed. It is always the exact union of the current bounds. Call
+  /// [Component3D.markAabbDirty] when the geometry of a component changes
+  /// without it moving. The box belongs to the world and changes when the
+  /// bounds change; copy it to keep it.
+  Aabb3? get sceneBounds => _sceneBounds.value;
+  final ComponentBounds _sceneBounds = ComponentBounds();
+
+  @override
+  void onChildrenChanged(flame.Component child, flame.ChildrenChangeType type) {
+    super.onChildrenChanged(child, type);
+    if (child is! Component3D || child is LightComponent) {
+      return;
+    }
+    switch (type) {
+      case flame.ChildrenChangeType.added:
+        _sceneBounds.add(child);
+      case flame.ChildrenChangeType.removed:
+        _sceneBounds.remove(child);
+    }
+  }
+
   /// Register a [light] with this world.
   @internal
   void addLight(Light light) => _lights.add(light);

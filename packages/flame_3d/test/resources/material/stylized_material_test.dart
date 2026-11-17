@@ -17,7 +17,7 @@ void main() {
     setUp(() {
       // The fake backend lays members out 1024 bytes apart.
       backend = FakeGpuBackend(
-        blockSizes: {'JointMatrices': 1024, 'Material': 16 * 1024},
+        blockSizes: {'JointMatrices': 1024, 'Material': 32 * 1024},
       );
       device = GraphicsDevice(backend: backend);
       context = RenderContext3D(device);
@@ -135,6 +135,80 @@ void main() {
         ),
       );
       expect(backend.textureBindings.keys, contains('matCapTexture'));
+    });
+
+    test('writes the defaults of its additions', () {
+      final material = StylizedMaterial(
+        emissiveColor: const Color(0xFF336699),
+        skyFill: 0.5,
+      );
+
+      draw([stylizedTriangle(material)]);
+
+      List<double> member(Shader shader, String block, String name, int n) {
+        final offset = shader.slot(block).getMemberOffsetInBytes(name)! ~/ 4;
+        return backend.uniforms[block]!.sublist(offset, offset + n);
+      }
+
+      final fragment = material.fragmentShader;
+      final vertex = material.vertexShader;
+      expect(material.renderState, RenderState.opaque);
+      // The boost color is the emissive color, the sky fill is gray.
+      expect(
+        member(fragment, 'Material', 'emissiveBoostColor', 3),
+        member(fragment, 'Material', 'emissiveColor', 3),
+      );
+      expect(member(fragment, 'Material', 'skyFill', 3), [0.5, 0.5, 0.5]);
+      // The first MatCap applies to every glossy vertex, in proportion to
+      // its gloss; no vertex is a gem.
+      expect(member(fragment, 'Material', 'matCapThreshold', 1), [0]);
+      expect(member(fragment, 'Material', 'matCapGlossWeight', 1), [1]);
+      expect(member(fragment, 'Material', 'gemMatCapStrength', 1), [0]);
+      expect(
+        member(fragment, 'Material', 'gemThreshold', 1).single,
+        greaterThan(1e29),
+      );
+      // World-space wind.
+      expect(member(vertex, 'Wind', 'direction', 3), [1, 0, 0]);
+      expect(member(vertex, 'Wind', 'modelDirection', 3), [0, 0, 0]);
+      expect(backend.textureBindings.keys, contains('gemMatCapTexture'));
+    });
+
+    test('writes its additions', () {
+      final gem = ColorTexture(const Color(0xFF00FF00));
+      final material = StylizedMaterial(
+        skyFill: 0.5,
+        skyFillWeight: Vector3(1, 0.5, 0.25),
+        gemMatCapTexture: gem,
+        gemMatCapStrength: 0.75,
+        gemThreshold: 1.5,
+        windSpace: WindSpace.model,
+        windDirection: Vector3(0, 1, 0),
+        translucent: true,
+      );
+
+      draw([stylizedTriangle(material)]);
+
+      List<double> member(Shader shader, String block, String name, int n) {
+        final offset = shader.slot(block).getMemberOffsetInBytes(name)! ~/ 4;
+        return backend.uniforms[block]!.sublist(offset, offset + n);
+      }
+
+      final fragment = material.fragmentShader;
+      final vertex = material.vertexShader;
+      expect(material.renderState, StylizedMaterial.translucentRenderState);
+      expect(member(fragment, 'Material', 'skyFill', 3), [0.5, 0.25, 0.125]);
+      expect(member(fragment, 'Material', 'gemMatCapStrength', 1), [0.75]);
+      expect(member(fragment, 'Material', 'gemThreshold', 1), [1.5]);
+      expect(member(vertex, 'Wind', 'direction', 3), [0, 0, 0]);
+      expect(member(vertex, 'Wind', 'modelDirection', 3), [0, 1, 0]);
+      expect(
+        identical(
+          backend.textureBindings['gemMatCapTexture']!.$1,
+          gem.resource,
+        ),
+        isTrue,
+      );
     });
 
     test('binds its MatCap texture with its strength', () {

@@ -14,15 +14,17 @@ GPU until the end of the render pass, when the recorded draws are submitted:
   Consecutive draws of the same `Surface` with the same `Material` instance become a single
   instanced draw. Components that share a `Mesh` therefore cost one draw call per surface, however
   many of them there are.
-- Translucent draws come after all the opaque ones, ordered back to front, one draw each.
+- Translucent draws come after all the opaque ones, ordered back to front. Consecutive translucent
+  draws of the same `Surface` with the same `Material` instance also become a single instanced draw,
+  whose instances are drawn in that back to front order.
 - Skinned draws are never batched.
 
 Because materials are applied when the draws are submitted, a material must not change its values
 between the draws of one frame to make objects look different: use distinct materials, or the
-per-instance color.
+per-instance color and data.
 
 
-## Per-instance color
+## Per-instance color and data
 
 Each draw carries a color besides its model matrix, `MeshComponent.color` (white by default). The
 built-in materials multiply their base color by it (`StylizedMaterial` only on the vertices of its
@@ -35,6 +37,22 @@ for (final (i, color) in playerColors.indexed) {
   );
 }
 ```
+
+Each draw also carries four floats of per-instance data, `MeshComponent.instanceData` (zero by
+default), that materials are free to interpret: a highlight, an emissive strength, an opacity, a
+wind strength... Objects that differ only in their color and data still batch.
+`SpatialMaterial` and `UnlitMaterial` ignore the data; `StylizedMaterial` reads it as described in
+[Materials and Lighting](materials.md#per-instance-data).
+
+```dart
+final house = MeshComponent(mesh: houseMesh, instanceData: Vector4.zero());
+
+// Later, when the pointer is over it:
+house.instanceData.x = 0.5;
+```
+
+Custom objects pass them to `RenderContext3D.drawSurface` and `drawMesh` with `color` and
+`instanceData`; both are copied when the draw is recorded.
 
 
 ## Render state
@@ -99,10 +117,13 @@ layouts with a vertex shader variant per layout, see `Material.vertexShaderFor`.
 Custom shaders can include the chunks `flame_3d` ships:
 
 - `flame_3d/instancing.glsl` declares the per-instance inputs: the columns of the model matrix
-  (`instanceModel0` to `instanceModel3`) and `instanceColor`, and `instanceModelMatrix()`. A vertex
-  shader that declares the model columns is drawn instanced. One that does not gets its model matrix
-  from uniforms its material sets in `apply`, from `RenderContext3D.model`, and draws each object on
-  its own.
+  (`instanceModel0` to `instanceModel3`), `instanceColor` and `instanceData`, and
+  `instanceModelMatrix()`. A vertex shader that declares the model columns is drawn instanced. One
+  that does not gets its model matrix from uniforms its material sets in `apply`, from
+  `RenderContext3D.model`, and draws each object on its own. `instanceModelMatrix()` also reads
+  `instanceColor` and `instanceData` (without changing the matrix): `impellerc` cannot compile a
+  vertex shader whose inputs leave a gap, which reading `instanceData` but not `instanceColor` would
+  otherwise do.
 - `flame_3d/camera.glsl` declares the `CameraMatrices` block (`view`, `projection`,
   `viewProjection`).
 - `flame_3d/skinning.glsl` handles vertex skinning.
@@ -122,6 +143,16 @@ are filled for each draw. Register your own per-pass blocks with
 Each camera renders the world into an image of its viewport size in physical pixels, rounded to
 whole pixels. `World3D.renderScale` renders it at a fraction of that size (or above `1` to
 render more pixels than the viewport covers); the image is scaled to the viewport when drawn.
+
+The render targets of a `GraphicsDevice` are pooled by size: a size that is not used in a frame
+stays pooled for `GraphicsDevice.targetRetainFrames` frames. A render target owns up to three color
+textures, created once, which its passes take turns rendering into; the image of a pass is drawn by
+Flutter straight from its texture. A texture is rendered into again only once Flutter can no longer
+draw its previous image: Flutter rasterizes at most the frame it is building and the one before, so
+two frames later the image has been drawn, and the draws that read it were submitted to the GPU
+before the new pass is. A scene rendered every frame therefore uses two textures; when Flutter draws
+no frames (passes rendered outside of frames), the texture rendered the longest ago of the three is
+reused.
 
 `FlameGame3D.renderStats` holds the statistics of the last rendered frame: render passes, draw
 calls, instances, triangles, pipeline changes, render state changes, material changes, uniform

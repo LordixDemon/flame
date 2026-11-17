@@ -103,7 +103,55 @@ class _Look({
     bool gem = false,
     double emissiveStrength = 0,
     Vector3? matCap,
+    Vector3? cap,
     Vector3? viewer,
+    Vector3? skyFill,
+    Vector3? emissive,
+    Vector3? highlight,
+  }) {
+    final color = shadeColor(
+      position: position,
+      normal: normal,
+      vertexColor: vertexColor,
+      ao: ao,
+      tint: tint,
+      accent: accent,
+      gloss: gloss,
+      gem: gem,
+      emissiveStrength: emissiveStrength,
+      matCap: matCap,
+      cap: cap,
+      viewer: viewer,
+      skyFill: skyFill,
+      emissive: emissive,
+      highlight: highlight,
+    );
+    int channel(double c) => (c * 255).round();
+    return (channel(color.x), channel(color.y), channel(color.z));
+  }
+
+  /// The color of [shade], from 0 to 1.
+  ///
+  /// [matCap] is added in proportion to the gloss, [cap] as it is;
+  /// [skyFill] weighs the sky color per channel (0.35 by default);
+  /// [emissive] replaces the emissive color; [highlight] is added before the
+  /// emission.
+  Vector3 shadeColor({
+    required Vector3 position,
+    required Vector3 normal,
+    required Vector3 vertexColor,
+    double ao = 1,
+    Vector3? tint,
+    bool accent = false,
+    double gloss = 0,
+    bool gem = false,
+    double emissiveStrength = 0,
+    Vector3? matCap,
+    Vector3? cap,
+    Vector3? viewer,
+    Vector3? skyFill,
+    Vector3? emissive,
+    Vector3? highlight,
   }) {
     final n = normal.normalized();
     // Orthographic cameras look down -z; perspective ones from [viewer].
@@ -123,9 +171,10 @@ class _Look({
       color.multiply(accentColor);
     }
 
+    final skyWeight = skyFill ?? Vector3.all(0.35);
     final lit =
         (Vector3.all(0.65) +
-              sky * (0.35 * hemi) +
+              (sky.clone()..multiply(skyWeight)) * hemi +
               ground * (0.10 * groundBounce))
           ..scale(ambientStrength * ao);
     lit.add(sunColor * (math.max(0.0, n.dot(l)) * sunStrength));
@@ -152,9 +201,14 @@ class _Look({
     if (matCap != null) {
       color.add(matCap * gloss);
     }
-    color = color + (emissiveColor - color) * emissiveStrength;
-    int channel(double c) => (c.clamp(0.0, 1.0) * 255).round();
-    return (channel(color.x), channel(color.y), channel(color.z));
+    if (cap != null) {
+      color.add(cap);
+    }
+    if (highlight != null) {
+      color.add(highlight);
+    }
+    color = color + ((emissive ?? emissiveColor) - color) * emissiveStrength;
+    return color..clamp(Vector3.zero(), Vector3.all(1));
   }
 }
 
@@ -520,6 +574,325 @@ void main() {
       expect(await leftEdge(0, time), 16);
       expect(await leftEdge(1, time), closeTo(16 + offset * 32, 1));
       expect(await leftEdge(0.5, time), closeTo(16 + offset * 16, 1));
+    });
+
+    testGpuEngine(
+      'boosts the glow and highlights each instance of one draw',
+      () async {
+        const boostColor = Color(0xFF3060FF);
+        const highlightColor = Color(0xFF406020);
+        final material = newMaterial()
+          ..emissiveStrength = 0.3
+          ..emissiveBoostColor = boostColor
+          ..highlightColor = highlightColor;
+        final surface = _square(
+          material,
+          _Vertex(
+            normal: Vector3(0.2, 0.3, 0.9),
+            color: const Color(0xFF8090A0),
+            emissive: 0.5,
+          ),
+          halfSize: 0.15,
+        );
+        // (x, boost, highlight)
+        const instances = [
+          (-0.6, 0.0, 0.0),
+          (-0.2, 0.4, 0.0),
+          (0.2, 1.0, 0.0),
+          (0.6, 0.0, 0.3),
+        ];
+
+        final frame = await renderFrame(
+          draw: (context) {
+            for (final (x, boost, highlight) in instances) {
+              context.drawSurface(
+                surface,
+                transform: Matrix4.translationValues(x, 0, 0),
+                instanceData: Vector4(boost, highlight, 0, 0),
+              );
+            }
+          },
+          lights: lights(),
+        );
+
+        expect(frame.stats.drawCalls, 1);
+        expect(frame.stats.instances, 4);
+        for (final (x, boost, highlight) in instances) {
+          final (px, py) = pixelAt(x, 0);
+          final expected = look.shade(
+            position: _worldAt(px, py),
+            normal: Vector3(0.2, 0.3, 0.9),
+            vertexColor: _rgb(const Color(0xFF8090A0)),
+            emissiveStrength: (0.5 * (0.3 + boost)).clamp(0.0, 1.0),
+            emissive:
+                _rgb(emissiveColor) +
+                (_rgb(boostColor) - _rgb(emissiveColor)) *
+                    boost.clamp(0.0, 1.0),
+            highlight: _rgb(highlightColor) * highlight,
+          );
+          expect(
+            _difference(frame.pixels.at(px, py), expected),
+            lessThan(2),
+            reason: 'instance at $x: ${frame.pixels.at(px, py)} vs $expected',
+          );
+        }
+      },
+    );
+
+    testGpuEngine('fades translucent instances over the scene', () async {
+      const background = Color(0xFF2040C0);
+      final ghost = StylizedMaterial(
+        accentColor: accentColor,
+        emissiveColor: emissiveColor,
+        emissiveStrength: 0.5,
+        rimStrength: 0.4,
+        translucent: true,
+      );
+      expect(ghost.renderState.translucent, isTrue);
+      expect(ghost.renderState.depthWrite, isFalse);
+      final vertex = _Vertex(
+        normal: Vector3(0, 0, 1),
+        color: const Color(0xFFE0C0A0),
+      );
+      final surface = _square(ghost, vertex, halfSize: 0.15);
+      // (x, fade)
+      const instances = [(-0.5, 0.6), (0.0, 0.0), (0.5, 1.0)];
+
+      final frame = await renderFrame(
+        draw: (context) {
+          for (final (x, fade) in instances) {
+            context.drawSurface(
+              surface,
+              transform: Matrix4.translationValues(x, 0, 0),
+              instanceData: Vector4(0, 0, 0, fade),
+            );
+          }
+          // Recorded last, drawn first: it is opaque.
+          context.drawSurface(
+            quad(opaqueUnlit(background), halfSize: 1),
+            transform: Matrix4.translationValues(0, 0, -8),
+          );
+        },
+        lights: lights(),
+      );
+
+      // The background, then the ghosts in one draw.
+      expect(frame.stats.drawCalls, 2);
+      for (final (x, fade) in instances) {
+        final (px, py) = pixelAt(x, 0);
+        final color = look.shadeColor(
+          position: _worldAt(px, py),
+          normal: vertex.normal,
+          vertexColor: _rgb(vertex.color),
+        );
+        // Premultiplied blending over the opaque background.
+        final alpha = 1 - fade;
+        final expected = color * alpha + _rgb(background) * (1 - alpha);
+        int channel(double c) => (c * 255).round();
+        final pixel = frame.pixels.at(px, py);
+        expect(
+          _difference(pixel, (
+            channel(expected.x),
+            channel(expected.y),
+            channel(expected.z),
+          )),
+          lessThan(2),
+          reason: 'fade $fade: $pixel vs $expected',
+        );
+        expect(pixel.$4, 255);
+      }
+    });
+
+    /// The first non-clear pixel of row [y] from the left.
+    int leftEdgeOf(Pixels pixels, int y) {
+      for (var x = 0; x < pixels.width; x++) {
+        if (!pixels.isClear(x, y)) {
+          return x;
+        }
+      }
+      return pixels.width;
+    }
+
+    /// The last non-clear pixel of column [x] from the top.
+    int bottomEdgeOf(Pixels pixels, int x) {
+      for (var y = pixels.height - 1; y >= 0; y--) {
+        if (!pixels.isClear(x, y)) {
+          return y;
+        }
+      }
+      return -1;
+    }
+
+    testGpuEngine('sways each instance by its wind strength', () async {
+      const time = 0.5;
+      final material = newMaterial()
+        ..windAmplitude = 0.1
+        ..windPhase = Vector3.zero()
+        ..windTime = time;
+      final surface = _square(
+        material,
+        _Vertex(normal: Vector3(0, 0, 1), sway: 1),
+        halfSize: 0.15,
+      );
+      // (x, strength offset)
+      const instances = [(-0.6, -1.0), (0.0, 0.0), (0.6, 1.0)];
+
+      final frame = await renderFrame(
+        draw: (context) {
+          for (final (x, wind) in instances) {
+            context.drawSurface(
+              surface,
+              transform: Matrix4.translationValues(x, 0, 0),
+              instanceData: Vector4(0, 0, wind, 0),
+            );
+          }
+        },
+        lights: lights(),
+      );
+
+      expect(frame.stats.drawCalls, 1);
+      // The left edges of the three squares along the middle row.
+      final edges = [
+        for (var px = 0; px < 64; px++)
+          if (!frame.pixels.isClear(px, 32) &&
+              (px == 0 || frame.pixels.isClear(px - 1, 32)))
+            px,
+      ];
+      expect(edges, hasLength(3));
+      final sway = math.sin(time * 2.3) * 0.1;
+      for (final (i, (x, wind)) in instances.indexed) {
+        expect(
+          edges[i],
+          closeTo((x - 0.15 + sway * (1 + wind) + 1) * 32, 1),
+          reason: 'instance at $x',
+        );
+      }
+    });
+
+    testGpuEngine(
+      'sways in model space, turned and scaled with each instance',
+      () async {
+        const time = 0.5;
+        final material = newMaterial()
+          ..windSpace = WindSpace.model
+          ..windDirection = Vector3(1, 0, 0)
+          ..windAmplitude = 0.1
+          ..windPhase = Vector3.zero()
+          ..windTime = time;
+        final surface = _square(
+          material,
+          _Vertex(normal: Vector3(0, 0, 1), sway: 1),
+        );
+        // One instance as modeled, one turned a quarter turn about z and
+        // scaled twice in x and y: its model x axis is the world y axis.
+        final turned = Matrix4.translationValues(0.5, 0, 0)
+          ..rotateZ(math.pi / 2)
+          ..scaleByDouble(2, 2, 1, 1);
+
+        final frame = await renderFrame(
+          draw: (context) => context
+            ..drawSurface(
+              surface,
+              transform: Matrix4.translationValues(-0.5, 0, 0),
+            )
+            ..drawSurface(surface, transform: turned),
+          lights: lights(),
+        );
+
+        expect(frame.stats.drawCalls, 1);
+        final sway = math.sin(time * 2.3) * 0.1;
+        // The first instance moves right by the amplitude.
+        final left = (-0.5 - 0.2 + sway + 1) * 32;
+        expect(leftEdgeOf(frame.pixels, 32), closeTo(left, 1));
+        // The second moves up by twice the amplitude: its bottom edge, at
+        // y = -0.4 at rest.
+        final bottom = (1 - (-0.4 + 2 * sway)) * 32;
+        expect(bottomEdgeOf(frame.pixels, 48), closeTo(bottom, 1));
+      },
+    );
+
+    testGpuEngine('weighs the sky fill per channel', () async {
+      final material = newMaterial()
+        ..skyFill = 1
+        ..skyFillWeight = Vector3(0.35, 0.35, 0.32);
+      final vertex = _Vertex(
+        normal: Vector3(0, 0.9, 0.44),
+        color: const Color(0xFFD0D0D0),
+      );
+
+      final frame = await renderFrame(
+        draw: (context) => context.drawSurface(_square(material, vertex)),
+        lights: lights(),
+      );
+
+      final (px, py) = pixelAt(0, 0);
+      final expected = look.shade(
+        position: _worldAt(px, py),
+        normal: vertex.normal,
+        vertexColor: _rgb(vertex.color),
+        skyFill: Vector3(0.35, 0.35, 0.32),
+      );
+      final scalar = look.shade(
+        position: _worldAt(px, py),
+        normal: vertex.normal,
+        vertexColor: _rgb(vertex.color),
+      );
+      // The weight shows in the blue channel only.
+      expect(expected.$3, lessThan(scalar.$3));
+      expect(_difference(frame.pixels.at(px, py), expected), lessThan(2));
+    });
+
+    testGpuEngine('adds a clear coat and a gem MatCap by gloss', () async {
+      const coat = Color(0xFF204060);
+      const gem = Color(0xFF605020);
+      final material = newMaterial()
+        ..matCapTexture = ColorTexture(coat)
+        ..matCapStrength = 0.5
+        ..matCapThreshold = 0.36
+        ..matCapGlossWeight = 0
+        ..gemMatCapTexture = ColorTexture(gem)
+        ..gemThreshold = 1.5;
+      // (x, gloss, expected MatCap)
+      final squares = [
+        (-0.6, 0.3, Vector3.zero()),
+        (0.0, 0.6, _rgb(coat) * 0.5),
+        (0.6, 0.52 / 0.28, _rgb(gem)),
+      ];
+
+      final frame = await renderFrame(
+        draw: (context) {
+          for (final (x, gloss, _) in squares) {
+            context.drawSurface(
+              _square(
+                material,
+                _Vertex(
+                  normal: Vector3(0, 0, 1),
+                  color: const Color(0xFF606060),
+                  gloss: gloss,
+                ),
+                x: x,
+              ),
+            );
+          }
+        },
+        lights: lights(),
+      );
+
+      for (final (x, gloss, cap) in squares) {
+        final (px, py) = pixelAt(x, 0);
+        final expected = look.shade(
+          position: _worldAt(px, py),
+          normal: Vector3(0, 0, 1),
+          vertexColor: _rgb(const Color(0xFF606060)),
+          gloss: gloss,
+          cap: cap,
+        );
+        expect(
+          _difference(frame.pixels.at(px, py), expected),
+          lessThan(2),
+          reason: 'gloss $gloss: ${frame.pixels.at(px, py)} vs $expected',
+        );
+      }
     });
   });
 }

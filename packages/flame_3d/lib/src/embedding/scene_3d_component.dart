@@ -41,9 +41,11 @@ import 'package:flutter/widgets.dart' show MediaQuery;
 /// is empty.
 ///
 /// The render target is rounded up to a multiple of 64 pixels in both
-/// directions, so that panning and zooming reuse the same target, and is at
-/// most [maxTextureSize] pixels wide and high: a larger visible part is
-/// rendered at a lower resolution.
+/// directions, and the target of the last render is kept while the visible
+/// part fits in it and covers at least half of it, so that panning, zooming
+/// and moving objects reuse the same target. It is at most [maxTextureSize]
+/// pixels wide and high: a larger visible part is rendered at a lower
+/// resolution.
 ///
 /// In a [Game3D] game, the components use the game's [GraphicsDevice] and
 /// [RenderContext3D], so its `renderStats` count their passes. In any other
@@ -291,8 +293,21 @@ class Scene3DComponent({
     if (pixelWidth <= 0 || pixelHeight <= 0) {
       return;
     }
-    final targetWidth = math.min(_roundUp(pixelWidth), maxSize);
-    final targetHeight = math.min(_roundUp(pixelHeight), maxSize);
+    // Keep the target of the last render while the part fits in it and
+    // covers at least half of it: a part whose size changes a little from
+    // frame to frame keeps rendering into the same target.
+    final neededWidth = math.min(_roundUp(pixelWidth), maxSize);
+    final neededHeight = math.min(_roundUp(pixelHeight), maxSize);
+    if (_targetWidth < neededWidth ||
+        _targetHeight < neededHeight ||
+        _targetWidth > maxSize ||
+        _targetHeight > maxSize ||
+        _targetWidth * _targetHeight > 2 * neededWidth * neededHeight) {
+      _targetWidth = neededWidth;
+      _targetHeight = neededHeight;
+    }
+    final targetWidth = _targetWidth;
+    final targetHeight = _targetHeight;
 
     _writeCamera(
       a,
@@ -389,19 +404,9 @@ class Scene3DComponent({
     double tx,
     double ty,
   ) {
-    final box = _sceneBox;
-    var empty = true;
-    for (final child in world.children) {
-      if (child is Component3D && child is! LightComponent) {
-        if (empty) {
-          box.setFrom(child.aabb);
-          empty = false;
-        } else {
-          box.hull(child.aabb);
-        }
-      }
-    }
-    if (empty) {
+    // Kept up to date by the world as its components move.
+    final box = world.sceneBounds;
+    if (box == null) {
       return null;
     }
     final m = projection.sceneToLocalValues;
@@ -431,7 +436,9 @@ class Scene3DComponent({
     return Rect.fromLTRB(left, top, right, bottom);
   }
 
-  final Aabb3 _sceneBox = Aabb3();
+  // The size of the render target of the last render, in pixels.
+  int _targetWidth = 0;
+  int _targetHeight = 0;
 
   /// Writes the camera of a pass whose render target of [targetWidth] by
   /// [targetHeight] pixels starts at the pixel ([left], [top]) of a screen

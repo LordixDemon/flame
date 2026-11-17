@@ -90,22 +90,25 @@ class VertexLayout(List<VertexAttribute> attributes) {
 
   /// The per-instance inputs flame_3d feeds from its instance buffer, in the
   /// order they are stored for each instance: the four columns of the model
-  /// matrix and a color.
+  /// matrix, a color and four floats of data that materials interpret as they
+  /// like (`instanceData`, zero unless the drawing component sets it).
   ///
   /// A vertex shader that declares the four model columns is drawn instanced
   /// (see `shaders/flame_3d/instancing.glsl`); one that does not gets its
-  /// model matrix from uniforms, one draw per object.
+  /// model matrix from uniforms, one draw per object. A shader only receives
+  /// the inputs it reads.
   static const List<VertexAttribute> instanceAttributes = [
     VertexAttribute('instanceModel0', 4),
     VertexAttribute('instanceModel1', 4),
     VertexAttribute('instanceModel2', 4),
     VertexAttribute('instanceModel3', 4),
     VertexAttribute('instanceColor', 4),
+    VertexAttribute('instanceData', 4),
   ];
 
   /// The number of floats stored per instance: a 4x4 model matrix (column
-  /// major) followed by an RGBA color.
-  static const int instanceStrideInFloats = 20;
+  /// major), an RGBA color and the four floats of the instance data.
+  static const int instanceStrideInFloats = 24;
 
   /// The number of bytes per vertex.
   int get strideInBytes => strideInFloats * 4;

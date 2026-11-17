@@ -81,6 +81,7 @@ void main() {
         _input('instanceModel2', 4, 4),
         _input('instanceModel3', 5, 4),
         _input('instanceColor', 6, 4),
+        _input('instanceData', 7, 4),
       ], VertexLayout.standard);
 
       final [vertices, instances] = layout.buffers;
@@ -93,7 +94,7 @@ void main() {
         ],
         [('vertexPosition', 0, 3, 0), ('vertexNormal', 1, 3, 36)],
       );
-      expect(instances.strideInBytes, 80);
+      expect(instances.strideInBytes, 96);
       expect(instances.perInstance, isTrue);
       expect(
         [for (final a in instances.attributes) (a.name, a.offsetInBytes)],
@@ -103,6 +104,7 @@ void main() {
           ('instanceModel2', 32),
           ('instanceModel3', 48),
           ('instanceColor', 64),
+          ('instanceData', 80),
         ],
       );
     });
@@ -128,7 +130,7 @@ void main() {
       final layout = layoutFor(null, VertexLayout.standard);
 
       expect(layout.buffers[0].attributes, hasLength(6));
-      expect(layout.buffers[1].attributes, hasLength(5));
+      expect(layout.buffers[1].attributes, hasLength(6));
     });
 
     test('know whether the shader reads its model from instances', () {

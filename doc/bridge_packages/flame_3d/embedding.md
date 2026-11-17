@@ -114,8 +114,13 @@ given depth on a local point.
 Each time the layer renders, it renders the part of the screen it covers in one render pass: the
 canvas's clip (the game's area when nothing clips the canvas), intersected with the picture of the
 bounding box of the scene's components (lights do not count) and, when the component has a
-non-zero `size`, with the rectangle from `(0, 0)` to `size`. Objects outside that part are culled. Nothing is rendered when
-the part is empty, for example when the scene is off screen.
+non-zero `size`, with the rectangle from `(0, 0)` to `size`. Objects outside that part are culled.
+Nothing is rendered when the part is empty, for example when the scene is off screen.
+
+The bounding box of the scene is `World3D.sceneBounds`, which the world keeps up to date as its
+components move: reading it only visits the components whose bounds changed since the last frame
+(`log2(n)` unions each), and costs next to nothing for a scene that does not move. It is always the
+exact union of the bounds of the components.
 
 The pass runs at the resolution of the screen: the device pixel ratio times `renderScale` pixels
 per logical pixel, with the image aligned to the device's pixel grid. The camera of the pass is
@@ -124,9 +129,13 @@ built from the canvas transform, so a scene point lands exactly where the projec
 `renderScale` saves fill rate and the image is scaled up with `scaledFilterQuality`. `msaa`
 switches multisample anti-aliasing on.
 
-The render target is rounded up to a multiple of 64 pixels in both directions, so that panning and
-zooming keep using the same target, and is at most `maxTextureSize` pixels wide and high (4096 by
-default); a larger part is rendered at a lower resolution.
+The render target is rounded up to a multiple of 64 pixels in both directions, and the target of the
+last render is kept while the part fits in it and covers at least half of it, so that panning,
+zooming and moving objects keep using the same target. It is at most `maxTextureSize` pixels wide
+and high (4096 by default); a larger part is rendered at a lower resolution. The image of the pass
+is drawn by Flutter straight from one of the color textures of the target, which are created once
+(see [Rendering](rendering.md#frame-output-and-statistics)): after the first frames, a pass
+allocates nothing on the GPU.
 
 The draws are recorded, sorted and batched as in any `World3D` (see [Rendering](rendering.md)):
 components sharing a mesh cost one instanced draw call per surface. `layer.renderStats` holds the

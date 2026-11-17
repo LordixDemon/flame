@@ -55,6 +55,33 @@ void main() {
 
       expect(backend.renderTargets, [(32, 32, 4), (32, 32, 4)]);
     });
+
+    test('stay pooled for a while when their size is not used', () {
+      void frame(double size) {
+        device
+          ..begin()
+          ..beginPass(Size(size, size))
+          ..endPass()
+          ..end();
+      }
+
+      // A size used every other frame keeps its target.
+      for (var i = 0; i < 10; i++) {
+        frame(i.isEven ? 64 : 128);
+      }
+      expect(backend.renderTargets, [(64, 64, 1), (128, 128, 1)]);
+
+      // A size unused for longer is released.
+      for (var i = 0; i < GraphicsDevice.targetRetainFrames; i++) {
+        frame(64);
+      }
+      frame(128);
+      expect(backend.renderTargets, [
+        (64, 64, 1),
+        (128, 128, 1),
+        (128, 128, 1),
+      ]);
+    });
   });
 
   group('transient data', () {
@@ -69,14 +96,17 @@ void main() {
         );
       }
       device
-        ..bindInstances(Float32List(40), 2)
+        ..bindInstances(
+          Float32List(2 * VertexLayout.instanceStrideInFloats),
+          2,
+        )
         ..endPass()
         ..end();
 
       final buffer = backend.buffers.single;
       expect(buffer.writes, hasLength(1));
       expect(device.lastFrameStats.uniformUploads, 10);
-      expect(device.lastFrameStats.uploadedBytes, 10 * 16 + 2 * 80);
+      expect(device.lastFrameStats.uploadedBytes, 10 * 16 + 2 * 96);
       // Every uniform at its own aligned offset.
       for (var i = 0; i < 10; i++) {
         expect(buffer.contents.buffer.asFloat32List(i * 256, 1)[0], i);

@@ -129,13 +129,18 @@ traversed, then submits them in an order that is cheap for the GPU:
   ordered front to back. Consecutive draws of the same `Surface` with the same
   `Material` instance become a single instanced draw, so components sharing a
   `Mesh` cost one draw call per surface, however many there are.
-- Translucent draws come after all opaque ones, back to front, one draw each.
+- Translucent draws come after all opaque ones, back to front; consecutive
+  translucent draws of the same `Surface` and `Material` are batched too.
 
 Each component can give its draws a per-instance color (`MeshComponent.color`)
 that materials may use; the built-in materials multiply their base color by it.
-Materials must not change their values between the draws of one frame to vary
-objects: they are applied when the draws are submitted, not when they are
-recorded. Use the per-instance color, or distinct materials.
+It can also give them four floats of per-instance data
+(`MeshComponent.instanceData`, zero by default) that materials are free to
+interpret: `StylizedMaterial` reads an emissive boost, a highlight, a wind
+strength and a fade from them. Materials must not change their values between
+the draws of one frame to vary objects: they are applied when the draws are
+submitted, not when they are recorded. Use the per-instance color and data, or
+distinct materials.
 
 A material declares how it is drawn with its `renderState`:
 
@@ -174,7 +179,9 @@ final surface = Surface.fromBuffers(
 The statistics of the last rendered frame (draw calls, instances, triangles,
 pipeline and state changes, uploads) are available from
 `FlameGame3D.renderStats`. `World3D.renderScale` renders the world at a
-fraction of the device pixels.
+fraction of the device pixels. The images of the render passes are drawn by
+Flutter straight from textures that each render target creates once and takes
+turns rendering into.
 
 
 ## Materials and lighting
@@ -187,7 +194,10 @@ fraction of the device pixels.
   vertices carry a color, a baked ambient occlusion and masks for the
   per-instance tint, an accent color, emission, gloss and wind sway. It is lit
   by a soft hemisphere ambient, suns and point lights, with highlights, a rim
-  light and an optional MatCap texture. `StylizedMaterial.buildSurface` builds
+  light and up to two MatCap textures (a sheen above a gloss threshold, and
+  one for gems). Objects vary through their per-instance data: a glow boost, a
+  highlight, a wind strength (the wind may sway in each object's model space)
+  and a fade, for translucent previews. `StylizedMaterial.buildSurface` builds
   surfaces in its vertex layout, and it draws standard surfaces too. It is not
   available on the web yet.
 
@@ -250,7 +260,9 @@ final ray = layer.localPointToRay(layer.absoluteToLocal(tapInWorld));
 ```
 
 Each frame the layer renders only the part of the screen its scene covers, at
-the device's resolution, in one render pass. See the
+the device's resolution, in one render pass; the bounds of the scene are kept up
+to date as its objects move, and render targets and their textures are reused
+from frame to frame. See the
 [documentation](https://docs.flame-engine.org/latest/bridge_packages/flame_3d/embedding.html)
 and the `houses` scenario of the example.
 
@@ -281,10 +293,11 @@ any package in your dependency graph, so chunks can be shared across packages.
 Including ones that `flame_3d` itself ships:
 
 - `#include <flame_3d/instancing.glsl>` declares the per-instance inputs
-  (`instanceModel0` to `instanceModel3`, the model matrix columns, and
-  `instanceColor`) and `instanceModelMatrix()`. A vertex shader that declares
-  the model columns is drawn instanced; one that does not gets its model matrix
-  from uniforms set by its material, one draw per object.
+  (`instanceModel0` to `instanceModel3`, the model matrix columns,
+  `instanceColor` and `instanceData`) and `instanceModelMatrix()`. A vertex
+  shader that declares the model columns is drawn instanced; one that does not
+  gets its model matrix from uniforms set by its material, one draw per
+  object.
 - `#include <flame_3d/camera.glsl>` declares the `CameraMatrices` block
   (`view`, `projection`, `viewProjection`), filled once per render pass.
 - `#include <flame_3d/skinning.glsl>` for vertex skinning; the joint matrices of
