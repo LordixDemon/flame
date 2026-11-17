@@ -503,9 +503,11 @@ Read more about this on [Post processing](rendering/post_processing.md).
   (`returnSpringRate`) when returning to canonical framing.
 
 - **Multi-Pass World Rendering (`RenderPass` & `MultiPassComponent`)**: Set `camera.renderPasses`
-  (for example `[RenderPass.groundShadow, RenderPass.mainGeometry, RenderPass.lightingOverlay]`) so
-  components mixing in `MultiPassComponent` render separate passes across the scene without cloning
-  shadow/glow components.
+  (for example `RenderPass.standardPipeline`, which is `[shadows, opaque, translucent, emissive,
+  overlay]`) so components mixing in `MultiPassComponent` render separate passes across the scene
+  without cloning shadow/glow components. Ordinary components are painted exactly once per frame,
+  in the first pass that is not `exclusiveToMultiPass` (an exclusive pass such as
+  `RenderPass.emissiveMask` paints only `MultiPassComponent`s).
 
 - **`SpatialCullGroup`**: Groups static or sectorized children under a single bounding box so an
   offscreen sector skips its entire subtree in `O(1)`.
@@ -533,18 +535,19 @@ Read more about this on [Post processing](rendering/post_processing.md).
 ### `CameraBillboard` and `ViewportClampedPin`
 
 World-space labels, price chips, and rooftop callouts can mix in `CameraBillboard` (to counteract
-camera zoom/rotation within `[minScale .. maxScale]` via `zoomExponent`) and `ViewportClampedPin`
-(to keep world-anchored tooltips clamped inside safe viewport margins during render without mutating
-their logical `position`):
+camera zoom/rotation within `[minBillboardScale .. maxBillboardScale]`, softened by
+`billboardZoomExponent`) and `ViewportClampedPin` (to keep world-anchored tooltips clamped inside
+the visible world rectangle inset by `viewportPinMargin` during render without mutating their
+logical `position`):
 
 ```dart
 class WorldCalloutChip extends PositionComponent
     with CameraBillboard, ViewportClampedPin {
   WorldCalloutChip() {
-    zoomExponent = 0.7;
+    billboardZoomExponent = 0.7;
     minBillboardScale = 0.65;
     maxBillboardScale = 1.35;
-    viewportPadding = const EdgeInsets.all(16);
+    viewportPinMargin = const EdgeInsets.all(16);
   }
 }
 ```
@@ -593,8 +596,8 @@ class WorldCalloutChip extends PositionComponent
   transition `currentLod` across `LodLevel.high` / `medium` / `low` / `culled` with hysteresis and
   `GraphicsProfile.lodBias` shifts (`LodLevel.culled` skips `renderTree` automatically).
 - **Off-Screen Update Throttling (`OffscreenTickPolicy`)**: Configure `offscreenTickPolicy` on any
-  `CullWhenOffscreen` component (`always`, `everyNFrames` with accumulated `dt`, or `paused`) and
-  monitor `skippedOffscreenTicks`.
+  `CullWhenOffscreen` component (`OffscreenTickPolicy.fullRate`, `OffscreenTickPolicy.everyNFrames(n)` with accumulated `dt`, or
+  `OffscreenTickPolicy.sleepWhenOffscreen`) and monitor `skippedOffscreenTicks`.
 
 
 ### Retained Layer Caching (`CameraLayerCacheMode`), Per-Component `cameraMask`, `RenderTextureComponent` & Deep `WorldSpatialIndex`
@@ -607,7 +610,7 @@ class WorldCalloutChip extends PositionComponent
   `viewportCacheHitCount`). Animating a HUD badge no longer re-records `world`, and moving a world
   actor no longer re-records `viewport` HUD.
 - **Per-Component `cameraMask`, Stack-Safe Nested `currentCamera` & `RenderTextureComponent`**:
-  - Every `Component` carries a 32-bit `cameraMask` (`0x7fffffff` default) checked against
+  - Every `Component` carries a 32-bit `cameraMask` (`0xFFFFFFFF` default) checked against
     `CameraComponent.cameraMask` across 2D world rendering, `WorldSpatialIndex`, 2D pointer
     hit-testing, 3D `SpatialHitbox3D` ray picking, and accessibility semantics.
   - `CameraComponent.currentCameras` uses try/finally stack scoping (`maxCamerasDepth = 4`) so an
