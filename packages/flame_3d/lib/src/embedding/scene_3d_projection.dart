@@ -282,6 +282,10 @@ class Scene3DProjection._(
   late final bool isAffine =
       _sceneToLocal[3] == 0 && _sceneToLocal[7] == 0 && _sceneToLocal[11] == 0;
 
+  /// The scene-to-local matrix, column-major, see [sceneToLocalMatrix].
+  @internal
+  Float64List get sceneToLocalValues => _sceneToLocal;
+
   /// The scene-to-view matrix, column-major, see [viewMatrix].
   @internal
   Float64List get viewValues => _view;

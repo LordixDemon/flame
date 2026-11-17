@@ -30,12 +30,14 @@ import 'package:flutter/widgets.dart' show MediaQuery;
 /// ## Rendering
 ///
 /// Every time the component renders, it renders the part of the scene that
-/// is visible on screen (inside the canvas's clip and the game's area, and
-/// inside the component's [size] unless that is zero) in one render pass, at
-/// the resolution of the screen: [pixelRatio] times [renderScale] pixels per
-/// logical pixel, aligned with the device's pixel grid. Objects outside that
-/// part are culled. The image is drawn back over the same part of the screen,
-/// unfiltered when [renderScale] is `1`.
+/// is visible on screen in one render pass: the part of the canvas's clip and
+/// of the game's area that the picture of the scene's bounding box covers
+/// (see [Component3D.aabb]; lights do not count), inside the component's
+/// [size] unless that is zero. It renders at the resolution of the screen,
+/// [pixelRatio] times [renderScale] pixels per logical pixel, aligned with
+/// the device's pixel grid, and culls the objects outside that part. The
+/// image is drawn back over the same part of the screen, unfiltered when
+/// [renderScale] is `1`. Nothing is rendered when that part is empty.
 ///
 /// The render target is rounded up to a multiple of 64 pixels in both
 /// directions, so that panning and zooming reuse the same target, and is at
@@ -257,6 +259,13 @@ class Scene3DComponent({
         _deviceBounds(a, b, c, d, tx, ty, width, height),
       );
     }
+    if (visible.isEmpty) {
+      return;
+    }
+    final scene = _sceneBounds(a, b, c, d, tx, ty);
+    if (scene != null) {
+      visible = visible.intersect(scene);
+    }
     if (visible.isEmpty || !visible.isFinite) {
       return;
     }
@@ -363,6 +372,63 @@ class Scene3DComponent({
     image.dispose();
     _renderedRect = destination;
   }
+
+  /// The bounding box, in device coordinates, of the picture of the bounding
+  /// box of the scene's components under the canvas transform
+  /// `(a, b, c, d, tx, ty)`, or null when it is unknown: when there is no
+  /// such component, or when the box reaches behind the eye of a perspective
+  /// projection.
+  Rect? _sceneBounds(
+    double a,
+    double b,
+    double c,
+    double d,
+    double tx,
+    double ty,
+  ) {
+    final box = _sceneBox;
+    var empty = true;
+    for (final child in world.children) {
+      if (child is Component3D && child is! LightComponent) {
+        if (empty) {
+          box.setFrom(child.aabb);
+          empty = false;
+        } else {
+          box.hull(child.aabb);
+        }
+      }
+    }
+    if (empty) {
+      return null;
+    }
+    final m = projection.sceneToLocalValues;
+    final min = box.min;
+    final max = box.max;
+    var left = double.infinity;
+    var top = double.infinity;
+    var right = double.negativeInfinity;
+    var bottom = double.negativeInfinity;
+    for (var corner = 0; corner < 8; corner++) {
+      final x = corner & 1 == 0 ? min.x : max.x;
+      final y = corner & 2 == 0 ? min.y : max.y;
+      final z = corner & 4 == 0 ? min.z : max.z;
+      final w = m[3] * x + m[7] * y + m[11] * z + m[15];
+      if (!(w > 0)) {
+        return null;
+      }
+      final localX = (m[0] * x + m[4] * y + m[8] * z + m[12]) / w;
+      final localY = (m[1] * x + m[5] * y + m[9] * z + m[13]) / w;
+      final deviceX = a * localX + c * localY + tx;
+      final deviceY = b * localX + d * localY + ty;
+      left = math.min(left, deviceX);
+      top = math.min(top, deviceY);
+      right = math.max(right, deviceX);
+      bottom = math.max(bottom, deviceY);
+    }
+    return Rect.fromLTRB(left, top, right, bottom);
+  }
+
+  final Aabb3 _sceneBox = Aabb3();
 
   /// Writes the camera of a pass whose render target of [targetWidth] by
   /// [targetHeight] pixels starts at the pixel ([left], [top]) of a screen

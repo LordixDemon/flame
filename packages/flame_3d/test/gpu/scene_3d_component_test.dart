@@ -315,8 +315,8 @@ void main() {
           position: Vector2(-250, -100),
           size: Vector2(200, 150),
         );
-        // A cube across the right edge of the layer (x = -50 in the world).
-        layer.world.add(
+        layer.world.addAll([
+          // A cube across the right edge of the layer (x = -50 in the world).
           MeshComponent(
             mesh: CuboidMesh(
               size: Vector3.all(1),
@@ -324,7 +324,15 @@ void main() {
             ),
             position: Vector3(4.95, 0.41, 0),
           ),
-        );
+          // Ground under the whole layer.
+          MeshComponent(
+            mesh: CuboidMesh(
+              size: Vector3(20, 20, 0.01),
+              material: opaqueUnlit(_gray),
+            ),
+            position: Vector3(2, 1, -0.6),
+          ),
+        ]);
         final game = FlameGame(
           world: World(
             children: [
@@ -347,6 +355,46 @@ void main() {
         final y = game.camera.localToGlobal(cube).y;
         expect(_colorAt(pixels, Vector2(27, y)), _red);
         expect(_colorAt(pixels, Vector2(33, y)), _blue);
+      });
+
+      testGpu('of the picture of the scene, not of the whole screen', (
+        tester,
+      ) async {
+        final layer = Scene3DComponent(projection: _boardProjection());
+        final cube = MeshComponent(
+          mesh: CuboidMesh(size: Vector3.all(1), material: opaqueUnlit(_red)),
+          position: Vector3(1, 0.5, 0.5),
+        );
+        layer.world.addAll([
+          cube,
+          // Lights do not draw anything: they do not widen the picture.
+          LightComponent.point(position: Vector3(40, 40, 40)),
+        ]);
+        final game = FlameGame(world: World(children: [layer]));
+        game.camera.viewfinder.position = layer.positionOf(
+          layer.scenePointToLocal(cube.position),
+        );
+        await _render(tester, game);
+
+        // The bounds of the cube's picture, rounded out to whole pixels.
+        final bounds = _screenBounds(game, layer, cube.aabb);
+        final rendered = layer.renderedRect;
+        expect(rendered.left, inInclusiveRange(bounds.left - 1, bounds.left));
+        expect(rendered.top, inInclusiveRange(bounds.top - 1, bounds.top));
+        expect(
+          rendered.right,
+          inInclusiveRange(bounds.right, bounds.right + 1),
+        );
+        expect(
+          rendered.bottom,
+          inInclusiveRange(bounds.bottom, bounds.bottom + 1),
+        );
+
+        // Once the scene is off screen, nothing is rendered.
+        game.camera.viewfinder.position = Vector2(5000, 0);
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(layer.renderStats.renderPasses, 0);
+        expect(layer.renderedRect, Rect.zero);
       });
 
       testGpu('of nothing when the layer is off screen', (tester) async {
@@ -488,6 +536,7 @@ const _green = Color(0xFF00FF00);
 const _blue = Color(0xFF0000FF);
 const _white = Color(0xFFFFFFFF);
 const _black = Color(0xFF000000);
+const _gray = Color(0xFF404040);
 
 class _Registration(
   /// Distance from the rendered object's center to where the mapping says
