@@ -144,6 +144,16 @@ Each camera renders the world into an image of its viewport size in physical pix
 whole pixels. `World3D.renderScale` renders it at a fraction of that size (or above `1` to
 render more pixels than the viewport covers); the image is scaled to the viewport when drawn.
 
+The render targets of a `GraphicsDevice` are pooled by size: a size that is not used in a frame
+stays pooled for `GraphicsDevice.targetRetainFrames` frames. A render target owns up to three color
+textures, created once, which its passes take turns rendering into; the image of a pass is drawn by
+Flutter straight from its texture. A texture is rendered into again only once Flutter can no longer
+draw its previous image: Flutter rasterizes at most the frame it is building and the one before, so
+two frames later the image has been drawn, and the draws that read it were submitted to the GPU
+before the new pass is. A scene rendered every frame therefore uses two textures; when Flutter draws
+no frames (passes rendered outside of frames), the texture rendered the longest ago of the three is
+reused.
+
 `FlameGame3D.renderStats` holds the statistics of the last rendered frame: render passes, draw
 calls, instances, triangles, pipeline changes, render state changes, material changes, uniform
 uploads and uploaded bytes.

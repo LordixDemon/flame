@@ -179,7 +179,9 @@ final surface = Surface.fromBuffers(
 The statistics of the last rendered frame (draw calls, instances, triangles,
 pipeline and state changes, uploads) are available from
 `FlameGame3D.renderStats`. `World3D.renderScale` renders the world at a
-fraction of the device pixels.
+fraction of the device pixels. The images of the render passes are drawn by
+Flutter straight from textures that each render target creates once and takes
+turns rendering into.
 
 
 ## Materials and lighting

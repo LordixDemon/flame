@@ -8,8 +8,10 @@ import 'package:flame_3d/src/graphics/backend/gpu_backend.dart' as base;
 import 'package:flame_3d/src/graphics/backend/gpu_enums.dart';
 import 'package:flame_3d/src/graphics/backend/gpu_handles.dart';
 import 'package:flame_3d/src/resources/texture/texture_sampler.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_gpu/gpu.dart' as gpu;
+import 'package:meta/meta.dart';
 
 /// A [base.GpuBackend] implemented on top of `flutter_gpu`.
 ///
@@ -173,16 +175,6 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
         ? msaaSampleCount
         : 1;
 
-    // The presented color textures come from an image surface: it only hands
-    // out a texture again once Flutter no longer samples the image made from
-    // it and the GPU finished writing it, so a frame never overwrites one that
-    // is still on screen.
-    final surface = _context.createImageSurface(
-      width,
-      height,
-      format: _colorFormat,
-    );
-
     final multisampleColorTexture = sampleCount > 1
         ? _context.createTexture(
             gpu.StorageMode.deviceTransient,
@@ -204,14 +196,35 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
     );
 
     return _FlutterGpuRenderTarget(
+      _context,
       width,
       height,
-      surface,
       multisampleColorTexture,
       depthTexture,
       Vector4Utils.fromColor(clearValue),
     );
   }
+
+  /// The number of frames Flutter has drawn since the backend started
+  /// counting them, see [_FlutterGpuRenderTarget].
+  static int get _drawnFrames {
+    if (!_countingFrames) {
+      try {
+        // Persistent callbacks run after every frame's layout and paint, and
+        // do not schedule frames.
+        SchedulerBinding.instance.addPersistentFrameCallback(
+          (_) => _frameCount++,
+        );
+        _countingFrames = true;
+        // Without a binding, frames are not counted.
+        // ignore: avoid_catches_without_on_clauses
+      } catch (_) {}
+    }
+    return _frameCount;
+  }
+
+  static bool _countingFrames = false;
+  static int _frameCount = 0;
 
   @override
   base.GpuFrame beginFrame() => _frame;
@@ -383,49 +396,127 @@ class _FlutterGpuUniformSlot(final gpu.UniformSlot raw)
 class const _FlutterGpuPipeline(final gpu.RenderPipeline raw)
     implements GpuPipeline;
 
+/// The number of color textures [target] (a render target of the Flutter
+/// GPU backend) has created, for tests.
+@visibleForTesting
+int debugColorTextureCount(GpuRenderTarget target) {
+  return (target as _FlutterGpuRenderTarget)._buffers.length;
+}
+
+/// A render target: a depth texture, a multisample color texture with MSAA,
+/// and the color textures its passes render into and whose images Flutter
+/// draws.
+///
+/// A color texture is rendered into again only once Flutter can no longer
+/// sample the image of its previous pass: Flutter rasterizes at most two
+/// frames at a time (the one being built and the one before it), so once two
+/// more frames have been drawn the frame that showed an image has been
+/// rasterized, and its draws have been submitted to the GPU before any new
+/// pass is. Up to [_maxColorTextures] are created; past that, when Flutter
+/// draws no frames (passes rendered outside of frames, in tests for
+/// instance), the texture rendered the longest ago is reused.
+///
+/// Every texture, and what it takes to render into it, is created once:
+/// unlike `GpuImageSurface`, whose textures can only be reused once the Dart
+/// garbage collector has collected the wrappers of the passes that rendered
+/// into them, and which therefore allocates a texture for most passes.
 class _FlutterGpuRenderTarget(
+  final gpu.GpuContext _context,
   @override final int width,
   @override final int height,
-  final gpu.GpuImageSurface surface,
-  final gpu.Texture? multisampleColorTexture,
-  final gpu.Texture depthTexture,
-  final Vector4 clearValue,
-) implements GpuRenderTarget;
+  final gpu.Texture? _multisampleColorTexture,
+  final gpu.Texture _depthTexture,
+  final Vector4 _clearValue,
+) implements GpuRenderTarget {
+  static const _maxColorTextures = 3;
+
+  final List<_ColorBuffer> _buffers = [];
+
+  /// The color buffer for a new pass.
+  _ColorBuffer acquire() {
+    final drawnFrames = GpuBackend._drawnFrames;
+    _ColorBuffer? oldest;
+    for (final buffer in _buffers) {
+      final presented = buffer.presentedFrame;
+      if (presented == null || drawnFrames >= presented + 2) {
+        return buffer;
+      }
+      if (oldest == null || buffer.presentedSerial < oldest.presentedSerial) {
+        oldest = buffer;
+      }
+    }
+    if (oldest != null && _buffers.length >= _maxColorTextures) {
+      return oldest;
+    }
+    final texture = _context.createTexture(
+      gpu.StorageMode.devicePrivate,
+      width,
+      height,
+      format: GpuBackend._colorFormat,
+    );
+    final multisample = _multisampleColorTexture;
+    final buffer = _ColorBuffer(
+      texture,
+      gpu.RenderTarget.singleColor(
+        gpu.ColorAttachment(
+          texture: multisample ?? texture,
+          resolveTexture: multisample == null ? null : texture,
+          storeAction: multisample == null
+              ? gpu.StoreAction.store
+              : gpu.StoreAction.multisampleResolve,
+          clearValue: _clearValue,
+        ),
+        depthStencilAttachment: gpu.DepthStencilAttachment(
+          texture: _depthTexture,
+          depthClearValue: 1.0,
+        ),
+      ),
+    );
+    _buffers.add(buffer);
+    return buffer;
+  }
+
+  /// Records that the image of [buffer] was handed out.
+  void present(_ColorBuffer buffer) {
+    buffer
+      ..presentedFrame = GpuBackend._drawnFrames
+      ..presentedSerial = _presentations++;
+  }
+
+  int _presentations = 0;
+}
+
+/// A color texture of a [_FlutterGpuRenderTarget] and the render target that
+/// renders into it.
+class _ColorBuffer(
+  final gpu.Texture texture,
+  final gpu.RenderTarget renderTarget,
+) {
+  /// The number of frames Flutter had drawn when the image of this texture
+  /// was last handed out, or `null` if it never was.
+  int? presentedFrame;
+
+  /// Orders the presentations of the buffers of a render target.
+  int presentedSerial = 0;
+}
 
 class const _FlutterGpuFrame(final GpuBackend _backend)
     implements base.GpuFrame {
   @override
   base.GpuRenderPass beginRenderPass(GpuRenderTarget target) {
     final renderTarget = target as _FlutterGpuRenderTarget;
-    final frame = renderTarget.surface.acquireNextFrame();
-    final multisample = renderTarget.multisampleColorTexture;
+    final buffer = renderTarget.acquire();
     final commandBuffer = _backend._context.createCommandBuffer();
-    final renderPass =
-        commandBuffer.createRenderPass(
-            gpu.RenderTarget.singleColor(
-              gpu.ColorAttachment(
-                texture: multisample ?? frame.colorTexture,
-                resolveTexture: multisample == null ? null : frame.colorTexture,
-                storeAction: multisample == null
-                    ? gpu.StoreAction.store
-                    : gpu.StoreAction.multisampleResolve,
-                clearValue: renderTarget.clearValue,
-              ),
-              depthStencilAttachment: gpu.DepthStencilAttachment(
-                texture: renderTarget.depthTexture,
-                depthClearValue: 1.0,
-              ),
-            ),
-          )
-          // The default state documented on `GpuFrame.beginRenderPass`.
-          ..setWindingOrder(gpu.WindingOrder.counterClockwise)
-          ..setCullMode(gpu.CullMode.none)
-          ..setColorBlendEnable(false)
-          ..setDepthWriteEnable(true)
-          ..setDepthCompareOperation(gpu.CompareFunction.less);
+    final renderPass = commandBuffer.createRenderPass(buffer.renderTarget)
+      // The default state documented on `GpuFrame.beginRenderPass`.
+      ..setWindingOrder(gpu.WindingOrder.counterClockwise)
+      ..setCullMode(gpu.CullMode.none)
+      ..setColorBlendEnable(false)
+      ..setDepthWriteEnable(true)
+      ..setDepthCompareOperation(gpu.CompareFunction.less);
     return _FlutterGpuRenderPass(
       renderTarget,
-      frame,
+      buffer,
       commandBuffer,
       renderPass,
     );
@@ -437,7 +528,7 @@ class const _FlutterGpuFrame(final GpuBackend _backend)
 
 class _FlutterGpuRenderPass(
   final _FlutterGpuRenderTarget _target,
-  final gpu.GpuImageSurfaceFrame _frame,
+  final _ColorBuffer _buffer,
   final gpu.CommandBuffer _commandBuffer,
   final gpu.RenderPass _renderPass,
 ) implements base.GpuRenderPass {
@@ -602,11 +693,11 @@ class _FlutterGpuRenderPass(
 
   @override
   Image submit({void Function()? onCompleted}) {
-    _frame.present(_commandBuffer);
     _commandBuffer.submit(
       completionCallback: onCompleted == null ? null : (_) => onCompleted(),
     );
-    return _target.surface.currentImage!;
+    _target.present(_buffer);
+    return _buffer.texture.asImage();
   }
 
   static final _premultiplied = gpu.ColorBlendEquation(

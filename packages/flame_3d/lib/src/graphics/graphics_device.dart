@@ -51,9 +51,15 @@ class GraphicsDevice({
 
   // Render target pool: keyed by (width, height, MSAA sample count), each
   // entry is a list of targets. _poolIndex tracks how many have been handed
-  // out this frame.
+  // out this frame, _poolLastUsed the last frame a key was used in.
   final _pool = <(int, int, int), List<GpuRenderTarget>>{};
   final _poolIndex = <(int, int, int), int>{};
+  final _poolLastUsed = <(int, int, int), int>{};
+
+  /// The number of frames a render target size that is no longer used stays
+  /// pooled, so that a scene whose size changes back and forth, or that skips
+  /// a few frames, keeps its targets instead of creating new ones.
+  static const int targetRetainFrames = 30;
 
   // Pipelines, keyed by vertex shader, fragment shader and surface layout.
   final _pipelines = <(GpuShader, GpuShader, VertexLayout), DevicePipeline>{};
@@ -98,14 +104,19 @@ class GraphicsDevice({
     _arena.endFrame();
     lastFrameStats.setFrom(stats);
 
-    // Ensure stale render targets are removed from the pool by checking
-    // how many targets were actually used in the last render.
+    // Release the targets of sizes unused for a while, and the targets of a
+    // size beyond how many were used in this frame.
     _pool.removeWhere((key, targets) {
       final used = _poolIndex[key] ?? 0;
       if (used == 0) {
+        if (_frame - (_poolLastUsed[key] ?? _frame) < targetRetainFrames) {
+          return false;
+        }
         _poolIndex.remove(key);
+        _poolLastUsed.remove(key);
         return true;
       }
+      _poolLastUsed[key] = _frame;
       if (used < targets.length) {
         targets.removeRange(used, targets.length);
       }

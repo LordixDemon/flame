@@ -55,6 +55,33 @@ void main() {
 
       expect(backend.renderTargets, [(32, 32, 4), (32, 32, 4)]);
     });
+
+    test('stay pooled for a while when their size is not used', () {
+      void frame(double size) {
+        device
+          ..begin()
+          ..beginPass(Size(size, size))
+          ..endPass()
+          ..end();
+      }
+
+      // A size used every other frame keeps its target.
+      for (var i = 0; i < 10; i++) {
+        frame(i.isEven ? 64 : 128);
+      }
+      expect(backend.renderTargets, [(64, 64, 1), (128, 128, 1)]);
+
+      // A size unused for longer is released.
+      for (var i = 0; i < GraphicsDevice.targetRetainFrames; i++) {
+        frame(64);
+      }
+      frame(128);
+      expect(backend.renderTargets, [
+        (64, 64, 1),
+        (128, 128, 1),
+        (128, 128, 1),
+      ]);
+    });
   });
 
   group('transient data', () {
