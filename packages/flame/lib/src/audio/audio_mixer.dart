@@ -52,8 +52,11 @@ class AudioVoiceHandle({
   /// Whether this voice loops indefinitely until stopped.
   final bool loop;
 
-  /// Nominal clip duration in seconds (used when non-looping if backend does
-  /// not report completion externally).
+  /// Length of the clip in seconds of audio at `pitch == 1.0` (used when
+  /// non-looping if backend does not report completion externally).
+  ///
+  /// [pitch] is a playback rate, so a non-looping voice lives for
+  /// `durationSeconds / pitch` seconds of mixer time.
   final double durationSeconds;
 
   /// Pre-bus voice gain (`0.0 .. 2.0`).
@@ -66,10 +69,16 @@ class AudioVoiceHandle({
   double pan;
 
   double _lastAppliedGain = 0.0;
+  double _playheadSeconds = 0.0;
   bool _stopped = false;
 
   /// Most recent post-bus gain pushed to [AudioBackend].
   double get effectiveGain => _lastAppliedGain;
+
+  /// Seconds of clip audio played so far: mixer time weighted by the [pitch]
+  /// in effect while it passed. A non-looping voice is retired once this
+  /// reaches [durationSeconds].
+  double get playheadSeconds => _playheadSeconds;
 
   /// Whether this voice has finished or been stopped.
   bool get isStopped => _stopped;
@@ -436,17 +445,21 @@ class AudioMixer({
 
   /// Advances bus fades, sidechain ducking envelopes, non-looping voice
   /// lifetimes, and live backend voice gains by [dt] seconds.
+  ///
+  /// A non-looping voice is retired (and [AudioBackend.onStopVoice] sent) once
+  /// its clip has played through, which takes `durationSeconds / pitch`
+  /// seconds: a clip slowed down to half speed lives twice as long.
   void update(double dt) {
     if (dt <= 0.0) {
       return;
     }
     _clockSeconds += dt;
 
-    // Retire expired one-shot voices.
+    // Advance playheads and retire one-shot voices that played through.
     for (var i = _voices.length - 1; i >= 0; i--) {
       final v = _voices[i];
-      if (!v.loop &&
-          (_clockSeconds - v.startedAtSeconds) >= v.durationSeconds) {
+      v._playheadSeconds += dt * v.pitch.clamp(0.25, 4.0);
+      if (!v.loop && v._playheadSeconds >= v.durationSeconds) {
         v._stopped = true;
         _voices.removeAt(i);
         backend.onStopVoice(v.voiceId);

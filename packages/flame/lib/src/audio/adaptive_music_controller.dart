@@ -3,6 +3,16 @@ import 'dart:math' as math;
 import 'package:flame/src/audio/audio_mixer.dart';
 
 /// Vertical stem descriptor inside an adaptive soundtrack.
+///
+/// A stem with a positive [minIntensity] is silent up to that intensity, rises
+/// along a smoothstep curve to [maxVolume] at [fullIntensity] and stays there.
+/// If [fullIntensity] does not exceed [minIntensity] there is nothing to fade
+/// along and the stem switches on at [minIntensity].
+///
+/// A stem whose [minIntensity] is `0.0` or less (the default) is a base layer:
+/// it plays at [maxVolume] at every intensity.
+///
+/// Either way the volume of a stem never drops when the intensity rises.
 class MusicStemLayer({
   required final String assetId,
   final double minIntensity = 0.0,
@@ -33,6 +43,9 @@ class AdaptiveMusicController({
   double _crossfadeElapsed = 0.0;
   double _currentTrackBaseVolume = 1.0;
 
+  /// Volume the outgoing track had when the cross-fade began.
+  double _fadingOutStartVolume = 0.0;
+
   final List<(MusicStemLayer, AudioVoiceHandle)> _activeStems =
       <(MusicStemLayer, AudioVoiceHandle)>[];
 
@@ -49,6 +62,11 @@ class AdaptiveMusicController({
   String? get activeTrackId => _activeTrackId;
 
   /// Crossfades horizontally to [trackAssetId] over [crossfadeSeconds].
+  ///
+  /// The outgoing track fades from the volume it has at this moment down to
+  /// silence while the new one rises from silence to [volume]. Switching again
+  /// before a cross-fade has finished stops the track that was already fading
+  /// out and fades the half-risen one out from where it is.
   void playTrack(
     String trackAssetId, {
     double volume = 1.0,
@@ -66,6 +84,7 @@ class AdaptiveMusicController({
 
     if (_currentTrackVoice != null && crossfadeSeconds > 1e-3) {
       _fadingOutVoice = _currentTrackVoice;
+      _fadingOutStartVolume = _currentTrackVoice!.sourceVolume;
       _crossfadeDuration = crossfadeSeconds;
       _crossfadeElapsed = 0.0;
       _currentTrackVoice = mixer.playClip(
@@ -113,12 +132,14 @@ class AdaptiveMusicController({
   }
 
   double _computeStemWeight(MusicStemLayer stem, double intensity) {
-    if (intensity <= stem.minIntensity) {
-      return stem.minIntensity <= 0.0 ? stem.maxVolume : 0.0;
+    if (stem.minIntensity <= 0.0) {
+      // Base layer: always on.
+      return stem.maxVolume;
     }
     final span = stem.fullIntensity - stem.minIntensity;
     if (span <= 1e-5) {
-      return stem.maxVolume;
+      // No ramp to fade along: the stem switches on at `minIntensity`.
+      return intensity >= stem.minIntensity ? stem.maxVolume : 0.0;
     }
     final t = ((intensity - stem.minIntensity) / span).clamp(0.0, 1.0);
     return t * t * (3.0 - 2.0 * t) * stem.maxVolume;
@@ -136,7 +157,7 @@ class AdaptiveMusicController({
       _crossfadeElapsed += dt;
       final t = (_crossfadeElapsed / _crossfadeDuration).clamp(0.0, 1.0);
       _currentTrackVoice?.sourceVolume = _currentTrackBaseVolume * t;
-      _fadingOutVoice?.sourceVolume = _currentTrackBaseVolume * (1.0 - t);
+      _fadingOutVoice?.sourceVolume = _fadingOutStartVolume * (1.0 - t);
       if (t >= 1.0 && _fadingOutVoice != null) {
         mixer.stopVoice(_fadingOutVoice!);
         _fadingOutVoice = null;

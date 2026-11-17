@@ -300,6 +300,9 @@ class BgmTransportStack({
   /// Inn Rest), ducking or pausing (`bgmDuckGain == 0.0`) the active BGM until
   /// [durationSeconds] elapses, then fading BGM back in over
   /// [resumeFadeInSeconds].
+  ///
+  /// A BGM that is fading out after [stopBgm] is not brought back when the
+  /// effect ends: it finishes its fade-out and stops.
   void playMusicalEffect(
     String fanfareAssetId, {
     required double durationSeconds,
@@ -335,6 +338,7 @@ class BgmTransportStack({
 
     // 1. Advance Musical Effect (ME) jingle if active.
     var remainingDtForBgm = dt;
+    var fadeDt = dt;
     if (_activeMeAssetId != null) {
       if (dt < _meRemainingSeconds) {
         _meRemainingSeconds -= dt;
@@ -350,9 +354,31 @@ class BgmTransportStack({
         if (_meBgmDuckGain <= 1e-6) {
           remainingDtForBgm = dt - timeSpentInMe;
         }
-        if (_activeTrack != null && _meResumeFadeInSeconds > 0.0) {
-          _fadeGain = _meBgmDuckGain;
-          _configureFade(target: 1.0, duration: _meResumeFadeInSeconds);
+        if (_activeTrack != null) {
+          if (_stopAfterFadeOut) {
+            // The BGM was told to stop. It keeps fading out from the level
+            // it had under the effect instead of being brought back.
+            _fadeGain *= _meBgmDuckGain;
+            if (_fadeGain <= 1e-6) {
+              _fadeGain = 0.0;
+              _fadeRatePerSec = 0.0;
+              _stopActiveVoice();
+              _activeTrack = null;
+              _cursorSeconds = 0.0;
+              _loopWrapCount = 0;
+              _stopAfterFadeOut = false;
+              return;
+            }
+          } else if (_meResumeFadeInSeconds > 0.0) {
+            // Carry the duck over into the fade envelope, so the volume is
+            // the same just before and just after the effect ends, then
+            // fade back up.
+            _fadeGain *= _meBgmDuckGain;
+            _configureFade(target: 1.0, duration: _meResumeFadeInSeconds);
+            // The fade back in starts when the effect ends, not at the
+            // beginning of this step.
+            fadeDt = dt - timeSpentInMe;
+          }
         }
       }
     }
@@ -364,7 +390,7 @@ class BgmTransportStack({
     }
 
     if (_fadeRatePerSec > 0.0 && (_fadeGain - _fadeTarget).abs() > 1e-6) {
-      final step = _fadeRatePerSec * dt;
+      final step = _fadeRatePerSec * fadeDt;
       if (_fadeGain < _fadeTarget) {
         _fadeGain = math.min(_fadeTarget, _fadeGain + step);
       } else {
