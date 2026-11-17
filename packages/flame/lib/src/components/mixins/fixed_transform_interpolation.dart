@@ -21,6 +21,10 @@ mixin FixedTransformInterpolation on PositionComponent, HasFixedUpdate {
   bool fixedInterpolationEnabled = true;
 
   bool _hasCapturedState = false;
+
+  /// The number of the fixed-step pass in which this component last ran its
+  /// `fixedUpdate` (`-1` before the first one).
+  int _steppedPass = -1;
   double _prevX = 0.0;
   double _prevY = 0.0;
   double _prevAngle = 0.0;
@@ -33,16 +37,32 @@ mixin FixedTransformInterpolation on PositionComponent, HasFixedUpdate {
 
   /// Snapshots the current logical transform as the "previous fixed tick"
   /// baseline. Invoked automatically by `ComponentTreeRoot.runFixedUpdatePass`
-  /// immediately before `fixedUpdate(fixedDt)`.
+  /// immediately before `fixedUpdate(fixedDt)`, which passes the number of
+  /// the running pass as [fixedPass].
   @internal
-  void capturePreFixedState() {
+  void capturePreFixedState([int? fixedPass]) {
     _prevX = transform.x;
     _prevY = transform.y;
     _prevAngle = transform.angle;
     _prevScaleX = transform.scale.x;
     _prevScaleY = transform.scale.y;
     _hasCapturedState = true;
+    if (fixedPass != null) {
+      _steppedPass = fixedPass;
+    }
   }
+
+  /// Whether this component ran its `fixedUpdate` in the fixed-step pass
+  /// number [fixedPass].
+  ///
+  /// The previous/current pair only describes motion that is in progress
+  /// when the component took part in the most recent pass. A component whose
+  /// step is skipped (a paused `HasTimeScale` ancestor, `sleepUpdates()`, a
+  /// graphics tier gate) keeps the pair of its last step, and must be drawn
+  /// at its logical transform instead of sliding between the two with the
+  /// interpolation alpha of every frame.
+  @internal
+  bool wasSteppedInFixedPass(int fixedPass) => _steppedPass == fixedPass;
 
   /// Snaps the interpolation history to the current logical transform so an
   /// instant teleport, spawn, or wrap-around does not streak across the screen
@@ -107,7 +127,9 @@ mixin FixedTransformInterpolation on PositionComponent, HasFixedUpdate {
       return;
     }
     final game = findGame();
-    if (game == null || game.fixedTimeStep == null) {
+    if (game == null ||
+        game.fixedTimeStep == null ||
+        !wasSteppedInFixedPass(game.fixedUpdatePassCount)) {
       super.renderTree(canvas);
       return;
     }
@@ -123,35 +145,55 @@ mixin FixedTransformInterpolation on PositionComponent, HasFixedUpdate {
       return;
     }
 
+    // The logical transform, which the regular render chain applies.
+    final current = transform.transformMatrix.storage;
+    final a = current[0];
+    final b = current[1];
+    final c = current[4];
+    final d = current[5];
+    final tx = current[12];
+    final ty = current[13];
+    final det = a * d - b * c;
+    if (det.abs() <= 1e-12) {
+      super.renderTree(canvas);
+      return;
+    }
+
+    // The interpolated transform that should end up on the canvas.
     final (ix, iy, ia, isx, isy) = sampleInterpolatedTransform(alpha);
     final cosA = math.cos(ia);
     final sinA = math.sin(ia);
     final offX = transform.offset.x;
     final offY = transform.offset.y;
+    final i00 = cosA * isx;
+    final i01 = sinA * isx;
+    final i10 = -sinA * isy;
+    final i11 = cosA * isy;
+    final itx = ix + i00 * offX + i10 * offY;
+    final ity = iy + i01 * offX + i11 * offY;
 
-    final m00 = cosA * isx;
-    final m01 = sinA * isx;
-    final m10 = -sinA * isy;
-    final m11 = cosA * isy;
-    _interpMatrix64[0] = m00;
-    _interpMatrix64[1] = m01;
-    _interpMatrix64[4] = m10;
-    _interpMatrix64[5] = m11;
-    _interpMatrix64[12] = ix + m00 * offX + m10 * offY;
-    _interpMatrix64[13] = iy + m01 * offX + m11 * offY;
+    // Inverse of the logical transform.
+    final n00 = d / det;
+    final n01 = -b / det;
+    final n10 = -c / det;
+    final n11 = a / det;
+    final ntx = -(n00 * tx + n10 * ty);
+    final nty = -(n01 * tx + n11 * ty);
+
+    // correction = interpolated * logical^-1. With it in front, the regular
+    // chain (visibility, culling and every other `renderTree` override, the
+    // decorators with their bounds) runs unchanged and still lands on the
+    // interpolated transform.
+    _interpMatrix64[0] = i00 * n00 + i10 * n01;
+    _interpMatrix64[1] = i01 * n00 + i11 * n01;
+    _interpMatrix64[4] = i00 * n10 + i10 * n11;
+    _interpMatrix64[5] = i01 * n10 + i11 * n11;
+    _interpMatrix64[12] = i00 * ntx + i10 * nty + itx;
+    _interpMatrix64[13] = i01 * ntx + i11 * nty + ity;
 
     canvas.save();
     canvas.transform(_interpMatrix64);
-    final nextDecorator = (decorator as Transform2DDecorator).nextDecorator;
-    if (nextDecorator == null) {
-      renderTreeWithoutDecorator(canvas);
-    } else {
-      nextDecorator.applyChain(
-        renderTreeWithoutDecorator,
-        canvas,
-        bounds: decoratorBounds,
-      );
-    }
+    super.renderTree(canvas);
     canvas.restore();
   }
 }
