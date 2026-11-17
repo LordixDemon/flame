@@ -19,13 +19,18 @@ in float vertexSway;
 #include <flame_3d/camera.glsl>
 
 // The wind sway: a vertex moves by
-// `direction * amplitude * sin(time * frequency + dot(origin, phaseScale))`
-// times its sway weight, where `origin` is the world position of its object.
+// `amplitude * sin(time * frequency + dot(origin, phaseScale))` times its sway
+// weight and the strength of its instance (`1 + instanceData.z`), along
+// `direction` in world space and along `modelDirection` in the model space of
+// its object (so that it turns and scales with the object), where `origin` is
+// the world position of its object. The material sets one of the two
+// directions and zeroes the other.
 uniform Wind {
   vec3 direction;
   float amplitude;
-  vec3 phaseScale;
+  vec3 modelDirection;
   float frequency;
+  vec3 phaseScale;
   float time;
 } wind;
 
@@ -35,6 +40,7 @@ out vec4 fragColor;
 out vec4 fragMasks;
 out float fragOcclusion;
 out vec4 fragInstanceColor;
+out vec4 fragInstanceData;
 
 // Transforms normals by the model matrix: its cofactor matrix, which is the
 // inverse transpose up to a scale, keeps them perpendicular to the surface
@@ -50,9 +56,12 @@ vec3 transformNormal(mat4 model, vec3 normal) {
 
 void main() {
   mat4 model = instanceModelMatrix();
-  vec4 worldPosition = model * vec4(vertexPosition, 1.0);
   float phase = wind.time * wind.frequency + dot(model[3].xyz, wind.phaseScale);
-  worldPosition.xyz += wind.direction * (sin(phase) * wind.amplitude * vertexSway);
+  float sway = sin(phase) * wind.amplitude * vertexSway *
+    (1.0 + instanceData.z);
+  vec4 worldPosition =
+    model * vec4(vertexPosition + wind.modelDirection * sway, 1.0);
+  worldPosition.xyz += wind.direction * sway;
   gl_Position = camera.viewProjection * worldPosition;
 
   fragPosition = worldPosition.xyz;
@@ -61,4 +70,5 @@ void main() {
   fragMasks = vertexMasks;
   fragOcclusion = vertexOcclusion;
   fragInstanceColor = instanceColor;
+  fragInstanceData = instanceData;
 }

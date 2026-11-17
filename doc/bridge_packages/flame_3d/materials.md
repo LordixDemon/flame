@@ -126,16 +126,53 @@ skinned meshes: their vertex color is used, and they are unoccluded, tinted by t
 color everywhere, with no accent, emission, gloss nor sway.
 
 
+### Per-instance data
+
+Besides the per-instance color, which tints the vertices of the tint mask, each object can vary
+through the four floats of its per-instance data (`MeshComponent.instanceData`, zero by default,
+see [Rendering](rendering.md#per-instance-color-and-data)):
+
+| Component | Meaning                                                                       |
+| --------- | ----------------------------------------------------------------------------- |
+| `x`       | emissive boost: added to `emissiveStrength`, moves the glow color (see below) |
+| `y`       | highlight: `highlightColor` times it is added to every vertex                 |
+| `z`       | wind strength, added to 1: `-1` stills the object's sway, `1` doubles it      |
+| `w`       | fade: the object's opacity is `1 - w`, shown by a translucent material        |
+
+From `0` to `1`, the emissive boost also moves the color of the glowing vertices from
+`emissiveColor` towards `emissiveBoostColor` (by default the same color).
+
+Objects that differ only in these values still cost one draw call per surface, so a hovered building
+can glow more, or a tree sway less, without a material of its own:
+
+```dart
+final ghost = StylizedMaterial(translucent: true);
+
+final house = MeshComponent(mesh: houseMesh); // drawn with an opaque material
+final preview = MeshComponent(
+  mesh: nextStageMesh, // its surfaces drawn with `ghost`
+  instanceData: Vector4(0, 0, 0, 0.6), // 40 % opaque
+);
+
+// When the pointer is over the house, it glows and lightens:
+house.instanceData
+  ..x = 0.4
+  ..y = 0.15;
+```
+
+
 ### Shading
 
 With `n` the normal, `v` the direction to the viewer, `up`, `sky` and `ground` those of the
-hemisphere light, `hemi = 0.5 + 0.5 * n·up` and `bounce = max(0, -n·up)`:
+hemisphere light, `hemi = 0.5 + 0.5 * n·up`, `bounce = max(0, -n·up)` and `boost`, `highlight` and
+`fade` from the instance data:
 
 ```text
 base = albedoColor * vertexColor * mix(1, instance color, tint mask)
        * mix(1, accentColor, accent mask)
 lit  = occlusion * (ambient light
-         + hemisphere intensity * (ambientBase + skyFill * sky * hemi
+         + hemisphere intensity * (ambientBase
+                                   + skyFill * skyFillWeight * sky * hemi
                                    + groundBounce * ground * bounce))
        + Σ directional: max(0, n·l) * intensity * color
        + Σ point: intensity * color * falloff * max(pointLightWrap, n·l)
@@ -143,35 +180,81 @@ spec = only where gloss > specularThreshold:
        Σ directional: (n·h)^specularPower * specular factor
          * gloss * specularStrength
 rim  = (1 - n·v)^rimPower * rimStrength * (sky + rimColor)
-cap  = matCapTexture(view-space normal) * gloss * matCapStrength
-out  = mix(base * lit + spec + rim + cap, emissiveColor,
-           emissive mask * emissiveStrength)
+cap  = where gloss > gemThreshold (with a gemMatCapTexture):
+         gemMatCapTexture(view-space normal) * gemMatCapStrength
+       elsewhere, where gloss > matCapThreshold:
+         matCapTexture(view-space normal) * matCapStrength
+         * mix(1, gloss, matCapGlossWeight)
+glow = clamp(emissive mask * (emissiveStrength + boost), 0, 1)
+out  = mix(base * lit + spec + rim + cap + highlight * highlightColor,
+           mix(emissiveColor, emissiveBoostColor, clamp(boost, 0, 1)), glow)
+alpha = albedoColor.a * vertex alpha * (1 - fade)
 ```
 
 `falloff` is the point light's (see [Lights](#lights)). Highlights are white and follow the
 direction of the directional lights, not their intensity, so they keep their strength when a sun
-dims. The result is clamped to `[0, 1]`, with no tone mapping. For orthographic cameras, `v` is the
-camera's direction.
+dims. The result is clamped to `[0, 1]`, with no tone mapping, and output premultiplied by its
+alpha. For orthographic cameras, `v` is the camera's direction. `skyFillWeight` weighs the sky fill
+per channel, for example `Vector3(1, 1, 0.914)` with the default `skyFill` for a fill of
+`(0.35, 0.35, 0.32)` times the sky color.
 
-| Parameter                                | Default                     | Meaning              |
-| ---------------------------------------- | --------------------------- | -------------------- |
-| `albedoColor`                            | white                       | times vertex color   |
-| `accentColor`                            | white                       | the accent color     |
-| `ambientBase`                            | `0.65` gray                 | ambient for all      |
-| `skyFill`, `groundBounce`                | `0.35`, `0.10`              | sky and ground share |
-| `pointLightWrap`                         | `0.18`                      | least point light    |
-| `specularStrength`, `specularPower`      | `0.28`, `8`                 | highlights           |
-| `specularThreshold`                      | `0.12`                      | least gloss to shine |
-| `rimStrength`, `rimPower`, `rimColor`    | `0.14`, `3`, black          | rim light            |
-| `emissiveColor`, `emissiveStrength`      | white, `1`                  | glowing vertices     |
-| `matCapTexture`, `matCapStrength`        | none, `1`                   | MatCap sheen         |
-| `windDirection`, `windAmplitude`         | `(1, 0, 0)`, `0.032`        | sway way and reach   |
-| `windFrequency`, `windPhase`, `windTime` | `2.3`, `(0.7, 0, 0.5)`, `0` | sway timing          |
+| Parameter                                     | Default                     | Meaning                |
+| --------------------------------------------- | --------------------------- | ---------------------- |
+| `albedoColor`                                 | white                       | times vertex color     |
+| `accentColor`                                 | white                       | the accent color       |
+| `ambientBase`                                 | `0.65` gray                 | ambient for all        |
+| `skyFill`, `skyFillWeight`                    | `0.35`, `(1, 1, 1)`         | sky share, per channel |
+| `groundBounce`                                | `0.10`                      | ground share           |
+| `pointLightWrap`                              | `0.18`                      | least point light      |
+| `specularStrength`, `specularPower`           | `0.28`, `8`                 | highlights             |
+| `specularThreshold`                           | `0.12`                      | least gloss to shine   |
+| `rimStrength`, `rimPower`, `rimColor`         | `0.14`, `3`, black          | rim light              |
+| `emissiveColor`, `emissiveStrength`           | white, `1`                  | glowing vertices       |
+| `emissiveBoostColor`                          | `emissiveColor`             | glow at boost 1        |
+| `highlightColor`                              | white                       | per-instance highlight |
+| `matCapTexture`, `matCapStrength`             | none, `1`                   | MatCap sheen           |
+| `matCapThreshold`, `matCapGlossWeight`        | `0`, `1`                    | least gloss, weighting |
+| `gemMatCapTexture`, `gemMatCapStrength`       | none, `1`                   | MatCap of gems         |
+| `gemThreshold`                                | `1`                         | least gloss of gems    |
+| `windDirection`, `windAmplitude`, `windSpace` | `(1, 0, 0)`, `0.032`, world | sway way and reach     |
+| `windFrequency`, `windPhase`, `windTime`      | `2.3`, `(0.7, 0, 0.5)`, `0` | sway timing            |
+
+With the defaults, the MatCap texture is added in proportion to the gloss of every vertex. For a
+clear-coat sheen on the glossy vertices only and a separate sheen on gems, at full strength:
+
+```dart
+final material = StylizedMaterial(
+  matCapTexture: clearCoat,
+  matCapStrength: 0.6,
+  matCapThreshold: 0.36,
+  matCapGlossWeight: 0, // the same strength whatever the gloss
+  gemMatCapTexture: gemSheen,
+  gemThreshold: 1.5, // vertices with more gloss are gems
+);
+```
+
+
+### Wind
 
 A vertex with a sway weight `w` moves by
-`windDirection * windAmplitude * sin(windTime * windFrequency + dot(origin, windPhase)) * w`, where
-`origin` is the world position of its object. Advance `windTime` every frame, and drive
-`emissiveStrength` from the time of day to light windows at dusk:
+`windDirection * windAmplitude * sin(windTime * windFrequency + dot(origin, windPhase)) * w`, times
+the wind strength of its object (`1 + instanceData.z`), where `origin` is the world position of its
+object. With `windSpace: WindSpace.world` (the default), the direction and the amplitude are in world
+space: every object sways the same way. With `WindSpace.model` they are in the model space of each
+object, as if the sway were part of its mesh: it turns with the object's rotation and scales with
+its scale, so one material serves objects of every orientation and size:
+
+```dart
+final trees = StylizedMaterial(
+  windSpace: WindSpace.model,
+  windDirection: Vector3(1, -0.55, 0), // along the model's own axes
+  windAmplitude: 0.032, // in model units
+  windPhase: Vector3(0.7, 0.5, 0), // from the world position of each tree
+);
+```
+
+Advance `windTime` every frame, and drive `emissiveStrength` from the time of day to light windows at
+dusk:
 
 ```dart
 @override
@@ -182,9 +265,19 @@ void update(double dt) {
 }
 ```
 
+
+### Batching and translucency
+
 Like the other built-in materials, it is drawn instanced: components sharing a mesh with a
-`StylizedMaterial` cost one draw call per surface, whatever their tints. The accent color belongs
-to the material, so use one material per accent color.
+`StylizedMaterial` cost one draw call per surface, whatever their tints and instance data. The
+accent color belongs to the material, so use one material per accent color.
+
+`StylizedMaterial(translucent: true)` blends its premultiplied output over what is behind it
+(`StylizedMaterial.translucentRenderState`: depth tested, without depth writes), and its draws are
+sorted back to front after the opaque ones; objects then fade with the `w` of their instance data.
+Consecutive translucent draws of one surface are still batched. Back-face culling
+(`renderState = StylizedMaterial.translucentRenderState.copyWith(cullMode: CullMode.backFace)`)
+keeps the inner faces of a closed mesh from showing through.
 
 ```{note}
 `StylizedMaterial` is not available on the web yet: creating one there throws an

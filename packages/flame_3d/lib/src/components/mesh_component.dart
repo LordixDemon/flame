@@ -34,8 +34,9 @@ class MeshComponent({
   /// material's vertex shader as `instanceData` (see
   /// `shaders/flame_3d/instancing.glsl`).
   ///
-  /// What they mean is up to the material. They may be changed at any time;
-  /// the values at the time the component is drawn are used.
+  /// What they mean is up to the material: see [StylizedMaterial] for the
+  /// built-in material that reads them. They may be changed at any time; the
+  /// values at the time the component is drawn are used.
   final Vector4 instanceData = instanceData?.clone() ?? Vector4.zero();
 
   @override

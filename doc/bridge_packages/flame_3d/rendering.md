@@ -41,7 +41,8 @@ for (final (i, color) in playerColors.indexed) {
 Each draw also carries four floats of per-instance data, `MeshComponent.instanceData` (zero by
 default), that materials are free to interpret: a highlight, an emissive strength, an opacity, a
 wind strength... Objects that differ only in their color and data still batch.
-The built-in materials ignore the data.
+`SpatialMaterial` and `UnlitMaterial` ignore the data; `StylizedMaterial` reads it as described in
+[Materials and Lighting](materials.md#per-instance-data).
 
 ```dart
 final house = MeshComponent(mesh: houseMesh, instanceData: Vector4.zero());

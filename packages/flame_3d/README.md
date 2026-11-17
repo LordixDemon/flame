@@ -136,10 +136,11 @@ Each component can give its draws a per-instance color (`MeshComponent.color`)
 that materials may use; the built-in materials multiply their base color by it.
 It can also give them four floats of per-instance data
 (`MeshComponent.instanceData`, zero by default) that materials are free to
-interpret; the built-in materials ignore them. Materials must not change their
-values between the draws of one frame to vary objects: they are applied when
-the draws are submitted, not when they are recorded. Use the per-instance color
-and data, or distinct materials.
+interpret: `StylizedMaterial` reads an emissive boost, a highlight, a wind
+strength and a fade from them. Materials must not change their values between
+the draws of one frame to vary objects: they are applied when the draws are
+submitted, not when they are recorded. Use the per-instance color and data, or
+distinct materials.
 
 A material declares how it is drawn with its `renderState`:
 
@@ -191,7 +192,10 @@ fraction of the device pixels.
   vertices carry a color, a baked ambient occlusion and masks for the
   per-instance tint, an accent color, emission, gloss and wind sway. It is lit
   by a soft hemisphere ambient, suns and point lights, with highlights, a rim
-  light and an optional MatCap texture. `StylizedMaterial.buildSurface` builds
+  light and up to two MatCap textures (a sheen above a gloss threshold, and
+  one for gems). Objects vary through their per-instance data: a glow boost, a
+  highlight, a wind strength (the wind may sway in each object's model space)
+  and a fade, for translucent previews. `StylizedMaterial.buildSurface` builds
   surfaces in its vertex layout, and it draws standard surfaces too. It is not
   available on the web yet.
 

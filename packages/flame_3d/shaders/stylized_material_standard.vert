@@ -3,6 +3,7 @@
 // StylizedMaterial for the standard vertex layout: the vertex color is read,
 // the other per-vertex values are neutral (unoccluded, tinted by the instance
 // color, no accent, emissive, gloss nor sway). Skinned surfaces are skinned.
+// The instance data is passed on like in stylized_material.vert.
 
 in vec3 vertexPosition;
 in vec4 vertexColor;
@@ -18,6 +19,7 @@ out vec4 fragColor;
 out vec4 fragMasks;
 out float fragOcclusion;
 out vec4 fragInstanceColor;
+out vec4 fragInstanceData;
 
 // See stylized_material.vert.
 vec3 transformNormal(mat4 model, vec3 normal) {
@@ -44,4 +46,5 @@ void main() {
   fragMasks = vec4(1.0, 0.0, 0.0, 0.0);
   fragOcclusion = 1.0;
   fragInstanceColor = instanceColor;
+  fragInstanceData = instanceData;
 }

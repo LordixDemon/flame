@@ -3,7 +3,8 @@
 
 // The fragment stage of StylizedMaterial: vertex-colored surfaces lit by the
 // hemisphere, directional and point lights of the scene, with per-vertex
-// masks for the instance tint, the accent color, emission and gloss.
+// masks for the instance tint, the accent color, emission and gloss, and per
+// instance data for an emissive boost, a highlight and a fade.
 //
 //   base = albedo * vertex color * mix(1, instance color, tint mask)
 //          * mix(1, accent, accent mask)
@@ -16,11 +17,18 @@
 //          sum over suns of (n.h)^specularPower * specular factor
 //          * gloss * specularStrength
 //   rim  = (1 - n.v)^rimPower * rimStrength * (sky + rimColor)
-//   cap  = matCap(view-space normal) * gloss * matCapStrength
-//   out  = mix(base * lit + spec + rim + cap, emissive,
-//              emissive mask * emissiveStrength)
+//   cap  = gloss > gemThreshold: gemMatCap(view-space normal)
+//          * gemMatCapStrength
+//          else gloss > matCapThreshold: matCap(view-space normal)
+//          * matCapStrength * mix(1, gloss, matCapGlossWeight)
+//   glow = clamp(emissive mask * (emissiveStrength + boost), 0, 1)
+//   out  = mix(base * lit + spec + rim + cap + highlight * highlightColor,
+//              mix(emissive, emissiveBoost, clamp(boost, 0, 1)), glow)
+//   alpha = albedo alpha * vertex alpha * (1 - fade)
 //
-// with hemi = 0.5 + 0.5 * n.up and bounce = max(0, -n.up).
+// with hemi = 0.5 + 0.5 * n.up, bounce = max(0, -n.up), skyFill an rgb
+// weight, and boost, highlight and fade the x, y and w of the instance data.
+// The color is output premultiplied by its alpha.
 
 in vec3 fragPosition;
 in vec3 fragNormal;
@@ -28,19 +36,23 @@ in vec4 fragColor;
 in vec4 fragMasks;
 in float fragOcclusion;
 in vec4 fragInstanceColor;
+in vec4 fragInstanceData;
 
 out vec4 outColor;
 
 uniform sampler2D matCapTexture;
+uniform sampler2D gemMatCapTexture;
 
 uniform Material {
   vec4 albedoColor;
   vec4 accentColor;
   vec4 emissiveColor;
+  vec4 emissiveBoostColor;
   vec4 ambientBase;
+  vec4 skyFill;
   vec4 rimColor;
+  vec4 highlightColor;
   float emissiveStrength;
-  float skyFill;
   float groundBounce;
   float pointLightWrap;
   float specularStrength;
@@ -49,6 +61,10 @@ uniform Material {
   float rimStrength;
   float rimPower;
   float matCapStrength;
+  float matCapThreshold;
+  float matCapGlossWeight;
+  float gemMatCapStrength;
+  float gemThreshold;
 } material;
 
 #include <flame_3d/lights.glsl>
@@ -74,6 +90,10 @@ void main() {
   float emissiveMask = fragMasks.z;
   float gloss = fragMasks.w;
 
+  float boost = fragInstanceData.x;
+  float highlight = fragInstanceData.y;
+  float fade = fragInstanceData.w;
+
   vec3 base = material.albedoColor.rgb * fragColor.rgb;
   base *= mix(vec3(1.0), fragInstanceColor.rgb, tintMask);
   base *= mix(vec3(1.0), material.accentColor.rgb, accentMask);
@@ -84,7 +104,7 @@ void main() {
   vec3 ambient = ambientLight.color.rgb * ambientLight.intensity +
     hemisphereLight.intensity * (
       material.ambientBase.rgb +
-      material.skyFill * hemi * hemisphereLight.skyColor.rgb +
+      material.skyFill.rgb * hemi * hemisphereLight.skyColor.rgb +
       material.groundBounce * bounce * hemisphereLight.groundColor.rgb
     );
   vec3 lit = fragOcclusion * ambient;
@@ -109,8 +129,8 @@ void main() {
     float range = lights.ranges[i].x;
     float falloff;
     if (range > 0.0) {
-      float fade = max(1.0 - dist / range, 0.0);
-      falloff = fade * fade;
+      float rangeFade = max(1.0 - dist / range, 0.0);
+      falloff = rangeFade * rangeFade;
     } else {
       falloff = 1.0 / max(dist * dist, 0.00000001);
     }
@@ -123,16 +143,34 @@ void main() {
   vec3 rim = fresnel * material.rimStrength *
     (hemisphereLight.skyColor.rgb + material.rimColor.rgb);
 
+  // Both MatCap textures are sampled outside of any branch, so that their
+  // texture coordinates' derivatives are defined.
   vec3 viewNormal = normalize(mat3(camera.view) * n);
   vec2 matCapUv = vec2(0.5 + 0.5 * viewNormal.x, 0.5 - 0.5 * viewNormal.y);
-  vec3 matCap = texture(matCapTexture, matCapUv).rgb * gloss *
-    material.matCapStrength;
+  vec3 coat = texture(matCapTexture, matCapUv).rgb * material.matCapStrength *
+    mix(1.0, gloss, material.matCapGlossWeight);
+  vec3 gem = texture(gemMatCapTexture, matCapUv).rgb *
+    material.gemMatCapStrength;
+  float gemWeight = gloss > material.gemThreshold ? 1.0 : 0.0;
+  float coatWeight = gloss > material.matCapThreshold ? 1.0 - gemWeight : 0.0;
+  vec3 matCap = coatWeight * coat + gemWeight * gem;
 
-  vec3 color = base * lit + vec3(specular) + rim + matCap;
-  float glow = clamp(emissiveMask * material.emissiveStrength, 0.0, 1.0);
-  color = mix(color, material.emissiveColor.rgb, glow);
+  vec3 color = base * lit + vec3(specular) + rim + matCap +
+    highlight * material.highlightColor.rgb;
+  vec3 emissive = mix(
+    material.emissiveColor.rgb,
+    material.emissiveBoostColor.rgb,
+    clamp(boost, 0.0, 1.0)
+  );
+  float glow = clamp(
+    emissiveMask * (material.emissiveStrength + boost),
+    0.0,
+    1.0
+  );
+  color = mix(color, emissive, glow);
 
-  float alpha = material.albedoColor.a * fragColor.a;
+  float alpha = material.albedoColor.a * fragColor.a *
+    clamp(1.0 - fade, 0.0, 1.0);
   outColor = vec4(clamp(color, 0.0, 1.0) * alpha, alpha);
 }
 

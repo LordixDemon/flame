@@ -32,16 +32,36 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 /// used, they are unoccluded, tinted by the instance color everywhere, and
 /// have no accent, emission, gloss nor sway.
 ///
+/// ## Per-instance data
+///
+/// Besides the per-instance color, which tints the vertices of the tint mask,
+/// each object can vary through its per-instance data
+/// (`MeshComponent.instanceData`, zero by default):
+///
+/// - `x`, the emissive boost: added to [emissiveStrength] on the vertices of
+///   the emissive mask; from `0` to `1` it also moves their glow color from
+///   [emissiveColor] towards [emissiveBoostColor];
+/// - `y`, the highlight: [highlightColor] times it is added to every vertex;
+/// - `z`, the wind strength, added to `1`: `-1` stills the sway of the object
+///   and `1` doubles it;
+/// - `w`, the fade: the opacity of the object is `1 - w`, which shows when
+///   the material is translucent (see below).
+///
+/// Objects that differ only in their color and instance data are still drawn
+/// with one instanced draw call per surface.
+///
 /// ## Shading
 ///
 /// With `n` the normal, `v` the direction to the viewer, `up` the hemisphere
-/// light's up axis, `hemi = 0.5 + 0.5 * n·up` and `bounce = max(0, -n·up)`:
+/// light's up axis, `hemi = 0.5 + 0.5 * n·up`, `bounce = max(0, -n·up)` and
+/// `boost`, `highlight` and `fade` from the instance data:
 ///
 /// ```text
 /// base = albedoColor * vertexColor * mix(1, instance color, tint mask)
 ///        * mix(1, accentColor, accent mask)
 /// lit  = occlusion * (ambient light
-///          + hemisphere intensity * (ambientBase + skyFill * sky * hemi
+///          + hemisphere intensity * (ambientBase
+///                                    + skyFill * skyFillWeight * sky * hemi
 ///                                    + groundBounce * ground * bounce))
 ///        + Σ directional: max(0, n·l) * intensity * color
 ///        + Σ point: intensity * color * falloff * max(pointLightWrap, n·l)
@@ -49,25 +69,49 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 ///        Σ directional: (n·h)^specularPower * light.specular
 ///          * gloss * specularStrength
 /// rim  = (1 - n·v)^rimPower * rimStrength * (sky + rimColor)
-/// cap  = matCapTexture(view-space normal) * gloss * matCapStrength
-/// out  = mix(base * lit + spec + rim + cap, emissiveColor,
-///            emissive mask * emissiveStrength)
+/// cap  = where gloss > gemThreshold:
+///          gemMatCapTexture(view-space normal) * gemMatCapStrength
+///        elsewhere, where gloss > matCapThreshold:
+///          matCapTexture(view-space normal) * matCapStrength
+///          * mix(1, gloss, matCapGlossWeight)
+/// glow = clamp(emissive mask * (emissiveStrength + boost), 0, 1)
+/// out  = mix(base * lit + spec + rim + cap + highlight * highlightColor,
+///            mix(emissiveColor, emissiveBoostColor, clamp(boost, 0, 1)),
+///            glow)
+/// alpha = albedoColor.a * vertex alpha * (1 - fade)
 /// ```
 ///
 /// `falloff` is the point light's: `(1 - d / range)²` with a range, `1 / d²`
 /// without. Highlights are white and follow the direction of the directional
 /// lights, not their intensity. The result is clamped to `[0, 1]`, with no
-/// tone mapping. Vertices with a sway weight move by
+/// tone mapping, and output premultiplied by its alpha.
+///
+/// ## Wind
+///
+/// Vertices with a sway weight move by
 /// `windDirection * windAmplitude * sin(windTime * windFrequency +
-/// dot(origin, windPhase))` times their weight, `origin` being the world
-/// position of their object.
+/// dot(origin, windPhase))` times their weight and the wind strength of
+/// their instance, `origin` being the world position of their object. With
+/// [windSpace] at [WindSpace.world] (the default) the direction and the
+/// amplitude are in world space; with [WindSpace.model] they are in the model
+/// space of each object, so that the sway turns and scales with the object
+/// and one material serves objects of every orientation and size.
 ///
 /// The defaults give a soft, toy-like look under a [HemisphereLight] and a
 /// [DirectionalLight].
 ///
 /// It is drawn instanced and batches like any opaque material: vary objects
-/// with the per-instance color (which tints the vertices of the tint mask),
-/// or with distinct materials (one per accent color, for instance).
+/// with the per-instance color and data, or with distinct materials (one per
+/// accent color, for instance).
+///
+/// ## Translucency
+///
+/// With `translucent: true` the material blends its premultiplied output over
+/// what is behind it, without writing depth, and its draws are sorted back to
+/// front after the opaque ones, like every translucent draw: objects can then
+/// fade out with the `w` of their instance data, a see-through preview for
+/// instance. Translucent draws of one surface that are consecutive in that
+/// order are still batched.
 ///
 /// Not available on the web yet: creating one there throws an
 /// [UnsupportedError].
@@ -86,6 +130,16 @@ class StylizedMaterial({
   /// the others) to `1` (the [emissiveColor] alone).
   var double emissiveStrength = 1.0,
 
+  /// The color the vertices of the emissive mask glow with in objects whose
+  /// emissive boost (the `x` of their instance data) is `1`; the color moves
+  /// from [emissiveColor] towards it as the boost goes from `0` to `1`.
+  /// `null` (the default) keeps [emissiveColor].
+  var Color? emissiveBoostColor,
+
+  /// The color added to objects in proportion to their highlight (the `y` of
+  /// their instance data).
+  var Color highlightColor = const Color(0xFFFFFFFF),
+
   /// The ambient light a hemisphere light gives every surface, whatever its
   /// orientation, per unit of the hemisphere light's intensity.
   var Color ambientBase = const Color.from(
@@ -95,8 +149,14 @@ class StylizedMaterial({
     blue: 0.65,
   ),
 
-  /// How much of the hemisphere light's sky color surfaces facing up get.
+  /// How much of the hemisphere light's sky color surfaces facing up get,
+  /// times [skyFillWeight].
   var double skyFill = 0.35,
+
+  /// The weight of each channel (red, green, blue) of the sky fill, `(1, 1,
+  /// 1)` by default: a surface facing up gets `skyFill * skyFillWeight`
+  /// times the hemisphere light's sky color.
+  Vector3? skyFillWeight,
 
   /// How much of the hemisphere light's ground color surfaces facing down
   /// get.
@@ -125,17 +185,44 @@ class StylizedMaterial({
   /// Added to the hemisphere light's sky color for the rim light.
   var Color rimColor = const Color(0xFF000000),
 
-  /// An optional MatCap texture, added where vertices have gloss.
+  /// An optional MatCap texture, a sheen added where vertices have more gloss
+  /// than [matCapThreshold] (and no more than [gemThreshold] when there is a
+  /// [gemMatCapTexture]).
   var Texture? matCapTexture,
 
-  /// The strength of the [matCapTexture] for a vertex of gloss `1`.
+  /// The strength of the [matCapTexture] (for a vertex of gloss `1` when
+  /// [matCapGlossWeight] is `1`).
   var double matCapStrength = 1.0,
 
-  /// The direction vertices sway in, in world space.
+  /// Vertices with no more gloss than this get no [matCapTexture].
+  var double matCapThreshold = 0,
+
+  /// How much the gloss of a vertex scales its [matCapTexture]: `1` (the
+  /// default) in proportion to the gloss, `0` at [matCapStrength] whatever
+  /// the gloss.
+  var double matCapGlossWeight = 1,
+
+  /// An optional second MatCap texture, for the glossiest vertices (gems, for
+  /// instance): those with more gloss than [gemThreshold] get it at
+  /// [gemMatCapStrength] instead of the [matCapTexture].
+  var Texture? gemMatCapTexture,
+
+  /// The strength of the [gemMatCapTexture].
+  var double gemMatCapStrength = 1.0,
+
+  /// Vertices with more gloss than this get the [gemMatCapTexture], when
+  /// there is one.
+  var double gemThreshold = 1.0,
+
+  /// The direction vertices sway in, in [windSpace].
   Vector3? windDirection,
 
-  /// How far vertices of sway weight `1` sway.
+  /// How far vertices of sway weight `1` sway, in [windSpace] units.
   var double windAmplitude = 0.032,
+
+  /// The space of [windDirection] and [windAmplitude]: the world (the
+  /// default) or the model space of each object.
+  var WindSpace windSpace = WindSpace.world,
 
   /// The angular frequency of the sway, in radians per unit of [windTime].
   var double windFrequency = 2.3,
@@ -147,6 +234,10 @@ class StylizedMaterial({
 
   /// The time of the sway, to advance every frame (in seconds).
   var double windTime = 0,
+
+  /// Whether the material is drawn translucent: blended with premultiplied
+  /// alpha, without depth writes, sorted back to front (see [renderState]).
+  bool translucent = false,
 }) extends Material {
   /// {@macro stylized_material}
   this
@@ -159,6 +250,7 @@ class StylizedMaterial({
           _bundle,
           slots: [
             'matCapTexture',
+            'gemMatCapTexture',
             'Material',
             RenderContext3D.ambientLightBlock,
             RenderContext3D.lightsBlock,
@@ -174,9 +266,20 @@ class StylizedMaterial({
         'shaders.',
       );
     }
+    if (translucent) {
+      renderState = translucentRenderState;
+    }
   }
 
-  /// The direction vertices sway in, in world space.
+  /// The render state of translucent stylized materials: blended with
+  /// premultiplied alpha, depth tested, without depth writes.
+  static const RenderState translucentRenderState =
+      RenderState.premultipliedAlphaBlend;
+
+  /// The weight of each channel of the sky fill, see [skyFill].
+  Vector3 skyFillWeight = skyFillWeight ?? Vector3.all(1);
+
+  /// The direction vertices sway in, in [windSpace].
   Vector3 windDirection = windDirection ?? Vector3(1, 0, 0);
 
   /// How the phase of the sway changes with the world position of objects.
@@ -225,22 +328,40 @@ class StylizedMaterial({
 
   @override
   void apply(RenderContext context) {
+    final inModelSpace = windSpace == WindSpace.model;
     vertexShader
-      ..setVector3('Wind.direction', windDirection)
+      ..setVector3('Wind.direction', inModelSpace ? _zero : windDirection)
+      ..setVector3('Wind.modelDirection', inModelSpace ? windDirection : _zero)
       ..setFloat('Wind.amplitude', windAmplitude)
       ..setVector3('Wind.phaseScale', windPhase)
       ..setFloat('Wind.frequency', windFrequency)
       ..setFloat('Wind.time', windTime);
     final matCap = matCapTexture;
+    final gemMatCap = gemMatCapTexture;
+    final weight = skyFillWeight;
     fragmentShader
       ..setTexture('matCapTexture', matCap ?? Texture.empty)
+      ..setTexture('gemMatCapTexture', gemMatCap ?? Texture.empty)
       ..setColor('Material.albedoColor', albedoColor)
       ..setColor('Material.accentColor', accentColor)
       ..setColor('Material.emissiveColor', emissiveColor)
+      ..setColor(
+        'Material.emissiveBoostColor',
+        emissiveBoostColor ?? emissiveColor,
+      )
       ..setColor('Material.ambientBase', ambientBase)
+      ..setVector4(
+        'Material.skyFill',
+        _skyFill..setValues(
+          skyFill * weight.x,
+          skyFill * weight.y,
+          skyFill * weight.z,
+          0,
+        ),
+      )
       ..setColor('Material.rimColor', rimColor)
+      ..setColor('Material.highlightColor', highlightColor)
       ..setFloat('Material.emissiveStrength', emissiveStrength)
-      ..setFloat('Material.skyFill', skyFill)
       ..setFloat('Material.groundBounce', groundBounce)
       ..setFloat('Material.pointLightWrap', pointLightWrap)
       ..setFloat('Material.specularStrength', specularStrength)
@@ -251,8 +372,27 @@ class StylizedMaterial({
       ..setFloat(
         'Material.matCapStrength',
         matCap == null ? 0 : matCapStrength,
+      )
+      ..setFloat('Material.matCapThreshold', matCapThreshold)
+      ..setFloat('Material.matCapGlossWeight', matCapGlossWeight)
+      ..setFloat(
+        'Material.gemMatCapStrength',
+        gemMatCap == null ? 0 : gemMatCapStrength,
+      )
+      // Without a gem texture no vertex is a gem: every glossy vertex gets
+      // the first MatCap texture.
+      ..setFloat(
+        'Material.gemThreshold',
+        gemMatCap == null ? _never : gemThreshold,
       );
   }
+
+  final Vector4 _skyFill = Vector4.zero();
+
+  static final Vector3 _zero = Vector3.zero();
+
+  /// A gloss no vertex reaches.
+  static const double _never = 1e30;
 
   /// Builds a surface in [vertexLayout] from per-vertex arrays, drawn with
   /// [material].
@@ -338,4 +478,15 @@ class StylizedMaterial({
     }
     return wide ? Uint32List.fromList(indices) : Uint16List.fromList(indices);
   }
+}
+
+/// The space a [StylizedMaterial]'s wind direction and amplitude are given in.
+enum WindSpace() {
+  /// World space: every object sways along the same direction, by the same
+  /// distance.
+  world,
+
+  /// The model space of each object: the sway turns and scales with the
+  /// object, as if it were part of its mesh.
+  model,
 }
