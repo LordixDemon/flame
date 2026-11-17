@@ -53,9 +53,11 @@ abstract class Broadphase<T extends Hitbox<T>>() {
   /// Appends hitboxes whose spatial bounds may intersect [ray] within
   /// [maxDistance] into [out].
   ///
-  /// Broadphase implementations override this to prune distant hitboxes in
-  /// sub-linear time (`Sweep` sorted X-interval pruning, `QuadTree` quadrant
-  /// slab culling). Custom subclasses default to scanning [items].
+  /// Broadphase implementations override this to prune hitboxes that the ray
+  /// can not reach: `QuadTreeBroadphase` skips whole quadrants that the ray
+  /// misses, while `Sweep` scans its X-sorted buckets linearly and only stops
+  /// early at the first hitbox that starts beyond the ray, so its query is
+  /// `O(N)` in the worst case. Custom subclasses default to scanning [items].
   void queryRayCandidates(Ray2 ray, double maxDistance, List<T> out) {
     if (maxDistance.isNaN) {
       return;

@@ -205,6 +205,7 @@ class KinematicBodyComponent({
           found = true;
           _bestHit
             ..toi = _candidateHit.toi
+            ..penetration = _candidateHit.penetration
             ..collider = _candidateHit.collider;
           _bestHit.normal.setFrom(_candidateHit.normal);
           _bestHit.point.setFrom(_candidateHit.point);
@@ -217,9 +218,13 @@ class KinematicBodyComponent({
       return null;
     }
 
+    // A body that already overlapped the obstacle (it was placed inside it,
+    // or the obstacle moved onto it) is pushed out by the whole penetration,
+    // so that it is free to move again right away.
     final safeT = math.max(0.0, _bestHit.toi);
-    position.x += delta.x * safeT + _bestHit.normal.x * skinWidth;
-    position.y += delta.y * safeT + _bestHit.normal.y * skinWidth;
+    final separation = _bestHit.penetration + skinWidth;
+    position.x += delta.x * safeT + _bestHit.normal.x * separation;
+    position.y += delta.y * safeT + _bestHit.normal.y * separation;
 
     final upDot =
         _bestHit.normal.x * upDirection.x + _bestHit.normal.y * upDirection.y;

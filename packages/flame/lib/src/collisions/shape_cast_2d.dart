@@ -15,6 +15,11 @@ class ShapeCastHit2D() {
   /// Contact point on the obstacle surface.
   final Vector2 point = Vector2.zero();
 
+  /// How deep the shape was inside the obstacle before it moved, along
+  /// [normal]. It is `0` unless the cast started in overlap (`toi == 0`), in
+  /// which case moving the shape by `normal * penetration` separates the two.
+  double penetration = 0.0;
+
   /// Optional obstacle tag/reference attached by the caller.
   Object? collider;
 }
@@ -22,6 +27,12 @@ class ShapeCastHit2D() {
 /// Continuous Collision Detection (`CCD`) swept shape-casting solvers
 /// preventing fast projectiles, dice, or tokens from tunneling through thin
 /// walls.
+///
+/// An impact is the moment the moving shape starts to overlap the obstacle.
+/// Shapes that only touch do not overlap, so a shape that starts in contact
+/// with an obstacle and moves away from it or slides along it is not
+/// reported, while one that starts in contact and moves into the obstacle is
+/// reported with `toi == 0` and the normal of the touched surface.
 abstract final class ShapeCast2D._() {
   /// Sweeps a circle (`startCenter`, `radius`) along `delta` against static
   /// axis-aligned [obstacleRect] via exact Minkowski-expanded rounded-box ray
@@ -35,6 +46,7 @@ abstract final class ShapeCast2D._() {
     required ShapeCastHit2D out,
     Object? collider,
   }) {
+    out.penetration = 0.0;
     // Handle initial overlap at t = 0.
     final initialManifold = _scratchManifold;
     if (CollisionManifold2D.circleVsRect(
@@ -45,6 +57,7 @@ abstract final class ShapeCast2D._() {
     )) {
       out
         ..toi = 0.0
+        ..penetration = initialManifold.depth
         ..collider = collider;
       out.normal.setFrom(initialManifold.normal);
       out.point.setFrom(initialManifold.contactPoint);
@@ -96,7 +109,7 @@ abstract final class ShapeCast2D._() {
       cornerY,
       radius,
     );
-    if (cornerT == null || cornerT < 0.0 || cornerT > 1.0) {
+    if (cornerT == null) {
       return false;
     }
     final cxAtHit = startCenter.x + delta.x * cornerT;
@@ -128,6 +141,7 @@ abstract final class ShapeCast2D._() {
     required ShapeCastHit2D out,
     Object? collider,
   }) {
+    out.penetration = 0.0;
     final initialManifold = _scratchManifold;
     if (CollisionManifold2D.rectVsRect(
       rectA: movingRect,
@@ -136,6 +150,7 @@ abstract final class ShapeCast2D._() {
     )) {
       out
         ..toi = 0.0
+        ..penetration = initialManifold.depth
         ..collider = collider;
       out.normal.setFrom(initialManifold.normal);
       out.point.setFrom(initialManifold.contactPoint);
@@ -184,18 +199,27 @@ abstract final class ShapeCast2D._() {
   static final CollisionManifold2D _scratchManifold = CollisionManifold2D();
   static final Vector2 _scratchOrigin = Vector2.zero();
 
+  /// The time in `[0, 1]` at which the point `origin + delta * t` enters the
+  /// interior of [box], with the normal of the side it enters through, or
+  /// `null` when it never gets inside.
+  ///
+  /// The sides themselves are not part of the interior: a point that runs
+  /// along a side, touches a corner, or starts on a side and moves outwards
+  /// does not enter. A point that starts on a side and moves inwards enters at
+  /// `t == 0`, and so does one that starts inside.
   static (double, double, double)? _rayVsAabb(
     Vector2 origin,
     Vector2 delta,
     Rect box,
   ) {
-    var tMin = 0.0;
-    var tMax = 1.0;
+    // The point is inside the box for t in (tEnter, tExit).
+    var tEnter = double.negativeInfinity;
+    var tExit = double.infinity;
     var nx = 0.0;
     var ny = 0.0;
 
     if (delta.x.abs() < 1e-12) {
-      if (origin.x < box.left || origin.x > box.right) {
+      if (origin.x <= box.left || origin.x >= box.right) {
         return null;
       }
     } else {
@@ -209,21 +233,18 @@ abstract final class ShapeCast2D._() {
         t2 = tmp;
         nSign = 1.0;
       }
-      if (t1 > tMin) {
-        tMin = t1;
+      if (t1 > tEnter) {
+        tEnter = t1;
         nx = nSign;
         ny = 0.0;
       }
-      if (t2 < tMax) {
-        tMax = t2;
-      }
-      if (tMin > tMax) {
-        return null;
+      if (t2 < tExit) {
+        tExit = t2;
       }
     }
 
     if (delta.y.abs() < 1e-12) {
-      if (origin.y < box.top || origin.y > box.bottom) {
+      if (origin.y <= box.top || origin.y >= box.bottom) {
         return null;
       }
     } else {
@@ -237,25 +258,27 @@ abstract final class ShapeCast2D._() {
         t2 = tmp;
         nSign = 1.0;
       }
-      if (t1 > tMin) {
-        tMin = t1;
+      if (t1 > tEnter) {
+        tEnter = t1;
         nx = 0.0;
         ny = nSign;
       }
-      if (t2 < tMax) {
-        tMax = t2;
-      }
-      if (tMin > tMax) {
-        return null;
+      if (t2 < tExit) {
+        tExit = t2;
       }
     }
 
-    if (tMin < 0.0 || tMin > 1.0) {
+    final toi = math.max(tEnter, 0.0);
+    // A positive comparison, so that a NaN is rejected.
+    if (!(tExit > toi) || toi > 1.0) {
       return null;
     }
-    return (tMin, nx, ny);
+    return (toi, nx, ny);
   }
 
+  /// The time in `[0, 1]` at which the point `(ox, oy) + (dx, dy) * t` enters
+  /// the interior of the circle, or `null` when it never gets inside. A point
+  /// that only touches the circle does not enter it.
   static double? _rayVsCircle(
     double ox,
     double oy,
@@ -271,10 +294,13 @@ abstract final class ShapeCast2D._() {
     final b = 2.0 * (fx * dx + fy * dy);
     final c = fx * fx + fy * fy - r * r;
     final disc = b * b - 4.0 * a * c;
-    if (disc < 0.0 || a <= 1e-12) {
+    if (!(disc > 0.0) || a <= 1e-12) {
       return null;
     }
-    final t = (-b - math.sqrt(disc)) / (2.0 * a);
-    return (t >= 0.0 && t <= 1.0) ? t : null;
+    final root = math.sqrt(disc);
+    final tEnter = (-b - root) / (2.0 * a);
+    final tExit = (-b + root) / (2.0 * a);
+    final toi = math.max(tEnter, 0.0);
+    return (tExit > toi && toi <= 1.0) ? toi : null;
   }
 }

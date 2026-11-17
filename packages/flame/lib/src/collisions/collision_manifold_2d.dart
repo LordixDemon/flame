@@ -54,6 +54,9 @@ class CollisionManifold2D() {
 
   /// Analytical circle-vs-AABB ([Rect]) penetration manifold (`true` when
   /// overlapping, including full circle-center containment inside [rectB]).
+  ///
+  /// A circle that only touches the rectangle from outside does not overlap
+  /// it, like for [circleVsCircle] and [rectVsRect].
   static bool circleVsRect({
     required Vector2 circleCenter,
     required double radius,
@@ -69,13 +72,12 @@ class CollisionManifold2D() {
     final dy = cy - closestY;
     final distSq = dx * dx + dy * dy;
 
-    if (distSq > radius * radius) {
-      out.depth = 0.0;
-      return false;
-    }
-
     // Center strictly outside the rectangle: push along (center - closest).
     if (distSq > 1e-10) {
+      if (distSq >= radius * radius) {
+        out.depth = 0.0;
+        return false;
+      }
       final dist = math.sqrt(distSq);
       out.normal.setValues(dx / dist, dy / dist);
       out.depth = radius - dist;
@@ -114,41 +116,51 @@ class CollisionManifold2D() {
   }
 
   /// Analytical AABB-vs-AABB penetration manifold (`true` when overlapping).
+  ///
+  /// `normal * depth` is the minimum translation vector: the shortest move
+  /// of [rectA] along one axis after which it no longer overlaps [rectB]. That
+  /// also holds when one rectangle spans the other on an axis (a wide body
+  /// over a thin wall, a small body deep inside a large one), where the
+  /// shortest way out is longer than the width of the overlapping area.
   static bool rectVsRect({
     required Rect rectA,
     required Rect rectB,
     required CollisionManifold2D out,
   }) {
-    final overlapX =
-        math.min(rectA.right, rectB.right) - math.max(rectA.left, rectB.left);
-    if (overlapX <= 0.0) {
+    // How far A has to move in each direction to clear B.
+    final pushLeft = rectA.right - rectB.left;
+    final pushRight = rectB.right - rectA.left;
+    if (pushLeft <= 0.0 || pushRight <= 0.0) {
       out.depth = 0.0;
       return false;
     }
-    final overlapY =
-        math.min(rectA.bottom, rectB.bottom) - math.max(rectA.top, rectB.top);
-    if (overlapY <= 0.0) {
+    final pushUp = rectA.bottom - rectB.top;
+    final pushDown = rectB.bottom - rectA.top;
+    if (pushUp <= 0.0 || pushDown <= 0.0) {
       out.depth = 0.0;
       return false;
     }
 
     final centerAx = (rectA.left + rectA.right) * 0.5;
     final centerAy = (rectA.top + rectA.bottom) * 0.5;
-    final centerBx = (rectB.left + rectB.right) * 0.5;
-    final centerBy = (rectB.top + rectB.bottom) * 0.5;
 
-    if (overlapX < overlapY) {
-      final sign = centerAx < centerBx ? -1.0 : 1.0;
+    // On each axis the nearer side wins, which is the side that the center of
+    // A is on; with the centers aligned it is the positive direction.
+    final depthX = math.min(pushLeft, pushRight);
+    final depthY = math.min(pushUp, pushDown);
+
+    if (depthX < depthY) {
+      final sign = pushLeft < pushRight ? -1.0 : 1.0;
       out.normal.setValues(sign, 0.0);
-      out.depth = overlapX;
+      out.depth = depthX;
       out.contactPoint.setValues(
         sign < 0 ? rectB.left : rectB.right,
         centerAy.clamp(rectB.top, rectB.bottom),
       );
     } else {
-      final sign = centerAy < centerBy ? -1.0 : 1.0;
+      final sign = pushUp < pushDown ? -1.0 : 1.0;
       out.normal.setValues(0.0, sign);
-      out.depth = overlapY;
+      out.depth = depthY;
       out.contactPoint.setValues(
         centerAx.clamp(rectB.left, rectB.right),
         sign < 0 ? rectB.top : rectB.bottom,
