@@ -121,8 +121,38 @@ void main() {
       final instance = backend.instancesOf(0).single;
       expect(instance.sublist(0, 16), orderedEquals(at(1, 2, -3).storage));
       expect(
-        instance.sublist(16),
+        instance.sublist(16, 20),
         orderedEquals(Float32List.fromList([1, 64 / 255, 0, 128 / 255])),
+      );
+      // No instance data: zero.
+      expect(instance.sublist(20), [0, 0, 0, 0]);
+    });
+
+    test('stores the per-instance data after the color', () {
+      final surface = triangle();
+      final data = Vector4(0.5, -1, 2, 0.25);
+      frame(() {
+        context
+          ..drawSurface(surface, transform: at(0, 0, -3), instanceData: data)
+          ..drawMesh(
+            Mesh()..addSurface(surface),
+            transform: at(0, 0, -4),
+            instanceData: Vector4(1, 2, 3, 4),
+          )
+          ..drawSurface(surface, transform: at(0, 0, -5));
+        // The data is copied when the draw is recorded.
+        data.setZero();
+      });
+
+      // Still one instanced draw.
+      expect(backend.countCommands('drawIndexed'), 1);
+      expect(
+        [for (final instance in backend.instancesOf(0)) instance.sublist(20)],
+        [
+          [0.5, -1, 2, 0.25],
+          [1, 2, 3, 4],
+          [0, 0, 0, 0],
+        ],
       );
     });
 
@@ -194,7 +224,7 @@ void main() {
   });
 
   group('translucent draws', () {
-    test('are drawn one by one, back to front, after the opaque ones', () {
+    test('are drawn back to front, after the opaque ones', () {
       final glass = _TestMaterial()..renderState = RenderState.alphaBlend;
       final glassSurface = triangle(glass);
       final wall = triangle();
@@ -206,11 +236,40 @@ void main() {
           ..drawSurface(glassSurface, transform: at(0, 0, -5));
       });
 
-      expect(backend.countCommands('drawIndexed'), 4);
-      final depths = [
-        for (var i = 0; i < 4; i++) backend.instancesOf(i).single[14],
-      ];
-      expect(depths, [-9, -8, -5, -2]);
+      // The wall, then the three panes, consecutive in back to front order:
+      // one instanced draw whose instances are in that order.
+      expect(backend.countCommands('drawIndexed'), 2);
+      expect(backend.instancesOf(0).single[14], -9);
+      expect(
+        [for (final instance in backend.instancesOf(1)) instance[14]],
+        [-8, -5, -2],
+      );
+    });
+
+    test('batch only the draws that are consecutive back to front', () {
+      final glass = _TestMaterial()..renderState = RenderState.alphaBlend;
+      final pane = triangle(glass);
+      final other = triangle(glass);
+      frame(() {
+        context
+          ..drawSurface(pane, transform: at(0, 0, -2))
+          ..drawSurface(other, transform: at(0, 0, -4))
+          ..drawSurface(pane, transform: at(0, 0, -6))
+          ..drawSurface(pane, transform: at(0, 0, -8));
+      });
+
+      expect(backend.countCommands('drawIndexed'), 3);
+      expect(
+        [
+          for (var i = 0; i < 3; i++)
+            [for (final instance in backend.instancesOf(i)) instance[14]],
+        ],
+        [
+          [-8, -6],
+          [-4],
+          [-2],
+        ],
+      );
     });
 
     test('keep their recording order at equal depths', () {
@@ -223,7 +282,7 @@ void main() {
       });
 
       expect(
-        [for (var i = 0; i < 20; i++) backend.instancesOf(i).single[12]],
+        [for (final instance in backend.instancesOf(0)) instance[12]],
         [for (var i = 0; i < 20; i++) i.toDouble()],
       );
     });

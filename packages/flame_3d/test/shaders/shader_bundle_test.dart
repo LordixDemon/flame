@@ -19,6 +19,7 @@ const _standardInputs = [
   ('instanceModel2', 4),
   ('instanceModel3', 4),
   ('instanceColor', 4),
+  ('instanceData', 4),
 ];
 
 void main() {

@@ -63,7 +63,10 @@ final class FakeGpuBackend({
     final (buffer, offset, count) = drawnInstances[draw];
     return [
       for (var i = 0; i < count; i++)
-        buffer.contents.buffer.asFloat32List(offset + i * 80, 20),
+        buffer.contents.buffer.asFloat32List(
+          offset + i * VertexLayout.instanceStrideInFloats * 4,
+          VertexLayout.instanceStrideInFloats,
+        ),
     ];
   }
 

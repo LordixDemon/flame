@@ -69,14 +69,17 @@ void main() {
         );
       }
       device
-        ..bindInstances(Float32List(40), 2)
+        ..bindInstances(
+          Float32List(2 * VertexLayout.instanceStrideInFloats),
+          2,
+        )
         ..endPass()
         ..end();
 
       final buffer = backend.buffers.single;
       expect(buffer.writes, hasLength(1));
       expect(device.lastFrameStats.uniformUploads, 10);
-      expect(device.lastFrameStats.uploadedBytes, 10 * 16 + 2 * 80);
+      expect(device.lastFrameStats.uploadedBytes, 10 * 16 + 2 * 96);
       // Every uniform at its own aligned offset.
       for (var i = 0; i < 10; i++) {
         expect(buffer.contents.buffer.asFloat32List(i * 256, 1)[0], i);

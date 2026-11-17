@@ -129,13 +129,17 @@ traversed, then submits them in an order that is cheap for the GPU:
   ordered front to back. Consecutive draws of the same `Surface` with the same
   `Material` instance become a single instanced draw, so components sharing a
   `Mesh` cost one draw call per surface, however many there are.
-- Translucent draws come after all opaque ones, back to front, one draw each.
+- Translucent draws come after all opaque ones, back to front; consecutive
+  translucent draws of the same `Surface` and `Material` are batched too.
 
 Each component can give its draws a per-instance color (`MeshComponent.color`)
 that materials may use; the built-in materials multiply their base color by it.
-Materials must not change their values between the draws of one frame to vary
-objects: they are applied when the draws are submitted, not when they are
-recorded. Use the per-instance color, or distinct materials.
+It can also give them four floats of per-instance data
+(`MeshComponent.instanceData`, zero by default) that materials are free to
+interpret; the built-in materials ignore them. Materials must not change their
+values between the draws of one frame to vary objects: they are applied when
+the draws are submitted, not when they are recorded. Use the per-instance color
+and data, or distinct materials.
 
 A material declares how it is drawn with its `renderState`:
 
@@ -281,10 +285,11 @@ any package in your dependency graph, so chunks can be shared across packages.
 Including ones that `flame_3d` itself ships:
 
 - `#include <flame_3d/instancing.glsl>` declares the per-instance inputs
-  (`instanceModel0` to `instanceModel3`, the model matrix columns, and
-  `instanceColor`) and `instanceModelMatrix()`. A vertex shader that declares
-  the model columns is drawn instanced; one that does not gets its model matrix
-  from uniforms set by its material, one draw per object.
+  (`instanceModel0` to `instanceModel3`, the model matrix columns,
+  `instanceColor` and `instanceData`) and `instanceModelMatrix()`. A vertex
+  shader that declares the model columns is drawn instanced; one that does not
+  gets its model matrix from uniforms set by its material, one draw per
+  object.
 - `#include <flame_3d/camera.glsl>` declares the `CameraMatrices` block
   (`view`, `projection`, `viewProjection`), filled once per render pass.
 - `#include <flame_3d/skinning.glsl>` for vertex skinning; the joint matrices of
