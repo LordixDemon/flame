@@ -6,7 +6,6 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
-import 'package:flutter/widgets.dart' show MediaQuery;
 import 'package:meta/meta.dart';
 
 /// {@template world_3d}
@@ -15,9 +14,14 @@ import 'package:meta/meta.dart';
 /// The primary feature of this component is that it allows [Component3D]s to
 /// render directly to a [GraphicsDevice] instead of the regular rendering.
 ///
-/// Each camera that looks at the world renders it into an image of the
-/// camera's viewport size in physical pixels, times [renderScale], which is
-/// then drawn into the viewport.
+/// A world renders with the device and render context of its [host], the
+/// nearest ancestor that is a [Scene3DHost]:
+///
+/// - In a [Game3D] game such as [FlameGame3D], each camera that looks at the
+///   world renders it into an image of the camera's viewport size in physical
+///   pixels, times [renderScale], which is then drawn into the viewport.
+/// - In a [Scene3DComponent], the component renders the world as one layer of
+///   a 2D game, see there.
 /// {@endtemplate}
 class World3D({
   super.children,
@@ -27,10 +31,24 @@ class World3D({
   /// to render fewer pixels than the viewport covers (the image is scaled up
   /// when drawn), or above `1` to render more pixels than it covers.
   double renderScale = 1.0,
-}) extends flame.World with flame.HasGameRef<FlameGame3D> {
+}) extends flame.World {
   final List<Light> _lights = [];
 
-  RenderContext3D get context => gameRef.context;
+  /// The [Scene3DHost] this world renders with: the nearest ancestor that is
+  /// one, such as a [Scene3DComponent] or a [Game3D] game.
+  ///
+  /// Throws a [StateError] when there is none.
+  Scene3DHost get host => _host ??= _findHost();
+  Scene3DHost? _host;
+
+  /// The render context that records the draws of this world, the one of
+  /// its [host].
+  RenderContext3D get context => host.context;
+
+  /// Whether this world is being rendered: [Object3D]s record their draws
+  /// into [context] only while this is true.
+  bool get isRendering => _rendering;
+  bool _rendering = false;
 
   /// The fraction of the device pixels the world is rendered at, see
   /// [World3D.new].
@@ -50,32 +68,73 @@ class World3D({
   @internal
   void removeLight(Light light) => _lights.remove(light);
 
+  @override
+  void onRemove() {
+    super.onRemove();
+    _host = null;
+  }
+
+  Scene3DHost _findHost() {
+    for (final ancestor in ancestors()) {
+      if (ancestor case final Scene3DHost host) {
+        return host;
+      }
+    }
+    throw StateError(
+      'A World3D needs a Scene3DHost ancestor: a Scene3DComponent, or a '
+      'Game3D game such as FlameGame3D.',
+    );
+  }
+
+  /// Records the draws of every component of this world into [context], with
+  /// the lights of this world.
+  ///
+  /// This is how a host that runs the render pass itself, such as a
+  /// [Scene3DComponent], renders the world: the [host]'s device must be in a
+  /// render pass and the camera of [context] set with
+  /// [RenderContext3D.setCamera]; the host then flushes the context and ends
+  /// the pass. [canvas] is passed on to the components, which do not draw on
+  /// it.
+  void renderScene(Canvas canvas) {
+    context.lights = _lights;
+    _rendering = true;
+    try {
+      for (final child in children) {
+        child.renderTree(canvas);
+      }
+    } finally {
+      _rendering = false;
+    }
+  }
+
   @internal
   @override
   void renderFromCamera(Canvas canvas) {
     final camera = CameraComponent3D.currentCamera!;
     final Viewport(virtualSize: size) = camera.viewport;
 
-    final buildContext = gameRef.buildContext;
-    final pixelRatio = buildContext == null
-        ? 1.0
-        : MediaQuery.devicePixelRatioOf(buildContext);
-    final scale = pixelRatio * _renderScale;
+    final host = this.host;
+    final scale = host.pixelRatio * _renderScale;
     final renderSize = Size(size.x * scale, size.y * scale);
 
     // The camera's matrices are read once per pass, everything derived from
     // them is computed by the context.
-    context
+    final context = host.context
       ..lights = _lights
       ..setCamera(camera.viewMatrix, camera.projectionMatrix);
 
-    final device = gameRef.device;
+    final device = host.device;
     device.beginPass(
       renderSize,
-      msaaSampleCount: gameRef.msaa().sampleCount,
+      msaaSampleCount: host.msaaSampleCount,
       frontFace: context.frontFace,
     );
-    super.renderFromCamera(canvas);
+    _rendering = true;
+    try {
+      super.renderFromCamera(canvas);
+    } finally {
+      _rendering = false;
+    }
     context.flush();
 
     final image = device.endPass();

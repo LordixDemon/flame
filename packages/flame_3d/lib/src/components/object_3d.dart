@@ -32,11 +32,12 @@ abstract class Object3D({
 
   @override
   void renderTree(Canvas canvas) {
+    final world = worldRef;
     assert(
-      CameraComponent3D.currentCamera != null,
-      '''Component is either not part of a World3D or the render is being called outside of the camera rendering''',
+      world.isRendering,
+      'Object3D is rendered outside of the rendering of its World3D',
     );
-    final context = worldRef.context;
+    final context = world.context;
     // The frustum of the pass, computed once by the context.
     final frustum = context.frustum;
 
