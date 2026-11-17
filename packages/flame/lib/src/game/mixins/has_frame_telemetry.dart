@@ -181,6 +181,10 @@ mixin HasFrameTelemetry<W extends World> on FlameGame<W> {
   @override
   void updateSubtree(double dt) {
     super.updateSubtree(dt);
-    recordTelemetryFrame(lastEffectiveDt);
+    // The zero-delta updates that run on start-up and on every resize are not
+    // frames and would otherwise show up as 0.5 ms samples.
+    if (lastEffectiveDt > 0.0) {
+      recordTelemetryFrame(lastEffectiveDt);
+    }
   }
 }

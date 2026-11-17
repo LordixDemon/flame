@@ -213,6 +213,10 @@ abstract mixin class Game() {
 
   /// Optional upper bound applied to [devicePixelRatio] (e.g. `2.0` on Retina
   /// mobile devices to cap fillrate).
+  ///
+  /// Changing it does not invoke [onDisplayMetricsChanged]; the new ratio is
+  /// picked up by the next rendered frame, which on-demand rendering
+  /// ([IdleRenderMode]) schedules for it.
   double? maxDevicePixelRatio;
 
   final Vector2 _physicalCanvasSize = Vector2.zero();
@@ -271,6 +275,22 @@ abstract mixin class Game() {
       _overrideRefreshRate ??
       _platformRefreshRate ??
       _fallbackViewRefreshRate();
+
+  /// Snapshot of the display characteristics this game currently renders
+  /// with: the effective [devicePixelRatio], the canvas size in physical
+  /// pixels at that ratio ([physicalCanvasSize], zero before the first layout)
+  /// and the [displayRefreshRate].
+  DisplayMetrics get displayMetrics {
+    final dpr = devicePixelRatio;
+    final logicalSize = _size;
+    return DisplayMetrics(
+      devicePixelRatio: dpr,
+      physicalSize: logicalSize == null
+          ? Size.zero
+          : Size(logicalSize.x * dpr, logicalSize.y * dpr),
+      refreshRate: displayRefreshRate,
+    );
+  }
 
   /// Overrides [rawDevicePixelRatio] and/or [displayRefreshRate] (pass `null`
   /// to clear overrides and return to live `FlutterView` hardware metrics).
@@ -680,6 +700,7 @@ abstract mixin class Game() {
   }
 
   bool _sceneDirty = true;
+  double _lastRenderedDevicePixelRatio = -1.0;
   double _renderAccumulator = 0.0;
   int _executedUpdateTicks = 0;
   int _executedRenderFrames = 0;
@@ -765,6 +786,11 @@ abstract mixin class Game() {
     if (_sceneDirty) {
       return true;
     }
+    // Catches a changed [maxDevicePixelRatio] (or graphics profile cap), which
+    // is a plain value that nothing else reports.
+    if (devicePixelRatio != _lastRenderedDevicePixelRatio) {
+      return true;
+    }
     for (var i = 0; i < _dirtyVersionSources.length; i++) {
       if (_dirtyVersionSources[i]() != _dirtyVersionSnapshots[i]) {
         return true;
@@ -779,6 +805,7 @@ abstract mixin class Game() {
   void onFrameRendered() {
     _executedRenderFrames++;
     _sceneDirty = false;
+    _lastRenderedDevicePixelRatio = devicePixelRatio;
     for (var i = 0; i < _dirtyVersionSources.length; i++) {
       _dirtyVersionSnapshots[i] = _dirtyVersionSources[i]();
     }
@@ -801,7 +828,12 @@ abstract mixin class Game() {
         _skippedRenderFrames++;
         return false;
       }
-      _renderAccumulator = 0.0;
+      // Carry the overshoot over (bounded by one interval), so that a render
+      // rate that does not divide the update rate is still met on average.
+      final overshoot = _renderAccumulator - minRenderInterval;
+      _renderAccumulator = overshoot <= 0.0
+          ? 0.0
+          : math.min(overshoot, minRenderInterval);
     }
 
     final checkDirty =
@@ -817,6 +849,15 @@ abstract mixin class Game() {
   /// Optional reduced framerate in Hz (e.g. `30`, or `0` to suspend frames
   /// completely) applied automatically after [idleTimeoutSeconds] without user
   /// input or [notifyActivity] boosts.
+  ///
+  /// User input is every pointer event that reaches the game's render box
+  /// (touches, mouse movement, hovering, scrolling and trackpad gestures) and
+  /// every key press that the game widget receives. Pointer events that are
+  /// consumed by widgets on top of the game, such as overlays, do not count;
+  /// call [notifyActivity] for those.
+  ///
+  /// With `0` the loop does not run at all while idle, so only user input or
+  /// [notifyActivity] can wake it; [markSceneDirty] cannot.
   double? idleFps;
 
   /// Seconds of inactivity before [idleFps] throttling engages.
@@ -837,12 +878,16 @@ abstract mixin class Game() {
       _boostRemainingSeconds <= 0.0 &&
       _idleElapsedSeconds >= idleTimeoutSeconds;
 
+  /// Framerate cap in Hz that applies while the game is not idle-throttled
+  /// ([fpsPolicy] when set, otherwise [targetFps]), or `null` if uncapped.
+  double? get activeTargetFps => fpsPolicy != null
+      ? fpsPolicy!.resolveTargetFps(displayRefreshRate)
+      : targetFps;
+
   /// Currently active framerate cap in Hz combining [fpsPolicy], [targetFps],
   /// and [idleFps], or `null` if running at uncapped native vsync.
   double? get effectiveTargetFps {
-    final activeBase = fpsPolicy != null
-        ? fpsPolicy!.resolveTargetFps(displayRefreshRate)
-        : targetFps;
+    final activeBase = activeTargetFps;
     if (isIdleThrottled) {
       final idle = idleFps!;
       if (idle <= 0.0) {
@@ -864,7 +909,7 @@ abstract mixin class Game() {
       if (eff == null || eff <= 0.0) {
         return null;
       }
-      return FpsPolicy.custom(eff).resolveVsyncDivisor(hz);
+      return FpsPolicy.harmonicDivisor(eff, hz);
     }
     final policy = fpsPolicy;
     if (policy != null) {
@@ -872,7 +917,7 @@ abstract mixin class Game() {
     }
     final target = targetFps;
     if (target != null && target > 0.0) {
-      return FpsPolicy.custom(target).resolveVsyncDivisor(hz);
+      return FpsPolicy.harmonicDivisor(target, hz);
     }
     return null;
   }

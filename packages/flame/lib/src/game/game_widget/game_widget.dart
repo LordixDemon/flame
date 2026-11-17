@@ -369,6 +369,12 @@ class GameWidgetState<T extends Game>() extends State<GameWidget<T>> {
       return KeyEventResult.ignored;
     }
 
+    // A key press is user input, just like a pointer event, so it keeps the
+    // game out of the idle throttle (`Game.idleFps`).
+    if (event is KeyDownEvent || event is KeyRepeatEvent) {
+      game.notifyActivity();
+    }
+
     if (game is KeyboardEvents) {
       return game.onKeyEvent(
         event,

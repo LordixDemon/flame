@@ -39,6 +39,7 @@ void main() {
         final loop = GameLoop(
           dts.add,
           vsyncDivisorGetter: () => 2,
+          displayRefreshRateGetter: () => 120,
         )..start();
         try {
           const tick120 = Duration(microseconds: 8333);

@@ -185,6 +185,7 @@ class FlameGame<W extends World>({
   int _lastRenderedStructureCount = -1;
   int _lastRenderedSortKeyCount = -1;
   int _lastRenderedVisualMutationCount = -1;
+  double _lastRenderedRenderScale = -1.0;
   double _lastRenderedInterpolationAlpha = 1.0;
   World? _lastRenderedWorld;
 
@@ -207,6 +208,9 @@ class FlameGame<W extends World>({
         !identical(_world, _lastRenderedWorld) ||
         _camera.viewfinder.transform.version != _lastRenderedCamTxVersion ||
         graphics.version != _lastRenderedGraphicsVersion ||
+        // Covers changes that do not bump `graphics.version`, such as
+        // toggling `qualityGovernor.enabled`.
+        graphics.effectiveRenderScale != _lastRenderedRenderScale ||
         Transform2D.globalMutationCount != _lastRenderedGlobalTxCount ||
         Component.structureMutationCount != _lastRenderedStructureCount ||
         Component.sortKeyMutationCount != _lastRenderedSortKeyCount ||
@@ -222,6 +226,7 @@ class FlameGame<W extends World>({
     super.onFrameRendered();
     _lastRenderedCamTxVersion = _camera.viewfinder.transform.version;
     _lastRenderedGraphicsVersion = graphics.version;
+    _lastRenderedRenderScale = graphics.effectiveRenderScale;
     _lastRenderedGlobalTxCount = Transform2D.globalMutationCount;
     _lastRenderedStructureCount = Component.structureMutationCount;
     _lastRenderedSortKeyCount = Component.sortKeyMutationCount;
@@ -314,6 +319,20 @@ class FlameGame<W extends World>({
           renderTelemetry.endRenderFrame(
             renderMicros: _telemetryStopwatch.elapsedMicroseconds,
           );
+        }
+        return;
+      }
+      if (qualityGovernor.enabled && !collectRenderTelemetry) {
+        // The governor needs the cost of this frame even when telemetry is
+        // off.
+        _telemetryStopwatch
+          ..reset()
+          ..start();
+        try {
+          renderTree(canvas);
+        } finally {
+          _telemetryStopwatch.stop();
+          _governorRenderMicros = _telemetryStopwatch.elapsedMicroseconds;
         }
         return;
       }
@@ -462,24 +481,11 @@ class FlameGame<W extends World>({
     final targetHz = math.max(1.0, effectiveTargetFps ?? displayRefreshRate);
     final budgetMs = 1000.0 / targetHz;
 
-    if (qualityGovernor.enabled && _lastEffectiveDt > 0.0) {
-      final double observedMs;
-      if (renderTelemetry.platformTimingSampleCount > 0) {
-        observedMs = renderTelemetry.smoothedTotalSpanMs;
-      } else if (collectRenderTelemetry &&
-          (renderTelemetry.updateMicros > 0 ||
-              renderTelemetry.renderMicros > 0)) {
-        observedMs =
-            (renderTelemetry.updateMicros + renderTelemetry.renderMicros) /
-            1000.0;
-      } else {
-        observedMs = _lastEffectiveDt * 1000.0;
-      }
-      graphics.recordFrameSample(
-        frameTimeMs: observedMs,
-        targetBudgetMs: budgetMs,
-        dtSeconds: _lastEffectiveDt,
-      );
+    if (qualityGovernor.enabled) {
+      _feedQualityGovernor(updateElapsedMicros);
+    } else {
+      _governorPendingDt = 0.0;
+      _governorFedRenderFrame = executedRenderFrames;
     }
 
     if (frameBudgetScheduler.hasPendingTasks) {
@@ -491,6 +497,49 @@ class FlameGame<W extends World>({
         markSceneDirty();
       }
     }
+  }
+
+  int _governorRenderMicros = 0;
+  int _governorFedRenderFrame = 0;
+  double _governorPendingDt = 0.0;
+
+  /// Feeds [qualityGovernor] with one sample per rendered frame.
+  ///
+  /// The sample is the measured cost of a frame: the hardware `FrameTiming`
+  /// span when the platform reports it, otherwise the CPU time of the last
+  /// `update` and `render`. It is compared with the frame budget of the
+  /// active (not idle-throttled) framerate, so that the idle throttle, which
+  /// only stretches the time between frames, does not look like headroom.
+  void _feedQualityGovernor(int updateElapsedMicros) {
+    _governorPendingDt += _lastEffectiveDt;
+    final renderedFrames = executedRenderFrames;
+    if (renderedFrames == _governorFedRenderFrame) {
+      // Nothing was drawn since the last sample, so there is nothing new to
+      // judge the render scale by.
+      return;
+    }
+    _governorFedRenderFrame = renderedFrames;
+    final dtSeconds = _governorPendingDt;
+    _governorPendingDt = 0.0;
+    if (dtSeconds <= 0.0) {
+      return;
+    }
+
+    final double observedMs;
+    if (renderTelemetry.platformTimingSampleCount > 0) {
+      observedMs = renderTelemetry.smoothedTotalSpanMs;
+    } else {
+      final renderMicros = collectRenderTelemetry
+          ? renderTelemetry.renderMicros
+          : _governorRenderMicros;
+      observedMs = (updateElapsedMicros + renderMicros) / 1000.0;
+    }
+    final activeHz = math.max(1.0, activeTargetFps ?? displayRefreshRate);
+    graphics.recordFrameSample(
+      frameTimeMs: observedMs,
+      targetBudgetMs: 1000.0 / activeHz,
+      dtSeconds: dtSeconds,
+    );
   }
 
   /// Optional upper bound (in seconds) above which incoming frame deltas
@@ -803,11 +852,14 @@ class FlameGame<W extends World>({
   /// Incrementally pre-warms all GPU shaders, textures, and vertex pipelines
   /// registered in [queue] before gameplay begins (skipped automatically when
   /// [isHotReloadShadow] is `true`).
+  ///
+  /// See [RenderWarmupQueue.warmupAll] for [awaitRasterization].
   Future<void> warmupRenderPipelines(
     RenderWarmupQueue queue, {
     int surfaceSize = 16,
     int tasksPerYield = 4,
     void Function(double progress)? onProgress,
+    bool awaitRasterization = false,
   }) {
     if (isHotReloadShadow) {
       return Future<void>.value();
@@ -816,6 +868,7 @@ class FlameGame<W extends World>({
       surfaceSize: surfaceSize,
       tasksPerYield: tasksPerYield,
       onProgress: onProgress,
+      awaitRasterization: awaitRasterization,
     );
   }
 

@@ -208,7 +208,14 @@ class DynamicQualityGovernor({
 
   /// Current dynamic resolution multiplier in
   /// `[minRenderScale .. maxRenderScale]`.
-  double get dynamicRenderScaleMultiplier => _renderScaleMultiplier;
+  double get dynamicRenderScaleMultiplier =>
+      _clampedToBounds(_renderScaleMultiplier);
+
+  /// Keeps [value] inside `[minRenderScale .. maxRenderScale]`, which may
+  /// have been changed after the multiplier was last adjusted.
+  double _clampedToBounds(double value) => minRenderScale <= maxRenderScale
+      ? value.clamp(minRenderScale, maxRenderScale)
+      : value;
 
   /// Current dynamic particle density multiplier in
   /// `[minParticleScale .. 1.0]`.
@@ -242,6 +249,7 @@ class DynamicQualityGovernor({
     if (_cooldownRemaining > 0.0) {
       _cooldownRemaining = math.max(0.0, _cooldownRemaining - dtSeconds);
     }
+    _renderScaleMultiplier = _clampedToBounds(_renderScaleMultiplier);
 
     final ratio = frameTimeMs / targetBudgetMs;
     if (ratio > highWatermarkRatio) {

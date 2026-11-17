@@ -7,6 +7,7 @@ import 'package:flame/game.dart' hide Matrix4;
 import 'package:flame/src/game/game_loop.dart';
 import 'package:flame/src/game/proxy_canvas.dart';
 import 'package:flame/src/game/widget_components.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart' hide WidgetBuilder;
@@ -74,6 +75,8 @@ class GameRenderBox(
 
     if (attached) {
       _attachGame(owner!);
+      // The semantics nodes of the previous game must not outlive it.
+      markNeedsSemanticsUpdate();
     }
   }
 
@@ -177,6 +180,7 @@ class GameRenderBox(
       gameLoopCallback,
       minFrameIntervalGetter: () => game.minFrameIntervalSeconds,
       vsyncDivisorGetter: () => game.effectiveVsyncDivisor,
+      displayRefreshRateGetter: () => game.displayRefreshRate,
     );
 
     if (!game.isPaused) {
@@ -203,6 +207,17 @@ class GameRenderBox(
   @override
   void handleEvent(PointerEvent event, BoxHitTestEntry entry) {
     game.recordRawPointerEvent(event);
+    // Every pointer interaction that reaches the game counts as user activity
+    // for the idle throttle. Reporting it here, instead of from a listener
+    // widget, makes it independent of when `Game.idleFps` was assigned.
+    if (event is PointerDownEvent ||
+        event is PointerMoveEvent ||
+        event is PointerHoverEvent ||
+        event is PointerSignalEvent ||
+        event is PointerPanZoomStartEvent ||
+        event is PointerPanZoomUpdateEvent) {
+      game.notifyActivity();
+    }
     super.handleEvent(event, entry);
   }
 
@@ -232,9 +247,13 @@ class GameRenderBox(
     if (game.shouldRenderThisTick(dt)) {
       markNeedsPaint();
     }
+    // Which components are part of the accessibility tree, and where, depends
+    // on their transforms and on their visibility (`HasVisibility`,
+    // `cameraMask`), which is reported through `Game.visualMutationCount`.
     if ((SemanticsComponent.mountedCount > 0 ||
             _semanticsNodesByComponent.isNotEmpty) &&
-        Transform2D.globalMutationCount != _lastSemanticsTxCount) {
+        (Transform2D.globalMutationCount != _lastSemanticsTxCount ||
+            Game.visualMutationCount != _lastSemanticsVisualCount)) {
       markNeedsSemanticsUpdate();
     }
   }
@@ -532,6 +551,7 @@ class GameRenderBox(
   final Map<Component, SemanticsNode> _semanticsNodesByComponent =
       <Component, SemanticsNode>{};
   int _lastSemanticsTxCount = -1;
+  int _lastSemanticsVisualCount = -1;
   static final Vector2 _semPtScratch = Vector2.zero();
 
   @override
@@ -550,6 +570,7 @@ class GameRenderBox(
   ) {
     final g = _game;
     _lastSemanticsTxCount = Transform2D.globalMutationCount;
+    _lastSemanticsVisualCount = Game.visualMutationCount;
     if (g is! FlameGame || !hasSize) {
       _semanticsNodesByComponent.clear();
       node.updateWith(

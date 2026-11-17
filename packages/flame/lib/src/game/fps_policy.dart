@@ -134,19 +134,32 @@ class const FpsPolicy._({
       case FpsPreset.locked60:
       case FpsPreset.custom:
         final target = customHz;
-        if (!preferHarmonicDivisor || target == null || target <= 0.0) {
+        if (!preferHarmonicDivisor || target == null) {
           return null;
         }
-        if (target >= safeDisplayHz * 0.97) {
-          return 1;
-        }
-        final ratio = safeDisplayHz / target;
-        final nearest = math.max(1, ratio.round());
-        if ((ratio - nearest).abs() / nearest <= 0.06) {
-          return nearest;
-        }
-        return null;
+        return harmonicDivisor(target, displayHz);
     }
+  }
+
+  /// Returns the integer `N` for which a [targetHz] cap runs on every `N`th
+  /// refresh of a [displayHz] display, or `null` when [targetHz] is not within
+  /// `6%` of `displayHz / N` (for example `60 FPS` on a `144 Hz` panel).
+  ///
+  /// A target at or above the display rate resolves to `1`.
+  static int? harmonicDivisor(double targetHz, double displayHz) {
+    if (targetHz <= 0.0) {
+      return null;
+    }
+    final safeDisplayHz = displayHz > 0.0 ? displayHz : 60.0;
+    if (targetHz >= safeDisplayHz * 0.97) {
+      return 1;
+    }
+    final ratio = safeDisplayHz / targetHz;
+    final nearest = math.max(1, ratio.round());
+    if ((ratio - nearest).abs() / nearest <= 0.06) {
+      return nearest;
+    }
+    return null;
   }
 
   @override
