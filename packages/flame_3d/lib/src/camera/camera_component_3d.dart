@@ -54,7 +54,7 @@ enum CameraProjection() {
 ///
 /// A [customViewMatrix] or [customProjectionMatrix] (or both) supports any
 /// affine view and any projection into the clip space above: oblique,
-/// dimetric, off-centre, or mirrored ones that no look-at camera produces.
+/// dimetric, off-center, or mirrored ones that no look-at camera produces.
 /// The cached matrices, [frustum], [eyePosition], [version] and the
 /// conversions between viewport points and world space all follow them.
 ///
@@ -341,7 +341,7 @@ class CameraComponent3D({
   /// The world-space position of the view-space origin: [position] for the
   /// look-at view, or derived from the [customViewMatrix].
   ///
-  /// It is the centre of projection of a perspective projection; [near] and
+  /// It is the center of projection of a perspective projection; [near] and
   /// [far] are measured from it along the view direction.
   Vector3 get eyePosition {
     _sync();
@@ -371,7 +371,7 @@ class CameraComponent3D({
   /// unless the viewport scales its content), with (0, 0) at its top-left
   /// corner and `viewport.virtualSize` at its bottom-right corner. [World3D]
   /// draws the scene over exactly that area while the [viewfinder] keeps its
-  /// default framing (centre anchor at the origin, zoom 1, no rotation). For
+  /// default framing (center anchor at the origin, zoom 1, no rotation). For
   /// a viewport that fills the game this is the `canvasPosition` of a Flame
   /// pointer event; otherwise convert it with
   /// `viewport.globalToLocal(event.canvasPosition)`.

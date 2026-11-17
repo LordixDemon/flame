@@ -26,7 +26,7 @@ void main() {
 
       for (final distance in [near, far]) {
         final expected = distance == near ? 0.0 : 1.0;
-        // Centre and the four corners of the plane at that distance.
+        // Center and the four corners of the plane at that distance.
         final halfHeight = distance * tanHalf;
         final halfWidth = halfHeight * 1.5;
         for (final (sx, sy) in [(0, 0), (-1, -1), (1, -1), (1, 1), (-1, 1)]) {

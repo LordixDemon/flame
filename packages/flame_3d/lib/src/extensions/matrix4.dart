@@ -83,7 +83,7 @@ extension Matrix4Extension on Matrix4 {
   /// [zFar].
   ///
   /// The depth maps [zNear] to 0 and [zFar] to 1 (`zNear < zFar`). An
-  /// off-centre box shifts the picture without moving the camera, which keeps
+  /// off-center box shifts the picture without moving the camera, which keeps
   /// the view matrix (and so the lighting and depth order) unchanged.
   void setAsOrthographicOffCenter(
     double left,
