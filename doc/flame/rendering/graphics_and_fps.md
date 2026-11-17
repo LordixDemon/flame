@@ -7,14 +7,17 @@ designed for 60–240 Hz mobile, desktop, and web displays.
 
 ## Live HiDPI `DisplayMetrics`
 
-`Game.displayMetrics` exposes a live `DisplayMetrics` snapshot synchronized automatically by
-`GameRenderBox` on mount, layout, and `WidgetsBindingObserver.didChangeMetrics` (including dragging
-a window between a 1x external monitor and a 2x/3x Retina display):
+`Game.displayMetrics` returns a `DisplayMetrics` snapshot (`devicePixelRatio`, `physicalSize`,
+`logicalSize`, `refreshRate`) of the values below, which `GameRenderBox` synchronizes automatically
+when it is attached, when the `GameWidget` is rebuilt, and on
+`WidgetsBindingObserver.didChangeMetrics` (including dragging a window between a 1x external monitor
+and a 2x/3x Retina display):
 
 - `Game.rawDevicePixelRatio` (`double`) — physical pixels per logical pixel (`FlutterView.devicePixelRatio`).
 - `Game.devicePixelRatio` (`double`) — effective pixel ratio capped by `maxDevicePixelRatio` and
   `GraphicsProfile.maxDevicePixelRatio`.
-- `Game.physicalCanvasSize` (`Vector2`) — current canvas dimensions in physical pixels.
+- `Game.physicalCanvasSize` (`Vector2`) — current canvas dimensions in physical pixels
+  (`DisplayMetrics.physicalSize`).
 - `Game.displayRefreshRate` (`double`) — detected display refresh rate in Hz (`Display.refreshRate`,
   e.g. `60`, `120`, `144`, `240`).
 
@@ -96,6 +99,12 @@ game.qualityGovernor
   ..cooldownSeconds = 1.0;
 ```
 
+The governor takes one sample per rendered frame: the smoothed hardware `FrameTiming` span when
+the platform reports it, otherwise the CPU time of `update` plus `render`. It compares the sample
+with the frame budget of the active framerate (`Game.activeTargetFps`, or the display refresh rate
+when uncapped). The idle throttle (`idleFps`) does not enlarge that budget, and ticks that do not
+render are not sampled, so the render scale holds still while the game is idle.
+
 Components automatically adapt to `GraphicsProfile`:
 - Every `Component` and `PositionComponent` exposes `GraphicsQualityTier? minQualityTier` — when
   `game.graphics.tier` is below `minQualityTier`, both `updateTree` and `renderTree` skip it.
@@ -138,7 +147,7 @@ a **zero-`toImageSync` direct bypass** (`bypassedLastFrame == true`) onto the ca
 
 - **`FlameGame.resourceBudget` (`SceneResourceBudget`)**: Tracks offscreen RGBA8 GPU `ui.Image` byte
   footprints (`width * height * 4`), automatically evicting least-recently-used `Snapshot` caches
-  via `trimToBudget()` when `totalBytes > maxBudgetBytes` (default `96 MiB`).
+  via `trimToBudget()` when `totalEstimatedBytes > maxBudgetBytes` (default `96 MiB`).
 - **`Game.backgroundColorValue` (`backgroundColorListenable`)**: Dynamically updates `GameWidget`'s
   backdrop via an isolated `ValueListenableBuilder<Color?>` + `ColoredBox`, causing **`0`
   `GameWidgetState` rebuilds**.
@@ -148,18 +157,27 @@ a **zero-`toImageSync` direct bypass** (`bypassedLastFrame == true`) onto the ca
 
 - **`FpsPolicy` & Exact VSync Divisors**: Set `game.fpsPolicy` to `FpsPolicy.powerSave30()`,
   `FpsPolicy.locked60()`, `FpsPolicy.harmonicHalf()`, `FpsPolicy.nativeDisplay()`,
-  `FpsPolicy.uncapped()`, or `FpsPolicy.custom(fps)`. When the target FPS divides
-  `displayRefreshRate` evenly (e.g. `60` FPS on `120 Hz` -> divisor `2`; `72` FPS on `144 Hz` via
-  `harmonicHalf()` -> divisor `2`; `60` FPS on `240 Hz` -> divisor `4`), `GameLoop` uses exact
-  integer VSync beat counting with zero accumulator drift.
+  `FpsPolicy.uncapped()`, or `FpsPolicy.custom(fps)`. A cap is always measured in elapsed time, so
+  it keeps its rate when frames arrive slower or faster than the reported `displayRefreshRate`.
+  When the target FPS divides `displayRefreshRate` evenly (e.g. `60` FPS on `120 Hz` -> divisor
+  `2`; `72` FPS on `144 Hz` via `harmonicHalf()` -> divisor `2`; `60` FPS on `240 Hz` -> divisor
+  `4`; see `FpsPolicy.harmonicDivisor`), the frame interval is snapped to that whole number of
+  display periods and `GameLoop` locks onto every Nth refresh without drift, tolerating a quarter
+  of a display period of timestamp jitter. A cap that does not divide the refresh rate (`60` FPS
+  on `90` or `144 Hz`, `120` FPS on `144 Hz`) is met on average: the time by which a frame
+  overshoots its interval is carried over to the next one.
 - **Decoupled `renderTargetFps` & `renderInterpolationAlpha`**: Run `updateTree` at full rate (or
   deterministic `fixedTimeStep`) while capping GPU rasterization via `game.renderTargetFps = 30.0`,
   exposing `renderInterpolationAlpha` (`0.0..1.0`), `executedUpdateTicks`, `executedRenderFrames`,
-  and `skippedRenderFrames`.
+  and `skippedRenderFrames`. A render rate that does not divide the update rate is met on average.
 - **Dirty-Scene Rendering (`IdleRenderMode`)**: Set
   `game.idleRenderMode = IdleRenderMode.onDemandWhenIdle` (or `IdleRenderMode.onDemand`) to skip
   `RenderBox.markNeedsPaint` (`skippedCleanPaints`) whenever transforms, structure, camera, effects,
-  and particles are stationary, or call `game.markSceneDirty()` for custom procedural changes.
+  and particles are stationary. `onDemandWhenIdle` only does so while the idle throttle is engaged,
+  which requires `idleFps` to be set. Stock components report the changes of their picture that do
+  not move them (`sprite`, the `current` sprite or animation, animation frames, parallax scrolling,
+  typed text, `paint`) through `Component.markSubtreeDirty()` and `Game.notifyVisualMutation()`;
+  a component that draws by itself does the same, or calls `game.markSceneDirty()`.
 
 
 ## Hardware `FrameTiming` Telemetry & `FrameBudgetScheduler`
