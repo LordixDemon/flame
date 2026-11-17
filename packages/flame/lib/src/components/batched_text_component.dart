@@ -106,7 +106,7 @@ class BatchedTextComponent({
   void _recomputeSize() {
     size.setValues(
       atlas.measureWidth(_text, letterSpacing: _letterSpacing),
-      atlas.lineHeight,
+      atlas.lineHeight * atlas.lineCountOf(_text),
     );
   }
 

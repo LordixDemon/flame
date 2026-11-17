@@ -313,7 +313,9 @@ class RichBatchedTextComponent({
     size.setValues(maxW, totalH);
   }
 
-  void _ensureIconCapacity(int needed) {
+  /// Grows the icon buffers to hold [needed] icons, keeping the [used] icons
+  /// already buffered in the current render pass.
+  void _ensureIconCapacity(int needed, int used) {
     if (_iconColors.length >= needed) {
       return;
     }
@@ -321,9 +323,10 @@ class RichBatchedTextComponent({
     while (cap < needed) {
       cap *= 2;
     }
-    _iconTransforms = Float32List(cap * 4);
-    _iconRects = Float32List(cap * 4);
-    _iconColors = Int32List(cap);
+    _iconTransforms = Float32List(cap * 4)
+      ..setRange(0, used * 4, _iconTransforms);
+    _iconRects = Float32List(cap * 4)..setRange(0, used * 4, _iconRects);
+    _iconColors = Int32List(cap)..setRange(0, used, _iconColors);
   }
 
   @override
@@ -407,7 +410,7 @@ class RichBatchedTextComponent({
             iconCount = 0;
           }
           sharedIconAtlas = icon.image;
-          _ensureIconCapacity(iconCount + 1);
+          _ensureIconCapacity(iconCount + 1, iconCount);
           final slot = iconCount++;
           final sx =
               (icon.logicalWidth * tok.scale) /

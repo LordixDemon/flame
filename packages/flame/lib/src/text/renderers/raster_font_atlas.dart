@@ -257,16 +257,72 @@ class RasterFontAtlas._(
   RasterGlyphMetrics? metricsForRune(int rune) =>
       _glyphs[rune] ?? _glyphs[0x3F];
 
-  /// Measures the logical single-line width of [text] with zero allocations.
+  /// Measures the logical width of [text] with zero allocations.
+  ///
+  /// A line feed (`\n`) starts a new line, as it does in
+  /// [GlyphBatchRenderer.addText]; the result is the width of the widest line.
   double measureWidth(String text, {double letterSpacing = 0.0}) {
     if (text.isEmpty) {
       return 0.0;
     }
+    var widest = 0.0;
+    var lineStart = 0;
+    while (true) {
+      final lineEnd = _lineEnd(text, lineStart);
+      final width = _measureRange(text, lineStart, lineEnd, letterSpacing);
+      if (width > widest) {
+        widest = width;
+      }
+      if (lineEnd >= text.length) {
+        return widest;
+      }
+      lineStart = lineEnd + 1;
+    }
+  }
+
+  /// Number of lines [text] occupies: one more than its line feeds.
+  int lineCountOf(String text) {
+    var lines = 1;
+    for (var i = 0; i < text.length; i++) {
+      if (text.codeUnitAt(i) == 0x0A) {
+        lines++;
+      }
+    }
+    return lines;
+  }
+
+  /// Index of the line feed that ends the line starting at [start], or the
+  /// length of [text] for its last line.
+  static int _lineEnd(String text, int start) {
+    final lf = text.indexOf('\n', start);
+    return lf < 0 ? text.length : lf;
+  }
+
+  /// Reads the Unicode code point at code unit [index] of [text], joining a
+  /// surrogate pair into one rune.
+  static int _runeAt(String text, int index, int end) {
+    final cu = text.codeUnitAt(index);
+    if (cu >= 0xD800 && cu <= 0xDBFF && index + 1 < end) {
+      final next = text.codeUnitAt(index + 1);
+      if (next >= 0xDC00 && next <= 0xDFFF) {
+        return 0x10000 + ((cu - 0xD800) << 10) + (next - 0xDC00);
+      }
+    }
+    return cu;
+  }
+
+  /// Width of the single line made of the code units `[start, end)` of
+  /// [text]. Carriage returns take no space.
+  double _measureRange(String text, int start, int end, double letterSpacing) {
     var width = 0.0;
     var count = 0;
-    for (final rune in text.runes) {
-      if (rune == 0x0A) {
-        break;
+    for (var i = start; i < end; i++) {
+      final rune = _runeAt(text, i, end);
+      if (rune > 0xFFFF) {
+        i++;
+      }
+      if (rune == 0x0D) {
+        continue;
       }
       final m = metricsForRune(rune);
       width += m?.advance ?? spaceAdvance;
@@ -334,6 +390,11 @@ class GlyphBatchRenderer({
 
   /// Appends [text] using [atlas] anchored at `(x, y)` with optional [anchor],
   /// uniform [scale], [rotation] (radians), [color] tint, and [letterSpacing].
+  ///
+  /// A line feed (`\n`) starts a new line one [RasterFontAtlas.lineHeight]
+  /// below; a carriage return is ignored. [anchor] positions the whole block
+  /// vertically and each line horizontally by its own width, so
+  /// `Anchor.center` centres every line.
   void addText(
     RasterFontAtlas atlas,
     String text, {
@@ -350,11 +411,8 @@ class GlyphBatchRenderer({
     }
     _ensureCapacity(_glyphCount + text.length);
 
-    final totalW = (anchor.x == 0.0)
-        ? 0.0
-        : atlas.measureWidth(text, letterSpacing: letterSpacing);
-    final totalH = atlas.lineHeight;
-    final startLocalX = -anchor.x * totalW;
+    final lineHeight = atlas.lineHeight;
+    final totalH = lineHeight * atlas.lineCountOf(text);
     final startLocalY = -anchor.y * totalH;
 
     final invPixelRatio = 1.0 / atlas.pixelRatio;
@@ -365,38 +423,61 @@ class GlyphBatchRenderer({
     final ssin = effScale * sinA;
     final argb = color.toARGB32();
 
-    var penX = startLocalX;
-    for (final rune in text.runes) {
-      if (rune == 0x20) {
-        penX += atlas.spaceAdvance + letterSpacing;
-        continue;
+    var lineStart = 0;
+    var lineIndex = 0;
+    while (true) {
+      final lineEnd = RasterFontAtlas._lineEnd(text, lineStart);
+      final lineW = (anchor.x == 0.0)
+          ? 0.0
+          : atlas._measureRange(text, lineStart, lineEnd, letterSpacing);
+      final lineLocalY = startLocalY + lineIndex * lineHeight;
+
+      var penX = -anchor.x * lineW;
+      for (var i = lineStart; i < lineEnd; i++) {
+        final rune = RasterFontAtlas._runeAt(text, i, lineEnd);
+        if (rune > 0xFFFF) {
+          i++;
+        }
+        if (rune == 0x0D) {
+          continue;
+        }
+        if (rune == 0x20) {
+          penX += atlas.spaceAdvance + letterSpacing;
+          continue;
+        }
+        final m = atlas.metricsForRune(rune);
+        if (m == null) {
+          penX += atlas.spaceAdvance + letterSpacing;
+          continue;
+        }
+        final gx = (penX + m.drawOffsetX) * scale;
+        final gy = (lineLocalY + m.drawOffsetY) * scale;
+        final tx = x + gx * cosA - gy * sinA;
+        final ty = y + gx * sinA + gy * cosA;
+
+        final slot = _glyphCount++;
+        _ensureCapacity(_glyphCount + 1);
+        final t4 = slot * 4;
+        _transforms[t4] = scos;
+        _transforms[t4 + 1] = ssin;
+        _transforms[t4 + 2] = tx;
+        _transforms[t4 + 3] = ty;
+
+        final r = m.atlasRect;
+        _rects[t4] = r.left;
+        _rects[t4 + 1] = r.top;
+        _rects[t4 + 2] = r.right;
+        _rects[t4 + 3] = r.bottom;
+        _colors[slot] = argb;
+
+        penX += m.advance + letterSpacing;
       }
-      final m = atlas.metricsForRune(rune);
-      if (m == null) {
-        penX += atlas.spaceAdvance + letterSpacing;
-        continue;
+
+      if (lineEnd >= text.length) {
+        break;
       }
-      final gx = (penX + m.drawOffsetX) * scale;
-      final gy = (startLocalY + m.drawOffsetY) * scale;
-      final tx = x + gx * cosA - gy * sinA;
-      final ty = y + gx * sinA + gy * cosA;
-
-      final slot = _glyphCount++;
-      _ensureCapacity(_glyphCount + 1);
-      final t4 = slot * 4;
-      _transforms[t4] = scos;
-      _transforms[t4 + 1] = ssin;
-      _transforms[t4 + 2] = tx;
-      _transforms[t4 + 3] = ty;
-
-      final r = m.atlasRect;
-      _rects[t4] = r.left;
-      _rects[t4 + 1] = r.top;
-      _rects[t4 + 2] = r.right;
-      _rects[t4 + 3] = r.bottom;
-      _colors[slot] = argb;
-
-      penX += m.advance + letterSpacing;
+      lineStart = lineEnd + 1;
+      lineIndex++;
     }
   }
 

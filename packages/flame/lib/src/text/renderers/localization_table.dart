@@ -20,6 +20,18 @@ typedef PluralRuleResolver = PluralCategory Function(int n);
 /// - `{name}` -> parameter value
 /// - `{plural:count|one=# монета|few=# монеты|many=# монет|other=# монеты}`
 /// - `{gender:heroSex|m=Готов|f=Готова|other=Готово}`
+///
+/// The forms of a `plural` or `gender` directive may themselves contain
+/// `{name}` parameters and further directives, for example
+/// `{plural:n|one={who} has # coin|other={who} has # coins}`; `#` stands for
+/// the count of the innermost enclosing `plural`.
+///
+/// A template is always pluralized by the rules of the language it is written
+/// in: when [tr] falls back to [fallbackLocale] for a missing key, the
+/// fallback locale's plural rules apply, not those of the active locale.
+///
+/// A count that is not a whole number takes the `other` form (in French the
+/// `one` form below `2`) and is printed as passed, as CLDR prescribes.
 class LocalizationTable({
   String initialLocale = 'en',
   this.fallbackLocale = 'en',
@@ -65,15 +77,18 @@ class LocalizationTable({
     PluralRuleResolver resolver,
   ) {
     _pluralResolvers[languagePrefix.toLowerCase()] = resolver;
+    _version++;
   }
+
+  static final RegExp _localeSeparator = RegExp('[-_]');
+
+  static String _languageOf(String localeCode) =>
+      localeCode.split(_localeSeparator).first.toLowerCase();
 
   /// Resolves the [PluralCategory] for integer [count] under [localeCode].
   PluralCategory resolvePluralCategory(int count, [String? localeCode]) {
     final n = count.abs();
-    final lang = (localeCode ?? _locale)
-        .split(RegExp('[-_]'))
-        .first
-        .toLowerCase();
+    final lang = _languageOf(localeCode ?? _locale);
 
     final custom = _pluralResolvers[lang];
     if (custom != null) {
@@ -116,18 +131,43 @@ class LocalizationTable({
     }
   }
 
+  /// The category of a count that is not a whole number: `other`, except in
+  /// French, where everything below `2` is `one`.
+  PluralCategory _resolveFractionCategory(double value, String? localeCode) {
+    final lang = _languageOf(localeCode ?? _locale);
+    if (lang == 'fr' &&
+        !_pluralResolvers.containsKey(lang) &&
+        value.abs() < 2) {
+      return PluralCategory.one;
+    }
+    return PluralCategory.other;
+  }
+
   /// Formats translation [key] using [params] under the active [locale]
   /// (falling back to [fallbackLocale], or returning `key` if missing).
+  ///
+  /// A template found in [fallbackLocale] is formatted with that locale's
+  /// plural rules.
   String tr(
     String key, [
     Map<String, Object?> params = const <String, Object?>{},
   ]) {
-    final template =
-        _bundles[_locale]?[key] ?? _bundles[fallbackLocale]?[key] ?? key;
-    return formatTemplate(template, params, localeCode: _locale);
+    final own = _bundles[_locale]?[key];
+    if (own != null) {
+      return formatTemplate(own, params, localeCode: _locale);
+    }
+    final fallback = _bundles[fallbackLocale]?[key];
+    if (fallback != null) {
+      return formatTemplate(fallback, params, localeCode: fallbackLocale);
+    }
+    return formatTemplate(key, params, localeCode: _locale);
   }
 
-  /// Formats an arbitrary template string against [params].
+  /// Formats an arbitrary template string against [params], using the plural
+  /// rules of [localeCode] (the active [locale] by default).
+  ///
+  /// A `{` without a matching `}` is ordinary text, and so is a `{name}` whose
+  /// parameter is missing.
   String formatTemplate(
     String template,
     Map<String, Object?> params, {
@@ -146,17 +186,18 @@ class LocalizationTable({
         break;
       }
       sb.write(template.substring(i, open));
-      final close = template.indexOf('}', open + 1);
+      final close = _matchingBrace(template, open);
       if (close < 0) {
-        sb.write(template.substring(open));
-        break;
+        sb.write('{');
+        i = open + 1;
+        continue;
       }
 
       final expr = template.substring(open + 1, close);
       if (expr.startsWith('plural:')) {
         sb.write(_evalPlural(expr.substring(7), params, localeCode));
       } else if (expr.startsWith('gender:')) {
-        sb.write(_evalGender(expr.substring(7), params));
+        sb.write(_evalGender(expr.substring(7), params, localeCode));
       } else {
         final v = params[expr];
         sb.write(v?.toString() ?? '{$expr}');
@@ -166,52 +207,80 @@ class LocalizationTable({
     return sb.toString();
   }
 
-  String _evalPlural(
-    String body,
-    Map<String, Object?> params,
-    String? localeCode,
-  ) {
-    final parts = body.split('|');
-    if (parts.isEmpty) {
-      return '';
-    }
-    final varName = parts[0].trim();
-    final rawVal = params[varName];
-    final count = rawVal is num
-        ? rawVal.round()
-        : (int.tryParse(rawVal?.toString() ?? '') ?? 0);
-    final cat = resolvePluralCategory(count, localeCode);
+  static const int _openBrace = 0x7B;
+  static const int _closeBrace = 0x7D;
+  static const int _pipe = 0x7C;
+  static const int _hash = 0x23;
 
-    String? matched;
-    String? otherFallback;
-    for (var i = 1; i < parts.length; i++) {
-      final eq = parts[i].indexOf('=');
-      if (eq <= 0) {
-        continue;
-      }
-      final k = parts[i].substring(0, eq).trim();
-      final v = parts[i].substring(eq + 1);
-      if (k == cat.name) {
-        matched = v;
-        break;
-      }
-      if (k == 'other') {
-        otherFallback = v;
+  /// Index of the `}` that closes the `{` at [open], or `-1` if there is none.
+  static int _matchingBrace(String text, int open) {
+    var depth = 0;
+    for (var i = open + 1; i < text.length; i++) {
+      final c = text.codeUnitAt(i);
+      if (c == _openBrace) {
+        depth++;
+      } else if (c == _closeBrace) {
+        if (depth == 0) {
+          return i;
+        }
+        depth--;
       }
     }
-    final chosen = matched ?? otherFallback ?? '';
-    return chosen.replaceAll('#', count.toString());
+    return -1;
   }
 
-  String _evalGender(String body, Map<String, Object?> params) {
-    final parts = body.split('|');
-    if (parts.isEmpty) {
-      return '';
+  /// Splits a directive body at the `|` separators that are not inside a
+  /// nested `{...}`.
+  static List<String> _splitForms(String body) {
+    final parts = <String>[];
+    var depth = 0;
+    var start = 0;
+    for (var i = 0; i < body.length; i++) {
+      final c = body.codeUnitAt(i);
+      if (c == _openBrace) {
+        depth++;
+      } else if (c == _closeBrace) {
+        if (depth > 0) {
+          depth--;
+        }
+      } else if (c == _pipe && depth == 0) {
+        parts.add(body.substring(start, i));
+        start = i + 1;
+      }
     }
-    final varName = parts[0].trim();
-    final genderVal = (params[varName]?.toString() ?? 'other').toLowerCase();
+    parts.add(body.substring(start));
+    return parts;
+  }
 
-    String? matched;
+  /// Replaces the `#` signs of [form] that are not inside a nested `{...}`
+  /// (those belong to a nested directive) with [shown].
+  static String _substituteCount(String form, String shown) {
+    if (!form.contains('#')) {
+      return form;
+    }
+    final sb = StringBuffer();
+    var depth = 0;
+    for (var i = 0; i < form.length; i++) {
+      final c = form.codeUnitAt(i);
+      if (c == _openBrace) {
+        depth++;
+      } else if (c == _closeBrace) {
+        if (depth > 0) {
+          depth--;
+        }
+      }
+      if (c == _hash && depth == 0) {
+        sb.write(shown);
+      } else {
+        sb.writeCharCode(c);
+      }
+    }
+    return sb.toString();
+  }
+
+  /// Picks the form of [parts] (`key=text` entries after the variable name)
+  /// whose key is [wanted], falling back to the `other` form.
+  static String _pickForm(List<String> parts, String wanted) {
     String? otherFallback;
     for (var i = 1; i < parts.length; i++) {
       final eq = parts[i].indexOf('=');
@@ -220,14 +289,60 @@ class LocalizationTable({
       }
       final k = parts[i].substring(0, eq).trim().toLowerCase();
       final v = parts[i].substring(eq + 1);
-      if (k == genderVal) {
-        matched = v;
-        break;
+      if (k == wanted) {
+        return v;
       }
       if (k == 'other') {
         otherFallback = v;
       }
     }
-    return matched ?? otherFallback ?? '';
+    return otherFallback ?? '';
+  }
+
+  String _evalPlural(
+    String body,
+    Map<String, Object?> params,
+    String? localeCode,
+  ) {
+    final parts = _splitForms(body);
+    final rawVal = params[parts[0].trim()];
+    final num number;
+    if (rawVal is num) {
+      number = rawVal;
+    } else {
+      number = num.tryParse(rawVal?.toString().trim() ?? '') ?? 0;
+    }
+
+    final PluralCategory cat;
+    final String shown;
+    // Whole numbers that a double represents exactly, in either form.
+    if (number is int ||
+        (number.abs() < 9007199254740992.0 &&
+            number == number.roundToDouble())) {
+      final count = number.toInt();
+      cat = resolvePluralCategory(count, localeCode);
+      shown = count.toString();
+    } else {
+      cat = _resolveFractionCategory(number.toDouble(), localeCode);
+      shown = number.toString();
+    }
+
+    final chosen = _substituteCount(_pickForm(parts, cat.name), shown);
+    return formatTemplate(chosen, params, localeCode: localeCode);
+  }
+
+  String _evalGender(
+    String body,
+    Map<String, Object?> params,
+    String? localeCode,
+  ) {
+    final parts = _splitForms(body);
+    final genderVal = (params[parts[0].trim()]?.toString() ?? 'other')
+        .toLowerCase();
+    return formatTemplate(
+      _pickForm(parts, genderVal),
+      params,
+      localeCode: localeCode,
+    );
   }
 }

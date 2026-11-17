@@ -41,6 +41,13 @@ class _DynamicAtlasPage(this.sizePx) {
 /// rasterizes unseen Unicode codepoints (Latin, Cyrillic, CJK, symbols, emoji,
 /// multiplayer nicknames) **on demand** without invalidating or moving the
 /// `(pageIndex, atlasRect)` of any previously baked glyph.
+///
+/// Every glyph cell is padded by [paddingLogical], the outline and the reach
+/// of the style's shadows, so that neither outlines nor shadows bleed into
+/// neighbouring cells.
+///
+/// Call [dispose] when the atlas is no longer needed. A disposed atlas draws
+/// nothing and cannot bake further glyphs.
 class DynamicFontAtlas({
   required this.style,
   this.pageSizePx = 512,
@@ -66,6 +73,19 @@ class DynamicFontAtlas({
               ..color = outlineColor,
           )
         : null;
+
+    var shadowPad = 0.0;
+    final shadows = _fillStyle.shadows;
+    if (shadows != null) {
+      for (final s in shadows) {
+        final reach =
+            math.max(s.offset.dx.abs(), s.offset.dy.abs()) + s.blurRadius * 2.0;
+        if (reach > shadowPad) {
+          shadowPad = reach;
+        }
+      }
+    }
+    _cellPadLogical = outlineWidth * 0.6 + shadowPad + paddingLogical;
 
     _painter
       ..text = TextSpan(text: 'Mg', style: _fillStyle)
@@ -100,6 +120,14 @@ class DynamicFontAtlas({
   late final double _lineHeight;
   late final double _baseline;
   late final double _spaceAdvance;
+
+  /// Margin around every glyph inside its atlas cell, in logical pixels.
+  late final double _cellPadLogical;
+
+  bool _disposed = false;
+
+  /// Whether [dispose] has been called on this atlas.
+  bool get isDisposed => _disposed;
 
   final TextPainter _painter = TextPainter(textDirection: TextDirection.ltr);
   final Map<int, DynamicGlyphEntry> _glyphs = <int, DynamicGlyphEntry>{};
@@ -140,6 +168,10 @@ class DynamicFontAtlas({
   void ensureGlyphsForText(String text) {
     List<int>? missing;
     for (final rune in text.runes) {
+      if (rune == 0x0A || rune == 0x0D) {
+        // Line breaks are layout, not glyphs.
+        continue;
+      }
       if (!_glyphs.containsKey(rune)) {
         missing ??= <int>[];
         missing.add(rune);
@@ -152,7 +184,12 @@ class DynamicFontAtlas({
 
   /// Batch-bakes any unseen runes in [runes]. Previously baked runes keep their
   /// exact `(pageIndex, atlasRect)` untouched.
+  ///
+  /// Throws a [StateError] if the atlas has been disposed.
   void ensureGlyphs(Iterable<int> runes) {
+    if (_disposed) {
+      throw StateError('Cannot bake glyphs into a disposed DynamicFontAtlas');
+    }
     final uniqueMissing = <int>{};
     for (final r in runes) {
       if (!_glyphs.containsKey(r)) {
@@ -163,7 +200,7 @@ class DynamicFontAtlas({
       return;
     }
 
-    final padLogical = outlineWidth * 0.6 + paddingLogical;
+    final padLogical = _cellPadLogical;
     final pendingByPage =
         <int, List<({int rune, String str, int pxX, int pxY, double padPx})>>{};
 
@@ -289,8 +326,12 @@ class DynamicFontAtlas({
     return (pageIdx, x, y);
   }
 
-  /// Renders single-line [text] at `(x, y)` using minimal per-page
-  /// `Canvas.drawRawAtlas` calls (automatically baking any unseen runes).
+  /// Renders [text] at `(x, y)` using minimal per-page `Canvas.drawRawAtlas`
+  /// calls (automatically baking any unseen runes) and returns the number of
+  /// calls issued.
+  ///
+  /// A line feed (`\n`) starts a new line one [lineHeight] below; a carriage
+  /// return is ignored. A disposed atlas draws nothing.
   int drawText(
     ui.Canvas canvas,
     String text, {
@@ -300,7 +341,7 @@ class DynamicFontAtlas({
     double scale = 1.0,
     double letterSpacing = 0.0,
   }) {
-    if (text.isEmpty) {
+    if (text.isEmpty || _disposed) {
       return 0;
     }
     ensureGlyphsForText(text);
@@ -312,7 +353,16 @@ class DynamicFontAtlas({
     final argb = color.toARGB32();
 
     var cursorX = x;
+    var lineY = y;
     for (final rune in text.runes) {
+      if (rune == 0x0A) {
+        cursorX = x;
+        lineY += _lineHeight * scale;
+        continue;
+      }
+      if (rune == 0x0D) {
+        continue;
+      }
       if (rune == 0x20) {
         cursorX += (_spaceAdvance + letterSpacing) * scale;
         continue;
@@ -326,7 +376,7 @@ class DynamicFontAtlas({
         invScale,
         0.0,
         cursorX + g.drawOffsetX * scale,
-        y + g.drawOffsetY * scale,
+        lineY + g.drawOffsetY * scale,
       ]);
       rx.addAll(<double>[
         g.atlasRect.left,
@@ -354,12 +404,19 @@ class DynamicFontAtlas({
     return draws;
   }
 
-  /// Disposes all GPU page images.
+  /// Disposes all GPU page images and the text painter used for baking.
+  ///
+  /// Safe to call more than once.
   void dispose() {
+    if (_disposed) {
+      return;
+    }
+    _disposed = true;
     for (var i = 0; i < _pages.length; i++) {
       _pages[i].dispose();
     }
     _pages.clear();
     _glyphs.clear();
+    _painter.dispose();
   }
 }
