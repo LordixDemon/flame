@@ -45,12 +45,16 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
 ## 3. Gameplay Architecture, Determinism & Persistence (`package:flame/components.dart`, `package:flame/math.dart`)
 
 - **`Signal<T>`, `WorldEventBus` & `HasEventBusSubscriptions`**: Typed zero-string synchronous
-  signals (`connect`, `connectOnce`) and `World.eventBus` (`emit` immediate + `enqueue` deferred
-  end-of-`World.updateTree` flush, `listenEvent` / `listenEventOnce`) with automatic subscription
-  cleanup on component removal and remounting.
+  signals (`connect`, `connectOnce`) and `World.eventBus` (`emit` immediate + `enqueue` deferred,
+  delivered at the end of the update of every mounted `World`; `listenEvent` / `listenEventOnce`).
+  An event reaches the listeners of its runtime type, also when it is passed around as a supertype
+  (the listeners of that static type receive it too). Subscriptions are cancelled when the
+  component is removed; those made before it mounts are attached again on every mount.
 - **`StateMachine<S, E>` & `StateMachineComponent<S, E>`**: Hierarchical Finite State Machine
-  (HFSM) with re-entrancy-safe Lowest Common Ancestor (LCA) `onExit`/`onEnter` traversal, guarded
-  event transitions, `elapsedInState`, and pushdown state stack (`pushState` / `popState`).
+  (HFSM) with Lowest Common Ancestor (LCA) `onExit`/`onEnter` traversal, run-to-completion
+  transitions (a transition requested from a hook is queued and runs right after the one in
+  progress), guarded event transitions, `stateElapsed`, and pushdown state stack (`pushState` /
+  `popState`).
 - **`SeededRng` & `CommandRecorder<C>`**: Deterministic 32-bit safe Xoshiro128** PRNG
   (`saveState` / `restoreState`, non-mutating `fork(label)`, weighted choice, Fisher-Yates shuffle,
   unit-circle/annulus sampling) plus tick-indexed deterministic command recording and replay.
@@ -109,8 +113,8 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
   pixels of an `ImageShader` image.
 - **`SpriteAnimationTicker` Frame Events, `AttachmentSocket2D`, `SpringBone2D`/`3D` &
   `AnimationStateTree<S>`**: Deterministic keyframe callbacks (even across large `dt` spikes),
-  named weapon/hat/VFX sockets, analytical spring-damper secondary motion, and state-driven sprite
-  animation trees with automatic one-shot return transitions.
+  named weapon/hat/VFX sockets, spring-damper secondary motion (semi-implicit Euler with a clamped
+  step), and state-driven sprite animation trees with automatic one-shot return transitions.
 - **`Light2DLayer`, `PointLight2D`, `SpotLight2D` & `ShadowOccluder2D`**: Dynamic 2D multiply +
   additive lighting layer with CPU-extruded 2D shadow volumes (segment, rectangle, and convex
   polygon occluders). A shadow covers everything behind its occluder inside the light radius, also
@@ -191,7 +195,8 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
     `PaintDecorator`) wake `IdleRenderMode.onDemand` with zero manual `markSceneDirty()` plumbing.
   - `FixedTransformInterpolation` (`on PositionComponent`) interpolates `previous -> current`
     fixed-step `position`, `scale`, and shortest-arc `angle` by `game.renderInterpolationAlpha`
-    inside `renderTree` without mutating logical simulation state (`teleportFixedState()`).
+    inside `renderTree` without mutating logical simulation state (`teleportFixedState()`), for as
+    long as the component takes part in the fixed step.
 - **Clipped Hit-Testing (`clipsChildEvents`), `ScrollContainerComponent` & `AffineMatrix2D`**:
   - `ClipComponent` overrides `clipsChildEvents => true` so pointers outside rect/circle/polygon clip
     regions never leak to hidden children.
@@ -202,7 +207,7 @@ pathfinding, 2D/3D procedural rendering, audio mixing, responsive scene layout, 
     reverts to measuring the content children.
   - `AffineMatrix2D` (`6` inline `double`s) and `PositionComponent.worldTransformMatrix` cache lazy
     ancestor-version-tracked `2x3` world transforms (`O(1)` amortized `absolutePosition`,
-    `toAbsoluteRect`, and `containsGlobalPoint`).
+    `toAbsoluteRect`, and `containsPoint`).
 - **`SemanticsComponent` Accessibility Bridge & Hardware Pointer Telemetry / OS Blur Cancel**:
   - `SemanticsComponent` + `GameRenderBox.assembleSemanticsNode` project world and HUD components
     into Flutter's `SemanticsNode` tree (`VoiceOver`, `TalkBack`, Web ARIA, `find.semantics`),

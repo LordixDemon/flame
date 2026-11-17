@@ -587,9 +587,19 @@ will be returned (though typically you would create a unique context type for ea
 `TimelineComponent` sequences synchronous actions, delays, async beats, component `Effect`s,
 `parallel` branches, and `stagger`ed cascades *without* spawning transient `TimerComponent` nodes:
 
-- `playbackRate` (`1.0`, `2.0`, etc.) dynamically scales both inline waits and active child timelines.
-- `skipToEnd()` deterministically fast-forwards all remaining beats and synchronous callbacks.
+- `playbackRate` (`1.0`, `2.0`, etc.) dynamically scales waits, tweens and timeline effects.
+- `skipToEnd()` deterministically fast-forwards the active block and every queued block: the
+  remaining `doSync` callbacks run, tweens and finite effects jump to their end state, and waits and
+  async beats receive their `onSkip` callback. Nothing new is started on the way (the task of an
+  async beat that has not begun yet is never called), and `onIdle` is reported once at the end.
 - `cancel()` increments an internal generation token so stale async continuations never fire.
+- `animate(target, effect)` drives an `Effect` without mounting it; the target is handed to the
+  effect (and to the effects inside a `SequenceEffect` or `CombinedEffect`) directly.
+- A step that fails does not stall the timeline: an error thrown by a callback, by the task of an
+  async beat (or delivered by its future) or by an effect is reported to the current `Zone` as an
+  uncaught error and the timeline continues with the next step.
+- A subclass may override `isBusy` to report work of its own; the timeline keeps ticking while it
+  returns `true`.
 
 ```dart
 final timeline = TimelineComponent();
@@ -614,9 +624,12 @@ Mix `HasListenableSubscriptions` into any `Component` or `World` to subscribe to
 `Listenable` / `ValueListenable<T>` stores (`ChangeNotifier`, `ValueNotifier`) with:
 
 - Automatic attachment in `onMount()` and guaranteed listener removal in `onRemove()` (zero leaks
-  across mount/remove cycles).
-- Optional per-frame coalescing (`coalescePerFrame: true` by default) so multiple store mutations
-  in one tick invoke the callback once at the start of `update(dt)`.
+  across mount/remove cycles). A subscription registered in the constructor, in `onLoad()` or while
+  the component is mounted is re-attached on every mount; one registered from `onMount()` lasts
+  until the component is removed.
+- Optional per-frame coalescing (`coalescePerFrame: true`) so multiple store mutations in one tick
+  invoke the callback once at the start of `update(dt)`. It is off by default: every notification
+  then invokes the callback synchronously.
 - Automatic `game.notifyActivity()` wakeups when idle frame pacing is enabled.
 
 ```dart
@@ -644,9 +657,15 @@ class HudWorld extends World with HasListenableSubscriptions {
   `PositionComponent` exposes a `double sortKey` secondary ordering key within equal integer
   `priority`. Updating `component.sortKey = position.y` on smoothly moving isometric/3D actors
   triggers an in-place, zero-allocation linear insertion sort (`O(N)` on nearly sorted lists)
-  instead of a full `priority` rebalance.
+  instead of a full `priority` rebalance. The sort is lazy: it is applied by the next ordered read
+  of the parent's `children` (rendering, hit-testing, iterating or querying the list), never while
+  the engine itself is walking that list, and it does not change the update order.
 - **`HasFixedUpdate`**: Runs deterministic `fixedUpdate(double fixedDt)` steps driven by
-  `FlameGame.fixedTimeStep` (e.g. `1 / 120`), passing `interpolationAlpha` for smooth rendering.
+  `FlameGame.fixedTimeStep` (e.g. `1 / 120`). For smooth rendering between two steps read
+  `game.renderInterpolationAlpha` while rendering, or mix `FixedTransformInterpolation` into a
+  `PositionComponent` to have its transform interpolated automatically. A component whose fixed
+  step is not running (paused `HasTimeScale` ancestor, `sleepUpdates()`) is drawn at its logical
+  transform.
 - **`HasTimeScale` & `applyTimePulse(...)`**: Scales variable and fixed `dt` on any subtree and
   supports hit-stop / slow-motion pulses (`applyTimePulse(scale: 0.15, realDuration: 0.06, rampBackDuration: 0.08)`).
 - **`HasAutoBatchedChildren`**: Automatically coalesces static/semi-static `SpriteComponent`
@@ -657,7 +676,7 @@ class HudWorld extends World with HasListenableSubscriptions {
   (`[0.5, 1.0, 1.5, 2.0, 3.0, 4.0]`) with hysteresis (`zoomBucketHysteresis`) and a GPU dimension
   ceiling (`maxSnapshotTextureDimension`).
 - **Component Quality Tiers & `HasGraphicsAdaptation`**: Set `minQualityTier` on any `Component` or
-  `PositionComponent` to automatically skip both `updateTree` and `renderTree` when
+  `PositionComponent` to automatically skip `updateTree`, `renderTree` and hit-testing when
   `FlameGame.graphics.tier` is lower, or mix in `HasGraphicsAdaptation` (`onGraphicsProfileChanged`)
   to react to live graphics tier and DRS changes. `ParticleEmitterComponent`
   (`respectGraphicsParticleDensity`) and `Shadow3DDecorator` (`respectGraphicsShadows`) adapt
