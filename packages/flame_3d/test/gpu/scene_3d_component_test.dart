@@ -397,6 +397,63 @@ void main() {
         expect(layer.renderedRect, Rect.zero);
       });
 
+      testGpu('of the picture of the scene as its objects move', (
+        tester,
+      ) async {
+        final layer = Scene3DComponent(projection: _boardProjection());
+        final still = MeshComponent(
+          mesh: CuboidMesh(size: Vector3.all(1), material: opaqueUnlit(_red)),
+          position: Vector3(1, 0.5, 0.5),
+        );
+        final inner = MeshComponent(
+          mesh: CuboidMesh(size: Vector3.all(1), material: opaqueUnlit(_red)),
+        );
+        // A nested object: moving it changes the bounds of its parent.
+        final moving = _Holder(position: Vector3(2, 0.5, 0.5), child: inner);
+        layer.world.addAll([still, moving]);
+        final game = FlameGame(world: World(children: [layer]));
+        game.camera.viewfinder.position = layer.positionOf(
+          layer.scenePointToLocal(Vector3(1.5, 0.5, 0.5)),
+        );
+        await _render(tester, game);
+
+        void expectTrimmedTo(Aabb3 box) {
+          // Within the view.
+          final bounds = _screenBounds(
+            game,
+            layer,
+            box,
+          ).intersect(const Rect.fromLTWH(0, 0, 160, 120));
+          final rendered = layer.renderedRect;
+          expect(rendered.left, inInclusiveRange(bounds.left - 1, bounds.left));
+          expect(rendered.top, inInclusiveRange(bounds.top - 1, bounds.top));
+          expect(
+            rendered.right,
+            inInclusiveRange(bounds.right, bounds.right + 1),
+          );
+          expect(
+            rendered.bottom,
+            inInclusiveRange(bounds.bottom, bounds.bottom + 1),
+          );
+        }
+
+        expectTrimmedTo(Aabb3.copy(still.aabb)..hull(moving.aabb));
+
+        // The nested object moves away, then back next to the other.
+        inner.position.setValues(1.5, 0, 0);
+        await tester.pump(const Duration(milliseconds: 16));
+        expectTrimmedTo(Aabb3.copy(still.aabb)..hull(moving.aabb));
+
+        inner.position.setValues(-1, 0, 0);
+        await tester.pump(const Duration(milliseconds: 16));
+        expectTrimmedTo(Aabb3.copy(still.aabb)..hull(moving.aabb));
+
+        // Without it, the picture is that of the remaining object.
+        moving.removeFromParent();
+        await tester.pump(const Duration(milliseconds: 16));
+        expectTrimmedTo(still.aabb);
+      });
+
       testGpu('of nothing when the layer is off screen', (tester) async {
         final layer = Scene3DComponent(
           projection: _boardProjection(),
@@ -715,4 +772,10 @@ Future<Pixels> _render(
     image.dispose();
     return pixels;
   }))!;
+}
+
+/// A group holding one child object.
+class _Holder({required Component3D child, super.position})
+    extends Component3D {
+  this : super(children: [child]);
 }

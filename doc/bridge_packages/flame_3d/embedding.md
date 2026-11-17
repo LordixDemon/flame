@@ -114,8 +114,13 @@ given depth on a local point.
 Each time the layer renders, it renders the part of the screen it covers in one render pass: the
 canvas's clip (the game's area when nothing clips the canvas), intersected with the picture of the
 bounding box of the scene's components (lights do not count) and, when the component has a
-non-zero `size`, with the rectangle from `(0, 0)` to `size`. Objects outside that part are culled. Nothing is rendered when
-the part is empty, for example when the scene is off screen.
+non-zero `size`, with the rectangle from `(0, 0)` to `size`. Objects outside that part are culled.
+Nothing is rendered when the part is empty, for example when the scene is off screen.
+
+The bounding box of the scene is `World3D.sceneBounds`, which the world keeps up to date as its
+components move: reading it only visits the components whose bounds changed since the last frame
+(`log2(n)` unions each), and costs next to nothing for a scene that does not move. It is always the
+exact union of the bounds of the components.
 
 The pass runs at the resolution of the screen: the device pixel ratio times `renderScale` pixels
 per logical pixel, with the image aligned to the device's pixel grid. The camera of the pass is

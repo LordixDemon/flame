@@ -404,19 +404,9 @@ class Scene3DComponent({
     double tx,
     double ty,
   ) {
-    final box = _sceneBox;
-    var empty = true;
-    for (final child in world.children) {
-      if (child is Component3D && child is! LightComponent) {
-        if (empty) {
-          box.setFrom(child.aabb);
-          empty = false;
-        } else {
-          box.hull(child.aabb);
-        }
-      }
-    }
-    if (empty) {
+    // Kept up to date by the world as its components move.
+    final box = world.sceneBounds;
+    if (box == null) {
       return null;
     }
     final m = projection.sceneToLocalValues;
@@ -445,8 +435,6 @@ class Scene3DComponent({
     }
     return Rect.fromLTRB(left, top, right, bottom);
   }
-
-  final Aabb3 _sceneBox = Aabb3();
 
   // The size of the render target of the last render, in pixels.
   int _targetWidth = 0;

@@ -260,7 +260,9 @@ final ray = layer.localPointToRay(layer.absoluteToLocal(tapInWorld));
 ```
 
 Each frame the layer renders only the part of the screen its scene covers, at
-the device's resolution, in one render pass. See the
+the device's resolution, in one render pass; the bounds of the scene are kept up
+to date as its objects move, and render targets and their textures are reused
+from frame to frame. See the
 [documentation](https://docs.flame-engine.org/latest/bridge_packages/flame_3d/embedding.html)
 and the `houses` scenario of the example.
 
