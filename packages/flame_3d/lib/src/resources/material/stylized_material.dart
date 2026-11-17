@@ -7,7 +7,7 @@ import 'package:flame_3d/resources.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 /// {@template stylized_material}
-/// A material for stylised, vertex-colored art without textures: low-poly
+/// A material for stylized, vertex-colored art without textures: low-poly
 /// meshes whose vertices carry a color, a baked ambient occlusion and a few
 /// masks that pick per-vertex effects.
 ///

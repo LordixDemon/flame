@@ -177,6 +177,49 @@ pipeline and state changes, uploads) are available from
 fraction of the device pixels.
 
 
+## Materials and lighting
+
+`flame_3d` ships three materials:
+
+- `SpatialMaterial`, physically based (metallic and roughness);
+- `UnlitMaterial`, without lighting;
+- `StylizedMaterial`, for stylized, vertex-colored art without textures: its
+  vertices carry a color, a baked ambient occlusion and masks for the
+  per-instance tint, an accent color, emission, gloss and wind sway. It is lit
+  by a soft hemisphere ambient, suns and point lights, with highlights, a rim
+  light and an optional MatCap texture. `StylizedMaterial.buildSurface` builds
+  surfaces in its vertex layout, and it draws standard surfaces too. It is not
+  available on the web yet.
+
+All of them multiply their color by the vertex color and by the per-instance
+color (`StylizedMaterial` by the latter only where its tint mask says).
+
+Lights are components of the world:
+
+```dart
+world.addAll([
+  LightComponent.hemisphere(
+    skyColor: const Color(0xFF9CC2F0),
+    groundColor: const Color(0xFF7A6A50),
+  ),
+  LightComponent.directional(direction: Vector3(-0.5, -0.8, -0.3)),
+  LightComponent.point(position: Vector3(0, 2, 0), intensity: 2, range: 5),
+]);
+```
+
+`AmbientLight`, `HemisphereLight`, up to four `DirectionalLight`s (oriented by
+an explicit direction or by the component's rotation) and up to eight
+`PointLight`s (with an inverse-square falloff, or fading out at a `range`) are
+supported. Textures have sampler options (`TextureSampler`: nearest or linear
+filtering, clamp, repeat or mirror wrapping), optional mipmaps, and
+`ImageTexture.create` shares an image's GPU memory where it can.
+
+See the [Materials and Lighting][materials-docs] documentation for the
+details.
+
+[materials-docs]: https://docs.flame-engine.org/latest/bridge_packages/flame_3d/materials.html
+
+
 ## Building shaders
 
 If you are using the materials provided by `flame_3d`, you do not need to worry
@@ -211,10 +254,13 @@ Including ones that `flame_3d` itself ships:
   (`view`, `projection`, `viewProjection`), filled once per render pass.
 - `#include <flame_3d/skinning.glsl>` for vertex skinning; the joint matrices of
   skinned draws are filled by `flame_3d`.
+- `#include <flame_3d/lights.glsl>` declares the light blocks (`AmbientLight`,
+  `Lights`, `DirectionalLights` and `HemisphereLight`).
 
-Uniform blocks named `CameraMatrices`, `Camera`, `AmbientLight` and `Lights` are
-filled by `flame_3d` once per render pass, and your own blocks can be added
-with `RenderContext3D.registerPassUniform`. A shader must use every vertex input
+Uniform blocks named `CameraMatrices`, `Camera`, `AmbientLight`, `Lights`,
+`DirectionalLights` and `HemisphereLight` are filled by `flame_3d` once per
+render pass, and your own blocks can be added with
+`RenderContext3D.registerPassUniform`. A shader must use every vertex input
 it declares, or `impellerc` rejects it; surfaces must provide every input the
 shader declares, except the per-instance ones.
 

@@ -25,7 +25,8 @@ per-instance color.
 ## Per-instance color
 
 Each draw carries a color besides its model matrix, `MeshComponent.color` (white by default). The
-built-in materials multiply their base color by it, so many tinted copies of a mesh still batch:
+built-in materials multiply their base color by it (`StylizedMaterial` only on the vertices of its
+tint mask), so many tinted copies of a mesh still batch:
 
 ```dart
 for (final (i, color) in playerColors.indexed) {
@@ -60,9 +61,10 @@ Front faces are counter-clockwise on screen. The winding flips automatically whe
 the scene, and for objects whose transform mirrors them (an odd number of negative scales), so
 back-face culling keeps culling the faces that point away from the camera.
 
-`SpatialMaterial` is opaque by default. `UnlitMaterial` may output translucent colors, so by default
-it blends with premultiplied alpha and draws as translucent; set its `renderState` to
-`RenderState.opaque` for opaque content so that it batches.
+`SpatialMaterial` and `StylizedMaterial` are opaque by default. `UnlitMaterial` may output
+translucent colors, so by default it blends with premultiplied alpha and draws as translucent; set
+its `renderState` to `RenderState.opaque` for opaque content so that it batches. The built-in
+materials and the lights are described in [Materials and Lighting](materials.md).
 
 
 ## Surfaces from typed arrays and custom vertex layouts
@@ -88,7 +90,8 @@ final surface = Surface.fromBuffers(
 
 A surface must provide every input the material's vertex shader declares, except the per-instance
 inputs, which `flame_3d` feeds itself. The standard layout (`VertexLayout.standard`) has a position,
-texture coordinates, a color, a normal, joints and joint weights.
+texture coordinates, a color, a normal, joints and joint weights. A material can draw several
+layouts with a vertex shader variant per layout, see `Material.vertexShaderFor`.
 
 
 ## Shaders
@@ -103,10 +106,14 @@ Custom shaders can include the chunks `flame_3d` ships:
 - `flame_3d/camera.glsl` declares the `CameraMatrices` block (`view`, `projection`,
   `viewProjection`).
 - `flame_3d/skinning.glsl` handles vertex skinning.
+- `flame_3d/lights.glsl` declares the light blocks: `AmbientLight`, `Lights` (point lights),
+  `DirectionalLights` and `HemisphereLight`, see
+  [Materials and Lighting](materials.md#custom-shaders).
 
-Blocks named `CameraMatrices`, `Camera` (`position`), `AmbientLight` and `Lights` are filled once
-per render pass by the `RenderContext3D`, for every shader that declares them; the joint matrices of
-skinned draws are filled for each draw. Register your own per-pass blocks with
+Blocks named `CameraMatrices`, `Camera` (`position`, and any of the `CameraMatrices` members),
+`AmbientLight`, `Lights`, `DirectionalLights` and `HemisphereLight` are filled once per render pass
+by the `RenderContext3D`, for every shader that declares them; the joint matrices of skinned draws
+are filled for each draw. Register your own per-pass blocks with
 `RenderContext3D.registerPassUniform`.
 
 
