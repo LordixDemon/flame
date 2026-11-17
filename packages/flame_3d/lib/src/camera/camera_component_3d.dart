@@ -11,8 +11,9 @@ enum CameraProjection() {
 /// {@endtemplate}
 class CameraComponent3D({
   /// The [fovY] is the field of view in Y (degrees) when the [projection] is
-  /// [CameraProjection.perspective] otherwise it is used as the near plane when
-  /// the [projection] is [CameraProjection.orthographic].
+  /// [CameraProjection.perspective], otherwise it is used as the full vertical
+  /// extent of the view volume in world units when the [projection] is
+  /// [CameraProjection.orthographic].
   var double fovY = 60,
   Vector3? position,
   Quaternion? rotation,
@@ -85,8 +86,9 @@ class CameraComponent3D({
     ..multiply(viewMatrix);
   final Matrix4 _viewProjectionMatrix = Matrix4.zero();
 
-  /// The frustum of the [viewProjectionMatrix].
-  Frustum get frustum => _frustum..setFromMatrix(viewProjectionMatrix);
+  /// The frustum of the [viewProjectionMatrix], with the near plane at depth
+  /// 0 and the far plane at depth 1.
+  Frustum get frustum => _frustum..setFromViewProjection(viewProjectionMatrix);
   final Frustum _frustum = Frustum();
 
   /// Rotates the camera's yaw and pitch.
