@@ -5,6 +5,11 @@ import 'package:flame/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class _Box({super.position, super.size}) extends PositionComponent {
+  this {
+    // A decorator layer is bounded only when the component states its bounds.
+    decoratorBounds = size.toRect();
+  }
+
   @override
   void render(Canvas canvas) {
     canvas.drawRect(size.toRect(), Paint()..color = const Color(0xFF3366FF));
