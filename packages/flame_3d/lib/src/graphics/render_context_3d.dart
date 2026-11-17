@@ -43,8 +43,8 @@ typedef PassUniformWriter = void Function(
 /// per-instance color, or distinct materials.
 ///
 /// Uniform blocks registered with [registerPassUniform] (the camera matrices
-/// and the lights by default) are written and uploaded once per pass for each
-/// shader that declares them.
+/// and the ambient, point, directional and hemisphere lights by default) are
+/// written and uploaded once per pass for each shader that declares them.
 /// {@endtemplate}
 class RenderContext3D(super.device) extends RenderContext {
   /// {@macro render_context_3d}
@@ -53,6 +53,8 @@ class RenderContext3D(super.device) extends RenderContext {
     registerPassUniform(cameraBlock, writeCameraUniforms);
     registerPassUniform(ambientLightBlock, writeAmbientLightUniforms);
     registerPassUniform(lightsBlock, writeLightsUniforms);
+    registerPassUniform(directionalLightsBlock, writeDirectionalLightsUniforms);
+    registerPassUniform(hemisphereLightBlock, writeHemisphereLightUniforms);
   }
 
   /// The name of the vertex stage block holding the camera matrices
@@ -67,8 +69,20 @@ class RenderContext3D(super.device) extends RenderContext {
   static const String ambientLightBlock = 'AmbientLight';
 
   /// The name of the block holding the point lights: `numLights`, and the
-  /// `positions`, `colors` and `intensities` arrays.
+  /// `positions`, `colors`, `intensities` (in `x`) and `ranges` (in `x`, `0`
+  /// for an inverse-square falloff) arrays.
   static const String lightsBlock = 'Lights';
+
+  /// The name of the block holding the directional lights: `numLights`, the
+  /// `directions` array (in `xyz` the unit vector from a surface towards the
+  /// light, in `w` its specular factor) and the `colors` array (in `rgb` the
+  /// color, in `a` the intensity).
+  static const String directionalLightsBlock = 'DirectionalLights';
+
+  /// The name of the block holding the hemisphere light: `skyColor`,
+  /// `groundColor`, the unit `up` vector and `intensity` (`0` when the scene
+  /// has none).
+  static const String hemisphereLightBlock = 'HemisphereLight';
 
   /// The name of the block holding the joint matrices (`joints`) of a skinned
   /// draw, see `shaders/flame_3d/skinning.glsl`. The context fills it for
@@ -77,6 +91,10 @@ class RenderContext3D(super.device) extends RenderContext {
 
   /// The maximum number of point lights written to the [lightsBlock].
   static const int maxPointLights = 8;
+
+  /// The maximum number of directional lights written to the
+  /// [directionalLightsBlock].
+  static const int maxDirectionalLights = 4;
 
   /// The model matrix of the draw being submitted.
   ///
@@ -280,7 +298,7 @@ class RenderContext3D(super.device) extends RenderContext {
   }
 
   DevicePipeline _pipelineFor(Material material, VertexLayout layout) {
-    final vertexShader = material.vertexShader;
+    final vertexShader = material.vertexShaderFor(layout);
     final fragmentShader = material.fragmentShader;
     // Resolve the resources first: recreating them bumps their generation.
     vertexShader.resource;
@@ -376,12 +394,13 @@ class RenderContext3D(super.device) extends RenderContext {
     final surface = _surfaces[first]!;
     final material = _materials[first]!;
     final pipeline = _pipelines[first]!;
+    final vertexShader = material.vertexShaderFor(surface.layout);
 
     device.bindPipeline(pipeline);
     if (device.bindingEpoch != _bindingEpoch) {
       _bindingEpoch = device.bindingEpoch;
       _boundMaterial = null;
-      _bindPassSlots(material);
+      _bindPassSlots(material, vertexShader);
     }
     device
       ..setRenderState(material.renderState)
@@ -403,8 +422,8 @@ class RenderContext3D(super.device) extends RenderContext {
           draw * VertexLayout.instanceStrideInFloats,
         );
         _jointTransforms = _joints[draw];
-        _applyMaterial(material);
-        _bindJoints(material, _joints[draw]);
+        _applyMaterial(material, vertexShader);
+        _bindJoints(vertexShader, _joints[draw]);
         device.bindSurface(surface);
         if (pipeline.usesInstanceData) {
           _gatherInstances(order, i, 1);
@@ -418,9 +437,9 @@ class RenderContext3D(super.device) extends RenderContext {
     final joints = _joints[first];
     if (!identical(material, _boundMaterial)) {
       _jointTransforms = joints;
-      _applyMaterial(material);
+      _applyMaterial(material, vertexShader);
     }
-    _bindJoints(material, joints);
+    _bindJoints(vertexShader, joints);
     device.bindSurface(surface);
     _gatherInstances(order, start, count);
     device.bindInstances(_batchInstances, count);
@@ -430,9 +449,9 @@ class RenderContext3D(super.device) extends RenderContext {
   Material? _boundMaterial;
   int _bindingEpoch = -1;
 
-  void _applyMaterial(Material material) {
+  void _applyMaterial(Material material, Shader vertexShader) {
     material.apply(this);
-    _bindSlots(material.vertexShader, _materialScope);
+    _bindSlots(vertexShader, _materialScope);
     _bindSlots(material.fragmentShader, _materialScope);
     if (!identical(material, _boundMaterial)) {
       device.stats.materialChanges++;
@@ -440,16 +459,16 @@ class RenderContext3D(super.device) extends RenderContext {
     }
   }
 
-  void _bindPassSlots(Material material) {
-    _bindSlots(material.vertexShader, _passScope);
+  void _bindPassSlots(Material material, Shader vertexShader) {
+    _bindSlots(vertexShader, _passScope);
     _bindSlots(material.fragmentShader, _passScope);
   }
 
-  void _bindJoints(Material material, List<Matrix4>? joints) {
+  void _bindJoints(Shader vertexShader, List<Matrix4>? joints) {
     if (joints == null) {
       return;
     }
-    _bindSlots(material.vertexShader, _jointsScope, joints);
+    _bindSlots(vertexShader, _jointsScope, joints);
   }
 
   /// Binds the slots of [shader] of the given [scope].
@@ -575,21 +594,32 @@ class RenderContext3D(super.device) extends RenderContext {
       ..setVector3('position', context.cameraPosition);
   }
 
-  /// Writes the first ambient light of [RenderContext3D.lights] (or a default
-  /// one) into [block].
+  /// Writes the first ambient light of [RenderContext3D.lights] into [block].
+  ///
+  /// A scene without ambient light gets a default one (white, intensity
+  /// `0.2`), unless it has a [HemisphereLight], which then lights it alone.
   static void writeAmbientLightUniforms(
     RenderContext3D context,
     UniformBlock block,
   ) {
     final lights = context.lights;
-    var ambient = _defaultAmbientLight;
-    for (var i = 0; i < lights.length; i++) {
+    AmbientLight? ambient;
+    var hasHemisphere = false;
+    for (var i = 0; i < lights.length && ambient == null; i++) {
       final source = lights[i].source;
       if (source is AmbientLight) {
         ambient = source;
-        break;
+      } else if (source is HemisphereLight) {
+        hasHemisphere = true;
       }
     }
+    if (ambient == null && hasHemisphere) {
+      block
+        ..setColor('color', const Color(0x00000000))
+        ..setFloat('intensity', 0);
+      return;
+    }
+    ambient ??= _defaultAmbientLight;
     block
       ..setColor('color', ambient.color)
       ..setFloat('intensity', ambient.intensity);
@@ -606,16 +636,100 @@ class RenderContext3D(super.device) extends RenderContext {
       if (source is! PointLight) {
         continue;
       }
+      final range = source.range;
       block
         ..setVector3('positions', light.position, index: count)
         ..setColor('colors', source.color, index: count)
-        ..setFloat('intensities', source.intensity, index: count);
+        ..setFloat('intensities', source.intensity, index: count)
+        ..setFloat(
+          'ranges',
+          range != null && range > 0 ? range : 0,
+          index: count,
+        );
       count++;
     }
     // NOTE: using floats because Android GLES does not support integer uniforms
     // Refer to https://github.com/flutter/engine/pull/55329
     block.setFloat('numLights', count.toDouble());
   }
+
+  /// Writes the directional lights of [RenderContext3D.lights] (at most
+  /// [maxDirectionalLights]) into [block], see [directionalLightsBlock].
+  static void writeDirectionalLightsUniforms(
+    RenderContext3D context,
+    UniformBlock block,
+  ) {
+    final lights = context.lights;
+    final direction = _scratchDirection;
+    final value = _scratchVector4;
+    var count = 0;
+    for (var i = 0; i < lights.length && count < maxDirectionalLights; i++) {
+      final light = lights[i];
+      final source = light.source;
+      if (source is! DirectionalLight) {
+        continue;
+      }
+      light.direction(direction);
+      final color = source.color;
+      block
+        ..setVector4(
+          'directions',
+          value..setValues(
+            -direction.x,
+            -direction.y,
+            -direction.z,
+            source.specular,
+          ),
+          index: count,
+        )
+        ..setVector4(
+          'colors',
+          value..setValues(color.r, color.g, color.b, source.intensity),
+          index: count,
+        );
+      count++;
+    }
+    block.setFloat('numLights', count.toDouble());
+  }
+
+  /// Writes the first hemisphere light of [RenderContext3D.lights] into
+  /// [block], see [hemisphereLightBlock].
+  static void writeHemisphereLightUniforms(
+    RenderContext3D context,
+    UniformBlock block,
+  ) {
+    final lights = context.lights;
+    HemisphereLight? hemisphere;
+    for (var i = 0; i < lights.length && hemisphere == null; i++) {
+      final source = lights[i].source;
+      if (source is HemisphereLight) {
+        hemisphere = source;
+      }
+    }
+    final up = _scratchDirection;
+    if (hemisphere == null) {
+      block
+        ..setColor('skyColor', const Color(0x00000000))
+        ..setColor('groundColor', const Color(0x00000000))
+        ..setVector3('up', up..setValues(0, 1, 0))
+        ..setFloat('intensity', 0);
+      return;
+    }
+    up.setFrom(hemisphere.up);
+    if (up.length2 > 0) {
+      up.normalize();
+    } else {
+      up.setValues(0, 1, 0);
+    }
+    block
+      ..setColor('skyColor', hemisphere.skyColor)
+      ..setColor('groundColor', hemisphere.groundColor)
+      ..setVector3('up', up)
+      ..setFloat('intensity', hemisphere.intensity);
+  }
+
+  static final _scratchDirection = Vector3.zero();
+  static final _scratchVector4 = Vector4.zero();
 
   static final _defaultAmbientLight = AmbientLight();
 

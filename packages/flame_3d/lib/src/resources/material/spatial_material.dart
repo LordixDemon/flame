@@ -4,12 +4,17 @@ import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 
 /// {@template spatial_material}
-/// A physically based material lit by the scene's ambient and point lights.
+/// A physically based material lit by the scene's ambient, hemisphere, point
+/// and directional lights.
 ///
-/// It is drawn instanced and multiplies its base color by the per-instance
-/// color (white unless the drawing component sets one). The camera, the lights
-/// and the joint matrices of skinned draws are filled by the
-/// [RenderContext3D].
+/// Its base color is [albedoColor] times [albedoTexture], times the vertex
+/// color, times the per-instance color (white unless the drawing component
+/// sets one). It is drawn instanced. The camera, the lights and the joint
+/// matrices of skinned draws are filled by the [RenderContext3D].
+///
+/// The lighting is physically based, so a directional light needs an
+/// intensity of about `3` to light a white surface facing it fully. The result
+/// is tone mapped and gamma corrected.
 /// {@endtemplate}
 class SpatialMaterial({
   /// The material's base color.
@@ -35,6 +40,8 @@ class SpatialMaterial({
             'Material',
             RenderContext3D.ambientLightBlock,
             RenderContext3D.lightsBlock,
+            RenderContext3D.directionalLightsBlock,
+            RenderContext3D.hemisphereLightBlock,
             RenderContext3D.cameraBlock,
           ],
         ),

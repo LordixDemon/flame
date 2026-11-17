@@ -67,6 +67,15 @@ abstract class Material({
   @internal
   MaterialPipelineCache? pipelineCache;
 
+  /// The vertex shader that draws surfaces whose vertices are laid out as
+  /// [layout]: [vertexShader] unless overridden.
+  ///
+  /// A material can draw several vertex layouts by overriding it to return a
+  /// vertex shader variant per layout. Every variant must feed the
+  /// [fragmentShader] the same outputs; [apply] writes the values of all of
+  /// them, as it does not know which one is bound.
+  Shader vertexShaderFor(VertexLayout layout) => vertexShader;
+
   /// Writes this material's values into its shaders, see [Material].
   ///
   /// Uniform blocks filled by the [RenderContext3D] (see

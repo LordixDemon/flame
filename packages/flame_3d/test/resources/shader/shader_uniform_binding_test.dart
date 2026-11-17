@@ -77,6 +77,7 @@ final class _FakeBackend(var Map<String, int> offsets) extends GpuBackend {
     required int width,
     required int height,
     required GpuPixelFormat format,
+    int mipLevelCount = 1,
   }) => throw UnimplementedError();
 
   @override

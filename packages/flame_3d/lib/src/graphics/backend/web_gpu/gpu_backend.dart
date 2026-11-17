@@ -7,6 +7,7 @@ import 'package:flame_3d/src/graphics/backend/gpu_enums.dart';
 import 'package:flame_3d/src/graphics/backend/gpu_handles.dart';
 import 'package:flame_3d/src/graphics/backend/web_gpu/shader_bundle.dart';
 import 'package:flame_3d/src/graphics/backend/web_gpu/web_gpu_interop.dart';
+import 'package:flame_3d/src/resources/texture/texture_sampler.dart';
 import 'package:flutter/services.dart';
 
 /// {@template web_gpu_backend}
@@ -17,15 +18,7 @@ base class GpuBackend._(
   final Map<String, WebShaderBundle> _bundles,
 ) extends base.GpuBackend {
   this
-    : _defaultSampler = _device.createSampler(
-        GPUSamplerDescriptor(
-          magFilter: 'nearest',
-          minFilter: 'nearest',
-          addressModeU: 'clamp-to-edge',
-          addressModeV: 'clamp-to-edge',
-        ),
-      ),
-      _zeroBuffer = _device.createBuffer(
+    : _zeroBuffer = _device.createBuffer(
         GPUBufferDescriptor(
           size: _maxUniformSize(_bundles),
           usage: GPUBufferUsage.uniform,
@@ -94,7 +87,32 @@ base class GpuBackend._(
 
   final GPUQueue _queue = _device.queue;
 
-  late final GPUSampler _defaultSampler;
+  late final GPUSampler _defaultSampler = _samplerFor(TextureSampler.nearest);
+
+  // The sampler of every distinct sampler value, by key, created once.
+  final List<GPUSampler?> _samplers = List.filled(
+    TextureSampler.keyCount,
+    null,
+  );
+
+  /// The sampler object for [sampler], created on first use.
+  GPUSampler _samplerFor(TextureSampler sampler) {
+    return _samplers[sampler.key] ??= _device.createSampler(
+      GPUSamplerDescriptor(
+        magFilter: sampler.magFilter.name,
+        minFilter: sampler.minFilter.name,
+        mipmapFilter: sampler.mipFilter.name,
+        addressModeU: _addressMode(sampler.wrapU),
+        addressModeV: _addressMode(sampler.wrapV),
+      ),
+    );
+  }
+
+  static String _addressMode(TextureWrap wrap) => switch (wrap) {
+    TextureWrap.clamp => 'clamp-to-edge',
+    TextureWrap.repeat => 'repeat',
+    TextureWrap.mirror => 'mirror-repeat',
+  };
 
   late final GPUTexture _defaultTexture;
 
@@ -117,15 +135,24 @@ base class GpuBackend._(
     required int width,
     required int height,
     required GpuPixelFormat format,
+    int mipLevelCount = 1,
   }) {
     final texture = _device.createTexture(
       GPUTextureDescriptor(
         size: GPUExtent3D(width: width, height: height, depthOrArrayLayers: 1),
         format: _pixelFormat(format),
         usage: GPUTextureUsage.textureBinding | GPUTextureUsage.copyDst,
+        mipLevelCount: mipLevelCount,
       ),
     );
-    return _WebGpuSampledTexture(_queue, texture, width, height);
+    return _WebGpuSampledTexture(
+      _queue,
+      texture,
+      width,
+      height,
+      mipLevelCount,
+      _bytesPerPixel(format),
+    );
   }
 
   @override
@@ -339,6 +366,11 @@ final _standardVertexBufferLayout = GPUVertexBufferLayout(
   ],
 );
 
+int _bytesPerPixel(GpuPixelFormat format) => switch (format) {
+  GpuPixelFormat.rgbaFloat32 => 16,
+  _ => 4,
+};
+
 String _pixelFormat(GpuPixelFormat format) => switch (format) {
   GpuPixelFormat.rgba8888 => 'rgba8unorm',
   GpuPixelFormat.bgra8888 => 'bgra8unorm',
@@ -537,23 +569,30 @@ class const _WebGpuBuffer(
   }
 }
 
-class const _WebGpuSampledTexture(
+class _WebGpuSampledTexture(
   final GPUQueue _queue,
   final GPUTexture raw,
   final int _width,
   final int _height,
+  @override final int mipLevelCount,
+  final int _bytesPerPixel,
 ) implements GpuTexture {
+  /// The view bound to shaders, created once.
+  late final GPUTextureView view = raw.createView();
+
   @override
-  void write(ByteData data) {
+  void write(ByteData data, {int mipLevel = 0}) {
+    final width = _width >> mipLevel < 1 ? 1 : _width >> mipLevel;
+    final height = _height >> mipLevel < 1 ? 1 : _height >> mipLevel;
     _queue.writeTexture(
-      GPUImageCopyTexture(texture: raw),
+      GPUImageCopyTexture(texture: raw, mipLevel: mipLevel),
       _padded(data),
       GPUImageDataLayout(
         offset: 0,
-        bytesPerRow: _width * 4,
-        rowsPerImage: _height,
+        bytesPerRow: width * _bytesPerPixel,
+        rowsPerImage: height,
       ),
-      GPUExtent3D(width: _width, height: _height, depthOrArrayLayers: 1),
+      GPUExtent3D(width: width, height: height, depthOrArrayLayers: 1),
     );
   }
 
@@ -595,7 +634,10 @@ class _WebGpuColorTexture(final OffscreenCanvas _canvas, int width, int height)
   Image? _retained;
 
   @override
-  void write(ByteData data) =>
+  int get mipLevelCount => 1;
+
+  @override
+  void write(ByteData data, {int mipLevel = 0}) =>
       throw UnsupportedError('A render-target texture cannot be written to.');
 
   @override
@@ -677,6 +719,7 @@ class _WebGpuRenderPass(
   // Bindings accumulated for the current draw, keyed by `_key(group, binding)`.
   final Map<int, (GPUBuffer buffer, int offset, int size)> _uniforms = {};
   final Map<int, GPUTextureView> _textures = {};
+  final Map<int, GPUSampler> _samplers = {};
 
   static int _key(int group, int binding) => (group << 16) | binding;
 
@@ -760,16 +803,22 @@ class _WebGpuRenderPass(
   }
 
   @override
-  void bindTexture(GpuUniformSlot slot, GpuTexture texture) {
+  void bindTexture(
+    GpuUniformSlot slot,
+    GpuTexture texture, {
+    TextureSampler sampler = TextureSampler.nearest,
+  }) {
     final reflected = (slot as _WebGpuUniformSlot).slot;
-    _textures[_key(reflected.group, reflected.binding)] =
-        (texture as _WebGpuSampledTexture).raw.createView();
+    final key = _key(reflected.group, reflected.binding);
+    _textures[key] = (texture as _WebGpuSampledTexture).view;
+    _samplers[key] = _backend._samplerFor(sampler);
   }
 
   @override
   void clearBindings() {
     _uniforms.clear();
     _textures.clear();
+    _samplers.clear();
   }
 
   @override
@@ -824,15 +873,14 @@ class _WebGpuRenderPass(
             ),
           );
         } else {
-          final view =
-              _textures[_key(slot.group, slot.binding)] ??
-              _backend._defaultTextureView;
+          final key = _key(slot.group, slot.binding);
+          final view = _textures[key] ?? _backend._defaultTextureView;
           entries
             ..add(GPUBindGroupEntry(binding: slot.binding, resource: view))
             ..add(
               GPUBindGroupEntry(
                 binding: slot.samplerBinding!,
-                resource: _backend._defaultSampler,
+                resource: _samplers[key] ?? _backend._defaultSampler,
               ),
             );
         }

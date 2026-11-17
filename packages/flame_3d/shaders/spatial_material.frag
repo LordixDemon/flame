@@ -2,7 +2,6 @@
 
 // implementation based on https://learnopengl.com/PBR/Lighting
 
-#define MAX_LIGHTS 8
 #define PI 3.14159265359
 #define EPSILON 0.0001
 
@@ -26,17 +25,7 @@ uniform Material {
 
 // light info
 
-uniform AmbientLight {
-  vec4 color;
-  float intensity;
-} ambientLight;
-
-uniform Lights {
-  float numLights;
-  vec3 positions[MAX_LIGHTS];
-  vec4 colors[MAX_LIGHTS];
-  vec4 intensities[MAX_LIGHTS];
-} lights;
+#include <flame_3d/lights.glsl>
 
 // camera info
 
@@ -80,22 +69,18 @@ float geometrySmith(vec3 normal, vec3 viewDir, vec3 lightDir, float roughness) {
   return ggx1 * ggx2;
 }
 
+// The light reflected towards the viewer from a light coming from lightDir
+// (a unit vector towards the light) with the given radiance.
 vec3 processLight(
-  vec3 lightPos,
-  vec3 lightColor,
-  float lightIntensity,
+  vec3 lightDir,
+  vec3 radiance,
+  float specularFactor,
   vec3 baseColor,
   vec3 normal,
   vec3 viewDir,
   vec3 diffuse
 ) {
-  vec3 lightDirVec = lightPos - fragPosition;
-  vec3 lightDir = normalize(lightDirVec);
-  float distance = length(lightDirVec) + EPSILON;
   vec3 halfwayDir = normalize(viewDir + lightDir);
-
-  float attenuation = lightIntensity / (distance * distance);
-  vec3 radiance = lightColor * attenuation;
 
   // cook-torrance brdf
   float ndf = distributionGGX(normal, halfwayDir, material.roughness);
@@ -111,14 +96,14 @@ vec3 processLight(
 
   // add to outgoing radiance Lo
   float NdotL = max(dot(normal, lightDir), 0.0);
-  return (kD * baseColor / PI + specular) * radiance * NdotL;
+  return (kD * baseColor / PI + specular * specularFactor) * radiance * NdotL;
 }
 
 void main() {
   vec3 normal = normalize(fragNormal);
   vec3 viewDir = normalize(camera.position - fragPosition);
 
-  vec3 baseColor = material.albedoColor.rgb * fragInstanceColor.rgb;
+  vec3 baseColor = material.albedoColor.rgb * fragInstanceColor.rgb * fragColor.rgb;
   baseColor *= texture(albedoTexture, fragTexCoord).rgb;
 
   vec3 f0 = vec3(0.04);
@@ -128,13 +113,39 @@ void main() {
   vec3 kD = (vec3(1.0) - kS) * (1.0 - material.metallic);
   vec3 ambient = kD * baseColor * ambientLight.color.rgb * ambientLight.intensity;
 
+  float hemi = 0.5 + 0.5 * dot(normal, hemisphereLight.up);
+  vec3 sky = mix(hemisphereLight.groundColor.rgb, hemisphereLight.skyColor.rgb, hemi);
+  ambient += kD * baseColor * sky * hemisphereLight.intensity;
+
   vec3 lo = vec3(0.0);
 
   for (int i = 0; i < int(lights.numLights); i++) {
+    vec3 lightDirVec = lights.positions[i] - fragPosition;
+    float distance = length(lightDirVec) + EPSILON;
+    float intensity = lights.intensities[i].x;
+    float range = lights.ranges[i].x;
+    float attenuation;
+    if (range > 0.0) {
+      float falloff = max(1.0 - distance / range, 0.0);
+      attenuation = intensity * falloff * falloff;
+    } else {
+      attenuation = intensity / (distance * distance);
+    }
     lo += processLight(
-      lights.positions[i],
-      lights.colors[i].rgb,
-      lights.intensities[i].x,
+      normalize(lightDirVec),
+      lights.colors[i].rgb * attenuation,
+      1.0,
+      baseColor, normal, viewDir, diffuse
+    );
+  }
+
+  for (int i = 0; i < int(directionalLights.numLights); i++) {
+    vec4 direction = directionalLights.directions[i];
+    vec4 lightColor = directionalLights.colors[i];
+    lo += processLight(
+      direction.xyz,
+      lightColor.rgb * lightColor.a,
+      direction.w,
       baseColor, normal, viewDir, diffuse
     );
   }

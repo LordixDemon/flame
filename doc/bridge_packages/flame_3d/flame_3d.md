@@ -11,4 +11,5 @@ space, feel free to give it a try and help us improve it!
 Getting Started <getting_started.md>
 Basic Concepts <basic_concepts.md>
 Rendering <rendering.md>
+Materials and Lighting <materials.md>
 ```
