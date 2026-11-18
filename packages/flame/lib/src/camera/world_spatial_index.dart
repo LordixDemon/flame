@@ -196,6 +196,13 @@ class WorldSpatialIndex({
   /// `O(1)` skip behavior).
   int get syncPassCount => _syncPassCount;
 
+  /// Number of times the membership (which components are leaves and pure
+  /// containers) was found again, after a mount or removal that could change
+  /// it.
+  @visibleForTesting
+  int get membershipSweepCount => _membershipSweepCount;
+  int _membershipSweepCount = 0;
+
   /// Monotonically increasing stamp for the latest [collectVisibleForRender].
   int get renderPassStamp => _renderPassStamp;
 
@@ -348,6 +355,64 @@ class WorldSpatialIndex({
   /// Marks membership dirty when children are added, removed, or reconfigured.
   void markMembershipDirty() {
     _dirtyMembership = true;
+  }
+
+  /// Whether [descendant], which was just mounted somewhere below [world],
+  /// leaves the leaves and pure containers of this index as they are, so
+  /// that the membership does not have to be swept again.
+  ///
+  /// That is the case for a component without children that is no leaf
+  /// itself (an effect, a timer, a particle burst without a size) mounted
+  /// under a parent that is neither a leaf nor a pure container: such a
+  /// parent already has a child that keeps it from being pure, and it stays
+  /// that way. A component mounted directly in the world is never one, as it
+  /// is drawn through the list of the world's unindexed children.
+  @internal
+  bool isUnaffectedByMount(Component descendant, World world) {
+    if (_dirtyMembership) {
+      // The sweep is due anyway.
+      return true;
+    }
+    final parent = descendant.parent;
+    if (parent == null || identical(parent, world)) {
+      return false;
+    }
+    return !descendant.hasChildren &&
+        !_isEligibleLeafForSpatialGrid(descendant) &&
+        _nodeOf(parent) == null &&
+        _containerOf(parent) == null;
+  }
+
+  /// Whether [descendant], which was just removed from below [world], leaves
+  /// the leaves and pure containers of this index as they are.
+  ///
+  /// That is the case for a component without children and without an entry
+  /// in this index, removed from a parent that has no entry either and still
+  /// has another child without one: that child keeps the parent from being
+  /// pure or a leaf, as before.
+  @internal
+  bool isUnaffectedByRemoval(Component descendant, World world) {
+    if (_dirtyMembership) {
+      return true;
+    }
+    final parent = descendant.parent;
+    if (parent == null ||
+        identical(parent, world) ||
+        descendant.hasChildren ||
+        _nodeOf(descendant) != null ||
+        _containerOf(descendant) != null ||
+        _nodeOf(parent) != null ||
+        _containerOf(parent) != null) {
+      return false;
+    }
+    for (final sibling in parent.children) {
+      if (!identical(sibling, descendant) &&
+          _nodeOf(sibling) == null &&
+          _containerOf(sibling) == null) {
+        return true;
+      }
+    }
+    return false;
   }
 
   void _releaseVisibleBuckets(_RenderPassState state) {
@@ -532,6 +597,7 @@ class WorldSpatialIndex({
   /// Leaves and containers that are still there keep their entries and their
   /// cells in the grid; only the ones that are gone are taken out.
   void _rebuildMembership(Iterable<Component> children) {
+    _membershipSweepCount++;
     _generation++;
     final previousNodes = _nodeList;
     final previousContainers = _containerList;

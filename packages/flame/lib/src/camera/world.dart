@@ -178,7 +178,10 @@ class World({
   /// inside this world's subtree.
   @internal
   void handleDescendantMounted(Component descendant) {
-    _spatialIndex?.markMembershipDirty();
+    final index = _spatialIndex;
+    if (index != null && !index.isUnaffectedByMount(descendant, this)) {
+      index.markMembershipDirty();
+    }
     final queries = _queries;
     if (queries != null) {
       final isDirect = identical(descendant.parent, this);
@@ -210,7 +213,10 @@ class World({
   /// anywhere inside this world's subtree.
   @internal
   void handleDescendantRemoved(Component descendant) {
-    _spatialIndex?.markMembershipDirty();
+    final index = _spatialIndex;
+    if (index != null && !index.isUnaffectedByRemoval(descendant, this)) {
+      index.markMembershipDirty();
+    }
     final queries = _queries;
     if (queries != null) {
       for (var i = 0; i < queries.length; i++) {

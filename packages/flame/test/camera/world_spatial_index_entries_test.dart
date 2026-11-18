@@ -1,3 +1,4 @@
+import 'dart:math';
 import 'dart:ui';
 
 import 'package:flame/camera.dart';
@@ -269,6 +270,138 @@ void main() {
         expect(second.world.spatialIndex.containsIndexed(leaf), isTrue);
       },
     );
+
+    test('mounts and removals that cannot change the membership leave it '
+        'as a full sweep would find it', () async {
+      final game = await makeGame();
+      final log = <String>[];
+      final random = Random(7);
+      final index = game.world.spatialIndex;
+      final containers = <Component>[];
+      var names = 0;
+      for (var i = 0; i < 4; i++) {
+        final container = PositionComponent(position: Vector2(i * 40.0, 0));
+        for (var j = 0; j < 3; j++) {
+          container.add(
+            _Leaf(
+              name: 'leaf${names++}',
+              log: log,
+              position: Vector2(j * 25.0 - 150, i * 20.0 - 100),
+            ),
+          );
+        }
+        containers.add(container);
+      }
+      game.world.addAll(containers);
+      await game.ready();
+      renderOnce(game);
+
+      List<Object> snapshot() {
+        log.clear();
+        renderOnce(game);
+        return [
+          ...log,
+          for (final c in game.world.descendants())
+            if (c is PositionComponent) index.containsIndexed(c),
+        ];
+      }
+
+      final added = <Component>[];
+      var skipped = 0;
+      for (var step = 0; step < 120; step++) {
+        final roll = random.nextInt(6);
+        final pool = [
+          for (final c in game.world.descendants())
+            if (c is! World) c,
+        ];
+        final parent = pool[random.nextInt(pool.length)];
+        if (roll == 0 && added.isNotEmpty) {
+          added.removeAt(random.nextInt(added.length)).removeFromParent();
+        } else if (roll == 1) {
+          // A leaf, so a real change of the membership.
+          final leaf = _Leaf(
+            name: 'leaf${names++}',
+            log: log,
+            position: Vector2(random.nextDouble() * 300 - 150, 0),
+          );
+          parent.add(leaf);
+          added.add(leaf);
+        } else {
+          // What effects and particle bursts look like to the index.
+          final inert = roll.isEven
+              ? Component()
+              : PositionComponent(position: Vector2(3, 3));
+          parent.add(inert);
+          added.add(inert);
+        }
+        final sweeps = index.membershipSweepCount;
+        await game.ready();
+        final incremental = snapshot();
+        if (index.membershipSweepCount == sweeps) {
+          skipped++;
+        }
+        index.markMembershipDirty();
+        final swept = snapshot();
+        expect(incremental, swept, reason: 'step $step');
+      }
+      // Many of the steps did not sweep the membership.
+      expect(skipped, greaterThan(20));
+    });
+
+    test('an effect on a container that is not pure needs no sweep, and an '
+        'effect on a leaf does', () async {
+      final game = await makeGame();
+      final leaf = _Leaf(name: 'leaf', log: [], position: Vector2(-10, -10));
+      final impure = PositionComponent(children: [Component()]);
+      game.world.addAll([
+        Component(children: [leaf]),
+        impure,
+      ]);
+      await game.ready();
+      renderOnce(game);
+      final index = game.world.spatialIndex;
+      final sweeps = index.membershipSweepCount;
+
+      final onImpure = Component();
+      impure.add(onImpure);
+      await game.ready();
+      renderOnce(game);
+      expect(index.membershipSweepCount, sweeps);
+      onImpure.removeFromParent();
+      await game.ready();
+      renderOnce(game);
+      expect(index.membershipSweepCount, sweeps);
+
+      leaf.add(Component());
+      await game.ready();
+      renderOnce(game);
+      expect(index.membershipSweepCount, sweeps + 1);
+      expect(index.containsIndexed(leaf), isFalse);
+    });
+
+    test('removing the child that kept a container from being pure makes it '
+        'pure again', () async {
+      final game = await makeGame();
+      final log = <String>[];
+      final inert = Component();
+      final container = Component(
+        children: [
+          _Leaf(name: 'leaf', log: log, position: Vector2(-10, -10)),
+          inert,
+        ],
+      );
+      game.world.add(container);
+      await game.ready();
+      renderOnce(game);
+      expect(container.spatialIndexEntry, isNull);
+
+      inert.removeFromParent();
+      await game.ready();
+      log.clear();
+      renderOnce(game);
+      expect(container.spatialIndexEntry, isNotNull);
+      expect(log, ['leaf']);
+    });
 
     test('clearing the index takes its entries off the components', () async {
       final game = await makeGame();
