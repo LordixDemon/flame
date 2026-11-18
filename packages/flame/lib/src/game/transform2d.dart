@@ -68,9 +68,20 @@ class Transform2D() extends ChangeNotifier {
       _position = NotifyingVector2.zero(),
       _scale = NotifyingVector2.all(1),
       _offset = NotifyingVector2.zero() {
-    _position.addListener(_markAsModified);
-    _scale.addListener(_markAsModified);
-    _offset.addListener(_markAsModified);
+    _position.ownerListener = _markAsModified;
+    _scale.ownerListener = _markAsModified;
+    _offset.ownerListener = _markAsModified;
+  }
+
+  /// Notifies the listeners, if there are any: `ChangeNotifier`'s own
+  /// implementation allocates on every call, even when nothing listens, and
+  /// a transform that nobody listens to changes many times per frame.
+  @override
+  void notifyListeners() {
+    assert(ChangeNotifier.debugAssertNotDisposed(this));
+    if (hasListeners) {
+      super.notifyListeners();
+    }
   }
 
   factory Transform2D.copy(Transform2D other) => Transform2D()..setFrom(other);

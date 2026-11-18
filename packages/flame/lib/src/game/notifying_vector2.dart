@@ -21,6 +21,25 @@ class NotifyingVector2.zero() extends Vector2 with ChangeNotifier {
   factory NotifyingVector2.copy(Vector2 v) =>
       NotifyingVector2.zero()..setFrom(v);
 
+  /// The listener of the object that owns this vector (such as the
+  /// `Transform2D` that a position belongs to), which is called first on
+  /// every change, before the listeners added with [addListener].
+  ///
+  /// It is a field rather than a regular listener so that a vector that has
+  /// no other listener does not have to go through [notifyListeners], which
+  /// allocates on every call even when nothing listens.
+  @internal
+  VoidCallback? ownerListener;
+
+  @override
+  void notifyListeners() {
+    ownerListener?.call();
+    assert(ChangeNotifier.debugAssertNotDisposed(this));
+    if (hasListeners) {
+      super.notifyListeners();
+    }
+  }
+
   @override
   void setValues(double x_, double y_) {
     super.setValues(x_, y_);
