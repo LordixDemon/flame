@@ -1,38 +1,109 @@
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flame/components.dart';
 import 'package:flame/src/post_process/post_process.dart';
-import 'package:flame/src/post_process/shader_post_process.dart';
+import 'package:flame/src/post_process/uniform_slot_buffer.dart';
 import 'package:flutter/painting.dart';
 import 'package:meta/meta.dart';
 
 /// Multi-texture GPU fragment-shader post-process that rasterizes both the
 /// primary full-resolution scene (`uScene` / sampler `0`) and a downscaled
-/// auxiliary pass (`uAux` / sampler `1`, such as `0.25x` `RenderPass.emissiveMask`
-/// or downsampled bloom) without GPU texture leaks or full-resolution 9-tap
-/// bandwidth stalls.
-abstract class DualPassShaderPostProcess extends ShaderPostProcess {
-  /// Creates a [DualPassShaderPostProcess] that loads `assetPath` in [onLoad].
+/// auxiliary pass (`uAux` / sampler `1`, such as `0.25x`
+/// `RenderPass.emissiveMask` or downsampled bloom) without GPU texture leaks or
+/// full-resolution 9-tap bandwidth stalls.
+abstract class DualPassShaderPostProcess extends PostProcess {
+  /// Creates a [DualPassShaderPostProcess] that loads [assetPath] in [onLoad].
   DualPassShaderPostProcess({
-    super.assetPath,
-    super.program,
-    super.enabled,
+    this.assetPath,
+    ui.FragmentProgram? program,
+    this.enabled = true,
     super.pixelRatio,
     this.auxiliaryResolutionScale = 0.25,
     this.auxiliaryPassTag = 'auxiliary',
     this.auxiliaryRenderPass = RenderPass.emissiveMask,
-  });
+  }) {
+    _program = program;
+  }
 
   /// Creates a [DualPassShaderPostProcess] backed by an already-loaded
   /// [program].
   DualPassShaderPostProcess.fromProgram(
-    super.program, {
-    super.enabled,
+    ui.FragmentProgram program, {
+    this.enabled = true,
     super.pixelRatio,
     this.auxiliaryResolutionScale = 0.25,
     this.auxiliaryPassTag = 'auxiliary',
     this.auxiliaryRenderPass = RenderPass.emissiveMask,
-  }) : super.fromProgram();
+  }) : assetPath = null,
+       _program = program;
+
+  /// Optional asset path passed to [ui.FragmentProgram.fromAsset] in [onLoad].
+  final String? assetPath;
+  ui.FragmentProgram? _program;
+  ui.FragmentProgram? _shaderProgram;
+  ui.FragmentShader? _cachedShader;
+  double _time = 0.0;
+
+  /// Float uniform writer associated with this post-process.
+  final UniformSlotBuffer uniforms = UniformSlotBuffer();
+
+  /// Whether shader post-processing is active; when false, the subtree is
+  /// rendered directly without offscreen rasterization.
+  bool enabled;
+
+  /// Elapsed time in seconds accumulated across [update] ticks.
+  double get time => _time;
+
+  /// Whether a live [ui.FragmentShader] instance is currently cached.
+  bool get hasCachedShader => _cachedShader != null;
+
+  /// Writes [value] into uniform slot [index] on [shader] through [uniforms].
+  @protected
+  bool setShaderFloat(ui.FragmentShader shader, int index, double value) =>
+      uniforms.setFloat(shader, index, value);
+
+  /// Returns the active [ui.FragmentProgram], allowing subclasses to supply a
+  /// lazily loaded or shared program.
+  @protected
+  ui.FragmentProgram? resolveProgram() => _program;
+
+  @override
+  @mustCallSuper
+  Future<void> onLoad() async {
+    await super.onLoad();
+    final path = assetPath;
+    if (_program == null && path != null) {
+      _program = await ui.FragmentProgram.fromAsset(path);
+    }
+  }
+
+  @override
+  @mustCallSuper
+  void update(double dt) {
+    super.update(dt);
+    _time += dt;
+  }
+
+  /// Returns the cached [ui.FragmentShader] for [program], recreating it only
+  /// when [program] changes or no shader is cached yet.
+  @protected
+  ui.FragmentShader obtainCachedShader(ui.FragmentProgram program) {
+    if (!identical(_shaderProgram, program) || _cachedShader == null) {
+      _cachedShader?.dispose();
+      uniforms.invalidate();
+      _shaderProgram = program;
+      _cachedShader = program.fragmentShader();
+    }
+    return _cachedShader!;
+  }
+
+  /// Replaces and disposes the previously held primary scene [ui.Image].
+  @protected
+  void replaceHeldSceneImage(ui.Image nextImage) => holdFrameImage(nextImage);
+
+  @override
+  bool get isEffectivelyNoOp => !enabled || resolveProgram() == null;
 
   /// Resolution multiplier `(0.125 .. 1.0]` applied to [pixelRatio] when
   /// rasterizing the auxiliary pass (`0.25` = `1/16` pixel count).
@@ -61,23 +132,6 @@ abstract class DualPassShaderPostProcess extends ShaderPostProcess {
   /// auxiliary intensity (for example bloom strength) is zero.
   @protected
   bool get shouldRasterizeAuxiliaryPass => true;
-
-  @override
-  void configureShader(
-    ui.FragmentShader shader,
-    Vector2 imageSize,
-    ui.Image subtreeImage,
-    double time,
-  ) {
-    configureDualPassShader(
-      shader,
-      imageSize,
-      imageSize,
-      subtreeImage,
-      subtreeImage,
-      time,
-    );
-  }
 
   /// Writes uniforms and binds both [sceneImage] (sampler `0`) and [auxImage]
   /// (sampler `1`, or [sceneImage] when [shouldRasterizeAuxiliaryPass] is
@@ -149,7 +203,7 @@ abstract class DualPassShaderPostProcess extends ShaderPostProcess {
       _auxSizeScratch,
       sceneImage,
       auxImage,
-      time,
+      _time,
     );
 
     _dualShaderPaint.shader = shader;
@@ -173,5 +227,9 @@ abstract class DualPassShaderPostProcess extends ShaderPostProcess {
     _heldAuxImage?.dispose();
     _heldAuxImage = null;
     super.releaseFrameResources();
+    uniforms.invalidate();
+    _cachedShader?.dispose();
+    _cachedShader = null;
+    _shaderProgram = null;
   }
 }

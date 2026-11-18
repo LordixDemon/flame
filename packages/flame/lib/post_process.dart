@@ -1,4 +1,5 @@
 export 'src/extensions/fragment_shader.dart';
+export 'src/extensions/uniform_slot.dart';
 export 'src/post_process/contrast_adaptive_sharpen.dart';
 export 'src/post_process/day_night_weather_controller.dart';
 export 'src/post_process/dual_pass_shader_post_process.dart';
