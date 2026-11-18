@@ -177,7 +177,7 @@ final surface = Surface.fromBuffers(
 ```
 
 The statistics of the last rendered frame (draw calls, instances, triangles,
-pipeline and state changes, uploads) are available from
+pipeline and state changes, uploads, particles) are available from
 `FlameGame3D.renderStats`. `World3D.renderScale` renders the world at a
 fraction of the device pixels. The images of the render passes are drawn by
 Flutter straight from textures that each render target creates once and takes
@@ -228,6 +228,52 @@ See the [Materials and Lighting][materials-docs] documentation for the
 details.
 
 [materials-docs]: https://docs.flame-engine.org/latest/bridge_packages/flame_3d/materials.html
+
+
+## Particles
+
+`ParticleSystem3D` (`package:flame_3d/particles.dart`) spawns particles from
+emitters (rates, bursts and trails; point, sphere, box, disc or ring, and cone
+shapes), simulates them on the CPU without allocating (gravity, drag, wind,
+curl-noise turbulence, attractors, a ground they bounce off with a callback for
+each hit; size, color, opacity, spin and rotation over their life) and draws
+all of them with one instanced draw, depth tested against the scene:
+
+```dart
+final sparks = ParticleSystem3D(
+  capacity: 512,
+  material: ParticleMaterial(
+    billboard: ParticleBillboard.velocity,
+    renderState: RenderState.additive,
+  ),
+  emitters: [
+    ParticleEmitter3D(
+      shape: const ConeEmitterShape3D(angle: 0.6),
+      speed: (3, 6),
+      lifespan: (0.4, 0.8),
+      size: (0.04, 0.06),
+    ),
+  ],
+  gravity: Vector3(0, -9.8, 0),
+  ground: ParticleGround3D(),
+  velocityStretch: 0.05,
+  opacityOverLife: ParticleCurve(1, 0),
+);
+world.add(sparks);
+sparks.burst(40, at: hitPoint);
+```
+
+`ParticleMaterial` draws camera-facing quads (spherical, cylindrical, stretched
+along the velocity, or flat), with a soft circle or a soft blob computed in the
+shader or a texture with flipbook frames, blended additively, with alpha or
+premultiplied alpha (sorted back to front). With a `mesh` instead, particles are
+small meshes (coins, debris, confetti) drawn with any instanced material.
+`ParticlePresets3D` builds sparks, smoke, dust puffs, confetti and coin bursts.
+Soft particles are not supported: Flutter GPU cannot sample the depth buffer.
+See the [Particles][particles-docs] documentation.
+
+[particles-docs]: https://docs.flame-engine.org/latest/bridge_packages/flame_3d/particles.html
+
 
 ## Embedding 3D in a 2D game
 

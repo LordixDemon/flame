@@ -540,6 +540,7 @@ class Scene3DComponent({
       ..stateChanges = after.stateChanges - before.stateChanges
       ..materialChanges = after.materialChanges - before.materialChanges
       ..uniformUploads = after.uniformUploads - before.uniformUploads
-      ..uploadedBytes = after.uploadedBytes - before.uploadedBytes;
+      ..uploadedBytes = after.uploadedBytes - before.uploadedBytes
+      ..particles = after.particles - before.particles;
   }
 }

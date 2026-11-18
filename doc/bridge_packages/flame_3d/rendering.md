@@ -54,6 +54,13 @@ house.instanceData.x = 0.5;
 Custom objects pass them to `RenderContext3D.drawSurface` and `drawMesh` with `color` and
 `instanceData`; both are copied when the draw is recorded.
 
+Objects that build their own instance data, such as particle systems, record it whole with
+`RenderContext3D.drawInstances`: one instanced draw of a surface, whatever the number of instances,
+read from a `Float32List` of 24 floats per instance (the model matrix columns, the color and the
+data, or whatever the material's vertex shader makes of them) when the draws are flushed. Such a
+draw is never batched with others; a translucent one is ordered by the `center` it is given. See
+[Particles](particles.md).
+
 
 ## Render state
 
@@ -181,4 +188,4 @@ reused.
 
 `FlameGame3D.renderStats` holds the statistics of the last rendered frame: render passes, draw
 calls, instances, triangles, pipeline changes, render state changes, material changes, uniform
-uploads and uploaded bytes.
+uploads, uploaded bytes and the particles drawn by particle systems.

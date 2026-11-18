@@ -36,6 +36,10 @@ class RenderStats() {
   /// The number of bytes of uniform and instance data uploaded.
   int uploadedBytes = 0;
 
+  /// The number of particles drawn by particle systems (a mesh particle
+  /// counts once, however many surfaces its mesh has).
+  int particles = 0;
+
   /// Resets every counter to zero.
   void reset() {
     renderPasses = 0;
@@ -47,6 +51,7 @@ class RenderStats() {
     materialChanges = 0;
     uniformUploads = 0;
     uploadedBytes = 0;
+    particles = 0;
   }
 
   /// Copies every counter from [other].
@@ -60,6 +65,7 @@ class RenderStats() {
     materialChanges = other.materialChanges;
     uniformUploads = other.uniformUploads;
     uploadedBytes = other.uploadedBytes;
+    particles = other.particles;
   }
 
   @override
@@ -68,6 +74,6 @@ class RenderStats() {
         'instances: $instances, triangles: $triangles, '
         'pipelineChanges: $pipelineChanges, stateChanges: $stateChanges, '
         'materialChanges: $materialChanges, uniformUploads: $uniformUploads, '
-        'uploadedBytes: $uploadedBytes)';
+        'uploadedBytes: $uploadedBytes, particles: $particles)';
   }
 }

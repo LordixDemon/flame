@@ -21,8 +21,9 @@ typedef PassUniformWriter = void Function(
 /// Records the draws of a render pass and submits them to the
 /// [GraphicsDevice] in an order that is cheap for the GPU.
 ///
-/// Components record draws with [drawMesh] and [drawSurface] while the world
-/// is traversed; nothing reaches the GPU until [flush]. Then:
+/// Components record draws with [drawMesh], [drawSurface] and
+/// [drawInstances] while the world is traversed; nothing reaches the GPU until
+/// [flush]. Then:
 ///
 /// - opaque draws (see [RenderState.translucent]) are grouped by pipeline,
 ///   material and surface, and roughly ordered front to back within a group;
@@ -322,6 +323,66 @@ class RenderContext3D(super.device) extends RenderContext {
     final wz = m[2] * cx + m[6] * cy + m[10] * cz + m[14];
     final d = _depthRow;
     _depths[i] = d[0] * wx + d[1] * wy + d[2] * wz + d[3];
+    _external[i] = null;
+  }
+
+  /// Records one instanced draw of [surface] with its material (or
+  /// [material]) whose [count] instances are read from [instances], each
+  /// [VertexLayout.instanceStrideInFloats] floats laid out as the per-instance
+  /// inputs (see `shaders/flame_3d/instancing.glsl`).
+  ///
+  /// This is for objects that build their own instance data, such as particle
+  /// systems: the draw costs one draw call however many instances it has. It
+  /// is never batched with other draws, and the material's vertex shader must
+  /// read the instance inputs (declare the four `instanceModel` columns); what
+  /// the columns mean is up to the material.
+  ///
+  /// [instances] is read when the draws are flushed, not copied when the draw
+  /// is recorded: keep its first [count] instances unchanged until then.
+  /// [center] is the world-space point whose depth orders the draw among the
+  /// other draws (back to front for translucent materials), the origin when
+  /// `null`. The instances are drawn with the winding of objects that do not
+  /// mirror. Nothing is recorded when [count] is zero.
+  void drawInstances(
+    Surface surface, {
+    required Float32List instances,
+    required int count,
+    Material? material,
+    Vector3? center,
+  }) {
+    if (count <= 0) {
+      return;
+    }
+    assert(
+      instances.length >= count * VertexLayout.instanceStrideInFloats,
+      'instances holds fewer than $count instances',
+    );
+    final drawMaterial = material ?? surface.material;
+    final pipeline = _pipelineFor(drawMaterial, surface.layout);
+    if (!pipeline.instanced) {
+      throw StateError(
+        'drawInstances needs a material whose vertex shader reads the '
+        'instance inputs (the four instanceModel columns)',
+      );
+    }
+    final i = _count;
+    if (i == _capacity) {
+      _grow();
+    }
+    _count++;
+
+    _surfaces[i] = surface;
+    _materials[i] = drawMaterial;
+    _pipelines[i] = pipeline;
+    _joints[i] = null;
+    _mirrored[i] = 0;
+    _external[i] = instances;
+    _externalCounts[i] = count;
+
+    final d = _depthRow;
+    _depths[i] = center == null
+        ? d[3]
+        : d[0] * center.x + d[1] * center.y + d[2] * center.z + d[3];
   }
 
   DevicePipeline _pipelineFor(Material material, VertexLayout layout) {
@@ -388,6 +449,7 @@ class RenderContext3D(super.device) extends RenderContext {
       _materials[i] = null;
       _pipelines[i] = null;
       _joints[i] = null;
+      _external[i] = null;
     }
     _boundMaterial = null;
     _jointTransforms = null;
@@ -402,7 +464,9 @@ class RenderContext3D(super.device) extends RenderContext {
     while (start < count) {
       final first = order[start];
       var end = start + 1;
-      if (_pipelines[first]!.instanced && _joints[first] == null) {
+      if (_pipelines[first]!.instanced &&
+          _joints[first] == null &&
+          _external[first] == null) {
         while (end < count && _batchesWith(first, order[end])) {
           end++;
         }
@@ -417,7 +481,8 @@ class RenderContext3D(super.device) extends RenderContext {
         identical(_materials[first], _materials[other]) &&
         identical(_pipelines[first], _pipelines[other]) &&
         _mirrored[first] == _mirrored[other] &&
-        _joints[other] == null;
+        _joints[other] == null &&
+        _external[other] == null;
   }
 
   /// Submits the [count] draws starting at [start] in [order], which share
@@ -442,6 +507,20 @@ class RenderContext3D(super.device) extends RenderContext {
             ? WindingOrder.counterClockwise
             : WindingOrder.clockwise,
       );
+
+    final external = _external[first];
+    if (external != null) {
+      if (!identical(material, _boundMaterial)) {
+        _jointTransforms = null;
+        _applyMaterial(material, vertexShader);
+      }
+      final instanceCount = _externalCounts[first];
+      device
+        ..bindSurface(surface)
+        ..bindInstances(external, instanceCount)
+        ..drawSurface(surface, instanceCount: instanceCount);
+      return;
+    }
 
     if (!pipeline.instanced) {
       // The model matrix comes from uniforms: one draw per object, applying
@@ -773,6 +852,10 @@ class RenderContext3D(super.device) extends RenderContext {
   List<Material?> _materials = [];
   List<DevicePipeline?> _pipelines = [];
   List<List<Matrix4>?> _joints = [];
+  // The instance buffers of draws recorded with drawInstances, and their
+  // instance counts.
+  List<Float32List?> _external = [];
+  Int32List _externalCounts = Int32List(0);
   Float32List _instances = Float32List(0);
   Float64List _depths = Float64List(0);
   Float64List _groupKeys = Float64List(0);
@@ -793,6 +876,9 @@ class RenderContext3D(super.device) extends RenderContext {
     _materials = grow(_materials);
     _pipelines = grow(_pipelines);
     _joints = grow(_joints);
+    _external = grow(_external);
+    _externalCounts = Int32List(capacity)
+      ..setRange(0, _externalCounts.length, _externalCounts);
     _instances = Float32List(capacity * VertexLayout.instanceStrideInFloats)
       ..setRange(0, _instances.length, _instances);
     _depths = Float64List(capacity)..setRange(0, _depths.length, _depths);
