@@ -290,15 +290,9 @@ class _ShadowPass(final RenderContext3D _context) {
       start = end;
     }
 
-    // Release the references to what was drawn.
-    for (var i = 0; i < count; i++) {
-      context._surfaces[i] = null;
-      context._materials[i] = null;
-      context._pipelines[i] = null;
-      context._joints[i] = null;
-      context._external[i] = null;
-    }
-    context._jointTransforms = null;
+    context
+      .._releaseDraws(count)
+      .._jointTransforms = null;
     context._lastDrawCount = count;
     context._count = 0;
     RenderProfile.lap(RenderPhase.release);
@@ -344,9 +338,8 @@ class _ShadowPass(final RenderContext3D _context) {
       RenderProfile.lap(RenderPhase.draw);
       return;
     }
-    context._gatherInstances(order, start, count);
     device
-      ..bindInstances(context._batchInstances, count)
+      ..bindInstancesOf(context._instances, order, start, count)
       ..drawSurface(surface, instanceCount: count);
     RenderProfile.lap(RenderPhase.draw);
   }

@@ -113,6 +113,40 @@ void main() {
       }
     });
 
+    test('gathers instances in the given order as it uploads them', () {
+      const stride = VertexLayout.instanceStrideInFloats;
+      // Five instances whose floats are their index times 100 plus the
+      // float's index.
+      final instances = Float32List.fromList([
+        for (var i = 0; i < 5; i++)
+          for (var f = 0; f < stride; f++) i * 100.0 + f,
+      ]);
+      final order = Int32List.fromList([4, 0, 3, 1, 2]);
+      final surface = Surface.fromBuffers(
+        vertices: Float32List(VertexLayout.standard.strideInFloats * 3),
+        indices: Uint16List.fromList([0, 1, 2]),
+      );
+      device
+        ..begin()
+        ..beginPass(const Size(8, 8))
+        ..bindSurface(surface)
+        ..bindInstancesOf(instances, order, 1, 3)
+        ..drawSurface(surface, instanceCount: 3)
+        ..endPass()
+        ..end();
+
+      final (buffer, offset, count) = backend.drawnInstances.single;
+      expect(count, 3);
+      expect(
+        buffer.contents.buffer.asFloat32List(offset, 3 * stride),
+        [
+          for (final i in [0, 3, 1])
+            for (var f = 0; f < stride; f++) i * 100.0 + f,
+        ],
+      );
+      expect(device.lastFrameStats.uploadedBytes, 3 * stride * 4);
+    });
+
     test('is not overwritten before the GPU completed its frame', () {
       void frame() {
         device

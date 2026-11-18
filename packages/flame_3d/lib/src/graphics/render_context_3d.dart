@@ -582,19 +582,21 @@ class RenderContext3D(super.device) extends RenderContext {
     // the instances of a batch are drawn in that order.
     _submitBatches(_translucent, translucentCount);
 
-    // Release the references to what was drawn.
-    for (var i = 0; i < count; i++) {
-      _surfaces[i] = null;
-      _materials[i] = null;
-      _pipelines[i] = null;
-      _joints[i] = null;
-      _external[i] = null;
-    }
+    _releaseDraws(count);
     _boundMaterial = null;
     _jointTransforms = null;
     _lastDrawCount = count;
     _count = 0;
     RenderProfile.lap(RenderPhase.release);
+  }
+
+  /// Releases the references to the first [count] recorded draws.
+  void _releaseDraws(int count) {
+    _surfaces.fillRange(0, count, null);
+    _materials.fillRange(0, count, null);
+    _pipelines.fillRange(0, count, null);
+    _joints.fillRange(0, count, null);
+    _external.fillRange(0, count, null);
   }
 
   /// Submits the first [count] draws of [order], merging consecutive draws
@@ -681,8 +683,7 @@ class RenderContext3D(super.device) extends RenderContext {
         _bindJoints(vertexShader, _joints[draw]);
         device.bindSurface(surface);
         if (pipeline.usesInstanceData) {
-          _gatherInstances(order, i, 1);
-          device.bindInstances(_batchInstances, 1);
+          device.bindInstancesOf(_instances, order, i, 1);
         }
         device.drawSurface(surface);
         RenderProfile.lap(RenderPhase.draw);
@@ -696,10 +697,10 @@ class RenderContext3D(super.device) extends RenderContext {
       _applyMaterial(material, vertexShader);
     }
     _bindJoints(vertexShader, joints);
-    device.bindSurface(surface);
-    _gatherInstances(order, start, count);
-    device.bindInstances(_batchInstances, count);
-    device.drawSurface(surface, instanceCount: count);
+    device
+      ..bindSurface(surface)
+      ..bindInstancesOf(_instances, order, start, count)
+      ..drawSurface(surface, instanceCount: count);
     RenderProfile.lap(RenderPhase.draw);
   }
 
@@ -834,19 +835,6 @@ class RenderContext3D(super.device) extends RenderContext {
     for (var i = 0; i < joints.length; i++) {
       block.writeAt(base + i * 16, joints[i].storage);
     }
-  }
-
-  void _gatherInstances(Int32List order, int start, int count) {
-    const stride = VertexLayout.instanceStrideInFloats;
-    if (_batchInstances.length < count * stride) {
-      _batchInstances = Float32List(_capacityFor(count) * stride);
-    }
-    final batch = _batchInstances;
-    for (var i = 0; i < count; i++) {
-      final source = order[start + i] * stride;
-      batch.setRange(i * stride, i * stride + stride, _instances, source);
-    }
-    RenderProfile.lap(RenderPhase.gather);
   }
 
   /// Writes the camera matrices and position into [block].
@@ -1019,7 +1007,6 @@ class RenderContext3D(super.device) extends RenderContext {
   Int32List _opaque = Int32List(0);
   Int32List _translucent = Int32List(0);
   Int32List _sortScratch = Int32List(0);
-  Float32List _batchInstances = Float32List(0);
   // The depth each draw is sorted by: its depth for opaque draws (front to
   // back), the opposite for translucent ones (back to front).
   Float64List _sortDepths = Float64List(0);

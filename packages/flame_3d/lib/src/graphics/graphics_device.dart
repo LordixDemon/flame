@@ -3,6 +3,7 @@ import 'dart:ui';
 
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:meta/meta.dart';
 
 /// {@template graphics_device}
 /// The [GraphicsDevice] provides a way for developers to interact with the GPU
@@ -369,6 +370,41 @@ class GraphicsDevice({
     block.floats.setRange(offset ~/ 4, offset ~/ 4 + floats, instances);
     stats.uploadedBytes += floats * 4;
     RenderProfile.lap(RenderPhase.upload);
+    _pass.bindVertexBuffer(
+      block.buffer,
+      offsetInBytes: offset,
+      lengthInBytes: floats * 4,
+      slot: 1,
+    );
+    RenderProfile.lap(RenderPhase.binding);
+  }
+
+  /// Upload the instances `order[start]` to `order[start + count - 1]` of
+  /// [instances] (each [VertexLayout.instanceStrideInFloats] floats), in that
+  /// order, and bind them as the instance buffer.
+  ///
+  /// It is [bindInstances] of the instances gathered together, without
+  /// gathering them first.
+  @internal
+  void bindInstancesOf(
+    Float32List instances,
+    Int32List order,
+    int start,
+    int count,
+  ) {
+    const stride = VertexLayout.instanceStrideInFloats;
+    final floats = count * stride;
+    final block = _arena.allocate(floats * 4, _instanceAlignment);
+    final offset = block.lastOffset;
+    final target = block.floats;
+    var at = offset ~/ 4;
+    for (var i = start; i < start + count; i++) {
+      final source = order[i] * stride;
+      target.setRange(at, at + stride, instances, source);
+      at += stride;
+    }
+    stats.uploadedBytes += floats * 4;
+    RenderProfile.lap(RenderPhase.gather);
     _pass.bindVertexBuffer(
       block.buffer,
       offsetInBytes: offset,
