@@ -93,7 +93,7 @@ class PositionComponent({
         SizeProvider,
         CoordinateTransform {
   this : transform = Transform2D() {
-    decorator = Transform2DDecorator(transform);
+    decorator = _transformDecorator = Transform2DDecorator(transform);
     transform.onMutated = _onTransformMutated;
     if (position != null) {
       transform.position = position;
@@ -188,6 +188,12 @@ class PositionComponent({
   /// A more common use for this field, however, is to apply additional visual
   /// effects such as tints/shadows/etc using [Decorator.addLast].
   late Decorator decorator;
+
+  /// The decorator that [decorator] starts with. While [decorator] is still
+  /// this one and nothing is chained to it, [renderTree] applies the
+  /// transform itself, which is what this decorator would do, without
+  /// creating a closure for every component in every frame.
+  late final Transform2DDecorator _transformDecorator;
 
   /// The total transformation matrix for the component. This matrix combines
   /// translation, rotation and scale transforms into a single entity. The
@@ -590,6 +596,16 @@ class PositionComponent({
 
   @override
   void renderTree(Canvas canvas) {
+    final decorator = this.decorator;
+    if (identical(decorator, _transformDecorator) &&
+        decorator.isLastDecorator) {
+      // What `Transform2DDecorator.apply` does, which ignores the bounds.
+      canvas.save();
+      canvas.transform2D(transform);
+      super.renderTree(canvas);
+      canvas.restore();
+      return;
+    }
     decorator.applyChain(super.renderTree, canvas, bounds: decoratorBounds);
   }
 

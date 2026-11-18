@@ -13,7 +13,7 @@ class Transform2DDecorator([Transform2D? transform]) extends Decorator {
   @override
   void apply(void Function(Canvas) draw, Canvas canvas) {
     canvas.save();
-    canvas.transform32(transform2d.transformMatrix.storage);
+    canvas.transform2D(transform2d);
     draw(canvas);
     canvas.restore();
   }

@@ -46,14 +46,28 @@ class Decorator() {
     Canvas canvas, {
     Rect? bounds,
   }) {
+    if (_next == null) {
+      applyBounded(draw, canvas, bounds);
+    } else {
+      _applyLinked(draw, canvas, bounds);
+    }
+  }
+
+  /// The part of [applyChain] for a decorator that has a next one. It is a
+  /// method of its own because the closure that it creates makes the function
+  /// that contains it allocate a context on every call, which the last
+  /// decorator of a chain (most often the only one) does not need.
+  void _applyLinked(
+    void Function(Canvas) draw,
+    Canvas canvas,
+    Rect? bounds,
+  ) {
     applyBounded(
-      _next == null
-          ? draw
-          : (nextCanvas) => _next!.applyChain(
-              draw,
-              nextCanvas,
-              bounds: transformBoundsForNext(bounds),
-            ),
+      (nextCanvas) => _next!.applyChain(
+        draw,
+        nextCanvas,
+        bounds: transformBoundsForNext(bounds),
+      ),
       canvas,
       bounds,
     );
