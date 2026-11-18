@@ -242,25 +242,35 @@ class _ShadowPass(final RenderContext3D _context) {
     final context = _context;
     final count = context._count;
     final order = context._opaque;
+    final groupKeys = context._groupKeys;
+    final surfaceKeys = context._surfaceKeys;
+    final sortDepths = context._sortDepths;
     var casters = 0;
+    // Consecutive draws mostly share their layout, and so their caster.
+    VertexLayout? lastLayout;
+    _CasterPipeline? caster;
     for (var i = 0; i < count; i++) {
       if (!context._materials[i]!.castsShadows) {
         continue;
       }
       final surface = context._surfaces[i]!;
-      final caster = _casterFor(surface.layout);
+      final layout = surface.layout;
+      if (!identical(layout, lastLayout)) {
+        lastLayout = layout;
+        caster = _casterFor(layout);
+      }
       if (caster == null) {
         continue;
       }
       final pipeline = caster.pipeline;
       context._pipelines[i] = pipeline;
-      context._groupKeys[i] = pipeline.id.toDouble();
+      groupKeys[i] = pipeline.id.toDouble();
       // Skinned draws are never batched: keep them apart from the others.
-      context._surfaceKeys[i] =
-          surface.id * 2 + (context._joints[i] == null ? 0 : 1);
+      surfaceKeys[i] = surface.id * 2 + (context._joints[i] == null ? 0 : 1);
+      sortDepths[i] = context._depths[i];
       order[casters++] = i;
     }
-    context._sort(order, casters, context._opaqueComparator);
+    context._sort(order, casters);
     RenderProfile.lap(RenderPhase.sort);
 
     context._boundMaterial = null;

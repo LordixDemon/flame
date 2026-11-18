@@ -550,20 +550,28 @@ class RenderContext3D(super.device) extends RenderContext {
     final count = _count;
     var opaqueCount = 0;
     var translucentCount = 0;
+    final groupKeys = _groupKeys;
+    final surfaceKeys = _surfaceKeys;
+    final sortDepths = _sortDepths;
     for (var i = 0; i < count; i++) {
       final material = _materials[i]!;
       if (material.renderState.translucent) {
         _translucent[translucentCount++] = i;
+        // Back to front.
+        groupKeys[i] = 0;
+        surfaceKeys[i] = 0;
+        sortDepths[i] = -_depths[i];
       } else {
         _opaque[opaqueCount++] = i;
-        _groupKeys[i] =
+        groupKeys[i] =
             _pipelines[i]!.id * 8589934592.0 + material.id * 2.0 + _mirrored[i];
         // Skinned draws are never batched: keep them apart from the others.
-        _surfaceKeys[i] = _surfaces[i]!.id * 2 + (_joints[i] == null ? 0 : 1);
+        surfaceKeys[i] = _surfaces[i]!.id * 2 + (_joints[i] == null ? 0 : 1);
+        sortDepths[i] = _depths[i];
       }
     }
-    _sort(_opaque, opaqueCount, _opaqueComparator);
-    _sort(_translucent, translucentCount, _translucentComparator);
+    _sort(_opaque, opaqueCount);
+    _sort(_translucent, translucentCount);
     RenderProfile.lap(RenderPhase.sort);
 
     _boundMaterial = null;
@@ -1012,6 +1020,9 @@ class RenderContext3D(super.device) extends RenderContext {
   Int32List _translucent = Int32List(0);
   Int32List _sortScratch = Int32List(0);
   Float32List _batchInstances = Float32List(0);
+  // The depth each draw is sorted by: its depth for opaque draws (front to
+  // back), the opposite for translucent ones (back to front).
+  Float64List _sortDepths = Float64List(0);
 
   void _grow() {
     final capacity = _capacityFor(_capacity + 1);
@@ -1032,6 +1043,7 @@ class RenderContext3D(super.device) extends RenderContext {
     _mirrored = Uint8List(capacity)..setRange(0, _mirrored.length, _mirrored);
     _groupKeys = Float64List(capacity);
     _surfaceKeys = Int32List(capacity);
+    _sortDepths = Float64List(capacity);
     _opaque = Int32List(capacity);
     _translucent = Int32List(capacity);
     _sortScratch = Int32List(capacity);
@@ -1046,13 +1058,13 @@ class RenderContext3D(super.device) extends RenderContext {
     return capacity;
   }
 
-  // Tear-offs are kept so that sorting does not allocate them every frame.
-  late final _opaqueComparator = _compareOpaque;
-  late final _translucentComparator = _compareTranslucent;
-
-  /// Opaque order: pipeline, material, mirroring, surface, skinning, then
-  /// front to back.
-  int _compareOpaque(int a, int b) {
+  /// The order of two draws: by group key (for opaque draws, pipeline,
+  /// material and mirroring), surface key (surface and skinning), sort depth,
+  /// then recording order. Translucent draws have no group nor surface key,
+  /// and the opposite of their depth as sort depth: back to front.
+  @pragma('vm:prefer-inline')
+  @pragma('dart2js:prefer-inline')
+  int _compareDraws(int a, int b) {
     final groupA = _groupKeys[a];
     final groupB = _groupKeys[b];
     if (groupA != groupB) {
@@ -1063,27 +1075,17 @@ class RenderContext3D(super.device) extends RenderContext {
     if (surfaceA != surfaceB) {
       return surfaceA < surfaceB ? -1 : 1;
     }
-    final depthA = _depths[a];
-    final depthB = _depths[b];
+    final depthA = _sortDepths[a];
+    final depthB = _sortDepths[b];
     if (depthA != depthB) {
       return depthA < depthB ? -1 : 1;
     }
     return a - b;
   }
 
-  /// Translucent order: back to front.
-  int _compareTranslucent(int a, int b) {
-    final depthA = _depths[a];
-    final depthB = _depths[b];
-    if (depthA != depthB) {
-      return depthA > depthB ? -1 : 1;
-    }
-    return a - b;
-  }
-
-  /// Sorts the first [length] entries of [list] with a bottom-up merge sort:
-  /// stable, O(n log n), and allocation free.
-  void _sort(Int32List list, int length, int Function(int, int) compare) {
+  /// Sorts the first [length] draws of [list] (see [_compareDraws]) with a
+  /// bottom-up merge sort: stable, O(n log n), and allocation free.
+  void _sort(Int32List list, int length) {
     if (length < 2) {
       return;
     }
@@ -1094,7 +1096,7 @@ class RenderContext3D(super.device) extends RenderContext {
       for (var i = start + 1; i < end; i++) {
         final value = list[i];
         var j = i - 1;
-        while (j >= start && compare(list[j], value) > 0) {
+        while (j >= start && _compareDraws(list[j], value) > 0) {
           list[j + 1] = list[j];
           j--;
         }
@@ -1111,7 +1113,7 @@ class RenderContext3D(super.device) extends RenderContext {
         var j = middle;
         var k = left;
         while (i < middle && j < right) {
-          if (compare(source[j], source[i]) < 0) {
+          if (_compareDraws(source[j], source[i]) < 0) {
             target[k++] = source[j++];
           } else {
             target[k++] = source[i++];

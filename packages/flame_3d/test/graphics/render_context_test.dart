@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
 
@@ -310,6 +311,86 @@ void main() {
         [for (var i = 0; i < 20; i++) i.toDouble()],
       );
     });
+  });
+
+  test('orders many draws by group, surface and depth, then as recorded', () {
+    // Opaque draws: by material (mirrored ones apart), surface, front to
+    // back, then recording order; translucent draws after them, back to
+    // front, then recording order.
+    final random = math.Random(3);
+    final opaque = [for (var i = 0; i < 4; i++) _TestMaterial()];
+    final translucent = [
+      for (var i = 0; i < 2; i++)
+        _TestMaterial()..renderState = RenderState.alphaBlend,
+    ];
+    final surfaces = [for (var i = 0; i < 5; i++) triangle()];
+    final draws = <(int, Material, Surface, bool, double)>[];
+    for (var i = 0; i < 700; i++) {
+      final material = random.nextInt(5) == 0
+          ? translucent[random.nextInt(2)]
+          : opaque[random.nextInt(4)];
+      // Few depths, so that many draws tie.
+      final z = -1.0 - random.nextInt(12) * 0.5;
+      draws.add((
+        i,
+        material,
+        surfaces[random.nextInt(5)],
+        random.nextInt(4) == 0,
+        z,
+      ));
+    }
+    frame(() {
+      for (final (i, material, surface, mirrored, z) in draws) {
+        context.drawSurface(
+          surface,
+          material: material,
+          // The id of the draw in x; mirrored draws scale z by -1.
+          transform: at(i.toDouble(), 0, z)
+            ..scaleByDouble(1, 1, mirrored ? -1 : 1, 1),
+        );
+      }
+    });
+
+    int compare(
+      (int, Material, Surface, bool, double) a,
+      (int, Material, Surface, bool, double) b,
+    ) {
+      final (ia, ma, sa, mirroredA, za) = a;
+      final (ib, mb, sb, mirroredB, zb) = b;
+      final ta = ma.renderState.translucent;
+      final tb = mb.renderState.translucent;
+      if (ta != tb) {
+        return ta ? 1 : -1;
+      }
+      if (!ta) {
+        if (ma.id != mb.id) {
+          return ma.id.compareTo(mb.id);
+        }
+        if (mirroredA != mirroredB) {
+          return mirroredA ? 1 : -1;
+        }
+        if (sa.id != sb.id) {
+          return sa.id.compareTo(sb.id);
+        }
+        // Front to back: the depth is -z.
+        if (za != zb) {
+          return zb.compareTo(za);
+        }
+      } else if (za != zb) {
+        // Back to front.
+        return za.compareTo(zb);
+      }
+      return ia.compareTo(ib);
+    }
+
+    final expected = [
+      for (final (i, _, _, _, _) in [...draws]..sort(compare)) i.toDouble(),
+    ];
+    final drawn = [
+      for (var draw = 0; draw < backend.drawnInstances.length; draw++)
+        for (final instance in backend.instancesOf(draw)) instance[12],
+    ];
+    expect(drawn, expected);
   });
 
   group('state and bindings', () {
