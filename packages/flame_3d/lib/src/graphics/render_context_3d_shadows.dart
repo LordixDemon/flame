@@ -86,8 +86,9 @@ class _ShadowPass(final RenderContext3D _context) {
     final context = _context;
     final device = context.device;
     active = false;
+    RenderProfile.switchPass(RenderPhase.setup, shadow: true);
     if (sceneBounds == null || !device.backend.supportsTextureTargets) {
-      return false;
+      return _none();
     }
 
     // The first directional light with shadows, among the ones the
@@ -113,7 +114,7 @@ class _ShadowPass(final RenderContext3D _context) {
       index++;
     }
     if (light == null || settings == null) {
-      return false;
+      return _none();
     }
 
     final direction = light.direction(_direction);
@@ -130,8 +131,9 @@ class _ShadowPass(final RenderContext3D _context) {
       resolution: resolution,
       stabilize: settings.stabilize,
     )) {
-      return false;
+      return _none();
     }
+    RenderProfile.lap(RenderPhase.shadowSetup);
     // From here on, the values of the last map are replaced.
     version++;
 
@@ -190,7 +192,14 @@ class _ShadowPass(final RenderContext3D _context) {
     _drawCallsBefore = device.stats.drawCalls;
     device.beginTexturePass(target, frontFace: context.frontFace);
     device.stats.shadowPasses++;
+    RenderProfile.lap(RenderPhase.passBegin);
     return true;
+  }
+
+  /// Ends a [begin] that found no shadows to render.
+  bool _none() {
+    RenderProfile.switchPass(RenderPhase.shadowSetup, shadow: false);
+    return false;
   }
 
   /// Makes the pass whose camera is set receive the map of the last shadow
@@ -213,13 +222,16 @@ class _ShadowPass(final RenderContext3D _context) {
     final context = _context;
     final device = context.device;
     try {
+      RenderProfile.lap(RenderPhase.traversal);
       flushCasters();
     } finally {
       device.endTexturePass();
       device.stats.shadowDrawCalls += device.stats.drawCalls - _drawCallsBefore;
       recording = false;
+      RenderProfile.switchPass(RenderPhase.passEnd, shadow: false);
       context.setCamera(_mainView, _mainProjection);
       active = true;
+      RenderProfile.lap(RenderPhase.setup);
     }
   }
 
@@ -249,6 +261,7 @@ class _ShadowPass(final RenderContext3D _context) {
       order[casters++] = i;
     }
     context._sort(order, casters, context._opaqueComparator);
+    RenderProfile.lap(RenderPhase.sort);
 
     context._boundMaterial = null;
     context._bindingEpoch = -1;
@@ -278,6 +291,7 @@ class _ShadowPass(final RenderContext3D _context) {
     context._jointTransforms = null;
     context._lastDrawCount = count;
     context._count = 0;
+    RenderProfile.lap(RenderPhase.release);
   }
 
   bool _batchesWith(int first, int other) {
@@ -296,6 +310,7 @@ class _ShadowPass(final RenderContext3D _context) {
     final vertexShader = _pipelines[surface.layout]!.skinned
         ? _skinnedVertexShader
         : _vertexShader;
+    RenderProfile.lap(RenderPhase.batch);
 
     device.bindPipeline(context._pipelines[first]!);
     if (device.bindingEpoch != context._bindingEpoch) {
@@ -307,6 +322,7 @@ class _ShadowPass(final RenderContext3D _context) {
     device
       ..setRenderState(_renderState)
       ..setFrontFace(WindingOrder.counterClockwise);
+    RenderProfile.lap(RenderPhase.state);
     context._bindJoints(vertexShader, context._joints[first]);
     device.bindSurface(surface);
     final external = context._external[first];
@@ -315,12 +331,14 @@ class _ShadowPass(final RenderContext3D _context) {
       device
         ..bindInstances(external, instanceCount)
         ..drawSurface(surface, instanceCount: instanceCount);
+      RenderProfile.lap(RenderPhase.draw);
       return;
     }
     context._gatherInstances(order, start, count);
     device
       ..bindInstances(context._batchInstances, count)
       ..drawSurface(surface, instanceCount: count);
+    RenderProfile.lap(RenderPhase.draw);
   }
 
   /// The caster pipeline for surfaces laid out as [layout], or `null` when

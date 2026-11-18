@@ -370,6 +370,7 @@ class RenderContext3D(super.device) extends RenderContext {
     final d = _depthRow;
     _depths[i] = d[0] * wx + d[1] * wy + d[2] * wz + d[3];
     _external[i] = null;
+    RenderProfile.lap(RenderPhase.recording);
   }
 
   /// Records one instanced draw of [surface] with its material (or
@@ -429,6 +430,7 @@ class RenderContext3D(super.device) extends RenderContext {
     _depths[i] = center == null
         ? d[3]
         : d[0] * center.x + d[1] * center.y + d[2] * center.z + d[3];
+    RenderProfile.lap(RenderPhase.recording);
   }
 
   DevicePipeline _pipelineFor(Material material, VertexLayout layout) {
@@ -527,6 +529,7 @@ class RenderContext3D(super.device) extends RenderContext {
   /// Sorts the draws recorded since the last flush and submits them to the
   /// device, which must be in a render pass.
   void flush() {
+    RenderProfile.lap(RenderPhase.traversal);
     if (_shadows.recording) {
       _shadows.flushCasters();
       return;
@@ -548,6 +551,7 @@ class RenderContext3D(super.device) extends RenderContext {
     }
     _sort(_opaque, opaqueCount, _opaqueComparator);
     _sort(_translucent, translucentCount, _translucentComparator);
+    RenderProfile.lap(RenderPhase.sort);
 
     _boundMaterial = null;
     _bindingEpoch = -1;
@@ -569,6 +573,7 @@ class RenderContext3D(super.device) extends RenderContext {
     _jointTransforms = null;
     _lastDrawCount = count;
     _count = 0;
+    RenderProfile.lap(RenderPhase.release);
   }
 
   /// Submits the first [count] draws of [order], merging consecutive draws
@@ -607,6 +612,7 @@ class RenderContext3D(super.device) extends RenderContext {
     final material = _materials[first]!;
     final pipeline = _pipelines[first]!;
     final vertexShader = material.vertexShaderFor(surface.layout);
+    RenderProfile.lap(RenderPhase.batch);
 
     device.bindPipeline(pipeline);
     if (device.bindingEpoch != _bindingEpoch) {
@@ -621,6 +627,7 @@ class RenderContext3D(super.device) extends RenderContext {
             ? WindingOrder.counterClockwise
             : WindingOrder.clockwise,
       );
+    RenderProfile.lap(RenderPhase.state);
 
     final external = _external[first];
     if (external != null) {
@@ -633,6 +640,7 @@ class RenderContext3D(super.device) extends RenderContext {
         ..bindSurface(surface)
         ..bindInstances(external, instanceCount)
         ..drawSurface(surface, instanceCount: instanceCount);
+      RenderProfile.lap(RenderPhase.draw);
       return;
     }
 
@@ -656,6 +664,7 @@ class RenderContext3D(super.device) extends RenderContext {
           device.bindInstances(_batchInstances, 1);
         }
         device.drawSurface(surface);
+        RenderProfile.lap(RenderPhase.draw);
       }
       return;
     }
@@ -670,13 +679,16 @@ class RenderContext3D(super.device) extends RenderContext {
     _gatherInstances(order, start, count);
     device.bindInstances(_batchInstances, count);
     device.drawSurface(surface, instanceCount: count);
+    RenderProfile.lap(RenderPhase.draw);
   }
 
   Material? _boundMaterial;
   int _bindingEpoch = -1;
 
   void _applyMaterial(Material material, Shader vertexShader) {
+    RenderProfile.lap(RenderPhase.binding);
     material.apply(this);
+    RenderProfile.lap(RenderPhase.materialApply);
     _bindSlots(vertexShader, _materialScope);
     _bindSlots(material.fragmentShader, _materialScope);
     if (!identical(material, _boundMaterial)) {
@@ -722,7 +734,9 @@ class RenderContext3D(super.device) extends RenderContext {
           device.bindUniformBlock(_jointsBlockFor(slot));
         case _jointsBlock when scope == _jointsScope:
           final block = _jointsBlockFor(slot);
+          RenderProfile.lap(RenderPhase.binding);
           _writeJoints(block, joints!);
+          RenderProfile.lap(RenderPhase.uniformWrite);
           device.bindUniformBlock(block);
       }
     }
@@ -776,7 +790,9 @@ class RenderContext3D(super.device) extends RenderContext {
     final block = _passBlocks[slot] ??= UniformBlock(slot);
     if (_passBlockPasses[slot] != _pass) {
       _passBlockPasses[slot] = _pass;
+      RenderProfile.lap(RenderPhase.binding);
       writer(this, block);
+      RenderProfile.lap(RenderPhase.uniformWrite);
     }
     return block;
   }
@@ -809,6 +825,7 @@ class RenderContext3D(super.device) extends RenderContext {
       final source = order[start + i] * stride;
       batch.setRange(i * stride, i * stride + stride, _instances, source);
     }
+    RenderProfile.lap(RenderPhase.gather);
   }
 
   /// Writes the camera matrices and position into [block].

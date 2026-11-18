@@ -151,8 +151,10 @@ class GraphicsDevice({
     if (frame == null) {
       throw StateError('beginPass must be called between begin and end');
     }
+    RenderProfile.lap(RenderPhase.setup);
     _renderTarget = _acquireRenderTarget(size, msaaSampleCount);
     _startPass(frame.beginRenderPass(_renderTarget), frontFace);
+    RenderProfile.lap(RenderPhase.passBegin);
   }
 
   void _startPass(GpuRenderPass renderPass, WindingOrder frontFace) {
@@ -180,9 +182,13 @@ class GraphicsDevice({
   /// The caller owns the image and should dispose it once it has been drawn.
   Image endPass() {
     final renderPass = _pass;
+    RenderProfile.lap(RenderPhase.release);
     _arena.flush();
+    RenderProfile.lap(RenderPhase.upload);
     _renderPass = null;
-    return renderPass.submit(onCompleted: _arena.passCompletion());
+    final image = renderPass.submit(onCompleted: _arena.passCompletion());
+    RenderProfile.lap(RenderPhase.passEnd);
+    return image;
   }
 
   /// The render target of [width]x[height] pixels that renders into a
@@ -237,7 +243,9 @@ class GraphicsDevice({
   /// passes that follow can sample the texture of its target.
   void endTexturePass() {
     final renderPass = _pass;
+    RenderProfile.lap(RenderPhase.release);
     _arena.flush();
+    RenderProfile.lap(RenderPhase.upload);
     _renderPass = null;
     renderPass.commit(onCompleted: _arena.passCompletion());
   }
@@ -348,6 +356,7 @@ class GraphicsDevice({
         indexType: surface.indexType,
       );
     _surface = surface;
+    RenderProfile.lap(RenderPhase.binding);
   }
 
   /// Upload the first [count] instances of [instances] (each
@@ -359,12 +368,14 @@ class GraphicsDevice({
     final offset = block.lastOffset;
     block.floats.setRange(offset ~/ 4, offset ~/ 4 + floats, instances);
     stats.uploadedBytes += floats * 4;
+    RenderProfile.lap(RenderPhase.upload);
     _pass.bindVertexBuffer(
       block.buffer,
       offsetInBytes: offset,
       lengthInBytes: floats * 4,
       slot: 1,
     );
+    RenderProfile.lap(RenderPhase.binding);
   }
 
   /// Draw the bound [surface] [instanceCount] times.
@@ -398,9 +409,11 @@ class GraphicsDevice({
   /// Bind [block] to its slot, uploading it first unless its current contents
   /// were already uploaded during this frame.
   void bindUniformBlock(UniformBlock block) {
+    RenderProfile.lap(RenderPhase.binding);
     if (block.isDirty || block.uploadFrame != _frame) {
       final upload = _uploadUniform(block.byteList);
       block.markUploaded(_frame, upload.buffer, upload.lastOffset);
+      RenderProfile.lap(RenderPhase.upload);
     }
     _pass.bindUniform(
       block.slot,
@@ -408,12 +421,14 @@ class GraphicsDevice({
       offsetInBytes: block.uploadOffset,
       lengthInBytes: block.bytes.lengthInBytes,
     );
+    RenderProfile.lap(RenderPhase.binding);
   }
 
   /// Bind a uniform [slot] to the [texture], sampled with its
   /// [Texture.sampler].
   void bindTexture(GpuUniformSlot slot, Texture texture) {
     _pass.bindTexture(slot, texture.resource, sampler: texture.sampler);
+    RenderProfile.lap(RenderPhase.binding);
   }
 
   _TransientBlock _uploadUniform(Uint8List data) {

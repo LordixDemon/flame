@@ -46,11 +46,13 @@ abstract class Object3D({
     final context = world.context;
     // The frustum of the pass, computed once by the context.
     final frustum = context.frustum;
+    RenderProfile.lap(RenderPhase.traversal);
 
     // If ancestor is inside, so are we, otherwise test.
     final cullResult = _ancestorFullyInside
         ? CullResult.inside
         : aabb.frustumCullTest(frustum);
+    RenderProfile.lap(RenderPhase.culling);
 
     // Result is fully outside, skip children and self.
     if (cullResult == CullResult.outside) {
@@ -64,9 +66,11 @@ abstract class Object3D({
     }
     super.renderTree(canvas);
     _ancestorFullyInside = wasAncestorFullyInside;
+    RenderProfile.lap(RenderPhase.traversal);
 
-    if ((cullResult == CullResult.inside || isVisible(frustum)) &&
-        (castsShadows || !context.isShadowPass)) {
+    final visible = cullResult == CullResult.inside || isVisible(frustum);
+    RenderProfile.lap(RenderPhase.culling);
+    if (visible && (castsShadows || !context.isShadowPass)) {
       draw(context);
     }
   }

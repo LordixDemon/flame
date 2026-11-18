@@ -230,6 +230,7 @@ class Scene3DComponent({
     final stopwatch = _stopwatch
       ..reset()
       ..start();
+    RenderProfile.start();
     _renderScene(canvas);
     stopwatch.stop();
     _renderMicroseconds = stopwatch.elapsedMicroseconds;
@@ -345,6 +346,7 @@ class Scene3DComponent({
 
     _statsBefore.setFrom(device.stats);
     context.setCamera(_viewMatrix, _projectionMatrix);
+    RenderProfile.lap(RenderPhase.setup);
     world.renderShadows(canvas);
     device.beginPass(
       Size(targetWidth.toDouble(), targetHeight.toDouble()),
@@ -362,6 +364,7 @@ class Scene3DComponent({
         _renderer!.close();
       }
     }
+    RenderProfile.lap(RenderPhase.passEnd);
 
     // Draw the image over the pixels it was rendered for, in device
     // coordinates.
@@ -396,6 +399,7 @@ class Scene3DComponent({
     canvas.restore();
     image.dispose();
     _renderedRect = destination;
+    RenderProfile.lap(RenderPhase.composite);
   }
 
   /// The bounding box, in device coordinates, of the picture of the bounding

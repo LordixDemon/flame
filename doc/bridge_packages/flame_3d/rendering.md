@@ -204,3 +204,26 @@ once for each size and format and kept while they are used.
 calls, instances, triangles, pipeline changes, render state changes, material changes, uniform
 uploads, uploaded bytes, the particles drawn by particle systems, and how many of the passes and
 draw calls rendered shadow maps (`shadowPasses` and `shadowDrawCalls`).
+
+
+### Profiling
+
+Built with `--dart-define=FLAME_3D_PROFILE=true`, the renderer times its phases on the CPU into
+`RenderProfile.active`: walking the components, culling, recording draws, particles, sorting,
+batching, render state, `Material.apply`, the uniform blocks of the pass, uploads, bindings,
+gathering instances, draw calls, and beginning and ending passes, the shadow pass apart. Without
+the define, the timing is compiled out.
+
+```dart
+final profile = RenderProfile.active = RenderProfile();
+// ... render some frames ...
+for (final phase in RenderPhase.values) {
+  print('${phase.name}: ${profile.microseconds(phase)} us, '
+      'shadow pass ${profile.microseconds(phase, shadow: true)} us');
+}
+```
+
+Timing every draw costs a little, so compare its totals with a build without the define. The
+package's `benchmark/` renders a board-like scene (a few hundred instanced objects, skinned
+characters, shadows, particles) and reports these phases, the objects allocated per frame and the
+`RenderStats`, under `flutter test` or in a profile build: see its README.

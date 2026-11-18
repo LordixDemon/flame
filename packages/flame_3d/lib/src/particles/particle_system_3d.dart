@@ -1189,6 +1189,7 @@ class ParticleSystem3D({
     if (count == 0) {
       return;
     }
+    RenderProfile.lap(RenderPhase.recording);
     final sorted = sortsParticles;
     if (sorted) {
       _sortBackToFront(context.view);
@@ -1206,6 +1207,7 @@ class ParticleSystem3D({
     if (space == ParticleSpace.local) {
       worldTransformMatrix.transform3(center);
     }
+    RenderProfile.lap(RenderPhase.particles);
     if (material != null) {
       context.drawInstances(
         _quad,
