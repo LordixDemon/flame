@@ -180,8 +180,8 @@ The statistics of the last rendered frame (passes, draw calls, instances,
 triangles, pipeline and state changes, uploads, particles, shadow passes and
 their draw calls) are available from `FlameGame3D.renderStats`.
 `World3D.renderScale` renders the world at a fraction of the device pixels.
-The images of the render passes are drawn by Flutter straight from textures that each render target creates once and takes
-turns rendering into.
+The images of the render passes are drawn by Flutter straight from textures
+that each render target creates once and takes turns rendering into.
 
 
 ## Materials and lighting
@@ -272,10 +272,12 @@ shader or a texture with flipbook frames, blended additively, with alpha or
 premultiplied alpha (sorted back to front). With a `mesh` instead, particles are
 small meshes (coins, debris, confetti) drawn with any instanced material.
 `ParticlePresets3D` builds sparks, smoke, dust puffs, confetti and coin bursts.
-Soft particles are not supported: Flutter GPU cannot sample the depth buffer.
+When `World3D.depthPrepassEnabled` is active, `ParticleMaterial.softDepthFade`
+fades billboards smoothly against opaque geometry.
 See the [Particles][particles-docs] documentation.
 
 [particles-docs]: https://docs.flame-engine.org/latest/bridge_packages/flame_3d/particles.html
+
 
 ## Shadows
 
@@ -306,11 +308,14 @@ light's own light, by their `strength` and `color`, and ambient light stays.
 `ShadowCatcherMaterial` on an invisible ground lets a `Scene3DComponent` cast
 shadows onto the 2D art below it.
 
-The shadow pass costs one more render pass, with one draw call per caster
-surface. The `shadows` scenario of the example casts shadows onto a 2D board. Shadows are not available on the web yet, and `SpatialMaterial` and
-`UnlitMaterial` do not receive them. See the
+The shadow pass costs one more render pass per cascade, with one draw call per
+caster surface (`ShadowSettings(cascades: 2)` packs near and far cascades into
+one shadow atlas, and `SpotLight(shadows: ...)` casts perspective cone
+shadows). Both `StylizedMaterial` and `SpatialMaterial` receive PCF shadows on
+native backends; `UnlitMaterial` and web do not receive shadows yet. See the
 [Shadows](https://docs.flame-engine.org/latest/bridge_packages/flame_3d/shadows.html)
 documentation for the details.
+
 
 ## Embedding 3D in a 2D game
 

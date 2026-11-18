@@ -140,7 +140,7 @@ void main() {
     });
 
     testGpuEngine('never batches skinned draws', () async {
-      final surface = quad(opaqueUnlit(const Color(0xFFFFFFFF)), halfSize: .1);
+      final surface = quad(opaqueUnlit(const Color(0xFFFFFFFF)), halfSize: 0.1);
       final joints = [Matrix4.identity()];
 
       final frame = await renderFrame(
@@ -154,7 +154,7 @@ void main() {
               )
               ..drawSurface(
                 surface,
-                transform: Matrix4.translationValues(-0.5 + i * 0.5, -.5, -5),
+                transform: Matrix4.translationValues(-0.5 + i * 0.5, -0.5, -5),
               );
           }
         },

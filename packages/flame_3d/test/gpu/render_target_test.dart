@@ -40,7 +40,7 @@ void main() {
     testGpuEngine('render many passes into at most three textures', () async {
       final device = GraphicsDevice();
       final context = RenderContext3D(device);
-      final surface = quad(opaqueUnlit(const Color(0xFF3080C0)), halfSize: .1);
+      final surface = quad(opaqueUnlit(const Color(0xFF3080C0)), halfSize: 0.1);
       // Flutter keeps the pictures of the frames it has yet to rasterize.
       final pictures = <ui.Picture>[];
       final beginPass = <int>[];
@@ -105,9 +105,9 @@ void main() {
       final device = GraphicsDevice();
       final context = RenderContext3D(device);
       final squares = [
-        (-0.5, quad(opaqueUnlit(const Color(0xFFFF0000)), halfSize: .2)),
-        (0.0, quad(opaqueUnlit(const Color(0xFF00FF00)), halfSize: .2)),
-        (0.5, quad(opaqueUnlit(const Color(0xFF0000FF)), halfSize: .2)),
+        (-0.5, quad(opaqueUnlit(const Color(0xFFFF0000)), halfSize: 0.2)),
+        (0.0, quad(opaqueUnlit(const Color(0xFF00FF00)), halfSize: 0.2)),
+        (0.5, quad(opaqueUnlit(const Color(0xFF0000FF)), halfSize: 0.2)),
       ];
 
       // Three passes into the same target, each drawing one square.

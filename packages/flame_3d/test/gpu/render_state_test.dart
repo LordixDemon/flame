@@ -88,28 +88,28 @@ void main() {
       final glow = quad(
         UnlitMaterial(albedoColor: const Color(0xFF004000))
           ..renderState = RenderState.additive,
-        halfSize: .3,
+        halfSize: 0.3,
       );
       final half = quad(
         UnlitMaterial(albedoColor: const Color(0x80800000))
           ..renderState = RenderState.premultipliedAlphaBlend,
-        halfSize: .3,
+        halfSize: 0.3,
       );
       final frame = await renderFrame(
         draw: (context) => context
           // Over an opaque surface, over a half transparent one, over nothing.
-          ..drawSurface(glow, transform: Matrix4.translationValues(-.6, 0, -4))
+          ..drawSurface(glow, transform: Matrix4.translationValues(-0.6, 0, -4))
           ..drawSurface(glow, transform: Matrix4.translationValues(0, 0, -4))
-          ..drawSurface(glow, transform: Matrix4.translationValues(.6, 0, -4))
+          ..drawSurface(glow, transform: Matrix4.translationValues(0.6, 0, -4))
           ..drawSurface(
-            quad(opaqueUnlit(const Color(0xFF000080)), halfSize: .3),
-            transform: Matrix4.translationValues(-.6, 0, -6),
+            quad(opaqueUnlit(const Color(0xFF000080)), halfSize: 0.3),
+            transform: Matrix4.translationValues(-0.6, 0, -6),
           )
           ..drawSurface(half, transform: Matrix4.translationValues(0, 0, -6)),
       );
-      final (ox, oy) = pixelAt(-.6, 0);
+      final (ox, oy) = pixelAt(-0.6, 0);
       final (hx, hy) = pixelAt(0, 0);
-      final (nx, ny) = pixelAt(.6, 0);
+      final (nx, ny) = pixelAt(0.6, 0);
       final opaque = frame.pixels.at(ox, oy);
       expect(opaque.$2, closeTo(64, 1));
       expect(opaque.$3, closeTo(128, 1));
@@ -126,20 +126,20 @@ void main() {
     testGpuEngine('writes no color with a depth-only draw', () async {
       final prepass = quad(
         UnlitMaterial()..renderState = RenderState.depthOnly,
-        halfSize: .3,
+        halfSize: 0.3,
       );
-      final behind = quad(opaqueUnlit(const Color(0xFF0000FF)), halfSize: .6);
+      final behind = quad(opaqueUnlit(const Color(0xFF0000FF)), halfSize: 0.6);
       final frame = await renderFrame(
         draw: (context) => context
           ..drawSurface(behind, transform: Matrix4.translationValues(0, 0, -6))
           ..drawSurface(prepass, transform: Matrix4.translationValues(0, 0, -4))
           ..drawSurface(
             prepass,
-            transform: Matrix4.translationValues(.7, 0, -4),
+            transform: Matrix4.translationValues(0.7, 0, -4),
           ),
       );
       final (cx, cy) = pixelAt(0, 0);
-      final (ex, ey) = pixelAt(.75, 0);
+      final (ex, ey) = pixelAt(0.75, 0);
       // What is behind the depth-only quads keeps its color, and so does
       // the cleared target.
       expect(frame.pixels.at(cx, cy), (0, 0, 255, 255));
@@ -207,66 +207,66 @@ void main() {
     });
 
     testGpuEngine('applies a different state to each draw of a pass', () async {
-      final opaque = quad(opaqueUnlit(const Color(0xFF0000FF)), halfSize: .2);
+      final opaque = quad(opaqueUnlit(const Color(0xFF0000FF)), halfSize: 0.2);
       final alpha = quad(
         UnlitMaterial(albedoColor: const Color(0x80FF0000))
           ..renderState = RenderState.alphaBlend,
-        halfSize: .2,
+        halfSize: 0.2,
       );
       final additive = quad(
         UnlitMaterial(albedoColor: const Color(0x8000FF00))
           ..renderState = RenderState.additive,
-        halfSize: .2,
+        halfSize: 0.2,
       );
       final frame = await renderFrame(
         draw: (context) => context
-          ..drawSurface(alpha, transform: Matrix4.translationValues(0, .5, -5))
+          ..drawSurface(alpha, transform: Matrix4.translationValues(0, 0.5, -5))
           ..drawSurface(
             additive,
-            transform: Matrix4.translationValues(.5, -.5, -5),
+            transform: Matrix4.translationValues(0.5, -0.5, -5),
           )
           ..drawSurface(
             opaque,
-            transform: Matrix4.translationValues(-.5, -.5, -5),
+            transform: Matrix4.translationValues(-0.5, -0.5, -5),
           ),
       );
-      final (ax, ay) = pixelAt(0, .5);
-      final (dx, dy) = pixelAt(.5, -.5);
-      final (ox, oy) = pixelAt(-.5, -.5);
+      final (ax, ay) = pixelAt(0, 0.5);
+      final (dx, dy) = pixelAt(0.5, -0.5);
+      final (ox, oy) = pixelAt(-0.5, -0.5);
       expect(frame.pixels.at(ax, ay).$1, closeTo(128, 1));
       expect(frame.pixels.at(dx, dy).$2, 255);
       expect(frame.pixels.at(ox, oy), (0, 0, 255, 255));
     });
 
     testGpuEngine('draws over nearer surfaces without depth test', () async {
-      final wall = quad(opaqueUnlit(const Color(0xFF0000FF)), halfSize: .6);
+      final wall = quad(opaqueUnlit(const Color(0xFF0000FF)), halfSize: 0.6);
       final overlay = quad(
         UnlitMaterial(albedoColor: const Color(0xFFFF0000))
           ..renderState = const RenderState(
             depthTest: false,
             translucent: true,
           ),
-        halfSize: .3,
+        halfSize: 0.3,
       );
       final hidden = quad(
         UnlitMaterial(albedoColor: const Color(0xFF00FF00))
           ..renderState = const RenderState(translucent: true),
-        halfSize: .3,
+        halfSize: 0.3,
       );
       final frame = await renderFrame(
         draw: (context) => context
           ..drawSurface(wall, transform: Matrix4.translationValues(0, 0, -4))
           ..drawSurface(
             overlay,
-            transform: Matrix4.translationValues(-.3, 0, -6),
+            transform: Matrix4.translationValues(-0.3, 0, -6),
           )
           ..drawSurface(
             hidden,
-            transform: Matrix4.translationValues(.3, 0, -6),
+            transform: Matrix4.translationValues(0.3, 0, -6),
           ),
       );
-      final (lx, ly) = pixelAt(-.3, 0);
-      final (rx, ry) = pixelAt(.3, 0);
+      final (lx, ly) = pixelAt(-0.3, 0);
+      final (rx, ry) = pixelAt(0.3, 0);
       expect(frame.pixels.at(lx, ly), (255, 0, 0, 255));
       expect(frame.pixels.at(rx, ry), (0, 0, 255, 255));
     });
@@ -279,9 +279,9 @@ void main() {
         final near = quad(
           UnlitMaterial(albedoColor: const Color(0xFFFF0000))
             ..renderState = const RenderState(depthWrite: false),
-          halfSize: .3,
+          halfSize: 0.3,
         );
-        final far = quad(opaqueUnlit(const Color(0xFF0000FF)), halfSize: .6);
+        final far = quad(opaqueUnlit(const Color(0xFF0000FF)), halfSize: 0.6);
         final frame = await renderFrame(
           draw: (context) => context
             ..drawSurface(near, transform: Matrix4.translationValues(0, 0, -4))
@@ -293,8 +293,8 @@ void main() {
     );
 
     testGpuEngine('passes the depth test with the material compare', () async {
-      final far = quad(opaqueUnlit(const Color(0xFF0000FF)), halfSize: .6);
-      final near = quad(opaqueUnlit(const Color(0xFFFF0000)), halfSize: .3);
+      final far = quad(opaqueUnlit(const Color(0xFF0000FF)), halfSize: 0.6);
+      final near = quad(opaqueUnlit(const Color(0xFFFF0000)), halfSize: 0.3);
       // Drawn last, behind the others, but its compare passes when farther.
       final behind = quad(
         UnlitMaterial(albedoColor: const Color(0xFF00FF00))
@@ -303,7 +303,7 @@ void main() {
             depthWrite: false,
             translucent: true,
           ),
-        halfSize: .9,
+        halfSize: 0.9,
       );
       final frame = await renderFrame(
         draw: (context) => context
@@ -312,7 +312,7 @@ void main() {
           ..drawSurface(behind, transform: Matrix4.translationValues(0, 0, -8)),
       );
       final (cx, cy) = pixelAt(0, 0);
-      final (ex, ey) = pixelAt(.75, 0);
+      final (ex, ey) = pixelAt(0.75, 0);
       // Where something nearer was drawn, the farther quad passes.
       expect(frame.pixels.at(cx, cy), (0, 255, 0, 255));
       // Where only the cleared depth (the far plane) is, it fails.

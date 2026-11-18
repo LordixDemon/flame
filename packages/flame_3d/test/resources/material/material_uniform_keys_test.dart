@@ -94,12 +94,12 @@ void main() {
             position: Vector3(i.toDouble(), i + 10, i + 20),
             source: PointLight(
               color: Color.fromARGB(255, i * 80, 255 - i * 80, 0),
-              intensity: i + .5,
+              intensity: i + 0.5,
             ),
           ),
         Light(
           position: Vector3.zero(),
-          source: AmbientLight(color: const Color(0xFF102030), intensity: .7),
+          source: AmbientLight(color: const Color(0xFF102030), intensity: 0.7),
         ),
       ];
       context.lights = lights;
@@ -137,7 +137,7 @@ void main() {
       );
       expect(
         ambient[offsetOf(material, 'AmbientLight', 'intensity')],
-        Float32List.fromList([.7]).single,
+        Float32List.fromList([0.7]).single,
       );
     });
 

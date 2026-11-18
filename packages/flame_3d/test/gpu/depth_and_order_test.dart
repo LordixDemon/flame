@@ -16,8 +16,11 @@ void main() {
         'keeps the nearest opaque surface in front when it is recorded '
         '${nearFirst ? 'first' : 'last'}',
         () async {
-          final near = quad(opaqueUnlit(const Color(0xFF00FF00)), halfSize: .3);
-          final far = quad(opaqueUnlit(const Color(0xFFFF0000)), halfSize: .6);
+          final near = quad(
+            opaqueUnlit(const Color(0xFF00FF00)),
+            halfSize: 0.3,
+          );
+          final far = quad(opaqueUnlit(const Color(0xFFFF0000)), halfSize: 0.6);
 
           final frame = await renderFrame(
             draw: (context) {
@@ -49,8 +52,8 @@ void main() {
 
     testGpuEngine('resolves intersecting surfaces per pixel', () async {
       // Two quads crossing each other: each is in front on one side.
-      final red = quad(opaqueUnlit(const Color(0xFFFF0000)), halfSize: .8);
-      final blue = quad(opaqueUnlit(const Color(0xFF0000FF)), halfSize: .8);
+      final red = quad(opaqueUnlit(const Color(0xFFFF0000)), halfSize: 0.8);
+      final blue = quad(opaqueUnlit(const Color(0xFF0000FF)), halfSize: 0.8);
 
       final frame = await renderFrame(
         draw: (context) {

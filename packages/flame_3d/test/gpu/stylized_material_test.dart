@@ -187,7 +187,7 @@ class _Look({
     final lit =
         (Vector3.all(0.65) +
               (sky.clone()..multiply(skyWeight)) * hemi +
-              ground * (0.10 * groundBounce))
+              ground * (0.1 * groundBounce))
           ..scale(ambientStrength * ao);
     lit.add(sunColor * (math.max(0.0, n.dot(l)) * sunStrength));
     final toPoint = pointPosition - position;

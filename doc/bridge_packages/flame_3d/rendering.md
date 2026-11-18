@@ -99,7 +99,7 @@ raycasting (`lastRaycastCandidatesTested`).
 ## Models, 64-bone skinning, morph targets, animation layers, and procedural IK
 
 `ModelComponent` evaluates glTF 2.0 models and animations through a zero-allocation `AnimationState`
-+ `ModelPoseWorkspace` pipeline with `O(log K)` binary keyframe lookup:
+and `ModelPoseWorkspace` pipeline with `O(log K)` binary keyframe lookup:
 
 - **64-bone skinning & auto-splitting:** skinned shaders support up to 64 joints per primitive
   (`JointMatrices`), and `ModelParser` automatically partitions glTF primitives referencing more
@@ -137,7 +137,7 @@ raycasting (`lastRaycastCandidatesTested`).
   animation keyframes, so animated `ModelComponent`s are never frustum-culled prematurely.
 
 
-## 3D input, 3D effects, collisions, physics, navmesh, spatial audio, and debug gizmos
+## 3D input, effects, physics, navigation, audio, and debug gizmos
 
 Beyond rendering, `package:flame_3d` ships modular 3D gameplay libraries:
 

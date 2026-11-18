@@ -50,13 +50,13 @@ colors, so the vertex color only changes the look of meshes that set it.
 The lights of a world come from its `LightComponent`s, and are read once per render pass, so their
 values can be animated:
 
-| Light              | Component                    | Lights a surface with                             |
-| ------------------ | ---------------------------- | ------------------------------------------------- |
-| `AmbientLight`     | `LightComponent.ambient`     | `color * intensity`, everywhere                   |
-| `HemisphereLight`  | `LightComponent.hemisphere`  | the sky color above, the ground below             |
-| `DirectionalLight` | `LightComponent.directional` | parallel rays along a direction (a sun)           |
-| `PointLight`       | `LightComponent.point`       | light from a position, fading out                 |
-| `SpotLight`        | `LightComponent.spot`        | cone of light (`innerConeAngle`..`outerConeAngle`)|
+| Light              | Component                    | Lights a surface with                        |
+| ------------------ | ---------------------------- | -------------------------------------------- |
+| `AmbientLight`     | `LightComponent.ambient`     | `color * intensity`, everywhere              |
+| `HemisphereLight`  | `LightComponent.hemisphere`  | the sky color above, the ground below        |
+| `DirectionalLight` | `LightComponent.directional` | parallel rays along a direction (a sun)      |
+| `PointLight`       | `LightComponent.point`       | light from a position, fading out            |
+| `SpotLight`        | `LightComponent.spot`        | cone (`innerConeAngle`..`outerConeAngle`)    |
 
 - The first `AmbientLight` and the first `HemisphereLight` of a scene are used. A scene with
   neither gets a white ambient light of intensity `0.2`; a hemisphere light replaces that default.
@@ -297,33 +297,33 @@ is the camera's direction. `skyFillWeight` weighs the sky fill per channel, for 
 `Vector3(1, 1, 0.914)` with the default `skyFill` for a fill of `(0.35, 0.35, 0.32)` times the sky
 color.
 
-| Parameter                                     | Default                     | Meaning                |
-| --------------------------------------------- | --------------------------- | ---------------------- |
-| `albedoColor`                                 | white                       | times vertex color     |
-| `accentColor`                                 | white                       | the accent color       |
-| `ambientBase`                                 | `0.65` gray                 | ambient for all        |
-| `skyFill`, `skyFillWeight`                    | `0.35`, `(1, 1, 1)`         | sky share, per channel |
-| `groundBounce`                                | `0.10`                      | ground share           |
-| `pointLightWrap`                              | `0.18`                      | least point light      |
-| `specularStrength`, `specularPower`           | `0.28`, `8`                 | highlights             |
-| `specularThreshold`                           | `0.12`                      | least gloss to shine   |
-| `rimStrength`, `rimPower`, `rimColor`         | `0.14`, `3`, black          | rim light              |
-| `emissiveColor`, `emissiveStrength`           | white, `1`                  | glowing vertices       |
-| `emissiveBoostColor`                          | `emissiveColor`             | glow at boost 1        |
-| `highlightColor`                              | white                       | per-instance highlight |
-| `matCapTexture`, `matCapStrength`             | none, `1`                   | MatCap sheen           |
-| `matCapThreshold`, `matCapGlossWeight`        | `0`, `1`                    | least gloss, weighting |
-| `gemMatCapTexture`, `gemMatCapStrength`       | none, `1`                   | MatCap of gems         |
-| `gemThreshold`                                | `1`                         | least gloss of gems    |
-| `matCapMetallic`                              | `0`                         | MatCap as reflection   |
-| `windDirection`, `windAmplitude`, `windSpace` | `(1, 0, 0)`, `0.032`, world | sway way and reach     |
-| `windFrequency`, `windPhase`, `windTime`      | `2.3`, `(0.7, 0, 0.5)`, `0` | sway timing            |
-| `windUpAxis`                                  | `(0, 1, 0)`                 | up, for `worldScaled`  |
-| `windFlutterAmplitude`                        | `0` (off)                   | flutter reach          |
-| `windFlutterFrequency`                        | `12`                        | flutter timing         |
-| `windGustAmplitude`, `windGustFrequency`      | `0` (off), `0.8`            | gusts                  |
-| `windGustDirection`, `windGustPhaseScale`     | `(1, 0, 0)`, `0.5`          | gusts' travel          |
-| `saturation`, `overlayColor`                  | `1`, transparent            | color grade            |
+| Parameter                                     | Default                   | Meaning              |
+| --------------------------------------------- | ------------------------- | -------------------- |
+| `albedoColor`                                 | white                     | times vertex color   |
+| `accentColor`                                 | white                     | the accent color     |
+| `ambientBase`                                 | `0.65` gray               | ambient for all      |
+| `skyFill`, `skyFillWeight`                    | `0.35`, `(1, 1, 1)`       | sky share            |
+| `groundBounce`                                | `0.10`                    | ground share         |
+| `pointLightWrap`                              | `0.18`                    | least point light    |
+| `specularStrength`, `specularPower`           | `0.28`, `8`               | highlights           |
+| `specularThreshold`                           | `0.12`                    | least gloss to shine |
+| `rimStrength`, `rimPower`, `rimColor`         | `0.14`, `3`, black        | rim light            |
+| `emissiveColor`, `emissiveStrength`           | white, `1`                | glowing vertices     |
+| `emissiveBoostColor`                          | `emissiveColor`           | glow at boost 1      |
+| `highlightColor`                              | white                     | instance highlight   |
+| `matCapTexture`, `matCapStrength`             | none, `1`                 | MatCap sheen         |
+| `matCapThreshold`, `matCapGlossWeight`        | `0`, `1`                  | least gloss, weight  |
+| `gemMatCapTexture`, `gemMatCapStrength`       | none, `1`                 | MatCap of gems       |
+| `gemThreshold`                                | `1`                       | least gloss of gems  |
+| `matCapMetallic`                              | `0`                       | MatCap reflection    |
+| `windDirection`, `windAmplitude`, `windSpace` | `(1,0,0)`, `0.032`, world | sway way and reach   |
+| `windFrequency`, `windPhase`, `windTime`      | `2.3`, `(0.7,0,0.5)`, `0` | sway timing          |
+| `windUpAxis`                                  | `(0, 1, 0)`               | up for `worldScaled` |
+| `windFlutterAmplitude`                        | `0` (off)                 | flutter reach        |
+| `windFlutterFrequency`                        | `12`                      | flutter timing       |
+| `windGustAmplitude`, `windGustFrequency`      | `0` (off), `0.8`          | gusts                |
+| `windGustDirection`, `windGustPhaseScale`     | `(1, 0, 0)`, `0.5`        | gusts' travel        |
+| `saturation`, `overlayColor`                  | `1`, transparent          | color grade          |
 
 With the defaults, the MatCap texture is added in proportion to the gloss of every vertex. For a
 clear-coat sheen on the glossy vertices only and a separate sheen on gems, at full strength:
@@ -497,6 +497,7 @@ keeps the inner faces of a closed mesh from showing through.
 
 ## Atmospheric fog, silhouette outlines, and surface decals
 
+
 ### Atmospheric fog (`FogSettings`)
 
 Assigning `world.fog = FogSettings(...)` fades surfaces smoothly towards `FogSettings.color` by
@@ -518,6 +519,7 @@ world.fog = FogSettings(
 `StylizedMaterial` applies `world.fog` automatically with zero extra bindings; custom shaders
 include `flame_3d/fog.glsl` and declare `RenderContext3D.fogBlock` (`'Fog'`).
 
+
 ### Silhouette outlines (`OutlineMaterial`)
 
 `OutlineMaterial` extrudes front-culled backfaces along smooth vertex normals to draw crisp
@@ -532,6 +534,7 @@ final outline = OutlineMaterial(
   screenSpace: true,
 );
 ```
+
 
 ### Surface decals (`DecalMaterial` and `DecalBatch3D`)
 

@@ -74,7 +74,7 @@ void main() {
       );
       final b3 = RigidBody3D(
         shape: boxShape,
-        position: Vector3(0, 2.60, 0),
+        position: Vector3(0, 2.6, 0),
         friction: 0.8,
       );
       physics

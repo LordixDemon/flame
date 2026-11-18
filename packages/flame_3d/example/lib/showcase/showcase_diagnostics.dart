@@ -679,7 +679,7 @@ class ShowcaseDiagnostics() {
         crownHideOk =
             hitWithCrown != null &&
             hitWithCrown.worldPoint.z > 1.95 &&
-            (hitWithoutCrown == null || hitWithoutCrown.worldPoint.z < 1.90);
+            (hitWithoutCrown == null || hitWithoutCrown.worldPoint.z < 1.9);
         rig26
           ..hideNodeByName('Crown', hidden: false)
           ..playAnimationByName('Wave');
@@ -1135,7 +1135,7 @@ class ShowcaseDiagnostics() {
       final diceOk =
           rig.diceRigidBodies.length == 4 &&
           rig.diceRigidBodies.every(
-            (b) => b.bodyPosition.z > 0.10 && b.bodyPosition.z < 5.0,
+            (b) => b.bodyPosition.z > 0.1 && b.bodyPosition.z < 5.0,
           );
       final hingeAngle = rig.pendulumHinge?.jointAngle ?? 99.0;
       final hingeOk =
@@ -1384,6 +1384,7 @@ class ShowcaseDiagnostics() {
       final fbComp = Canvas3DFallbackComponent(
         world: fbWorld,
         size: Vector2(120, 90),
+        cullBackFaces: false,
       );
       final fbRec = ui.PictureRecorder();
       fbComp.render(ui.Canvas(fbRec));

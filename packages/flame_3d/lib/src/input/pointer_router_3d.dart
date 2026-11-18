@@ -25,10 +25,6 @@ class PointerRouter3D._({
   super.priority,
   super.key,
 }) extends PositionComponent with TapCallbacks, DragCallbacks, HoverCallbacks {
-  this {
-    isDropPayload = false;
-  }
-
   /// Creates a router targeting an embedded [Scene3DComponent] layer.
   factory PointerRouter3D.forScene(
     Scene3DComponent layer, {

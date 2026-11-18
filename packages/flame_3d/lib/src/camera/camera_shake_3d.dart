@@ -237,7 +237,7 @@ class CameraShake3D({
     final p3 = ((hash >> 14) % 6283) * 0.001 + 2.41;
     final f = 1.0 + channel * 0.07;
     return 0.55 * math.sin(t * f + p1) +
-        0.30 * math.sin(t * f * 2.31 + p2) +
+        0.3 * math.sin(t * f * 2.31 + p2) +
         0.15 * math.sin(t * f * 4.17 + p3);
   }
 

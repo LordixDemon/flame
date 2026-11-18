@@ -87,7 +87,7 @@ class ShowcaseV2Builders() {
         final cz = math.sin(a);
         pos.addAll([x, cy * radius, cz * radius]);
         nrm.addAll([0.0, cy, cz]);
-        col.addAll([0.18 + 0.65 * u, 0.85 - 0.30 * u, 0.92, 1.0]);
+        col.addAll([0.18 + 0.65 * u, 0.85 - 0.3 * u, 0.92, 1.0]);
         occ.add(0.55 + 0.45 * (0.5 + 0.5 * cz));
         accent.add(r % 3 == 0 ? 0.9 : 0.1);
         gloss.add(0.65);
@@ -237,7 +237,7 @@ class ShowcaseV2Builders() {
             weights: Float32List.fromList(const [
               0.0, 0.0, //
               0.95, 0.15, //
-              0.20, 0.95, //
+              0.2, 0.95, //
               0.0, 0.0, //
             ]),
           ),
@@ -308,7 +308,7 @@ class ShowcaseV2Builders() {
         name: 'Shoulder',
         nodeIndex: 4,
         parentNodeIndex: 1,
-        transform: Matrix4.translationValues(0.36, 0.30, 0),
+        transform: Matrix4.translationValues(0.36, 0.3, 0),
         mesh: limbMesh,
         joints: const {},
       ),
@@ -332,7 +332,7 @@ class ShowcaseV2Builders() {
         name: 'WaveArm',
         nodeIndex: 7,
         parentNodeIndex: 1,
-        transform: Matrix4.translationValues(-0.40, 0.30, 0),
+        transform: Matrix4.translationValues(-0.4, 0.3, 0),
         mesh: limbMesh,
         joints: const {},
       ),
@@ -348,9 +348,9 @@ class ShowcaseV2Builders() {
                 interpolation: AnimationInterpolation.cubicSpline,
                 times: const [0.0, 0.6, 1.2],
                 values: [
-                  Vector3(0, 0.50, 0),
+                  Vector3(0, 0.5, 0),
                   Vector3(0, 0.68, 0),
-                  Vector3(0, 0.50, 0),
+                  Vector3(0, 0.5, 0),
                 ],
               ),
             ),
@@ -367,7 +367,7 @@ class ShowcaseV2Builders() {
             AnimationController(
               animation: RotationAnimationSpline.from(
                 interpolation: AnimationInterpolation.cubicSpline,
-                times: const [0.0, 0.45, 0.90],
+                times: const [0.0, 0.45, 0.9],
                 values: [
                   Quaternion.axisAngle(Vector3(0, 0, 1), 0.35),
                   Quaternion.axisAngle(Vector3(0, 0, 1), 1.35),
@@ -396,7 +396,7 @@ class ShowcaseV2Builders() {
         var nx = 0.0;
         var ny = 0.0;
         var nz = 1.0;
-        if (r2 < 0.20) {
+        if (r2 < 0.2) {
           nx = fx * 1.65;
           ny = fy * 1.65;
           nz = math.sqrt(math.max(0.05, 1.0 - nx * nx - ny * ny));
@@ -575,8 +575,8 @@ class ShowcaseV2Builders() {
 
         final head = lx * lx + (ly - 0.24) * (ly - 0.24) * 4.0 < 0.14;
         final cloak =
-            ly >= 0.36 && ly <= 0.95 && lx.abs() < (0.20 + (ly - 0.36) * 0.65);
-        final isVisor = ly >= 0.20 && ly <= 0.27 && lx.abs() < 0.18;
+            ly >= 0.36 && ly <= 0.95 && lx.abs() < (0.2 + (ly - 0.36) * 0.65);
+        final isVisor = ly >= 0.2 && ly <= 0.27 && lx.abs() < 0.18;
         final opaque = head || cloak;
         final i = (y * size + x) * 4;
         if (!opaque) {

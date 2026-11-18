@@ -823,7 +823,7 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
           shape: const SphereEmitterShape3D(1.1, surface: true),
           speed: (0.2, 0.5),
           lifespan: (1.5, 2.5),
-          size: (0.12, 0.20),
+          size: (0.12, 0.2),
         ),
       ],
       attractors: [
@@ -852,7 +852,7 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
           shape: const ConeEmitterShape3D(angle: 0.65),
           speed: (0.4, 1.0),
           lifespan: (0.9, 1.4),
-          size: (0.10, 0.16),
+          size: (0.1, 0.16),
           colors: const [ui.Color(0xFF38BDF8), ui.Color(0xFFF43F5E)],
         ),
       ],
@@ -891,7 +891,7 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
           shape: const SphereEmitterShape3D(0.55),
           speed: (0.1, 0.3),
           lifespan: (0.8, 1.2),
-          size: (0.20, 0.32),
+          size: (0.2, 0.32),
         ),
       ],
     )..prewarm(0.8);
@@ -1395,7 +1395,7 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
         if (h < 0.22) {
           return const ui.Color(0xFFE9C46A); // Sandy shore
         }
-        if (slope > 0.30) {
+        if (slope > 0.3) {
           return const ui.Color(0xFF64748B); // Cliff rock
         }
         return h > 0.85
@@ -1476,7 +1476,7 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
       if (i.isEven) {
         staticExtras.add(
           MeshComponent(
-            mesh: CapsuleMesh(radius: 0.20, height: 0.78, material: ringMat),
+            mesh: CapsuleMesh(radius: 0.2, height: 0.78, material: ringMat),
             position: Vector3(wx, wy, groundZ + 0.39),
             rotation: upright,
           ),
@@ -1486,7 +1486,7 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
           MeshComponent(
             mesh: TorusMesh(
               majorRadius: 0.36,
-              minorRadius: 0.10,
+              minorRadius: 0.1,
               material: ringMat,
             ),
             position: Vector3(wx, wy, groundZ + 0.85),
@@ -1642,7 +1642,7 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
     staticExtras.add(
       MeshComponent(
         mesh: CuboidMesh(
-          size: Vector3(6.6, 0.10, 0.08),
+          size: Vector3(6.6, 0.1, 0.08),
           material: SpatialMaterial(
             albedoColor: const ui.Color(0xFF64748B),
             metallic: 0.7,
@@ -1758,7 +1758,7 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
       shape: BoxShape3D(halfExtents: Vector3(7.0, 7.0, 0.25)),
       bodyType: BodyType3D.static,
       restitution: 0.42,
-      friction: 0.60,
+      friction: 0.6,
       syncParent: false,
       position: Vector3(7.0, 7.0, -0.25),
     );
@@ -1781,7 +1781,7 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
           size: Vector3.all(0.56),
           material: SpatialMaterial(
             albedoColor: dieColors[i],
-            metallic: 0.20,
+            metallic: 0.2,
             roughness: 0.32,
           )..renderState = const RenderState(cullMode: CullMode.backFace),
         ),
@@ -1806,19 +1806,19 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
       position: Vector3(2.8, 10.6, 2.8),
     );
     pendulumBobBody = RigidBody3D(
-      shape: SphereShape3D(radius: 0.30),
+      shape: SphereShape3D(radius: 0.3),
       mass: 1.5,
       linearDamping: 0.02,
       angularDamping: 0.02,
     );
     final pendulumBob = MeshComponent(
       mesh: SphereMesh(
-        radius: 0.30,
+        radius: 0.3,
         segments: 14,
         material: SpatialMaterial(
           albedoColor: const ui.Color(0xFFEAB308),
           metallic: 0.85,
-          roughness: 0.20,
+          roughness: 0.2,
         )..renderState = const RenderState(cullMode: CullMode.backFace),
       ),
       position: Vector3(3.75, 10.6, 2.05),
@@ -1867,7 +1867,7 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
           children: [
             Collider3D(
               shape: BoxShape3D(
-                halfExtents: Vector3(widthX * 0.5, 0.70, topZ * 0.5),
+                halfExtents: Vector3(widthX * 0.5, 0.7, topZ * 0.5),
               ),
               isStatic: true,
             ),
@@ -1907,7 +1907,7 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
         material: SpatialMaterial(
           albedoColor: const ui.Color(0xFFEC4899),
           metallic: 0.35,
-          roughness: 0.30,
+          roughness: 0.3,
         )..renderState = const RenderState(cullMode: CullMode.backFace),
       ),
       position: Vector3(8.1, 11.4, 0.0),
@@ -2161,7 +2161,7 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
       staticExtras.add(
         MeshComponent(
           mesh: SphereMesh(
-            radius: 0.40,
+            radius: 0.4,
             segments: 20,
             material: SpatialMaterial(
               albedoColor: const ui.Color(0xFFF8FAFC),
@@ -2254,7 +2254,7 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
       mat.windTime = time;
     }
     if (depthPrepassGhost case final ghost?) {
-      final fade = 0.42 + 0.30 * math.sin(time * 2.2);
+      final fade = 0.42 + 0.3 * math.sin(time * 2.2);
       ghost.fade = fade;
       naiveGhost?.instanceData.w = fade;
     }
@@ -2268,7 +2268,7 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
     if (ikTargetOrb case final orb?) {
       final tx = 4.9 + 0.45 * math.cos(time * 2.1);
       final ty = 9.8 + 0.55 * math.sin(time * 1.7);
-      final tz = 1.15 + 0.30 * math.sin(time * 2.8);
+      final tz = 1.15 + 0.3 * math.sin(time * 2.8);
       orb.position.setValues(tx, ty, tz);
       twoBoneIk?.targetWorld.setValues(tx, ty, tz);
       lookAtHead?.targetWorld.setValues(tx, ty, tz);

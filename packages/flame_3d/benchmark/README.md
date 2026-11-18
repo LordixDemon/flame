@@ -53,18 +53,18 @@ It prints, per frame:
 `flutter test` runs the Dart code in JIT, with assertions, on a software
 GPU: compare its numbers with each other, not with a device.
 
-| Define               | Default | Meaning                                    |
-| -------------------- | ------- | ------------------------------------------ |
+| Define               | Default | Meaning                                               |
+| -------------------- | ------- | ----------------------------------------------------- |
 | `BENCH_MODE`         | `all`   | `cpu`, `alloc` (CPU and allocations), `gpu`, or `all` |
-| `BENCH_FRAMES`       | `600`   | measured frames                            |
-| `BENCH_WARMUP`       | `400`   | frames rendered before measuring           |
-| `BENCH_GPU_FRAMES`   | `24`    | whole frames timed at a phone's resolution |
-| `BENCH_RENDER_SCALE` | `1`     | the layer's render scale for those frames  |
-| `BENCH_OBJECTS`      | `200`   | instanced objects                          |
-| `BENCH_TRIANGLES`    | `1`     | triangles per object, times about 600      |
-| `BENCH_SHADOWS`      | `true`  | whether the sun casts shadows              |
-| `BENCH_OUT`          |         | a file to write the results to, as JSON    |
-| `FLAME_3D_PROFILE`   | `false` | time the renderer's phases (`RenderProfile`) |
+| `BENCH_FRAMES`       | `600`   | measured frames                                       |
+| `BENCH_WARMUP`       | `400`   | frames rendered before measuring                      |
+| `BENCH_GPU_FRAMES`   | `24`    | whole frames timed at a phone's resolution            |
+| `BENCH_RENDER_SCALE` | `1`     | the layer's render scale for those frames             |
+| `BENCH_OBJECTS`      | `200`   | instanced objects                                     |
+| `BENCH_TRIANGLES`    | `1`     | triangles per object, times about 600                 |
+| `BENCH_SHADOWS`      | `true`  | whether the sun casts shadows                         |
+| `BENCH_OUT`          |         | a file to write the results to, as JSON               |
+| `FLAME_3D_PROFILE`   | `false` | time the renderer's phases (`RenderProfile`)          |
 
 
 ## Running it in an AOT build

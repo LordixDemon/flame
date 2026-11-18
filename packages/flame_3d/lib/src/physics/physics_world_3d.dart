@@ -1,7 +1,6 @@
 import 'dart:math' as math;
 
 import 'package:flame/components.dart' show Component, HasWorldRef;
-import 'package:flame/math.dart' show SeededRng;
 import 'package:flame_3d/camera.dart' show World3D;
 import 'package:flame_3d/collisions.dart';
 import 'package:flame_3d/core.dart';
@@ -94,7 +93,7 @@ class PhysicsWorld3D({
     double minSpinSpeed = 10.0,
     double maxSpinSpeed = 22.0,
   }) {
-    final rng = SeededRng(seed);
+    final rng = SeededRng3D(seed);
     final baseOrigin = origin ?? Vector3(0.0, 3.0, 2.5);
     final baseVel = throwVelocity ?? Vector3(0.0, -1.5, -4.5);
     final halfSpan = (bodies.length - 1) * 0.5 * spacing;

@@ -33,7 +33,7 @@ class ShowcaseAssets() {
   /// Clear-coat MatCap sphere texture (`64x64`, linear + mipmaps).
   late final Texture coatMatCap = _buildMatCap(
     size: 64,
-    base: const (0.04, 0.06, 0.10),
+    base: const (0.04, 0.06, 0.1),
     highlight: const (0.95, 0.97, 1.0),
     rim: const (0.18, 0.34, 0.56),
     power: 22,
@@ -168,7 +168,7 @@ class ShowcaseAssets() {
       halfY: 0.36,
       z0: 0.0,
       z1: 0.22,
-      rgb: const (0.86, 0.84, 0.80),
+      rgb: const (0.86, 0.84, 0.8),
       aoBottom: 0.55,
       tintMask: 0.85,
       accentMask: 0.0,
@@ -182,7 +182,7 @@ class ShowcaseAssets() {
       z0: 0.22,
       z1: 0.38,
       rgb: const (0.95, 0.95, 0.98),
-      aoBottom: 0.80,
+      aoBottom: 0.8,
       tintMask: 0.0,
       accentMask: 1.0,
       emissiveMask: 0.12,
@@ -194,7 +194,7 @@ class ShowcaseAssets() {
       halfY: 0.15,
       z0: 0.38,
       z1: 0.58,
-      rgb: const (0.90, 0.96, 1.0),
+      rgb: const (0.9, 0.96, 1.0),
       aoBottom: 0.95,
       tintMask: 0.0,
       accentMask: 0.45,
@@ -284,7 +284,7 @@ class ShowcaseAssets() {
       rTop: 0.09,
       z0: 0.0,
       z1: 0.65,
-      rgb: const (0.44, 0.30, 0.20),
+      rgb: const (0.44, 0.3, 0.2),
       sway0: 0.0,
       sway1: 0.18,
       flutterVal: 0.0,
@@ -298,7 +298,7 @@ class ShowcaseAssets() {
       rTop: 0.08,
       z0: 0.48,
       z1: 1.32,
-      rgb: const (0.20, 0.56, 0.32),
+      rgb: const (0.2, 0.56, 0.32),
       sway0: 0.22,
       sway1: 0.72,
       flutterVal: 0.65,
@@ -312,7 +312,7 @@ class ShowcaseAssets() {
       rTop: 0.02,
       z0: 1.02,
       z1: 1.85,
-      rgb: const (0.28, 0.72, 0.40),
+      rgb: const (0.28, 0.72, 0.4),
       sway0: 0.55,
       sway1: 1.0,
       flutterVal: 1.0,
@@ -467,8 +467,8 @@ class ShowcaseAssets() {
             texCoord: Vector2(s / sides, t),
             color: ui.Color.from(
               alpha: 1.0,
-              red: 0.30 + 0.55 * t,
-              green: 0.72 - 0.20 * t,
+              red: 0.3 + 0.55 * t,
+              green: 0.72 - 0.2 * t,
               blue: 0.95,
             ),
             joints: Vector4(0, 1, 0, 0),
@@ -710,7 +710,7 @@ class ShowcaseAssets() {
         final cy = math.sin(a);
         pos.addAll([cx * radius, cy * radius, z]);
         nrm.addAll([cx, cy, 0.2]);
-        col.addAll([0.88, 0.90, 0.96, 1.0]);
+        col.addAll([0.88, 0.9, 0.96, 1.0]);
         occ.add(0.45 + 0.55 * t);
         tint.add(1.0 - t);
         accent.add(s.isEven ? 0.85 : 0.15);
@@ -911,8 +911,8 @@ class ShowcaseAssets() {
     // Intersecting spheres: torso, inner bright core, shoulders, head.
     addSphere(0, 0, 0.55, 0.44, const ui.Color(0xFF72EFDD));
     addSphere(0, 0, 0.62, 0.24, const ui.Color(0xFFFF4D6D));
-    addSphere(-0.30, 0, 0.78, 0.26, const ui.Color(0xFF64DFDF));
-    addSphere(0.30, 0, 0.78, 0.26, const ui.Color(0xFF64DFDF));
+    addSphere(-0.3, 0, 0.78, 0.26, const ui.Color(0xFF64DFDF));
+    addSphere(0.3, 0, 0.78, 0.26, const ui.Color(0xFF64DFDF));
     addSphere(0, 0, 1.12, 0.28, const ui.Color(0xFF80FFDB));
 
     return Mesh()..addSurface(
@@ -1179,7 +1179,7 @@ class ShowcaseAssets() {
           final a = (mask * (1.0 - 0.55 * phase)).clamp(0.0, 1.0);
           final cr = (1.0 * a * 255).round();
           final cg = ((0.35 + 0.65 * hot) * a * 255).round();
-          final cb = ((0.08 + 0.80 * hot * hot) * a * 255).round();
+          final cb = ((0.08 + 0.8 * hot * hot) * a * 255).round();
           final ca = (a * 255).round();
           final gx = col * cell + px;
           final gy = row * cell + py;
@@ -1315,7 +1315,7 @@ class ShowcaseAssets() {
             0.0,
             1.0,
           );
-          final inner = manhattan < 0.30 ? 0.9 : 0.0;
+          final inner = manhattan < 0.3 ? 0.9 : 0.0;
           alpha = math.max(outer, inner);
         } else {
           // Concentric pulse target

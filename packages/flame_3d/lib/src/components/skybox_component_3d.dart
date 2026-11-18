@@ -43,7 +43,7 @@ class SkyboxMaterial3D({
 
   /// Direction light travels FROM the sun (`-sunDir` points towards the sun),
   /// matching [DirectionalLight.direction].
-  Vector3 sunDirection = sunDirection?.clone() ?? Vector3(-0.45, -0.65, -0.60);
+  Vector3 sunDirection = sunDirection?.clone() ?? Vector3(-0.45, -0.65, -0.6);
 
   /// World up axis (`(0, 1, 0)` by default).
   Vector3 upAxis = upAxis?.clone() ?? Vector3(0, 1, 0);

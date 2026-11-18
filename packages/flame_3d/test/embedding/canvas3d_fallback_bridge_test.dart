@@ -1,6 +1,5 @@
 import 'dart:ui' show Canvas, Color, PictureRecorder;
 
-import 'package:flame/canvas3d.dart' as c3d;
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
@@ -47,10 +46,10 @@ void main() {
 
         final fallback = Canvas3DFallbackComponent(
           world: world,
-          drawShadows: true,
-          cameraRig: c3d.CameraRig3D(
-            projectionMode: c3d.CameraProjectionMode3D.perspective,
-            cameraDistance: 10.0,
+          size: Vector2(320, 200),
+          camera: CameraComponent3D(
+            position: Vector3(0, 5, 8),
+            target: Vector3(0, 0.8, 0),
           ),
         );
 
@@ -60,7 +59,7 @@ void main() {
         final picture = recorder.endRecording();
         addTearDown(picture.dispose);
 
-        expect(fallback.lastTrianglesSubmitted, greaterThan(50));
+        expect(fallback.lastTrianglesSubmitted, greaterThan(20));
       },
     );
 

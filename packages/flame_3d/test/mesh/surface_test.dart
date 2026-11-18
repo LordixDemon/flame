@@ -32,7 +32,7 @@ void main() {
           texCoord: Vector2(0, 1),
           normal: Vector3(0, 0, 1),
           joints: Vector4(1, 2, 3, 4),
-          weights: Vector4(.4, .3, .2, .1),
+          weights: Vector4(0.4, 0.3, 0.2, 0.1),
         ),
       ];
       final surface = Surface(vertices: vertices, indices: [0, 1, 2]);

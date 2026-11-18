@@ -242,7 +242,7 @@ class StylizedMaterial({
 
   /// How much of the hemisphere light's ground color surfaces facing down
   /// get.
-  var double groundBounce = 0.10,
+  var double groundBounce = 0.1,
 
   /// The least a point light lights a surface, even facing away from it, as
   /// a fraction of its light.

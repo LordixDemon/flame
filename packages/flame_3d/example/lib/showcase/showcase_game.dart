@@ -379,7 +379,7 @@ class ShowcaseGame({ShowcaseController? controller})
         shadowMesh: shadowCrystal,
         levels: [
           MeshLodLevel(mesh: highCrystal, minScreenHeightRatio: 0.32),
-          MeshLodLevel(mesh: midCrystal, minScreenHeightRatio: 0.10),
+          MeshLodLevel(mesh: midCrystal, minScreenHeightRatio: 0.1),
           MeshLodLevel(mesh: lowCrystal),
         ],
       );
@@ -464,7 +464,7 @@ class ShowcaseGame({ShowcaseController? controller})
         for (var iy = 0; iy < 32; iy++) {
           final cx = 0.35 + ix * (boardCells - 0.7) / 63;
           final cy = 0.35 + iy * (boardCells - 0.7) / 31;
-          final zScale = 0.30 + 0.55 * ((ix * 5 + iy * 3) % 5) / 4;
+          final zScale = 0.3 + 0.55 * ((ix * 5 + iy * 3) % 5) / 4;
           m
             ..setIdentity()
             ..setTranslationRaw(cx, cy, 0)
@@ -630,7 +630,7 @@ class ShowcaseGame({ShowcaseController? controller})
     ringDecals = DecalBatch3D(
       material: DecalMaterial(
         innerRadius: 0.68,
-        softness: 0.10,
+        softness: 0.1,
         depthBias: 0.001,
       ),
     );
@@ -1100,7 +1100,7 @@ class ShowcaseGame({ShowcaseController? controller})
       ..ssaoIntensity = controller.ssao ? 0.72 : 0.0
       ..ssaoRadius = 0.032
       ..dofBlurStrength = controller.dof ? 0.45 : 0.0
-      ..dofFocusDepth = 0.50
+      ..dofFocusDepth = 0.5
       ..dofFocusRange = 0.16;
 
     final needDepthPrepass =
@@ -1205,7 +1205,7 @@ class ShowcaseGame({ShowcaseController? controller})
   /// `Swing` -> `Spin`), supporting custom [mode] and [duration].
   void crossFadeNextClip({
     AnimationPlayMode mode = AnimationPlayMode.loop,
-    double duration = 0.30,
+    double duration = 0.3,
   }) {
     _clipIndex = (_clipIndex + 1) % animationClips.length;
     final clipName = animationClips[_clipIndex];
@@ -1404,7 +1404,7 @@ class ShowcaseGame({ShowcaseController? controller})
       return;
     }
     final sorted = _frameDurationsMs.sublist(0, _frameSamples)..sort();
-    final p50 = sorted[(sorted.length * 0.50).floor()];
+    final p50 = sorted[(sorted.length * 0.5).floor()];
     final p95Index = math.min(
       sorted.length - 1,
       (sorted.length * 0.95).floor(),

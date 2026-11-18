@@ -219,10 +219,9 @@ thumbnails and UI cards), call `layer.renderToImage(logicalSize)` or
 `world.renderToImage(pixelSize, view: ..., projection: ...)`. For live zero-CPU-readback GPU portals,
 monitors and mirrors inside a 3D scene, use `RenderTexture3D` instead. And on desktop/legacy
 environments where Flutter GPU is unavailable (`!GpuBackend.isAvailable`, such as Windows or Linux),
-`Canvas3DFallbackComponent(world: world)` projects and renders `World3D` meshes via
-`package:flame/canvas3d.dart` (`BatchMeshRenderer3D`). Dispose returned `Image`s and
-`RenderTexture3D`s when no longer needed (`Resource.dispose()` also deterministically releases GPU
-buffers and textures).
+`Canvas3DFallbackComponent(world: world)` projects, shades, depth-sorts and renders `World3D`
+meshes via `Canvas.drawVertices`. Dispose returned `Image`s and `RenderTexture3D`s when no longer
+needed (`Resource.dispose()` also deterministically releases GPU buffers and textures).
 
 
 ## Hosts

@@ -142,7 +142,7 @@ class ShowcaseV3Builders() {
     zenithColor: const ui.Color(0xFF1D4ED8),
     horizonColor: const ui.Color(0xFF67E8F9),
     upAxis: Vector3(0, 0, 1),
-    sunDirection: Vector3(-0.45, -0.55, -0.70),
+    sunDirection: Vector3(-0.45, -0.55, -0.7),
     sunIntensity: 1.5,
   );
 
@@ -197,7 +197,7 @@ class ShowcaseV3Builders() {
       final times = [
         0.0,
         duration * 0.25,
-        duration * 0.50,
+        duration * 0.5,
         duration * 0.75,
         duration,
       ];
@@ -266,18 +266,18 @@ class ShowcaseV3Builders() {
       name: 'Walk',
       duration: 0.8,
       strideSwingRad: 0.48,
-      rootForwardDist: 0.90,
+      rootForwardDist: 0.9,
       rootStrafeDist: 0.0,
       events: [
-        AnimationEvent3D(time: 0.20, name: 'footstep_l'),
-        AnimationEvent3D(time: 0.60, name: 'footstep_r'),
+        AnimationEvent3D(time: 0.2, name: 'footstep_l'),
+        AnimationEvent3D(time: 0.6, name: 'footstep_r'),
       ],
     );
     final run = buildGaitClip(
       name: 'Run',
       duration: 0.5,
       strideSwingRad: 0.85,
-      rootForwardDist: 1.80,
+      rootForwardDist: 1.8,
       rootStrafeDist: 0.0,
       events: [
         AnimationEvent3D(time: 0.125, name: 'footstep_l'),
@@ -289,14 +289,14 @@ class ShowcaseV3Builders() {
       duration: 0.7,
       strideSwingRad: 0.38,
       rootForwardDist: 0.0,
-      rootStrafeDist: -0.80,
+      rootStrafeDist: -0.8,
     );
     final strafeR = buildGaitClip(
       name: 'StrafeR',
       duration: 0.7,
       strideSwingRad: 0.38,
       rootForwardDist: 0.0,
-      rootStrafeDist: 0.80,
+      rootStrafeDist: 0.8,
     );
 
     return Model(

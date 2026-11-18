@@ -1,10 +1,71 @@
 import 'dart:math' as math;
 
-import 'package:flame/math.dart' show SeededRng;
 import 'package:flame_3d/collisions.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/game.dart' show NotifyingQuaternion, NotifyingVector3;
+
+/// Cross-platform deterministic 32-bit-safe SplitMix/Xoshiro128** PRNG used by
+/// `RigidBody3D` and `PhysicsWorld3D` so identical integer seeds produce
+/// bit-identical 3D dice throws across native VM, AOT, and Web targets.
+class SeededRng3D(int seed) {
+  /// Initializes the generator state from `seed`.
+  this {
+    var z = seed & 0xFFFFFFFF;
+    int nextWord() {
+      z = (z + 0x9E3779B9) & 0xFFFFFFFF;
+      var t = z ^ (z >>> 16);
+      t = _imul32(t, 0x85EBCA6B);
+      t = t ^ (t >>> 13);
+      t = _imul32(t, 0xC2B2AE35);
+      return (t ^ (t >>> 16)) & 0xFFFFFFFF;
+    }
+
+    _s0 = nextWord();
+    _s1 = nextWord();
+    _s2 = nextWord();
+    _s3 = nextWord();
+    if ((_s0 | _s1 | _s2 | _s3) == 0) {
+      _s0 = 1;
+    }
+  }
+
+  int _s0 = 1;
+  int _s1 = 0;
+  int _s2 = 0;
+  int _s3 = 0;
+
+  static int _imul32(int a, int b) {
+    final ah = (a >>> 16) & 0xFFFF;
+    final al = a & 0xFFFF;
+    final bh = (b >>> 16) & 0xFFFF;
+    final bl = b & 0xFFFF;
+    return ((al * bl) + ((((ah * bl) + (al * bh)) & 0xFFFF) << 16)) &
+        0xFFFFFFFF;
+  }
+
+  static int _rotl32(int x, int k) =>
+      ((x << k) | ((x & 0xFFFFFFFF) >>> (32 - k))) & 0xFFFFFFFF;
+
+  int _nextUint32() {
+    final result = _imul32(_rotl32(_imul32(_s1, 5), 7), 9);
+    final t = (_s1 << 9) & 0xFFFFFFFF;
+    _s2 = (_s2 ^ _s0) & 0xFFFFFFFF;
+    _s3 = (_s3 ^ _s1) & 0xFFFFFFFF;
+    _s1 = (_s1 ^ _s2) & 0xFFFFFFFF;
+    _s0 = (_s0 ^ _s3) & 0xFFFFFFFF;
+    _s2 = (_s2 ^ t) & 0xFFFFFFFF;
+    _s3 = _rotl32(_s3, 11);
+    return result;
+  }
+
+  /// Returns a uniform double in `[0.0, 1.0)`.
+  double nextDouble() => _nextUint32() / 4294967296.0;
+
+  /// Returns a uniform double in `[min, max)`.
+  double rangeDouble(double min, double max) =>
+      min + (max - min) * nextDouble();
+}
 
 /// Simulation mobility mode of a [RigidBody3D].
 enum BodyType3D() {
@@ -335,7 +396,7 @@ class RigidBody3D({
   }
 
   /// Applies a cross-platform deterministic launch velocity and angular spin
-  /// derived from [seed] via [SeededRng].
+  /// derived from [seed] via [SeededRng3D].
   void applySeededSpinImpulse({
     required int seed,
     double linearSpeed = 5.0,
@@ -347,7 +408,7 @@ class RigidBody3D({
     if (_bodyType != BodyType3D.dynamic || _inverseMass <= 0.0) {
       return;
     }
-    final rng = SeededRng(seed);
+    final rng = SeededRng3D(seed);
     wakeUp();
 
     final dir = baseDirection != null && baseDirection.length2 > 1e-12

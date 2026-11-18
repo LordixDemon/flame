@@ -6,12 +6,12 @@ import 'package:flame_test/flame_test.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Depth (z / w) of the view-space point [p] under [projection].
-double depthOf(Matrix4 projection, Vector3 p) {
+double _depthOf(Matrix4 projection, Vector3 p) {
   final clip = projection.transformed(Vector4(p.x, p.y, p.z, 1));
   return clip.z / clip.w;
 }
 
-Vector2 ndcOf(Matrix4 projection, Vector3 p) {
+Vector2 _ndcOf(Matrix4 projection, Vector3 p) {
   final clip = projection.transformed(Vector4(p.x, p.y, p.z, 1));
   return Vector2(clip.x / clip.w, clip.y / clip.w);
 }
@@ -31,14 +31,14 @@ void main() {
         final halfWidth = halfHeight * 1.5;
         for (final (sx, sy) in [(0, 0), (-1, -1), (1, -1), (1, 1), (-1, 1)]) {
           final point = Vector3(sx * halfWidth, sy * halfHeight, -distance);
-          expect(depthOf(projection, point), closeTo(expected, 1e-6));
-          expect(ndcOf(projection, point).x, closeTo(sx.toDouble(), 1e-6));
-          expect(ndcOf(projection, point).y, closeTo(sy.toDouble(), 1e-6));
+          expect(_depthOf(projection, point), closeTo(expected, 1e-6));
+          expect(_ndcOf(projection, point).x, closeTo(sx.toDouble(), 1e-6));
+          expect(_ndcOf(projection, point).y, closeTo(sy.toDouble(), 1e-6));
         }
       }
       // Depth grows monotonically between them.
       expect(
-        depthOf(projection, Vector3(0, 0, -1)),
+        _depthOf(projection, Vector3(0, 0, -1)),
         allOf(greaterThan(0), lessThan(1)),
       );
     });
@@ -46,16 +46,16 @@ void main() {
     test('setAsOrthographic maps near to 0, far to 1, linearly between', () {
       final projection = Matrix4.zero()..setAsOrthographic(10, 2, 1, 101);
 
-      expect(depthOf(projection, Vector3(0, 0, -1)), closeTo(0, 1e-7));
-      expect(depthOf(projection, Vector3(3, 4, -51)), closeTo(0.5, 1e-7));
-      expect(depthOf(projection, Vector3(-3, -4, -101)), closeTo(1, 1e-7));
+      expect(_depthOf(projection, Vector3(0, 0, -1)), closeTo(0, 1e-7));
+      expect(_depthOf(projection, Vector3(3, 4, -51)), closeTo(0.5, 1e-7));
+      expect(_depthOf(projection, Vector3(-3, -4, -101)), closeTo(1, 1e-7));
       // The height is the full vertical extent, the width height * aspect.
       expect(
-        ndcOf(projection, Vector3(10, 5, -50)),
+        _ndcOf(projection, Vector3(10, 5, -50)),
         closeToVector(Vector2(1, 1), 1e-6),
       );
       expect(
-        ndcOf(projection, Vector3(-10, -5, -50)),
+        _ndcOf(projection, Vector3(-10, -5, -50)),
         closeToVector(Vector2(-1, -1), 1e-6),
       );
     });
@@ -63,9 +63,9 @@ void main() {
     test('setAsOrthographic accepts a negative near distance', () {
       final projection = Matrix4.zero()..setAsOrthographic(10, 1, -50, 50);
 
-      expect(depthOf(projection, Vector3(0, 0, 50)), closeTo(0, 1e-7));
-      expect(depthOf(projection, Vector3(0, 0, 0)), closeTo(0.5, 1e-7));
-      expect(depthOf(projection, Vector3(0, 0, -50)), closeTo(1, 1e-7));
+      expect(_depthOf(projection, Vector3(0, 0, 50)), closeTo(0, 1e-7));
+      expect(_depthOf(projection, Vector3(0, 0, 0)), closeTo(0.5, 1e-7));
+      expect(_depthOf(projection, Vector3(0, 0, -50)), closeTo(1, 1e-7));
     });
 
     test('setAsOrthographicOffCenter maps the box to the clip volume', () {
@@ -73,19 +73,19 @@ void main() {
         ..setAsOrthographicOffCenter(2, 6, -1, 3, 0, 10);
 
       expect(
-        ndcOf(projection, Vector3(2, -1, -5)),
+        _ndcOf(projection, Vector3(2, -1, -5)),
         closeToVector(Vector2(-1, -1), 1e-6),
       );
       expect(
-        ndcOf(projection, Vector3(6, 3, -5)),
+        _ndcOf(projection, Vector3(6, 3, -5)),
         closeToVector(Vector2(1, 1), 1e-6),
       );
       expect(
-        ndcOf(projection, Vector3(4, 1, -5)),
+        _ndcOf(projection, Vector3(4, 1, -5)),
         closeToVector(Vector2(0, 0), 1e-6),
       );
-      expect(depthOf(projection, Vector3(4, 1, 0)), closeTo(0, 1e-7));
-      expect(depthOf(projection, Vector3(4, 1, -10)), closeTo(1, 1e-7));
+      expect(_depthOf(projection, Vector3(4, 1, 0)), closeTo(0, 1e-7));
+      expect(_depthOf(projection, Vector3(4, 1, -10)), closeTo(1, 1e-7));
     });
 
     test('setAsViewMatrix matches vector_math for regular input', () {
