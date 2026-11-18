@@ -56,6 +56,14 @@ float shadowVisibility(vec3 worldPosition, vec3 normal) {
   vec3 ndc = clip.xyz / clip.w;
   vec2 uv = vec2(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y);
   float depth = ndc.z;
+  // Outside the map, nothing is in shadow: the map is not sampled. It is
+  // sampled at single texels, without mipmaps, so that sampling it in a
+  // branch is safe.
+  bool inside = uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0 &&
+    depth <= 1.0;
+  if (!inside) {
+    return 1.0;
+  }
 
   vec2 texelPosition = uv * shadows.map.xy - 0.5;
   vec2 base = floor(texelPosition);
@@ -71,11 +79,7 @@ float shadowVisibility(vec3 worldPosition, vec3 normal) {
     }
   }
   float side = float(2 * radius + 1);
-  lit /= side * side;
-
-  bool inside = uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0 &&
-    depth <= 1.0;
-  return inside ? lit : 1.0;
+  return lit / (side * side);
 }
 
 // What the light that casts shadows is multiplied by where `visibility` of

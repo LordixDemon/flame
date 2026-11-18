@@ -213,7 +213,9 @@ components (recording their draws a second time, `ModelComponent`s posing their 
 - the shadow pass draws one draw call per caster surface, objects sharing a surface in one
   instanced draw, with depth-only shaders; draws whose material casts no shadows are not even
   recorded, and particle systems that cast none skip the shadow pass altogether;
-- the receivers sample the map `(2 * softness + 2)²` times per fragment;
+- the receivers sample the map `(2 * softness + 2)²` times per fragment, where the shadow can show:
+  not outside of the map, and, for `StylizedMaterial`, not where the surface faces away from the
+  sun and has no highlights;
 - the map takes `resolution² * 4` bytes, plus a depth attachment that lives in tile memory where
   the GPU has it.
 

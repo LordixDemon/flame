@@ -140,7 +140,15 @@ void main() {
 
   float specular = 0.0;
   bool glossy = gloss > material.specularThreshold;
-  vec3 sunShadow = shadowFactor(shadowVisibility(fragPosition, n));
+  // The shadow only scales the direct light (and the highlights) of the sun
+  // that casts it: where the surface faces away from that sun and has no
+  // highlights, it changes nothing and the map is not sampled.
+  vec3 sunShadow = vec3(1.0);
+  int shadowed = int(shadows.toLight.w);
+  if (shadowed >= 0 && shadowed < int(directionalLights.numLights) &&
+      (glossy || dot(n, directionalLights.directions[shadowed].xyz) > 0.0)) {
+    sunShadow = shadowFactor(shadowVisibility(fragPosition, n));
+  }
   for (int i = 0; i < int(directionalLights.numLights); i++) {
     vec4 direction = directionalLights.directions[i];
     vec4 lightColor = directionalLights.colors[i];
@@ -176,17 +184,23 @@ void main() {
   vec3 rim = fresnel * material.rimStrength *
     (hemisphereLight.skyColor.rgb + material.rimColor.rgb);
 
-  // Both MatCap textures are sampled outside of any branch, so that their
-  // texture coordinates' derivatives are defined. A MatCap is a sphere as
-  // seen in the picture: when the projection mirrors the picture, the x axis
-  // of the (rigid) view points to the left of it, and is mirrored back.
-  vec3 viewNormal = normalize(mat3(camera.view) * n);
-  viewNormal.x *= pictureMirror();
-  vec2 matCapUv = vec2(0.5 + 0.5 * viewNormal.x, 0.5 - 0.5 * viewNormal.y);
-  vec3 coat = texture(matCapTexture, matCapUv).rgb * material.matCapStrength *
-    mix(1.0, gloss, material.matCapGlossWeight);
-  vec3 gem = texture(gemMatCapTexture, matCapUv).rgb *
-    material.gemMatCapStrength;
+  // Both MatCap textures are sampled in a branch that depends on the
+  // material alone, so that their texture coordinates' derivatives are
+  // defined; a material whose MatCaps have no strength does not sample them.
+  // A MatCap is a sphere as seen in the picture: when the projection mirrors
+  // the picture, the x axis of the (rigid) view points to the left of it,
+  // and is mirrored back.
+  vec3 coat = vec3(0.0);
+  vec3 gem = vec3(0.0);
+  if (material.matCapStrength != 0.0 || material.gemMatCapStrength != 0.0) {
+    vec3 viewNormal = normalize(mat3(camera.view) * n);
+    viewNormal.x *= pictureMirror();
+    vec2 matCapUv = vec2(0.5 + 0.5 * viewNormal.x, 0.5 - 0.5 * viewNormal.y);
+    coat = texture(matCapTexture, matCapUv).rgb * material.matCapStrength *
+      mix(1.0, gloss, material.matCapGlossWeight);
+    gem = texture(gemMatCapTexture, matCapUv).rgb *
+      material.gemMatCapStrength;
+  }
   float gemWeight = gloss > material.gemThreshold ? 1.0 : 0.0;
   float coatWeight = gloss > material.matCapThreshold ? 1.0 - gemWeight : 0.0;
   vec3 matCap = coatWeight * coat + gemWeight * gem;
