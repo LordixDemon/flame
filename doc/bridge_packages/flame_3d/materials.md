@@ -7,7 +7,7 @@ lights they respond to, and textures.
 
 ## Built-in materials
 
-- `SpatialMaterial` is physically based (metallic-roughness PBR v2), lit by every kind of light
+- `SpatialMaterial` is physically based (metallic-roughness PBR), lit by every kind of light
   (including `SpotLight`s and directional PCF shadows on native), atmospheric fog, tangent-free
   cotangent `normalTexture` (`normalScale`), `metallicRoughnessTexture` (glTF `G` = roughness,
   `B` = metallic), `occlusionTexture` (`occlusionStrength`), `emissiveTexture` + `emissiveColor` /

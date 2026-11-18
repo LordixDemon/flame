@@ -110,7 +110,7 @@ class _BinBuilder() {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  group('glTF 2.0 v2 materials, samplers, morphs & >64-joint splitting', () {
+  group('glTF 2.0 materials, samplers, morphs & >64-joint splitting', () {
     test(
       'parses PBR maps, samplers, alphaMode, COLOR_0, morph targets '
       'and weights animation',

@@ -96,7 +96,7 @@ Texture _solidTexture(int r, int g, int b, [int a = 255]) {
 void main() {
   setUpGpu();
 
-  group('SpatialMaterial v2, SpotLight GPU & single-piece prepass', () {
+  group('SpatialMaterial maps, SpotLight GPU & single-piece prepass', () {
     testGpu(
       'SpatialMaterial receives SpotLight cone, directional shadows '
       'and FogSettings',

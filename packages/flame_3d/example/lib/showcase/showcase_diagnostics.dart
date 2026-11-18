@@ -383,12 +383,12 @@ class ShowcaseDiagnostics() {
             'width=${bannerTex?.width ?? 0}, height=${bannerTex?.height ?? 0}',
       );
 
-      // --- LAB 3: Wind v2 Spaces ---
+      // --- LAB 3: Wind Spaces ---
       game.applyPreset(ShowcasePreset.windSpaces);
       await pumpFrame();
       await pumpFrame();
 
-      // 13. Wind v2 (`WindSpace.world` vs `model` vs `worldScaled` + gusts).
+      // 13. Wind (`WindSpace.world` vs `model` vs `worldScaled` + gusts).
       final spaces = {for (final m in rig.animatedWindMaterials) m.windSpace};
       final windOk =
           spaces.containsAll(WindSpace.values) &&
@@ -712,7 +712,7 @@ class ShowcaseDiagnostics() {
             '(${waveSurf?.indexType.name}), obj=$objOk, glb=$glbOk',
       );
 
-      // --- LAB 9: PBR v2 Maps, Single-Piece Skinned Prepass & Dither Fade ---
+      // --- LAB 9: PBR Maps, Single-Piece Skinned Prepass & Dither Fade ---
       game.applyPreset(ShowcasePreset.pbrV2AndSinglePiece);
       await pumpFrame();
       await pumpFrame();
@@ -733,7 +733,7 @@ class ShowcaseDiagnostics() {
           game.staticLayer.renderStats.drawCalls >= 6;
       record(
         'pbr_v2_maps_and_env',
-        'SpatialMaterial v2 (Normal/ORM/AO/Emissive/Env/Cutout)',
+        'SpatialMaterial (Normal/ORM/AO/Emissive/Env/Cutout)',
         ok: pbrV2Ok,
         detail:
             'staticDraws=${game.staticLayer.renderStats.drawCalls}, '

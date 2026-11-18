@@ -75,7 +75,7 @@ class ShowcaseController() extends ChangeNotifier {
 ///   [ShadowSettings.cacheWhenStatic], [ShadowCatcherMaterial] on 2D ground,
 ///   [InstancedGroup3D] with 16-color [StylizedMaterial.accentPalette],
 ///   [LodMeshComponent] towers, `WindSpace.worldScaled` foliage, two-tier
-///   metallic/gem MatCaps, PBR [SpatialMaterial] v2 maps, [TerrainMesh3D], and
+///   metallic/gem MatCaps, PBR [SpatialMaterial] maps, [TerrainMesh3D], and
 ///   [TubeSplineMesh];
 /// - `dynamicLayer`: [BloomSettings] + fused [PostProcessSettings] (ACES/AgX,
 ///   vignette, FXAA), [FogSettings], 64-bone skinning, morph targets, animation

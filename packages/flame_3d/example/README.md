@@ -7,7 +7,7 @@ Interactive examples and an all-in-one 16-lab engine showcase for `package:flame
   - **16 feature labs (`ShowcasePreset`)** exercising retained `Scene3DComponent` layers,
     `ShadowSettings.cacheWhenStatic`, 2-cascade directional shadow atlases (`cascades: 2`),
     perspective `SpotLight` shadows, shared `ShadowGroup`, `ShadowCatcherMaterial`, 2,048-instance
-    `InstancedGroup3D` batching, `LodMeshComponent`, PBR v2 `SpatialMaterial` (`EnvironmentProbe3D`
+    `InstancedGroup3D` batching, `LodMeshComponent`, PBR `SpatialMaterial` (`EnvironmentProbe3D`
     `SH9` IBL, normal/ORM/AO/emissive maps), `StylizedMaterial`, `WaterMaterial` (`shoreFoamDepth`),
     `TerrainMesh3D`, `TubeSplineMesh`, HD-2D `BillboardBatch3D`, `Text3DComponent`, 64-bone
     skinning, morph targets, `AnimationLayer3D`, IK/LookAt/SpringBone, `BlendSpace1D`/`BlendSpace2D`,

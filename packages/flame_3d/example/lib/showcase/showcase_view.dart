@@ -457,7 +457,7 @@ class _ShowcaseViewState() extends State<ShowcaseView> {
                                 _toggle((c) => c.outlines = !c.outlines),
                           ),
                           _Chip(
-                            label: 'Wind v2',
+                            label: 'Wind',
                             active: ctrl.wind,
                             onTap: () => _toggle((c) => c.wind = !c.wind),
                           ),

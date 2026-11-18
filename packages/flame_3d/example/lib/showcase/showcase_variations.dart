@@ -36,7 +36,7 @@ enum ShowcasePreset(final String label, final String summary) {
     'PBR 3x3 + Grading + Depth-Prepass Ghost + Samplers + ImageTex + Mirror',
   ),
   windSpaces(
-    '3. Wind v2 Spaces',
+    '3. Wind Spaces',
     'Side-by-side WindSpace.world vs model vs worldScaled + Gusts + Flutter',
   ),
   shadowsAndLights(
@@ -60,7 +60,7 @@ enum ShowcasePreset(final String label, final String summary) {
     '2,048 InstancedGroup + 6 Skinned Rigs + 4 Particle Systems + Ribbons',
   ),
   pbrV2AndSinglePiece(
-    '9. PBR v2 & Single-Piece',
+    '9. PBR & Single-Piece',
     'Normal/ORM/Emissive/Env Maps + Cutout + Built-in Single-Piece + Dither',
   ),
   skinning64MorphIkLayers(
@@ -1163,7 +1163,7 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
   void buildPbrV2AndSinglePieceLab() {
     final upright = Quaternion.axisAngle(Vector3(1, 0, 0), math.pi / 2);
 
-    // 1. SpatialMaterial v2 with normal, ORM, occlusion, and emissive maps +
+    // 1. SpatialMaterial with normal, ORM, occlusion, and emissive maps +
     //    directional shadow & fog reception.
     pbrCobbleMaterial = SpatialMaterial(
       albedoColor: const ui.Color(0xFFCBD5E1),
