@@ -880,15 +880,24 @@ class RenderContext3D(super.device) extends RenderContext {
       ..setFloat('intensity', ambient.intensity);
   }
 
-  /// Writes the point lights of [RenderContext3D.lights] (at most
+  /// Writes the point lights of [RenderContext3D.lights] (the first
   /// [maxPointLights]) into [block].
+  ///
+  /// Lights of zero intensity add no light: they are left out, so that
+  /// shaders do not spend time on them, but still count among the first
+  /// [maxPointLights].
   static void writeLightsUniforms(RenderContext3D context, UniformBlock block) {
     final lights = context.lights;
     var count = 0;
-    for (var i = 0; i < lights.length && count < maxPointLights; i++) {
+    var slots = 0;
+    for (var i = 0; i < lights.length && slots < maxPointLights; i++) {
       final light = lights[i];
       final source = light.source;
       if (source is! PointLight) {
+        continue;
+      }
+      slots++;
+      if (source.intensity == 0) {
         continue;
       }
       final range = source.range;

@@ -44,7 +44,10 @@ values can be animated:
   (4) are used. With `shadows`, a `ShadowSettings`, it casts shadows, see [Shadows](shadows.md).
 - Without a `range`, a point light falls off with the inverse square of the distance `d`:
   `intensity / d²`. With one, it fades out smoothly and reaches no further:
-  `intensity * (1 - d / range)²`. Up to `RenderContext3D.maxPointLights` (8) are used.
+  `intensity * (1 - d / range)²`. Up to `RenderContext3D.maxPointLights` (8) are used. A point
+  light of zero intensity adds nothing and costs nothing: it is not written to the shaders, which
+  only go through the lights that shine (it still counts among the first eight), so a scene can
+  keep a fixed set of point lights and dim the unused ones to zero.
 
 ```dart
 world.addAll([

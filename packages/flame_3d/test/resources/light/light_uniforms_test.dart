@@ -194,6 +194,58 @@ void main() {
       expect(data[offsetOf('Lights', 'numLights')], 3);
     });
 
+    test('point lights of zero intensity are left out', () {
+      Light point(double x, double intensity) => Light(
+        position: Vector3(x, 0, 0),
+        source: PointLight(
+          color: const Color(0xFFFFFFFF),
+          intensity: intensity,
+        ),
+      );
+      final data = draw([
+        point(1, 0),
+        point(2, 2),
+        point(3, 0),
+        point(4, 0.5),
+      ])[RenderContext3D.lightsBlock]!;
+
+      expect(data[offsetOf('Lights', 'numLights')], 2);
+      final positions = offsetOf('Lights', 'positions');
+      expect(data[positions], 2);
+      expect(data[positions + 4], 4);
+      final intensities = offsetOf('Lights', 'intensities');
+      expect(data[intensities], 2);
+      expect(data[intensities + 4], 0.5);
+    });
+
+    test('point lights of zero intensity count among the first eight', () {
+      final data = draw([
+        for (var i = 0; i < RenderContext3D.maxPointLights; i++)
+          Light(
+            position: Vector3(i.toDouble(), 0, 0),
+            source: PointLight(
+              color: const Color(0xFFFFFFFF),
+              intensity: i.isEven ? 1 : 0,
+            ),
+          ),
+        // A ninth point light, as before, is not written.
+        Light(
+          position: Vector3(9, 0, 0),
+          source: PointLight(color: const Color(0xFFFFFFFF), intensity: 1),
+        ),
+      ])[RenderContext3D.lightsBlock]!;
+
+      expect(
+        data[offsetOf('Lights', 'numLights')],
+        RenderContext3D.maxPointLights ~/ 2,
+      );
+      final positions = offsetOf('Lights', 'positions');
+      expect(
+        [for (var i = 0; i < 4; i++) data[positions + i * 4]],
+        [0, 2, 4, 6],
+      );
+    });
+
     group('ambient light', () {
       test('defaults to white 0.2 without any ambient light', () {
         final data = draw(const [])[RenderContext3D.ambientLightBlock]!;
