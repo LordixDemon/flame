@@ -205,6 +205,56 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
     );
   }
 
+  @override
+  bool get supportsTextureTargets => true;
+
+  // Flutter GPU has no query for the formats a texture can be rendered into.
+  // Metal and Vulkan render into 32-bit float textures (Vulkan requires it of
+  // every device), OpenGL ES only with an extension; framebuffer render
+  // mipmaps are documented as supported on Metal and Vulkan and not on
+  // OpenGL ES, which tells the backends apart.
+  @override
+  late final bool supportsFloatTextureTargets =
+      _context.doesSupportFramebufferRenderMipmap;
+
+  @override
+  GpuTextureTarget createTextureTarget({
+    required int width,
+    required int height,
+    required GpuPixelFormat format,
+    required Color clearValue,
+  }) {
+    final texture = _context.createTexture(
+      gpu.StorageMode.devicePrivate,
+      width,
+      height,
+      format: _pixelFormat(format),
+    );
+    final depthTexture = _context.createTexture(
+      gpu.StorageMode.deviceTransient,
+      width,
+      height,
+      format: _context.defaultDepthStencilFormat,
+      enableShaderReadUsage: false,
+    );
+    return _FlutterGpuTextureTarget(
+      width,
+      height,
+      format,
+      _FlutterGpuTexture(texture),
+      gpu.RenderTarget.singleColor(
+        gpu.ColorAttachment(
+          texture: texture,
+          clearValue: Vector4Utils.fromColor(clearValue),
+        ),
+        depthStencilAttachment: gpu.DepthStencilAttachment(
+          texture: depthTexture,
+          depthClearValue: 1.0,
+        ),
+      ),
+    );
+  }
+
   /// The number of frames Flutter has drawn since the backend started
   /// counting them, see [_FlutterGpuRenderTarget].
   static int get _drawnFrames {
@@ -234,6 +284,7 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
       GpuPixelFormat.rgba8888 => gpu.PixelFormat.r8g8b8a8UNormInt,
       GpuPixelFormat.bgra8888 => gpu.PixelFormat.b8g8r8a8UNormInt,
       GpuPixelFormat.rgbaFloat32 => gpu.PixelFormat.r32g32b32a32Float,
+      GpuPixelFormat.r32Float => gpu.PixelFormat.r32Float,
       GpuPixelFormat.depthStencil => _context.defaultDepthStencilFormat,
     };
   }
@@ -500,35 +551,61 @@ class _ColorBuffer(
   int presentedSerial = 0;
 }
 
+/// A [GpuTextureTarget] of the Flutter GPU backend: one color texture, which
+/// later passes sample, and a transient depth texture, created once.
+class _FlutterGpuTextureTarget(
+  @override final int width,
+  @override final int height,
+  @override final GpuPixelFormat format,
+  @override final _FlutterGpuTexture texture,
+  final gpu.RenderTarget renderTarget,
+) implements GpuTextureTarget;
+
 class const _FlutterGpuFrame(final GpuBackend _backend)
     implements base.GpuFrame {
   @override
   base.GpuRenderPass beginRenderPass(GpuRenderTarget target) {
+    final commandBuffer = _backend._context.createCommandBuffer();
+    if (target is _FlutterGpuTextureTarget) {
+      return _FlutterGpuRenderPass(
+        null,
+        null,
+        commandBuffer,
+        _begin(commandBuffer, target.renderTarget),
+      );
+    }
     final renderTarget = target as _FlutterGpuRenderTarget;
     final buffer = renderTarget.acquire();
-    final commandBuffer = _backend._context.createCommandBuffer();
-    final renderPass = commandBuffer.createRenderPass(buffer.renderTarget)
+    return _FlutterGpuRenderPass(
+      renderTarget,
+      buffer,
+      commandBuffer,
+      _begin(commandBuffer, buffer.renderTarget),
+    );
+  }
+
+  static gpu.RenderPass _begin(
+    gpu.CommandBuffer commandBuffer,
+    gpu.RenderTarget renderTarget,
+  ) {
+    return commandBuffer.createRenderPass(renderTarget)
       // The default state documented on `GpuFrame.beginRenderPass`.
       ..setWindingOrder(gpu.WindingOrder.counterClockwise)
       ..setCullMode(gpu.CullMode.none)
       ..setColorBlendEnable(false)
       ..setDepthWriteEnable(true)
       ..setDepthCompareOperation(gpu.CompareFunction.less);
-    return _FlutterGpuRenderPass(
-      renderTarget,
-      buffer,
-      commandBuffer,
-      renderPass,
-    );
   }
 
   @override
   void end() {}
 }
 
+/// A render pass; [_target] and [_buffer] are those of a pass whose image is
+/// returned by [submit], and `null` for a pass into a texture target.
 class _FlutterGpuRenderPass(
-  final _FlutterGpuRenderTarget _target,
-  final _ColorBuffer _buffer,
+  final _FlutterGpuRenderTarget? _target,
+  final _ColorBuffer? _buffer,
   final gpu.CommandBuffer _commandBuffer,
   final gpu.RenderPass _renderPass,
 ) implements base.GpuRenderPass {
@@ -694,11 +771,21 @@ class _FlutterGpuRenderPass(
 
   @override
   Image submit({void Function()? onCompleted}) {
+    final target = _target;
+    final buffer = _buffer;
+    if (target == null || buffer == null) {
+      throw StateError('A pass into a texture target ends with commit');
+    }
+    commit(onCompleted: onCompleted);
+    target.present(buffer);
+    return buffer.texture.asImage();
+  }
+
+  @override
+  void commit({void Function()? onCompleted}) {
     _commandBuffer.submit(
       completionCallback: onCompleted == null ? null : (_) => onCompleted(),
     );
-    _target.present(_buffer);
-    return _buffer.texture.asImage();
   }
 
   static final _premultiplied = gpu.ColorBlendEquation(

@@ -23,6 +23,12 @@ Because materials are applied when the draws are submitted, a material must not 
 between the draws of one frame to make objects look different: use distinct materials, or the
 per-instance color and data.
 
+When a directional light casts shadows (see [Shadows](shadows.md)), the world is traversed twice
+per frame: first with the light's view as the camera (`RenderContext3D.isShadowPass` is `true`),
+to render the shadow map from the draws of the objects and materials that cast shadows, then for
+the main pass. In the shadow pass, draws of one surface become a single instanced draw whatever
+their materials, drawn with depth-only shaders.
+
 
 ## Per-instance color and data
 
@@ -160,14 +166,19 @@ Custom shaders can include the chunks `flame_3d` ships:
 - `flame_3d/lights.glsl` declares the light blocks: `AmbientLight`, `Lights` (point lights),
   `DirectionalLights` and `HemisphereLight`, see
   [Materials and Lighting](materials.md#custom-shaders).
+- `flame_3d/shadows.glsl` declares the `Shadows` block and the `shadowMap` sampler, and
+  `shadowVisibility()`, `shadowFactor()` and `castsShadows()` to receive shadows, see
+  [Shadows](shadows.md#receiving-shadows).
 
 Blocks named `CameraMatrices`, `Camera` (`position`, and any of the `CameraMatrices` members),
 `AmbientLight`, `Lights`, `DirectionalLights` and `HemisphereLight` are filled once per render pass
 by the `RenderContext3D`, for every shader that declares them; the joint matrices of skinned draws
 are filled for each draw, from the `jointTransforms` given to `RenderContext3D.drawSurface` (or to
 `drawMesh`, by surface index, which `MeshComponent.jointTransforms` feeds), whatever the surface:
-a parsed model's or one built with `Surface.fromBuffers`. Register your own per-pass blocks with
-`RenderContext3D.registerPassUniform`.
+a parsed model's or one built with `Surface.fromBuffers`. The `Shadows` block and the `shadowMap`
+sampler are filled once per pass too. Register your own per-pass blocks with
+`RenderContext3D.registerPassUniform`, and per-pass textures with
+`RenderContext3D.registerPassTexture`.
 
 
 ## Frame output and statistics
@@ -186,6 +197,10 @@ before the new pass is. A scene rendered every frame therefore uses two textures
 no frames (passes rendered outside of frames), the texture rendered the longest ago of the three is
 reused.
 
+Shadow maps render into textures that later passes sample (`GraphicsDevice.textureTarget`), created
+once for each size and format and kept while they are used.
+
 `FlameGame3D.renderStats` holds the statistics of the last rendered frame: render passes, draw
 calls, instances, triangles, pipeline changes, render state changes, material changes, uniform
-uploads, uploaded bytes and the particles drawn by particle systems.
+uploads, uploaded bytes, the particles drawn by particle systems, and how many of the passes and
+draw calls rendered shadow maps (`shadowPasses` and `shadowDrawCalls`).

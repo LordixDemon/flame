@@ -47,6 +47,12 @@ import 'package:flutter/widgets.dart' show MediaQuery;
 /// pixels wide and high: a larger visible part is rendered at a lower
 /// resolution.
 ///
+/// When a directional light of the scene casts shadows (see
+/// `ShadowSettings`), a shadow pass renders its shadow map first, fitted to
+/// the visible part. A `ShadowCatcherMaterial` on an invisible ground in the
+/// scene draws the shadows falling on it over the 2D components below the
+/// layer, so that 3D objects cast shadows onto 2D art.
+///
 /// In a [Game3D] game, the components use the game's [GraphicsDevice] and
 /// [RenderContext3D], so its `renderStats` count their passes. In any other
 /// game, all the components of the game share a device and a context of
@@ -339,6 +345,7 @@ class Scene3DComponent({
 
     _statsBefore.setFrom(device.stats);
     context.setCamera(_viewMatrix, _projectionMatrix);
+    world.renderShadows(canvas);
     device.beginPass(
       Size(targetWidth.toDouble(), targetHeight.toDouble()),
       msaaSampleCount: msaa.sampleCount,
@@ -541,6 +548,8 @@ class Scene3DComponent({
       ..materialChanges = after.materialChanges - before.materialChanges
       ..uniformUploads = after.uniformUploads - before.uniformUploads
       ..uploadedBytes = after.uploadedBytes - before.uploadedBytes
-      ..particles = after.particles - before.particles;
+      ..particles = after.particles - before.particles
+      ..shadowPasses = after.shadowPasses - before.shadowPasses
+      ..shadowDrawCalls = after.shadowDrawCalls - before.shadowDrawCalls;
   }
 }

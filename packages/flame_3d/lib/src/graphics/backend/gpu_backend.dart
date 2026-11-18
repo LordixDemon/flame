@@ -117,6 +117,30 @@ abstract base class GpuBackend() {
     int msaaSampleCount = 1,
   });
 
+  /// Whether this backend can create [GpuTextureTarget]s, see
+  /// [createTextureTarget].
+  bool get supportsTextureTargets => false;
+
+  /// Whether a [GpuTextureTarget] can render into a
+  /// [GpuPixelFormat.r32Float] texture. When it cannot, a depth stored in a
+  /// texture is packed into the 8-bit channels of a
+  /// [GpuPixelFormat.rgba8888] texture instead.
+  bool get supportsFloatTextureTargets => false;
+
+  /// Creates a [GpuTextureTarget] of [width]x[height] whose passes render
+  /// into a texture of [format] that later passes sample, cleared to
+  /// [clearValue] (and its depth to the far plane) at the start of each pass.
+  ///
+  /// Throws an [UnsupportedError] when [supportsTextureTargets] is `false`.
+  GpuTextureTarget createTextureTarget({
+    required int width,
+    required int height,
+    required GpuPixelFormat format,
+    required Color clearValue,
+  }) {
+    throw UnsupportedError('$runtimeType cannot render into textures.');
+  }
+
   /// Begins a new frame.
   GpuFrame beginFrame();
 }
@@ -221,5 +245,13 @@ abstract interface class GpuRenderPass() {
   ///
   /// [onCompleted] is called once the GPU no longer reads any buffer bound
   /// during the pass, after which their contents may be overwritten.
+  ///
+  /// Passes into a [GpuTextureTarget] end with [commit] instead.
   Image submit({void Function()? onCompleted});
+
+  /// Finalizes the pass and submits its commands to the GPU without
+  /// returning an image, as passes into a [GpuTextureTarget] end.
+  ///
+  /// [onCompleted] is called as for [submit].
+  void commit({void Function()? onCompleted});
 }

@@ -13,6 +13,7 @@ class ModelComponent({
   super.rotation,
   super.scale,
   super.children,
+  super.castsShadows,
 }) extends Object3D {
   final Set<int> _hiddenNodes = {};
   final AnimationState _animation = AnimationState();

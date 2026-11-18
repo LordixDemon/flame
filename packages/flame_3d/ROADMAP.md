@@ -32,6 +32,10 @@ materials.
   - [x] Sort opaque draws to batch and limit state changes, translucent draws back to front.
 - [x] Give materials their own render state (blending, depth test and writes, culling).
   - [x] Keep back-face culling right for mirroring cameras and mirrored objects.
+- [x] Real-time shadows from a directional light.
+  - [x] Fit the shadow map to what the camera sees, aligned with its texels.
+  - [x] Soft edges, tinted shadows, and a shadow catcher for 2D ground.
+  - [ ] Cascaded shadow maps for large scenes, and shadows from point lights.
 - [ ] Provide a `Mesh` API
   - [x] Provide `Surface`s that can hold geometric shapes.
   - [x] Build `Surface`s straight from typed arrays, with custom vertex layouts.

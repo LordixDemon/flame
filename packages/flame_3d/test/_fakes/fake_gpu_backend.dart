@@ -7,9 +7,9 @@ import 'package:flame_3d/resources.dart';
 /// A [GpuBackend] that records what is created, bound and drawn, for tests
 /// that do not need pixels.
 ///
-/// Slots whose name ends in `Texture` are samplers, the others uniform blocks
-/// of [blockSize] bytes whose members are laid out at 1024-byte intervals in
-/// the order they are first asked for.
+/// Slots whose name ends in `Texture` or `Map` are samplers, the others
+/// uniform blocks of [blockSize] bytes whose members are laid out at
+/// 1024-byte intervals in the order they are first asked for.
 final class FakeGpuBackend({
   /// The vertex inputs every vertex shader reports, or `null` for none.
   final List<GpuShaderInput>? inputs,
@@ -20,6 +20,12 @@ final class FakeGpuBackend({
   /// The size of uniform blocks, by name.
   final Map<String, int> blockSizes = const {},
   final int uniformAlignmentInBytes = 256,
+
+  /// Whether it creates texture targets, see [supportsTextureTargets].
+  final bool textureTargets = false,
+
+  /// Whether its texture targets can be 32-bit floats.
+  final bool floatTextureTargets = true,
 }) extends GpuBackend {
   @override
   int get uniformAlignment => uniformAlignmentInBytes;
@@ -143,6 +149,36 @@ final class FakeGpuBackend({
   }
 
   @override
+  bool get supportsTextureTargets => textureTargets;
+
+  @override
+  bool get supportsFloatTextureTargets => floatTextureTargets;
+
+  /// Every texture target created, as (width, height, format).
+  final List<(int, int, GpuPixelFormat)> textureTargetsCreated = [];
+
+  @override
+  GpuTextureTarget createTextureTarget({
+    required int width,
+    required int height,
+    required GpuPixelFormat format,
+    required Color clearValue,
+  }) {
+    if (!textureTargets) {
+      return super.createTextureTarget(
+        width: width,
+        height: height,
+        format: format,
+        clearValue: clearValue,
+      );
+    }
+    textureTargetsCreated.add((width, height, format));
+    final texture = FakeTexture(width, height, 1);
+    textures.add(texture);
+    return FakeTextureTarget(width, height, format, texture);
+  }
+
+  @override
   GpuFrame beginFrame() => FakeFrame(this);
 
   /// Completes every submitted pass.
@@ -188,7 +224,7 @@ class FakeShader(
   GpuUniformSlot getUniformSlot(String slot) {
     return _slots.putIfAbsent(
       slot,
-      () => slot.endsWith('Texture')
+      () => slot.endsWith('Texture') || slot.endsWith('Map')
           ? FakeSamplerSlot(slot)
           : FakeUniformSlot(
               slot,
@@ -279,6 +315,13 @@ class FakeRenderTarget(
   @override final int width,
   @override final int height,
 ) implements GpuRenderTarget;
+
+class FakeTextureTarget(
+  @override final int width,
+  @override final int height,
+  @override final GpuPixelFormat format,
+  @override final FakeTexture texture,
+) implements GpuTextureTarget;
 
 class FakeFrame(final FakeGpuBackend backend) implements GpuFrame {
   @override
@@ -392,6 +435,17 @@ class FakeRenderPass(final FakeGpuBackend backend) implements GpuRenderPass {
   @override
   Image submit({void Function()? onCompleted}) {
     _commands.add('submit');
+    _complete(onCompleted);
+    return _FakeImage();
+  }
+
+  @override
+  void commit({void Function()? onCompleted}) {
+    _commands.add('commit');
+    _complete(onCompleted);
+  }
+
+  void _complete(void Function()? onCompleted) {
     if (onCompleted != null) {
       if (backend.completeImmediately) {
         onCompleted();
@@ -399,7 +453,6 @@ class FakeRenderPass(final FakeGpuBackend backend) implements GpuRenderPass {
         backend.pendingCompletions.add(onCompleted);
       }
     }
-    return _FakeImage();
   }
 }
 

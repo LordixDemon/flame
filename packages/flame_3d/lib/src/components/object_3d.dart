@@ -25,6 +25,12 @@ abstract class Object3D({
   super.scale,
   super.rotation,
   super.children,
+
+  /// Whether this object casts shadows, when the scene has a light that
+  /// casts them (see [ShadowSettings]). It applies to this object's own
+  /// draws, not to its children; the surfaces of materials that cast no
+  /// shadows (see [Material.castsShadows]) cast none either way.
+  var bool castsShadows = true,
 }) extends Component3D {
   /// Whether an ancestor's AABB was fully inside the frustum, meaning
   /// children can skip their own frustum tests.
@@ -59,7 +65,8 @@ abstract class Object3D({
     super.renderTree(canvas);
     _ancestorFullyInside = wasAncestorFullyInside;
 
-    if (cullResult == CullResult.inside || isVisible(frustum)) {
+    if ((cullResult == CullResult.inside || isVisible(frustum)) &&
+        (castsShadows || !context.isShadowPass)) {
       draw(context);
     }
   }
@@ -68,11 +75,16 @@ abstract class Object3D({
   /// [RenderContext3D.drawMesh] and [RenderContext3D.drawSurface].
   ///
   /// It is called while the world is traversed; the recorded draws reach the
-  /// GPU when the context is flushed at the end of the pass.
+  /// GPU when the context is flushed at the end of the pass. When the scene
+  /// has a light that casts shadows, the world is traversed a first time to
+  /// render the shadow map, with the light's view as the camera (see
+  /// [RenderContext3D.isShadowPass]); objects that do not [castsShadows] are
+  /// not drawn then.
   void draw(RenderContext context);
 
   /// Whether this component itself should be drawn when its [aabb] is not
-  /// fully inside the camera's [frustum].
+  /// fully inside the camera's [frustum] (the light's view in a shadow
+  /// pass).
   ///
   /// The default implementation checks whether the world-space [aabb]
   /// intersects the frustum, so a partially visible component is drawn.

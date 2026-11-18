@@ -13,5 +13,6 @@ Basic Concepts <basic_concepts.md>
 Rendering <rendering.md>
 Materials and Lighting <materials.md>
 Particles <particles.md>
+Shadows <shadows.md>
 Embedding 3D in a 2D Game <embedding.md>
 ```

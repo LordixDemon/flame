@@ -14,7 +14,9 @@ lights they respond to, and textures.
   per-instance color, without lighting. It blends with premultiplied alpha and draws as translucent
   by default; set its `renderState` to `RenderState.opaque` for opaque content.
 - `StylizedMaterial` is made for stylized, vertex-colored art without textures, see
-  [below](#stylizedmaterial).
+  [below](#stylizedmaterial). It receives shadows.
+- `ShadowCatcherMaterial` makes a surface invisible except for the shadows falling on it, so that
+  3D objects cast shadows onto 2D art, see [Shadows](shadows.md#shadows-on-2d-art).
 
 Vertices built from `Vertex` objects, the built-in meshes and parsed models have white vertex
 colors, so the vertex color only changes the look of meshes that set it.
@@ -39,7 +41,7 @@ values can be animated:
 - A directional light travels along its `direction` when it has one, otherwise along the -Z axis
   of its component's world rotation, so rotating the component turns it. Its `specular` factor
   (from `0` to `1`) scales the highlights it makes. Up to `RenderContext3D.maxDirectionalLights`
-  (4) are used.
+  (4) are used. With `shadows`, a `ShadowSettings`, it casts shadows, see [Shadows](shadows.md).
 - Without a `range`, a point light falls off with the inverse square of the distance `d`:
   `intensity / d²`. With one, it fades out smoothly and reaches no further:
   `intensity * (1 - d / range)²`. Up to `RenderContext3D.maxPointLights` (8) are used.
@@ -222,11 +224,11 @@ lit  = occlusion * (ambient light
          + hemisphere intensity * (ambientBase
                                    + skyFill * skyFillWeight * sky * hemi
                                    + groundBounce * ground * bounce))
-       + Σ directional: max(0, n·l) * intensity * color
+       + Σ directional: max(0, n·l) * intensity * color * shadow
        + Σ point: intensity * color * falloff * max(pointLightWrap, n·l)
 spec = only where gloss > specularThreshold:
        Σ directional: (n·h)^specularPower * specular factor
-         * gloss * specularStrength
+         * gloss * specularStrength * mean(shadow)
 rim  = (1 - n·v)^rimPower * rimStrength * (sky + rimColor)
 cap  = where gloss > gemThreshold (with a gemMatCapTexture):
          gemMatCapTexture(view-space normal) * gemMatCapStrength
@@ -245,7 +247,10 @@ out  = mix(mix(luminosity(lit), lit, saturation), overlayColor.rgb,
 alpha = albedoColor.a * vertex alpha * (1 - fade)
 ```
 
-`falloff` is the point light's (see [Lights](#lights)). MatCap textures are sampled at
+`falloff` is the point light's (see [Lights](#lights)). `shadow` is `1`, except for the directional
+light that casts shadows, where it is `mix(white, color, strength * (1 - visibility))` with the
+light's shadow `color` and `strength` and `visibility` from `0` (in its shadow) to `1` (see
+[Shadows](shadows.md#receiving-shadows)). MatCap textures are sampled at
 `(0.5 + 0.5 x, 0.5 - 0.5 y)` of the view-space normal, `x` pointing right and `y` up in the
 picture, also when the projection mirrors the picture (as some `Scene3DProjection`s do).
 `reflected` is `cap` on the vertices that get a MatCap texture and `1` on the others (see
@@ -435,6 +440,10 @@ the `RenderContext3D` fills once per pass. List the blocks the shader uses in it
 | `DirectionalLights` | `numLights`, `directions`, `colors`                         |
 | `HemisphereLight`   | `skyColor`, `groundColor`, `up`, `intensity`                |
 
+Shaders that receive shadows include `flame_3d/shadows.glsl`, list its `Shadows` block and
+`shadowMap` sampler in their slots, and call its `shadowVisibility`, see
+[Shadows](shadows.md#receiving-shadows).
+
 A point light's intensity and range are in the `x` of `intensities` and `ranges`; its range is `0`
 when it falls off with the inverse square of the distance. A directional light's `directions` hold
 the unit vector from a surface towards the light (`xyz`) and its specular factor (`w`), and its
@@ -448,5 +457,5 @@ for the standard layout.
 ## Web
 
 On the web, `SpatialMaterial` and `UnlitMaterial` support the vertex color, every kind of light
-and the texture sampler options, through hand-written WebGPU shaders. `StylizedMaterial` is native
-only for now.
+and the texture sampler options, through hand-written WebGPU shaders. `StylizedMaterial` and
+`ShadowCatcherMaterial` are native only for now, and so are shadows.

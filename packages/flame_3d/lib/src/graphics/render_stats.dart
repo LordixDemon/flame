@@ -39,6 +39,12 @@ class RenderStats() {
   /// The number of particles drawn by particle systems (a mesh particle
   /// counts once, however many surfaces its mesh has).
   int particles = 0;
+  /// The number of the [renderPasses] that rendered a shadow map.
+  int shadowPasses = 0;
+
+  /// The number of the [drawCalls] issued by the passes that rendered a
+  /// shadow map.
+  int shadowDrawCalls = 0;
 
   /// Resets every counter to zero.
   void reset() {
@@ -52,6 +58,8 @@ class RenderStats() {
     uniformUploads = 0;
     uploadedBytes = 0;
     particles = 0;
+    shadowPasses = 0;
+    shadowDrawCalls = 0;
   }
 
   /// Copies every counter from [other].
@@ -66,6 +74,8 @@ class RenderStats() {
     uniformUploads = other.uniformUploads;
     uploadedBytes = other.uploadedBytes;
     particles = other.particles;
+    shadowPasses = other.shadowPasses;
+    shadowDrawCalls = other.shadowDrawCalls;
   }
 
   @override
@@ -74,6 +84,7 @@ class RenderStats() {
         'instances: $instances, triangles: $triangles, '
         'pipelineChanges: $pipelineChanges, stateChanges: $stateChanges, '
         'materialChanges: $materialChanges, uniformUploads: $uniformUploads, '
-        'uploadedBytes: $uploadedBytes, particles: $particles)';
+        'uploadedBytes: $uploadedBytes, particles: $particles, '
+        'shadowPasses: $shadowPasses, shadowDrawCalls: $shadowDrawCalls)';
   }
 }

@@ -10,7 +10,7 @@
 //          * mix(1, accent, accent mask)
 //   lit  = occlusion * (ambient + hemisphere intensity * (ambientBase
 //          + skyFill * sky * hemi + groundBounce * ground * bounce))
-//          + sum over suns of max(0, n.l) * intensity * color
+//          + sum over suns of max(0, n.l) * intensity * color * shadow
 //          + sum over points of intensity * color * falloff
 //            * max(pointLightWrap, n.l)
 //   spec = gloss > specularThreshold:
@@ -36,7 +36,9 @@
 // weight, reflected the cap on vertices that get a MatCap and 1 on the
 // others, boost, highlight and fade the x, y and w of the instance data, and
 // luminosity(c) = 0.3 r + 0.59 g + 0.11 b. The color is output premultiplied
-// by its alpha.
+// by its alpha. `shadow` is 1, except for the sun that casts shadows, where
+// it is shadowFactor() of flame_3d/shadows.glsl; its highlights are scaled by
+// the mean of it.
 
 in vec3 fragPosition;
 in vec3 fragNormal;
@@ -79,6 +81,7 @@ uniform Material {
 } material;
 
 #include <flame_3d/lights.glsl>
+#include <flame_3d/shadows.glsl>
 
 uniform Camera {
   mat4 view;
@@ -137,13 +140,17 @@ void main() {
 
   float specular = 0.0;
   bool glossy = gloss > material.specularThreshold;
+  vec3 sunShadow = shadowFactor(shadowVisibility(fragPosition, n));
   for (int i = 0; i < int(directionalLights.numLights); i++) {
     vec4 direction = directionalLights.directions[i];
     vec4 lightColor = directionalLights.colors[i];
-    lit += max(dot(n, direction.xyz), 0.0) * lightColor.a * lightColor.rgb;
+    vec3 shadow = castsShadows(i) ? sunShadow : vec3(1.0);
+    lit += max(dot(n, direction.xyz), 0.0) * lightColor.a * lightColor.rgb *
+      shadow;
     if (glossy) {
       float ndoth = max(dot(n, normalize(direction.xyz + v)), 0.0);
-      specular += pow(ndoth, material.specularPower) * direction.w;
+      specular += pow(ndoth, material.specularPower) * direction.w *
+        (shadow.r + shadow.g + shadow.b) / 3.0;
     }
   }
   specular *= gloss * material.specularStrength;

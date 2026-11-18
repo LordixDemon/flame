@@ -139,7 +139,38 @@ allocates nothing on the GPU.
 
 The draws are recorded, sorted and batched as in any `World3D` (see [Rendering](rendering.md)):
 components sharing a mesh cost one instanced draw call per surface. `layer.renderStats` holds the
-statistics of the layer's last pass and `layer.lastRenderTime` the time it took on the CPU.
+statistics of the layer's last pass (and of its shadow pass) and `layer.lastRenderTime` the time it
+took on the CPU.
+
+
+## Shadows on the 2D art
+
+When a directional light of the scene casts shadows, the layer renders the shadow map first, fitted
+to the part of the scene it renders, and its components receive them (see [Shadows](shadows.md)).
+The shadow map is aligned with its texels as the 2D camera pans, so the edges of the shadows do not
+shimmer.
+
+To cast shadows onto the 2D art below the layer, give the scene an invisible ground of
+`ShadowCatcherMaterial`: it draws only the shadows falling on it, blended over the 2D components
+behind the layer, and leaves them untouched elsewhere.
+
+```dart
+layer.world.addAll([
+  LightComponent.directional(
+    direction: Vector3(-0.3, -0.5, -1),
+    shadows: ShadowSettings(),
+  ),
+  MeshComponent(
+    mesh: PlaneMesh(
+      size: Vector2.all(boardSize + 2),
+      material: ShadowCatcherMaterial(color: const Color(0x8C1B2440)),
+    ),
+    position: Vector3(boardSize / 2, boardSize / 2, 0),
+    // The PlaneMesh faces +y: turned to face +z, up in this scene.
+    rotation: Quaternion.axisAngle(Vector3(1, 0, 0), pi / 2),
+  ),
+]);
+```
 
 
 ## Hosts

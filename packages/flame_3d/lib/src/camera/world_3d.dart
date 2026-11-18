@@ -22,6 +22,10 @@ import 'package:meta/meta.dart';
 ///   pixels, times [renderScale], which is then drawn into the viewport.
 /// - In a [Scene3DComponent], the component renders the world as one layer of
 ///   a 2D game, see there.
+///
+/// When one of its directional lights casts shadows (see [ShadowSettings]),
+/// the world is rendered a first time from the light into its shadow map,
+/// before each main pass, see [renderShadows].
 /// {@endtemplate}
 class World3D({
   super.children,
@@ -115,6 +119,41 @@ class World3D({
     );
   }
 
+  /// The projection of the shadow map of this world, fitted by
+  /// [renderShadows] before each main pass when a light casts shadows.
+  DirectionalShadowProjection get shadowProjection => _shadowProjection;
+  final DirectionalShadowProjection _shadowProjection =
+      DirectionalShadowProjection();
+
+  /// Renders the shadow map of this world, when one of its directional lights
+  /// casts shadows (see [ShadowSettings]), and returns whether it did.
+  ///
+  /// This is how a host that runs the render passes itself renders the
+  /// shadows: call it once the camera of the main pass is set with
+  /// [RenderContext3D.setCamera], before the main pass begins (see
+  /// [renderScene]). The draws of the main pass then receive the shadows.
+  /// The components are traversed as for the main pass, with the light's view
+  /// as the camera; [canvas] is passed on to them.
+  bool renderShadows(Canvas canvas) {
+    final context = this.context..lights = _lights;
+    if (!context.beginShadowPass(
+      projection: _shadowProjection,
+      sceneBounds: sceneBounds,
+    )) {
+      return false;
+    }
+    _rendering = true;
+    try {
+      for (final child in children) {
+        child.renderTree(canvas);
+      }
+    } finally {
+      _rendering = false;
+      context.endShadowPass();
+    }
+    return true;
+  }
+
   /// Records the draws of every component of this world into [context], with
   /// the lights of this world.
   ///
@@ -151,6 +190,7 @@ class World3D({
     final context = host.context
       ..lights = _lights
       ..setCamera(camera.viewMatrix, camera.projectionMatrix);
+    renderShadows(canvas);
 
     final device = host.device;
     device.beginPass(

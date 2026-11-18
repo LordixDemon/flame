@@ -375,6 +375,7 @@ String _pixelFormat(GpuPixelFormat format) => switch (format) {
   GpuPixelFormat.rgba8888 => 'rgba8unorm',
   GpuPixelFormat.bgra8888 => 'bgra8unorm',
   GpuPixelFormat.rgbaFloat32 => 'rgba32float',
+  GpuPixelFormat.r32Float => 'r32float',
   GpuPixelFormat.depthStencil => _depthFormat,
 };
 
@@ -908,12 +909,17 @@ class _WebGpuRenderPass(
 
   @override
   Image submit({void Function()? onCompleted}) {
+    commit(onCompleted: onCompleted);
+    return _target.colorTexture.asImage();
+  }
+
+  @override
+  void commit({void Function()? onCompleted}) {
     _pass.end();
     _backend._queue.submit([_encoder.finish()]);
     // `GPUQueue.writeBuffer` calls are ordered after the submissions that
     // precede them, so the buffers of this pass can be rewritten right away.
     onCompleted?.call();
-    return _target.colorTexture.asImage();
   }
 }
 
