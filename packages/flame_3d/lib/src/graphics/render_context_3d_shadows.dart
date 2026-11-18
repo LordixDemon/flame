@@ -237,7 +237,9 @@ class _ShadowPass(final RenderContext3D _context) {
     while (start < casters) {
       final first = order[start];
       var end = start + 1;
-      if (context._joints[first] == null) {
+      // Skinned draws and draws of instances the caller filled (particle
+      // systems, `drawInstances`) are drawn on their own.
+      if (context._joints[first] == null && context._external[first] == null) {
         while (end < casters && _batchesWith(first, order[end])) {
           end++;
         }
@@ -252,6 +254,7 @@ class _ShadowPass(final RenderContext3D _context) {
       context._materials[i] = null;
       context._pipelines[i] = null;
       context._joints[i] = null;
+      context._external[i] = null;
     }
     context._jointTransforms = null;
     context._lastDrawCount = count;
@@ -262,7 +265,8 @@ class _ShadowPass(final RenderContext3D _context) {
     final context = _context;
     return identical(context._surfaces[first], context._surfaces[other]) &&
         identical(context._pipelines[first], context._pipelines[other]) &&
-        context._joints[other] == null;
+        context._joints[other] == null &&
+        context._external[other] == null;
   }
 
   void _submit(Int32List order, int start, int count) {
@@ -286,6 +290,14 @@ class _ShadowPass(final RenderContext3D _context) {
       ..setFrontFace(WindingOrder.counterClockwise);
     context._bindJoints(vertexShader, context._joints[first]);
     device.bindSurface(surface);
+    final external = context._external[first];
+    if (external != null) {
+      final instanceCount = context._externalCounts[first];
+      device
+        ..bindInstances(external, instanceCount)
+        ..drawSurface(surface, instanceCount: instanceCount);
+      return;
+    }
     context._gatherInstances(order, start, count);
     device
       ..bindInstances(context._batchInstances, count)

@@ -39,6 +39,7 @@ class RenderStats() {
   /// The number of particles drawn by particle systems (a mesh particle
   /// counts once, however many surfaces its mesh has).
   int particles = 0;
+
   /// The number of the [renderPasses] that rendered a shadow map.
   int shadowPasses = 0;
 
