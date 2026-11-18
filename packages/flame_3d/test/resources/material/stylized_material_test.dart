@@ -45,6 +45,17 @@ void main() {
       );
     }
 
+    Surface skinnedTriangle(Material material) {
+      return StylizedMaterial.buildSurface(
+        positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+        normals: [0, 0, 1, 0, 0, 1, 0, 0, 1],
+        joints: [0, 0, 0, 0, 1, 0, 0, 0, 1, 2, 0, 0],
+        weights: [1, 0, 0, 0, 1, 0, 0, 0, 0.5, 0.5, 0, 0],
+        indices: [0, 1, 2],
+        material: material,
+      );
+    }
+
     Surface standardTriangle(Material material) {
       return Surface(
         vertices: [
@@ -90,6 +101,111 @@ void main() {
       expect(
         material.vertexShaderFor(VertexLayout.standard),
         isNot(material.vertexShader),
+      );
+    });
+
+    test('lays out 24 floats per skinned vertex', () {
+      final layout = StylizedMaterial.skinnedVertexLayout;
+
+      expect(layout.strideInFloats, 24);
+      expect(
+        [for (final a in layout.attributes) (a.name, a.components)],
+        [
+          for (final a in StylizedMaterial.vertexLayout.attributes)
+            (a.name, a.components),
+          ('vertexJoints', 4),
+          ('vertexWeights', 4),
+        ],
+      );
+    });
+
+    test('draws skinned surfaces with a variant of their own', () {
+      final material = StylizedMaterial();
+
+      draw([
+        stylizedTriangle(material),
+        skinnedTriangle(material),
+        standardTriangle(material),
+      ]);
+
+      expect(backend.pipelines, hasLength(3));
+      final shaders = {for (final p in backend.pipelines) p.vertexShader};
+      expect(shaders, hasLength(3));
+      expect(
+        {for (final p in backend.pipelines) p.fragmentShader},
+        hasLength(1),
+      );
+      final skinned = material.vertexShaderFor(
+        StylizedMaterial.skinnedVertexLayout,
+      );
+      expect(skinned, isNot(material.vertexShader));
+      expect(skinned, isNot(material.vertexShaderFor(VertexLayout.standard)));
+      expect(skinned.slots, contains(RenderContext3D.jointMatricesBlock));
+    });
+
+    test('feeds a skinned draw its joint matrices and its wind', () {
+      final material = StylizedMaterial(
+        windTime: 1.5,
+        windSpace: WindSpace.model,
+        windDirection: Vector3(0, 1, 0),
+      );
+      final joints = [
+        Matrix4.identity(),
+        Matrix4.translationValues(1, 2, 3),
+        Matrix4.diagonal3Values(2, 2, 2),
+      ];
+
+      device.begin();
+      context.setCamera(Matrix4.identity(), Matrix4.identity());
+      device.beginPass(const Size(8, 8));
+      context.drawSurface(skinnedTriangle(material), jointTransforms: joints);
+      context.flush();
+      device
+        ..endPass()
+        ..end();
+
+      final skinned = material.vertexShaderFor(
+        StylizedMaterial.skinnedVertexLayout,
+      );
+      List<double> member(String block, String name, int n) {
+        final offset = skinned.slot(block).getMemberOffsetInBytes(name)! ~/ 4;
+        return backend.uniforms[block]!.sublist(offset, offset + n);
+      }
+
+      expect(member('Wind', 'time', 1), [1.5]);
+      expect(member('Wind', 'modelDirection', 3), [0, 1, 0]);
+      final matrices = member('JointMatrices', 'joints', 48);
+      expect(matrices.sublist(16, 32), joints[1].storage);
+      expect(matrices.sublist(32, 48), joints[2].storage);
+    });
+
+    test('writes its color grade, neutral by default', () {
+      final neutral = StylizedMaterial();
+      final graded = StylizedMaterial(
+        saturation: 0.25,
+        overlayColor: const Color(0x80FF0000),
+      );
+
+      List<double> member(StylizedMaterial material, String name, int n) {
+        draw([stylizedTriangle(material)]);
+        final offset =
+            material.fragmentShader
+                .slot('Material')
+                .getMemberOffsetInBytes(name)! ~/
+            4;
+        return backend.uniforms['Material']!.sublist(offset, offset + n);
+      }
+
+      expect(member(neutral, 'saturation', 1), [1]);
+      expect(member(neutral, 'overlayColor', 4), [0, 0, 0, 0]);
+      expect(member(graded, 'saturation', 1), [0.25]);
+      expect(
+        member(graded, 'overlayColor', 4),
+        pairwiseCompare<double, double>(
+          [1, 0, 0, 128 / 255],
+          (a, b) => (a - b).abs() < 1e-6,
+          'close to',
+        ),
       );
     });
 
@@ -283,6 +399,77 @@ void main() {
         );
 
         expect(surface.indices, isA<Uint32List>());
+      });
+
+      test('packs joints and weights in the skinned layout', () {
+        final surface = StylizedMaterial.buildSurface(
+          positions: [1, 2, 3, 4, 5, 6],
+          normals: [0, 1, 0, 0, 0, 1],
+          joints: [0, 1, 0, 0, 15, 2, 3, 4],
+          weights: [0.75, 0.25, 0, 0, 0.4, 0.3, 0.2, 0.1],
+          indices: [0, 1, 0],
+          material: StylizedMaterial(),
+        );
+
+        expect(surface.layout, StylizedMaterial.skinnedVertexLayout);
+        expect(surface.vertexCount, 2);
+        final data = surface.vertexData;
+        expect(data.length, 48);
+        expect(data.sublist(0, 6), [1, 2, 3, 0, 1, 0]);
+        expect(data.sublist(16, 24), [0, 1, 0, 0, 0.75, 0.25, 0, 0]);
+        expect(
+          data.sublist(40, 48),
+          pairwiseCompare<double, double>(
+            [15, 2, 3, 4, 0.4, 0.3, 0.2, 0.1],
+            (a, b) => (a - b).abs() < 1e-6,
+            'close to',
+          ),
+        );
+      });
+
+      test('keeps the bounds it is given', () {
+        final bounds = Aabb3.minMax(Vector3.all(-2), Vector3.all(2));
+        final surface = StylizedMaterial.buildSurface(
+          positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+          normals: List.filled(9, 0),
+          indices: [0, 1, 2],
+          material: StylizedMaterial(),
+          aabb: bounds,
+        );
+
+        expect(surface.aabb.min, Vector3.all(-2));
+        expect(surface.aabb.max, Vector3.all(2));
+      });
+
+      test('needs both joints and weights, with valid joints', () {
+        Surface build({List<double>? joints, List<double>? weights}) =>
+            StylizedMaterial.buildSurface(
+              positions: [0, 0, 0],
+              normals: [0, 0, 1],
+              indices: [0, 0, 0],
+              material: StylizedMaterial(),
+              joints: joints,
+              weights: weights,
+            );
+
+        expect(() => build(joints: [0, 0, 0, 0]), throwsArgumentError);
+        expect(() => build(weights: [1, 0, 0, 0]), throwsArgumentError);
+        expect(
+          () => build(joints: [16, 0, 0, 0], weights: [1, 0, 0, 0]),
+          throwsArgumentError,
+        );
+        expect(
+          () => build(joints: [0.5, 0, 0, 0], weights: [1, 0, 0, 0]),
+          throwsArgumentError,
+        );
+        expect(
+          () => build(joints: [0, 0, 0], weights: [1, 0, 0, 0]),
+          throwsArgumentError,
+        );
+        expect(
+          build(joints: [3, 0, 0, 0], weights: [1, 0, 0, 0]).layout,
+          StylizedMaterial.skinnedVertexLayout,
+        );
       });
 
       test('rejects arrays of the wrong length', () {

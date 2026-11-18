@@ -74,6 +74,15 @@ class const RenderState({
     depthWrite: false,
   );
 
+  /// A depth prepass: no color written ([BlendState.depthOnly]), depth
+  /// tested and written, drawn with the translucent draws. Draw an object
+  /// with it right before drawing it with a translucent material whose
+  /// depth compare is [CompareFunction.lessEqual]: only the object's nearest
+  /// surfaces then blend, and it fades as one piece.
+  static const RenderState depthOnly = RenderState(
+    blend: BlendState.depthOnly,
+  );
+
   /// The depth comparison applied, taking [depthTest] into account.
   CompareFunction get effectiveDepthCompare =>
       depthTest ? depthCompare : CompareFunction.always;

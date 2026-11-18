@@ -58,8 +58,8 @@ Custom objects pass them to `RenderContext3D.drawSurface` and `drawMesh` with `c
 ## Render state
 
 A material declares how it is drawn with its `renderState`: the blend mode (`BlendState.opaque`,
-`alpha`, `premultipliedAlpha` or `additive`), whether the depth test is on and with which
-`CompareFunction`, whether depth is written, the `CullMode`, and whether the material is
+`alpha`, `premultipliedAlpha`, `additive` or `depthOnly`), whether the depth test is on and with
+which `CompareFunction`, whether depth is written, the `CullMode`, and whether the material is
 translucent (by default, every blend mode other than opaque is). Additive draws add their color and
 keep the alpha of the target: added light covers nothing, so in a `Scene3DComponent` a glow over an
 empty part of the scene adds its color to the 2D components drawn behind the layer.
@@ -75,6 +75,26 @@ final shadow = UnlitMaterial(albedoColor: const Color(0x80000000))
 
 final floor = SpatialMaterial()
   ..renderState = const RenderState(cullMode: CullMode.backFace);
+```
+
+A translucent object drawn with a single translucent material shows its own hidden parts through
+its near ones: an arm in front of a body lets the body show through it. To fade the object as one
+piece, draw it first with a depth prepass, `RenderState.depthOnly` (`BlendState.depthOnly` writes no
+color, only depth, and draws among the translucent draws), then with a translucent material whose
+depth test passes on equal depths: only its nearest surfaces blend, over whatever is behind it.
+
+```dart
+final prepass = StylizedMaterial()..renderState = RenderState.depthOnly;
+final ghost = StylizedMaterial(translucent: true)
+  ..renderState = StylizedMaterial.translucentRenderState.copyWith(
+    depthCompare: CompareFunction.lessEqual,
+  );
+
+// Recorded in this order, the prepass is drawn right before the ghost:
+// both have the same depth in the back to front order.
+context
+  ..drawSurface(surface, transform: model, material: prepass)
+  ..drawSurface(surface, transform: model, material: ghost);
 ```
 
 Front faces are counter-clockwise on screen. The winding flips automatically when the camera mirrors
@@ -128,7 +148,8 @@ Custom shaders can include the chunks `flame_3d` ships:
   otherwise do.
 - `flame_3d/camera.glsl` declares the `CameraMatrices` block (`view`, `projection`,
   `viewProjection`).
-- `flame_3d/skinning.glsl` handles vertex skinning.
+- `flame_3d/skinning.glsl` handles vertex skinning: it declares the `vertexJoints` and
+  `vertexWeights` inputs and the `JointMatrices` block (16 matrices), and `computeSkinMatrix()`.
 - `flame_3d/lights.glsl` declares the light blocks: `AmbientLight`, `Lights` (point lights),
   `DirectionalLights` and `HemisphereLight`, see
   [Materials and Lighting](materials.md#custom-shaders).
@@ -136,7 +157,9 @@ Custom shaders can include the chunks `flame_3d` ships:
 Blocks named `CameraMatrices`, `Camera` (`position`, and any of the `CameraMatrices` members),
 `AmbientLight`, `Lights`, `DirectionalLights` and `HemisphereLight` are filled once per render pass
 by the `RenderContext3D`, for every shader that declares them; the joint matrices of skinned draws
-are filled for each draw. Register your own per-pass blocks with
+are filled for each draw, from the `jointTransforms` given to `RenderContext3D.drawSurface` (or to
+`drawMesh`, by surface index, which `MeshComponent.jointTransforms` feeds), whatever the surface:
+a parsed model's or one built with `Surface.fromBuffers`. Register your own per-pass blocks with
 `RenderContext3D.registerPassUniform`.
 
 

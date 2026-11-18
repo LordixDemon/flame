@@ -126,6 +126,54 @@ skinned meshes: their vertex color is used, and they are unoccluded, tinted by t
 color everywhere, with no accent, emission, gloss nor sway.
 
 
+### Skinning
+
+Surfaces in `StylizedMaterial.skinnedVertexLayout`, 24 floats per vertex, are skinned: the 16
+floats above followed by `vertexJoints` (up to four joint indices) and `vertexWeights` (their
+weights), 4 floats each. Each vertex is moved by the weighted sum of the joint matrices of its draw,
+`sum(weight * joint) * position` (and its normal by the same matrix), then shaded like any other
+vertex; its wind sway is added in model space after the skinning. A vertex whose weights are all
+`0` keeps its position, and weights need not add up to `1` when the joints are built for it (for
+example two joints that differ only in a translation, weighted `1 - w` and `w`, move a vertex by
+`w` times the difference).
+
+`buildSurface` lays the surface out this way when given `joints` and `weights`, both together; the
+indices must be whole numbers below `StylizedMaterial.maxJoints` (16). Every draw of a skinned
+surface gives its joint matrices, which can be updated in place every frame:
+
+```dart
+final surface = StylizedMaterial.buildSurface(
+  positions: positions,
+  normals: normals,
+  colors: colors,
+  joints: joints, // 4 joint indices per vertex
+  weights: weights, // 4 weights per vertex
+  indices: indices,
+  material: material,
+  // Culling uses the bounds of the rest pose unless given wider ones.
+  aabb: boundsOfEveryPose,
+);
+
+final arm = Matrix4.identity();
+final figure = MeshComponent(
+  mesh: Mesh()..addSurface(surface),
+  jointTransforms: {
+    0: [Matrix4.identity(), arm], // the joint matrices of surface 0
+  },
+);
+
+// Every frame: swing the arm about its shoulder.
+arm
+  ..setIdentity()
+  ..translate(shoulder)
+  ..rotateY(swing)
+  ..translate(-shoulder);
+```
+
+A custom `Object3D` gives them to `RenderContext3D.drawSurface(jointTransforms: ...)` instead. A
+skinned draw is never batched with another: each costs one draw call, whatever its material.
+
+
 ### Per-instance data
 
 Besides the per-instance color, which tints the vertices of the tint mask, each object can vary
@@ -189,8 +237,11 @@ surface = base * lit + rim
 shaded  = mix(surface + cap, min(surface, 1) * reflected, matCapMetallic)
           + spec + highlight * highlightColor
 glow = clamp(emissive mask * (emissiveStrength + boost), 0, 1)
-out  = mix(shaded,
-           mix(emissiveColor, emissiveBoostColor, clamp(boost, 0, 1)), glow)
+lit  = clamp(mix(shaded,
+                 mix(emissiveColor, emissiveBoostColor, clamp(boost, 0, 1)),
+                 glow), 0, 1)
+out  = mix(mix(luminosity(lit), lit, saturation), overlayColor.rgb,
+           overlayColor.a)
 alpha = albedoColor.a * vertex alpha * (1 - fade)
 ```
 
@@ -200,10 +251,11 @@ picture, also when the projection mirrors the picture (as some `Scene3DProjectio
 `reflected` is `cap` on the vertices that get a MatCap texture and `1` on the others (see
 [Metals](#metals)). Highlights are white and follow
 the direction of the directional lights, not their intensity, so they keep their strength when a sun
-dims. The result is clamped to `[0, 1]`, with no tone mapping, and output premultiplied by its
-alpha. For orthographic cameras, `v` is the camera's direction. `skyFillWeight` weighs the sky fill
-per channel, for example `Vector3(1, 1, 0.914)` with the default `skyFill` for a fill of
-`(0.35, 0.35, 0.32)` times the sky color.
+dims. The result is clamped to `[0, 1]`, with no tone mapping, graded (see
+[Color grade](#color-grade)), and output premultiplied by its alpha. For orthographic cameras, `v`
+is the camera's direction. `skyFillWeight` weighs the sky fill per channel, for example
+`Vector3(1, 1, 0.914)` with the default `skyFill` for a fill of `(0.35, 0.35, 0.32)` times the sky
+color.
 
 | Parameter                                     | Default                     | Meaning                |
 | --------------------------------------------- | --------------------------- | ---------------------- |
@@ -226,6 +278,7 @@ per channel, for example `Vector3(1, 1, 0.914)` with the default `skyFill` for a
 | `matCapMetallic`                              | `0`                         | MatCap as reflection   |
 | `windDirection`, `windAmplitude`, `windSpace` | `(1, 0, 0)`, `0.032`, world | sway way and reach     |
 | `windFrequency`, `windPhase`, `windTime`      | `2.3`, `(0.7, 0, 0.5)`, `0` | sway timing            |
+| `saturation`, `overlayColor`                  | `1`, transparent            | color grade            |
 
 With the defaults, the MatCap texture is added in proportion to the gloss of every vertex. For a
 clear-coat sheen on the glossy vertices only and a separate sheen on gems, at full strength:
@@ -263,6 +316,24 @@ final metals = StylizedMaterial(
   specularStrength: 0, // the MatCaps paint the highlights
 );
 ```
+
+
+### Color grade
+
+Last, the clamped color is graded. `saturation` moves it towards its luminosity,
+`0.3 r + 0.59 g + 0.11 b` (the luminosity of the non-separable blend modes): `1`, the default,
+leaves it as it is and `0` turns it grey. Then `overlayColor` covers it as far as its alpha goes:
+transparent, the default, leaves it as it is. One material per grade greys out or tints whole
+objects whatever their vertex colors, for a disabled or petrified look, or the glint of a shield:
+
+```dart
+final stunned = StylizedMaterial(saturation: 0); // grey
+final shielded = StylizedMaterial(
+  overlayColor: const Color(0x3864FFDA), // 22 % of a cyan glint
+);
+```
+
+Graded objects still batch with each other, as long as they share their material.
 
 
 ### Wind

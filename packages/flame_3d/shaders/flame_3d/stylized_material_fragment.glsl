@@ -25,14 +25,18 @@
 //   shaded = mix(surf + cap, min(surf, 1) * reflected, matCapMetallic)
 //          + spec + highlight * highlightColor
 //   glow = clamp(emissive mask * (emissiveStrength + boost), 0, 1)
-//   out  = mix(shaded, mix(emissive, emissiveBoost, clamp(boost, 0, 1)),
-//              glow)
+//   lit out = clamp(mix(shaded,
+//                       mix(emissive, emissiveBoost, clamp(boost, 0, 1)),
+//                       glow), 0, 1)
+//   graded  = mix(luminosity(lit out), lit out, saturation)
+//   out     = mix(graded, overlay rgb, overlay alpha)
 //   alpha = albedo alpha * vertex alpha * (1 - fade)
 //
 // with hemi = 0.5 + 0.5 * n.up, bounce = max(0, -n.up), skyFill an rgb
 // weight, reflected the cap on vertices that get a MatCap and 1 on the
-// others, and boost, highlight and fade the x, y and w of the instance data.
-// The color is output premultiplied by its alpha.
+// others, boost, highlight and fade the x, y and w of the instance data, and
+// luminosity(c) = 0.3 r + 0.59 g + 0.11 b. The color is output premultiplied
+// by its alpha.
 
 in vec3 fragPosition;
 in vec3 fragNormal;
@@ -56,6 +60,7 @@ uniform Material {
   vec4 skyFill;
   vec4 rimColor;
   vec4 highlightColor;
+  vec4 overlayColor;
   float emissiveStrength;
   float groundBounce;
   float pointLightWrap;
@@ -70,6 +75,7 @@ uniform Material {
   float gemMatCapStrength;
   float gemThreshold;
   float matCapMetallic;
+  float saturation;
 } material;
 
 #include <flame_3d/lights.glsl>
@@ -198,11 +204,22 @@ void main() {
     0.0,
     1.0
   );
-  color = mix(color, emissive, glow);
+  color = clamp(mix(color, emissive, glow), 0.0, 1.0);
+
+  // The color grade, on the final color: desaturated towards its luminosity
+  // (the luminosity of the non-separable blend modes), then covered by the
+  // overlay color as far as its alpha goes. The defaults leave it unchanged.
+  if (material.saturation != 1.0) {
+    float luminosity = dot(color, vec3(0.3, 0.59, 0.11));
+    color = clamp(mix(vec3(luminosity), color, material.saturation), 0.0, 1.0);
+  }
+  if (material.overlayColor.a > 0.0) {
+    color = mix(color, material.overlayColor.rgb, material.overlayColor.a);
+  }
 
   float alpha = material.albedoColor.a * fragColor.a *
     clamp(1.0 - fade, 0.0, 1.0);
-  outColor = vec4(clamp(color, 0.0, 1.0) * alpha, alpha);
+  outColor = vec4(color * alpha, alpha);
 }
 
 #endif

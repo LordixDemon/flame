@@ -430,6 +430,14 @@ GPUColorTargetState _colorTarget(BlendState blend) {
         alpha: component('zero', 'one'),
       ),
     ),
+    // Depth only: the target keeps its color and alpha.
+    BlendState.depthOnly => GPUColorTargetState(
+      format: _canvasFormat,
+      blend: GPUBlendState(
+        color: component('zero', 'one'),
+        alpha: component('zero', 'one'),
+      ),
+    ),
   };
 }
 

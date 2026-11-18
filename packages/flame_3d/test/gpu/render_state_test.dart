@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flame_3d/core.dart';
@@ -120,6 +121,89 @@ void main() {
       final alone = frame.pixels.at(nx, ny);
       expect(alone.$2, closeTo(64, 1));
       expect(alone.$4, 0);
+    });
+
+    testGpuEngine('writes no color with a depth-only draw', () async {
+      final prepass = quad(
+        UnlitMaterial()..renderState = RenderState.depthOnly,
+        halfSize: .3,
+      );
+      final behind = quad(opaqueUnlit(const Color(0xFF0000FF)), halfSize: .6);
+      final frame = await renderFrame(
+        draw: (context) => context
+          ..drawSurface(behind, transform: Matrix4.translationValues(0, 0, -6))
+          ..drawSurface(prepass, transform: Matrix4.translationValues(0, 0, -4))
+          ..drawSurface(
+            prepass,
+            transform: Matrix4.translationValues(.7, 0, -4),
+          ),
+      );
+      final (cx, cy) = pixelAt(0, 0);
+      final (ex, ey) = pixelAt(.75, 0);
+      // What is behind the depth-only quads keeps its color, and so does
+      // the cleared target.
+      expect(frame.pixels.at(cx, cy), (0, 0, 255, 255));
+      expect(frame.pixels.isClear(ex, ey), isTrue);
+      expect(RenderState.depthOnly.translucent, isTrue);
+      expect(RenderState.depthOnly.depthWrite, isTrue);
+    });
+
+    testGpuEngine('fades an object as one piece after a prepass', () async {
+      // Two overlapping quads of one surface: a near red one, a far blue one.
+      Surface pair(Material material) {
+        const stride = 20;
+        final vertices = Float32List(8 * stride);
+        const corners = [(-1, -1), (1, -1), (1, 1), (-1, 1)];
+        for (final (q, (dx, z, color)) in [
+          (0.0, -4.0, [1.0, 0.0, 0.0, 1.0]),
+          (0.3, -6.0, [0.0, 0.0, 1.0, 1.0]),
+        ].indexed) {
+          for (final (i, (x, y)) in corners.indexed) {
+            final o = (q * 4 + i) * stride;
+            vertices
+              ..setRange(o, o + 3, [dx + x * 0.4, y * 0.4, z])
+              ..setRange(o + 5, o + 9, color)
+              ..setRange(o + 9, o + 12, [0, 0, 1]);
+          }
+        }
+        return Surface.fromBuffers(
+          vertices: vertices,
+          indices: Uint16List.fromList([
+            0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4, //
+          ]),
+          material: material,
+        );
+      }
+
+      final faded = UnlitMaterial(albedoColor: const Color(0x80FFFFFF))
+        ..renderState = RenderState.premultipliedAlphaBlend.copyWith(
+          depthCompare: CompareFunction.lessEqual,
+        );
+      final prepass = UnlitMaterial()..renderState = RenderState.depthOnly;
+      final surface = pair(faded);
+
+      Future<(int, int, int, int)> overlap({required bool withPrepass}) async {
+        final frame = await renderFrame(
+          draw: (context) {
+            if (withPrepass) {
+              context.drawSurface(surface, material: prepass);
+            }
+            context.drawSurface(surface);
+          },
+        );
+        final (x, y) = pixelAt(0.2, 0);
+        return frame.pixels.at(x, y);
+      }
+
+      // Without a prepass, the far blue quad shows through the near red one.
+      final seeThrough = await overlap(withPrepass: false);
+      expect(seeThrough.$3, greaterThan(30));
+      // With one, only the red quad blends, at half opacity (the unlit
+      // material's colors are not premultiplied).
+      final (r, g, b, a) = await overlap(withPrepass: true);
+      expect(r, 255);
+      expect((g, b), (0, 0));
+      expect(a, closeTo(128, 1));
     });
 
     testGpuEngine('applies a different state to each draw of a pass', () async {

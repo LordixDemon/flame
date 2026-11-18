@@ -61,6 +61,15 @@ enum BlendState() {
   /// drawn over 2D content, as `Scene3DComponent` does), the color is added
   /// to whatever is drawn behind the image.
   additive,
+
+  /// No color is written: `color = dst`, `alpha = dstAlpha`.
+  ///
+  /// With depth writes on, a draw only fills the depth buffer: a depth
+  /// prepass. Drawn right before the same object with a translucent material
+  /// whose depth test passes on equal depths ([CompareFunction.lessEqual]),
+  /// it leaves only the object's nearest surfaces to blend, so that the
+  /// object fades as one piece instead of showing its own hidden parts.
+  depthOnly,
 }
 
 /// A comparison between an incoming value and a stored one, used for the

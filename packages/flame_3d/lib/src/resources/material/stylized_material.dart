@@ -32,6 +32,19 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 /// used, they are unoccluded, tinted by the instance color everywhere, and
 /// have no accent, emission, gloss nor sway.
 ///
+/// ## Skinning
+///
+/// Surfaces in [skinnedVertexLayout], [vertexLayout] followed by
+/// `vertexJoints` and `vertexWeights` (4 floats each: up to four joint
+/// indices per vertex and their weights), are skinned: each vertex is moved
+/// by the weighted sum of the joint matrices of its draw, then drawn as
+/// above, its wind sway added in model space after the skinning. Build them
+/// with [buildSurface] and its `joints` and `weights`, and give the joint
+/// matrices with every draw (`RenderContext3D.drawSurface(jointTransforms:)`,
+/// or `MeshComponent.jointTransforms`); at most 16 joints per draw. A vertex
+/// whose weights are all `0` keeps its position. Skinned draws are never
+/// batched: each is one draw call.
+///
 /// ## Per-instance data
 ///
 /// Besides the per-instance color, which tints the vertices of the tint mask,
@@ -84,13 +97,20 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 /// alpha = albedoColor.a * vertex alpha * (1 - fade)
 /// ```
 ///
+/// Last comes the color grade of the material, which leaves the color as it
+/// is by default: the color, clamped to `[0, 1]`, is desaturated towards its
+/// luminosity `0.3 r + 0.59 g + 0.11 b` as [saturation] goes from `1` to
+/// `0`, then covered by [overlayColor] as far as its alpha goes. One material
+/// per grade greys out or tints whole objects (a disabled or stunned look,
+/// a shield's glint) whatever their vertex colors.
+///
 /// `falloff` is the point light's: `(1 - d / range)²` with a range, `1 / d²`
 /// without. MatCap textures are sampled at `(0.5 + 0.5 x, 0.5 - 0.5 y)` of
 /// the view-space normal, `x` pointing right and `y` up in the picture, also
 /// when the projection mirrors it. `reflected` is `cap` on the vertices that
 /// get a MatCap texture and `1` on the others. Highlights are white and
 /// follow the direction of the directional lights, not their intensity. The
-/// result is clamped to `[0, 1]`, with no tone mapping, and output
+/// result is clamped to `[0, 1]`, with no tone mapping, graded, and output
 /// premultiplied by its alpha.
 ///
 /// ## Metals
@@ -237,6 +257,14 @@ class StylizedMaterial({
   /// two. See the "Metals" section of [StylizedMaterial].
   var double matCapMetallic = 0,
 
+  /// How saturated the final color stays: `1` (the default) leaves it as it
+  /// is, `0` turns it into its luminosity, a grey (see "Shading").
+  var double saturation = 1,
+
+  /// A color laid over the final color as far as its alpha goes: transparent
+  /// (the default) leaves the color as it is (see "Shading").
+  var Color overlayColor = const Color(0x00000000),
+
   /// The direction vertices sway in, in [windSpace].
   Vector3? windDirection,
 
@@ -326,6 +354,37 @@ class StylizedMaterial({
   /// as laid out in [vertexLayout], the others as in the standard layout.
   static const String masksAttribute = 'vertexMasks';
 
+  /// The name of the joint indices attribute of [skinnedVertexLayout].
+  static const String jointsAttribute = 'vertexJoints';
+
+  /// The name of the joint weights attribute of [skinnedVertexLayout].
+  static const String weightsAttribute = 'vertexWeights';
+
+  /// The layout of skinned vertices, 24 floats per vertex: [vertexLayout]
+  /// followed by four joint indices (`vertexJoints`) and their four weights
+  /// (`vertexWeights`). See the "Skinning" section of [StylizedMaterial].
+  static final VertexLayout skinnedVertexLayout = VertexLayout([
+    ...vertexLayout.attributes,
+    const VertexAttribute(jointsAttribute, 4),
+    const VertexAttribute(weightsAttribute, 4),
+  ]);
+
+  /// The number of joint matrices a skinned draw may have.
+  static const int maxJoints = 16;
+
+  // The variant for skinned surfaces in the stylized layout.
+  final Shader _skinnedVertexShader = VertexShader.fromAsset(
+    'packages/flame_3d/assets/shaders/stylized_material_skinned.shaderbundle',
+    slots: [
+      RenderContext3D.cameraMatricesBlock,
+      'Wind',
+      RenderContext3D.jointMatricesBlock,
+    ],
+  );
+
+  // Whether the skinned variant drew: only then are its values written.
+  bool _skinnedInUse = false;
+
   // The variant for surfaces without the masks (the standard layout).
   final Shader _standardVertexShader = VertexShader.fromAsset(
     'packages/flame_3d/assets/shaders/stylized_material_standard.shaderbundle',
@@ -342,23 +401,25 @@ class StylizedMaterial({
   Shader vertexShaderFor(VertexLayout layout) {
     if (!identical(layout, _lastLayout)) {
       _lastLayout = layout;
-      _lastShader = layout.offsetOf(masksAttribute) == null
-          ? _standardVertexShader
-          : vertexShader;
+      if (layout.offsetOf(masksAttribute) == null) {
+        _lastShader = _standardVertexShader;
+      } else if (layout.offsetOf(jointsAttribute) != null &&
+          layout.offsetOf(weightsAttribute) != null) {
+        _lastShader = _skinnedVertexShader;
+        _skinnedInUse = true;
+      } else {
+        _lastShader = vertexShader;
+      }
     }
     return _lastShader!;
   }
 
   @override
   void apply(RenderContext context) {
-    final inModelSpace = windSpace == WindSpace.model;
-    vertexShader
-      ..setVector3('Wind.direction', inModelSpace ? _zero : windDirection)
-      ..setVector3('Wind.modelDirection', inModelSpace ? windDirection : _zero)
-      ..setFloat('Wind.amplitude', windAmplitude)
-      ..setVector3('Wind.phaseScale', windPhase)
-      ..setFloat('Wind.frequency', windFrequency)
-      ..setFloat('Wind.time', windTime);
+    _applyWind(vertexShader);
+    if (_skinnedInUse) {
+      _applyWind(_skinnedVertexShader);
+    }
     final matCap = matCapTexture;
     final gemMatCap = gemMatCapTexture;
     final weight = skyFillWeight;
@@ -413,7 +474,20 @@ class StylizedMaterial({
         'Material.gemThreshold',
         gemMatCap == null ? _never : gemThreshold,
       )
-      ..setFloat('Material.matCapMetallic', matCapMetallic);
+      ..setFloat('Material.matCapMetallic', matCapMetallic)
+      ..setFloat('Material.saturation', saturation)
+      ..setColor('Material.overlayColor', overlayColor);
+  }
+
+  void _applyWind(Shader shader) {
+    final inModelSpace = windSpace == WindSpace.model;
+    shader
+      ..setVector3('Wind.direction', inModelSpace ? _zero : windDirection)
+      ..setVector3('Wind.modelDirection', inModelSpace ? windDirection : _zero)
+      ..setFloat('Wind.amplitude', windAmplitude)
+      ..setVector3('Wind.phaseScale', windPhase)
+      ..setFloat('Wind.frequency', windFrequency)
+      ..setFloat('Wind.time', windTime);
   }
 
   final Vector4 _skyFill = Vector4.zero();
@@ -432,6 +506,14 @@ class StylizedMaterial({
   /// [indices] are the triangles' vertex indices; they are stored as 16-bit
   /// integers when possible, and used as given when they are a [Uint16List]
   /// or a [Uint32List].
+  ///
+  /// With [joints] and [weights], 4 floats per vertex each (joint indices,
+  /// below [maxJoints], and their weights), the surface is skinned and laid
+  /// out in [skinnedVertexLayout] instead; both must be given together.
+  ///
+  /// The bounds of the surface, which culling uses, are those of [positions]
+  /// unless [aabb] is given: give bounds wide enough for every pose when the
+  /// joints of a skinned surface move it outside of them.
   static Surface buildSurface({
     required List<double> positions,
     required List<double> normals,
@@ -444,6 +526,9 @@ class StylizedMaterial({
     List<double>? emissive,
     List<double>? gloss,
     List<double>? sway,
+    List<double>? joints,
+    List<double>? weights,
+    Aabb3? aabb,
   }) {
     final count = positions.length ~/ 3;
     void check(List<double>? values, String name, int perVertex) {
@@ -465,8 +550,30 @@ class StylizedMaterial({
     check(emissive, 'emissive', 1);
     check(gloss, 'gloss', 1);
     check(sway, 'sway', 1);
+    check(joints, 'joints', 4);
+    check(weights, 'weights', 4);
+    if ((joints == null) != (weights == null)) {
+      throw ArgumentError(
+        'joints and weights must be given together: '
+        'a skinned surface needs both',
+      );
+    }
+    if (joints != null) {
+      for (var i = 0; i < joints.length; i++) {
+        final joint = joints[i];
+        if (joint < 0 || joint >= maxJoints || joint != joint.roundToDouble()) {
+          throw ArgumentError.value(
+            joint,
+            'joints',
+            'Joint indices must be whole numbers from 0 to ${maxJoints - 1}',
+          );
+        }
+      }
+    }
 
-    final stride = vertexLayout.strideInFloats;
+    final skinned = joints != null;
+    final layout = skinned ? skinnedVertexLayout : vertexLayout;
+    final stride = layout.strideInFloats;
     final data = Float32List(count * stride);
     for (var i = 0; i < count; i++) {
       final o = i * stride;
@@ -487,12 +594,20 @@ class StylizedMaterial({
         ..[o + 13] = gloss?[i] ?? 0
         ..[o + 14] = occlusion?[i] ?? 1
         ..[o + 15] = sway?[i] ?? 0;
+      if (skinned) {
+        for (var k = 0; k < 4; k++) {
+          data
+            ..[o + 16 + k] = joints[i * 4 + k]
+            ..[o + 20 + k] = weights![i * 4 + k];
+        }
+      }
     }
     return Surface.fromBuffers(
       vertices: data,
       indices: _indexList(indices, count),
-      layout: vertexLayout,
+      layout: layout,
       material: material,
+      aabb: aabb,
     );
   }
 

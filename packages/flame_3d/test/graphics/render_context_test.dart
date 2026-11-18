@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'dart:ui';
 
+import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
@@ -197,6 +198,29 @@ void main() {
       expect(backend.commands.where((c) => c.startsWith('drawIndexed')), [
         'drawIndexed 3 x2',
         'drawIndexed 3 x1',
+        'drawIndexed 3 x1',
+      ]);
+    });
+
+    test('takes the joint matrices of a MeshComponent', () {
+      final surface = triangle();
+      final joints = [Matrix4.identity(), Matrix4.translationValues(4, 5, 6)];
+      final component = MeshComponent(
+        mesh: Mesh()..addSurface(surface),
+        position: Vector3(0, 0, -5),
+        jointTransforms: {0: joints},
+      );
+      frame(() => component.draw(context));
+
+      final data = backend.uniforms[RenderContext3D.jointMatricesBlock]!;
+      final shader = surface.material.vertexShader;
+      final base =
+          shader
+              .slot(RenderContext3D.jointMatricesBlock)
+              .getMemberOffsetInBytes('joints')! ~/
+          4;
+      expect(data.sublist(base + 16, base + 32), joints[1].storage);
+      expect(backend.commands.where((c) => c.startsWith('drawIndexed')), [
         'drawIndexed 3 x1',
       ]);
     });

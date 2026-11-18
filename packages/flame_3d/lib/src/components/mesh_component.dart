@@ -26,6 +26,16 @@ class MeshComponent({
 
   /// The initial value of [instanceData], zero when `null`.
   Vector4? instanceData,
+
+  /// The joint matrices of the mesh's skinned surfaces, by surface index: a
+  /// [StylizedMaterial] surface built with joints and weights, or a skinned
+  /// surface of a model. `null` (the default) draws every surface unskinned.
+  ///
+  /// The matrices are read when the component is drawn, so they can be
+  /// updated in place every frame to animate the mesh. The component's bounds
+  /// are the mesh's: give the surfaces bounds that hold every pose (see
+  /// [StylizedMaterial.buildSurface]) for culling to stay right.
+  var Map<int, List<Matrix4>>? jointTransforms,
 }) extends Object3D {
   /// The mesh resource.
   Mesh get mesh => _mesh;
@@ -49,6 +59,7 @@ class MeshComponent({
       transform: worldTransformMatrix,
       color: color,
       instanceData: instanceData,
+      jointTransforms: jointTransforms,
     );
   }
 }

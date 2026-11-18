@@ -28,6 +28,14 @@ void main() {
       });
     });
 
+    test('the skinned variant reads the skinned layout', () {
+      expect(_vertexInputs('stylized_material_skinned'), {
+        for (final a in StylizedMaterial.skinnedVertexLayout.attributes)
+          a.name: a.components,
+        ...instanceInputs,
+      });
+    });
+
     test('the standard variant reads only standard attributes', () {
       final standard = {
         for (final a in VertexLayout.standard.attributes) a.name: a.components,
@@ -42,7 +50,11 @@ void main() {
     });
 
     test('are native only: there is no WebGPU bundle', () {
-      for (final name in ['stylized_material', 'stylized_material_standard']) {
+      for (final name in [
+        'stylized_material',
+        'stylized_material_skinned',
+        'stylized_material_standard',
+      ]) {
         expect(File('assets/shaders/$name.wgslbundle').existsSync(), isFalse);
       }
     });
