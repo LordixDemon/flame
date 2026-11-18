@@ -1,3 +1,4 @@
+import 'dart:async' show unawaited;
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -12,10 +13,13 @@ import 'package:flame_3d/particles.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d_example/houses/board_grid.dart';
 import 'package:flame_3d_example/showcase/showcase_meshes.dart';
+import 'package:flame_3d_example/showcase/showcase_variations.dart';
 import 'package:flutter/foundation.dart' show ChangeNotifier;
 
 /// Interactive feature flags and live telemetry state of [ShowcaseGame].
 class ShowcaseController() extends ChangeNotifier {
+  ShowcasePreset preset = ShowcasePreset.allInOne;
+
   bool retainedStaticLayer = true;
   bool staticShadowCache = true;
   bool sharedShadowGroup = false;
@@ -28,6 +32,13 @@ class ShowcaseController() extends ChangeNotifier {
   bool msaa4x = true;
   bool autoOrbitCamera = false;
   bool stressInstances = false;
+
+  ShadowMapEncoding shadowEncoding = ShadowMapEncoding.auto;
+  ShadowFit shadowFit = ShadowFit.scene;
+  int shadowSoftness = 1;
+  double renderScale = 1.0;
+  AnimationPlayMode playMode = AnimationPlayMode.loop;
+  double animSpeed = 1.0;
 
   String activeClip = 'Idle';
   String lastHitSummary = 'Tap any 3D object to raycast its triangle BVH';
@@ -87,6 +98,9 @@ class ShowcaseGame({ShowcaseController? controller})
   static const List<String> animationClips = ['Idle', 'Swing', 'Spin'];
 
   final ShowcaseAssets showcaseAssets = ShowcaseAssets();
+  late final ShowcaseVariationRig variationRig = ShowcaseVariationRig(
+    assets: showcaseAssets,
+  );
   final ShadowGroup shadowGroup = ShadowGroup();
 
   late final Scene3DComponent staticLayer;
@@ -306,8 +320,8 @@ class ShowcaseGame({ShowcaseController? controller})
 
     // 1. InstancedGroup3D with 16-color accentPalette.
     final tileMesh = showcaseAssets.buildAccentTileMesh(tileMaterial);
-    tileInstances = InstancedGroup3D(mesh: tileMesh, initialCapacity: 1024);
-    _rebuildTileInstances(stress: controller.stressInstances);
+    tileInstances = InstancedGroup3D(mesh: tileMesh, initialCapacity: 2048);
+    _rebuildTileInstances(mode: _desiredTileMode());
     staticLayer.world.add(tileInstances);
 
     // 2. 8 LodMeshComponent crystal towers around the arena.
@@ -412,14 +426,79 @@ class ShowcaseGame({ShowcaseController? controller})
     ]);
   }
 
-  void _rebuildTileInstances({required bool stress}) {
+  int _desiredTileMode() {
+    if (controller.preset == ShowcasePreset.extremeStress) {
+      return 2048;
+    }
+    if (controller.stressInstances) {
+      return 1024;
+    }
+    if (controller.preset == ShowcasePreset.allInOne) {
+      return 144;
+    }
+    return 44;
+  }
+
+  void _rebuildTileInstances({required int mode}) {
     tileInstances.clear();
     final m = Matrix4.identity();
     const paletteLen = 16;
-    if (!stress) {
-      // 12x12 courtyard grid (144 instances in 1 draw call).
+    if (mode == 2048) {
+      // 64x32 extreme stress lattice (2,048 instances in 1 draw call!).
+      for (var ix = 0; ix < 64; ix++) {
+        for (var iy = 0; iy < 32; iy++) {
+          final cx = 0.35 + ix * (boardCells - 0.7) / 63;
+          final cy = 0.35 + iy * (boardCells - 0.7) / 31;
+          final zScale = 0.30 + 0.55 * ((ix * 5 + iy * 3) % 5) / 4;
+          m
+            ..setIdentity()
+            ..setTranslationRaw(cx, cy, 0)
+            ..scaleByDouble(0.22, 0.38, zScale, 1);
+          final paletteIdx = (ix + iy) % paletteLen;
+          tileInstances.addInstance(
+            transform: m,
+            color: const ui.Color(0xFFE2E8F0),
+            instanceData: Vector4(
+              (ix * iy) % 13 == 0 ? 0.65 : 0.0,
+              0.0,
+              0.0,
+              StylizedMaterial.packAccentAndFade(paletteIdx),
+            ),
+          );
+        }
+      }
+    } else if (mode == 1024) {
+      // 32x32 dense stress lattice (1,024 instances in 1 draw call!).
+      for (var ix = 0; ix < 32; ix++) {
+        for (var iy = 0; iy < 32; iy++) {
+          final cx = 0.4 + ix * (boardCells - 0.8) / 31;
+          final cy = 0.4 + iy * (boardCells - 0.8) / 31;
+          final zScale = 0.35 + 0.55 * ((ix * 7 + iy * 3) % 5) / 4;
+          m
+            ..setIdentity()
+            ..setTranslationRaw(cx, cy, 0)
+            ..scaleByDouble(0.38, 0.38, zScale, 1);
+          final paletteIdx = (ix + iy) % paletteLen;
+          tileInstances.addInstance(
+            transform: m,
+            color: const ui.Color(0xFFE2E8F0),
+            instanceData: Vector4(
+              (ix * iy) % 11 == 0 ? 0.6 : 0.0,
+              0.0,
+              0.0,
+              StylizedMaterial.packAccentAndFade(paletteIdx),
+            ),
+          );
+        }
+      }
+    } else {
+      // 12x12 courtyard grid (144 full or 44 perimeter ring for sub-labs).
+      final perimeterOnly = mode == 44;
       for (var ix = 0; ix < 12; ix++) {
         for (var iy = 0; iy < 12; iy++) {
+          if (perimeterOnly && ix > 0 && ix < 11 && iy > 0 && iy < 11) {
+            continue;
+          }
           final cx = 1.5 + ix;
           final cy = 1.5 + iy;
           final dist = math.sqrt(
@@ -439,30 +518,6 @@ class ShowcaseGame({ShowcaseController? controller})
                 : const ui.Color(0xFFE2E8F0),
             instanceData: Vector4(
               (ix + iy) % 7 == 0 ? 0.45 : 0.0,
-              0.0,
-              0.0,
-              StylizedMaterial.packAccentAndFade(paletteIdx),
-            ),
-          );
-        }
-      }
-    } else {
-      // 32x32 dense stress lattice (1,024 instances in 1 draw call!).
-      for (var ix = 0; ix < 32; ix++) {
-        for (var iy = 0; iy < 32; iy++) {
-          final cx = 0.4 + ix * (boardCells - 0.8) / 31;
-          final cy = 0.4 + iy * (boardCells - 0.8) / 31;
-          final zScale = 0.35 + 0.55 * ((ix * 7 + iy * 3) % 5) / 4;
-          m
-            ..setIdentity()
-            ..setTranslationRaw(cx, cy, 0)
-            ..scaleByDouble(0.38, 0.38, zScale, 1);
-          final paletteIdx = (ix + iy) % paletteLen;
-          tileInstances.addInstance(
-            transform: m,
-            color: const ui.Color(0xFFE2E8F0),
-            instanceData: Vector4(
-              (ix * iy) % 11 == 0 ? 0.6 : 0.0,
               0.0,
               0.0,
               StylizedMaterial.packAccentAndFade(paletteIdx),
@@ -763,6 +818,178 @@ class ShowcaseGame({ShowcaseController? controller})
     }
   }
 
+  /// Preloads optional async testbed assets (`ImageTexture` from `Picture`,
+  /// `.obj`+`.mtl` and `.glb` models via `ModelParser`).
+  Future<void> preloadVariationAssets() => variationRig.preloadAssets();
+
+  /// Asynchronously preloads any external variation assets and switches to
+  /// [next].
+  Future<void> selectPreset(ShowcasePreset next) async {
+    await preloadVariationAssets();
+    if (isLoaded) {
+      applyPreset(next);
+    }
+  }
+
+  /// Synchronously switches the active [ShowcasePreset] lab.
+  void applyPreset(ShowcasePreset next) {
+    controller.preset = next;
+    variationRig.clearMounted();
+
+    // Configure per-lab defaults while preserving manual toggle state.
+    switch (next) {
+      case ShowcasePreset.allInOne:
+        controller
+          ..retainedStaticLayer = true
+          ..staticShadowCache = true
+          ..sharedShadowGroup = false
+          ..stressInstances = false
+          ..renderScale = 1.0;
+      case ShowcasePreset.materialsAndGrading:
+        controller
+          ..retainedStaticLayer = false
+          ..staticShadowCache = true
+          ..sharedShadowGroup = false
+          ..stressInstances = false;
+        variationRig.buildMaterialsAndGradingLab();
+      case ShowcasePreset.windSpaces:
+        controller
+          ..retainedStaticLayer = false
+          ..wind = true
+          ..stressInstances = false;
+        variationRig.buildWindSpacesLab();
+      case ShowcasePreset.shadowsAndLights:
+        controller
+          ..retainedStaticLayer = false
+          ..staticShadowCache = false
+          ..sharedShadowGroup = true
+          ..stressInstances = false;
+        variationRig.buildShadowsAndLightsLab(
+          projection: projection,
+          shadowGroup: shadowGroup,
+          msaa: controller.msaa4x ? Msaa.sample4 : Msaa.off,
+        );
+      case ShowcasePreset.particlesAndRibbons:
+        controller
+          ..retainedStaticLayer = true
+          ..particles = true
+          ..ribbonsAndDecals = true
+          ..stressInstances = false;
+        variationRig.buildParticlesAndRibbonsLab(impactDecals: ringDecals);
+      case ShowcasePreset.projectionsAndInsets:
+        controller
+          ..retainedStaticLayer = true
+          ..stressInstances = false;
+        variationRig.buildProjectionsAndInsetsLab(gemMat: crystalMaterial);
+      case ShowcasePreset.modelsAnd32BitMesh:
+        controller
+          ..retainedStaticLayer = false
+          ..stressInstances = false;
+        variationRig.buildModelsAnd32BitMeshLab();
+      case ShowcasePreset.extremeStress:
+        controller
+          ..retainedStaticLayer = false
+          ..staticShadowCache = true
+          ..wind = true
+          ..particles = true
+          ..ribbonsAndDecals = true;
+        variationRig.buildExtremeStressLab(rigMat: automatonMaterial);
+    }
+
+    if (variationRig.staticExtras.isNotEmpty) {
+      staticLayer.world.addAll(variationRig.staticExtras);
+    }
+    if (variationRig.dynamicExtras.isNotEmpty) {
+      dynamicLayer.world.addAll(variationRig.dynamicExtras);
+    }
+    if (variationRig.world2DExtras.isNotEmpty) {
+      world.addAll(variationRig.world2DExtras);
+    }
+    if (variationRig.viewportExtras.isNotEmpty) {
+      camera.viewport.addAll(variationRig.viewportExtras);
+    }
+    syncControllerState();
+  }
+
+  /// Cycles `ShadowMapEncoding` (`auto` -> `float32` -> `rgba8`).
+  void cycleShadowEncoding() {
+    const vals = ShadowMapEncoding.values;
+    controller.shadowEncoding =
+        vals[(controller.shadowEncoding.index + 1) % vals.length];
+    syncControllerState();
+  }
+
+  /// Toggles `ShadowFit` between `scene` and `view` (`maxDistance: 32`).
+  void toggleShadowFit() {
+    controller.shadowFit = controller.shadowFit == ShadowFit.scene
+        ? ShadowFit.view
+        : ShadowFit.scene;
+    syncControllerState();
+  }
+
+  /// Cycles PCF shadow filter softness (`0` -> `1` -> `2` -> `3`).
+  void cycleShadowSoftness() {
+    controller.shadowSoftness = (controller.shadowSoftness + 1) % 4;
+    syncControllerState();
+  }
+
+  /// Toggles dynamic resolution scaling (`renderScale`: `1.0` vs `0.5`).
+  void toggleRenderScale() {
+    controller.renderScale = controller.renderScale == 1.0 ? 0.5 : 1.0;
+    syncControllerState();
+  }
+
+  /// Cycles `AnimationPlayMode` (`loop` -> `once` -> `pingPong`) and triggers
+  /// the current clip with that mode.
+  void cyclePlayMode() {
+    const modes = AnimationPlayMode.values;
+    final next = modes[(controller.playMode.index + 1) % modes.length];
+    controller.playMode = next;
+    final clipName = animationClips[_clipIndex];
+    automaton.playAnimationByName(
+      clipName,
+      mode: next,
+      onComplete: () => variationRig.onceClipCompletions++,
+    );
+    automatonOutline.playAnimationByName(clipName, mode: next);
+    controller.notifyChanged();
+  }
+
+  /// Cycles skeletal animation playback speed (`1.0x` -> `2.0x` -> `0.5x`).
+  void cycleAnimSpeed() {
+    final next = controller.animSpeed == 1.0
+        ? 2.0
+        : controller.animSpeed == 2.0
+        ? 0.5
+        : 1.0;
+    controller.animSpeed = next;
+    syncControllerState();
+  }
+
+  /// Toggles visibility of the `Crown` sub-node on the 26-float stylized rig
+  /// (`ModelComponent.hideNodeByName`).
+  void toggleCrownNode() {
+    if (variationRig.stylized26Rig == null) {
+      unawaited(
+        selectPreset(ShowcasePreset.modelsAnd32BitMesh).then((_) {
+          variationRig.crownHidden = !variationRig.crownHidden;
+          variationRig.stylized26Rig?.hideNodeByName(
+            'Crown',
+            hidden: variationRig.crownHidden,
+          );
+          controller.notifyChanged();
+        }),
+      );
+      return;
+    }
+    variationRig.crownHidden = !variationRig.crownHidden;
+    variationRig.stylized26Rig?.hideNodeByName(
+      'Crown',
+      hidden: variationRig.crownHidden,
+    );
+    controller.notifyChanged();
+  }
+
   /// Applies all toggle states from [controller] to the live 3D layers.
   void syncControllerState() {
     if (!isLoaded) {
@@ -771,23 +998,39 @@ class ShowcaseGame({ShowcaseController? controller})
     final msaa = controller.msaa4x ? Msaa.sample4 : Msaa.off;
     staticLayer
       ..msaa = msaa
+      ..renderScale = controller.renderScale
       ..cacheMode = controller.retainedStaticLayer
           ? Scene3DCacheMode.retained
           : Scene3DCacheMode.none;
     dynamicLayer
       ..msaa = msaa
+      ..renderScale = controller.renderScale
       ..bloom = controller.bloom ? _bloomSettings : null;
 
-    _staticShadows.cacheWhenStatic = controller.staticShadowCache;
+    _staticShadows
+      ..cacheWhenStatic = controller.staticShadowCache
+      ..encoding = controller.shadowEncoding
+      ..fit = controller.shadowFit
+      ..softness = controller.shadowSoftness;
+    _dynamicShadows
+      ..encoding = controller.shadowEncoding
+      ..fit = controller.shadowFit
+      ..softness = controller.shadowSoftness;
+
     if (controller.sharedShadowGroup) {
       staticLayer.world.shadowGroup = shadowGroup;
       dynamicLayer.world.shadowGroup = shadowGroup;
+      variationRig.skyShadowLayer?.world.shadowGroup = shadowGroup;
     } else {
       staticLayer.world.shadowGroup = null;
       dynamicLayer.world.shadowGroup = null;
     }
 
     dynamicLayer.world.fog = controller.fog ? _fogSettings : null;
+
+    automaton.animationState.speed = controller.animSpeed;
+    automatonOutline.animationState.speed = controller.animSpeed;
+    variationRig.stylized26Rig?.animationState.speed = controller.animSpeed;
 
     final outlineScale = controller.outlines ? 1.0 : 0.0;
     automatonOutline.scale.setValues(outlineScale, outlineScale, outlineScale);
@@ -814,9 +1057,9 @@ class ShowcaseGame({ShowcaseController? controller})
       _rebuildEnergyStrokes(_time);
     }
 
-    final expectedInstances = controller.stressInstances ? 1024 : 144;
+    final expectedInstances = _desiredTileMode();
     if (tileInstances.length != expectedInstances) {
-      _rebuildTileInstances(stress: controller.stressInstances);
+      _rebuildTileInstances(mode: expectedInstances);
     }
 
     staticLayer.markDirty();
@@ -985,6 +1228,8 @@ class ShowcaseGame({ShowcaseController? controller})
     if (controller.ribbonsAndDecals) {
       _rebuildEnergyStrokes(_time);
     }
+
+    variationRig.update(_time, dt);
 
     _hudRefreshTimer += dt;
     if (_hudRefreshTimer >= 0.25) {

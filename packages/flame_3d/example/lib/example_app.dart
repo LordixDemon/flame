@@ -1,6 +1,7 @@
 import 'package:flame/game.dart';
 import 'package:flame_3d_example/commands/commands.dart';
 import 'package:flame_3d_example/example_game_3d.dart';
+import 'package:flame_3d_example/showcase/pure_camera_lab_game.dart';
 import 'package:flame_3d_example/showcase/showcase_game.dart';
 import 'package:flame_3d_example/showcase/showcase_view.dart';
 import 'package:flame_console/flame_console.dart';
@@ -94,6 +95,8 @@ class _StandaloneGameState() extends State<_StandaloneGame> {
   void dispose() {
     if (_game case final ShowcaseGame showcase) {
       showcase.controller.dispose();
+    } else if (_game case final PureCameraLabGame camLab) {
+      camLab.hudTick.dispose();
     }
     super.dispose();
   }
@@ -105,6 +108,8 @@ class _StandaloneGameState() extends State<_StandaloneGame> {
       children: [
         if (_game case final ShowcaseGame showcase)
           ShowcaseView(game: showcase)
+        else if (_game case final PureCameraLabGame camLab)
+          PureCameraLabView(game: camLab)
         else
           GameWidget(game: _game),
         Positioned(

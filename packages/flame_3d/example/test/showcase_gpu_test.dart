@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d_example/showcase/showcase_diagnostics.dart';
 import 'package:flame_3d_example/showcase/showcase_game.dart';
+import 'package:flame_3d_example/showcase/showcase_variations.dart';
 import 'package:flame_3d_example/showcase/showcase_view.dart';
 import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter/widgets.dart';
@@ -20,10 +21,10 @@ void main() {
   });
 
   testWidgets(
-    'ShowcaseGame boots, renders all subsystems, and passes 12/12 self-tests',
+    'ShowcaseGame boots, exercises 8 labs, and passes 24/24 self-tests',
     (tester) async {
       tester.view
-        ..physicalSize = const ui.Size(640, 400)
+        ..physicalSize = const ui.Size(800, 520)
         ..devicePixelRatio = 1.0;
       addTearDown(tester.view.reset);
 
@@ -49,6 +50,7 @@ void main() {
       final report = await ShowcaseDiagnostics.runAllChecks(
         game,
         pumpFrame: () => tester.pump(const Duration(milliseconds: 16)),
+        runAsyncHost: tester.runAsync,
         readImageBytes: (img) =>
             tester.runAsync<ByteData?>(() => img.toByteData()),
       );
@@ -62,20 +64,19 @@ void main() {
         isTrue,
         reason: 'Failed showcase checks:\n$failedDetails',
       );
-      expect(report.totalCount, 12);
+      expect(report.totalCount, 24);
 
-      // Verify 1,024-instance stress mode renders in a single instanced draw
-      // for the tile mesh and paints visible pixels into the frame!
-      game.controller
-        ..stressInstances = true
-        ..retainedStaticLayer = false;
-      game.syncControllerState();
+      // Verify 2,048-instance + 6-rig extreme stress lab renders and paints
+      // visible pixels into the frame!
+      game.applyPreset(ShowcasePreset.extremeStress);
       await tester.pump(const Duration(milliseconds: 16));
-      expect(game.tileInstances.length, 1024);
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(game.tileInstances.length, 2048);
       expect(
         game.staticLayer.renderStats.instances,
-        greaterThanOrEqualTo(1024),
+        greaterThanOrEqualTo(2048),
       );
+      expect(game.variationRig.extraSkinnedRigs, hasLength(6));
 
       final boundary =
           boundaryKey.currentContext!.findRenderObject()!

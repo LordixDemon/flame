@@ -24,6 +24,7 @@ abstract class GameScenario() {
     'particles': ParticlesScenario(),
     'shadows': ShadowsScenario(),
     'showcase': ShowcaseScenario(),
+    'camera_lab': CameraLabScenario(),
   };
 
   static void defaultSetup(ExampleGame3D game) {

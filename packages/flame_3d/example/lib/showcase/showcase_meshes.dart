@@ -1,8 +1,9 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
-import 'dart:ui' show Color;
+import 'dart:ui' as ui;
 
 import 'package:flame_3d/core.dart';
+import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/model.dart';
 import 'package:flame_3d/resources.dart';
 
@@ -10,23 +11,23 @@ import 'package:flame_3d/resources.dart';
 /// [Model] built on the fly for the `flame_3d` maximum-feature showcase.
 class ShowcaseAssets() {
   /// 16-color accent palette shared by instanced stylized tiles and pillars.
-  static const List<Color> accentPalette = [
-    Color(0xFFE53935),
-    Color(0xFFD81B60),
-    Color(0xFF8E24AA),
-    Color(0xFF5E35B1),
-    Color(0xFF3949AB),
-    Color(0xFF1E88E5),
-    Color(0xFF039BE5),
-    Color(0xFF00ACC1),
-    Color(0xFF00897B),
-    Color(0xFF43A047),
-    Color(0xFF7CB342),
-    Color(0xFFC0CA33),
-    Color(0xFFFDD835),
-    Color(0xFFFFB300),
-    Color(0xFFFB8C00),
-    Color(0xFFF4511E),
+  static const List<ui.Color> accentPalette = [
+    ui.Color(0xFFE53935),
+    ui.Color(0xFFD81B60),
+    ui.Color(0xFF8E24AA),
+    ui.Color(0xFF5E35B1),
+    ui.Color(0xFF3949AB),
+    ui.Color(0xFF1E88E5),
+    ui.Color(0xFF039BE5),
+    ui.Color(0xFF00ACC1),
+    ui.Color(0xFF00897B),
+    ui.Color(0xFF43A047),
+    ui.Color(0xFF7CB342),
+    ui.Color(0xFFC0CA33),
+    ui.Color(0xFFFDD835),
+    ui.Color(0xFFFFB300),
+    ui.Color(0xFFFB8C00),
+    ui.Color(0xFFF4511E),
   ];
 
   /// Clear-coat MatCap sphere texture (`64x64`, linear + mipmaps).
@@ -59,6 +60,14 @@ class ShowcaseAssets() {
   /// Procedural `2x2` decal atlas (`64x64`): crosshair, star, rune diamond,
   /// and chevrons, premultiplied RGBA8.
   late final Texture decalAtlas = _buildDecalAtlas(64);
+
+  /// Procedural `4x4` = 16-frame animated plasma/flame flipbook (`64x64`,
+  /// premultiplied RGBA8) for `ParticleMaterial` + `ParticleFlipbook3D`.
+  late final Texture flipbookFireTexture = _buildFlipbookFire(64);
+
+  /// Procedural `64x16` streaked glowing plasma strip (`TextureWrap.repeat`)
+  /// for textured `RibbonMaterial3D` trails and beams.
+  late final Texture ribbonPlasmaTexture = _buildRibbonPlasma(64, 16);
 
   /// Builds a stylized pillar/tile mesh whose base uses the tint mask and
   /// whose cap uses the accent mask + gloss + gem finial.
@@ -333,7 +342,7 @@ class ShowcaseAssets() {
   Mesh buildCrystalTowerLodMesh(
     StylizedMaterial material, {
     required int segments,
-    required Color crystalTint,
+    required ui.Color crystalTint,
   }) {
     final pos = <double>[];
     final nrm = <double>[];
@@ -348,7 +357,7 @@ class ShowcaseAssets() {
       required double r1,
       required double z0,
       required double z1,
-      required Color c,
+      required ui.Color c,
       required double em,
       required double gl,
       required double ao0,
@@ -384,7 +393,7 @@ class ShowcaseAssets() {
       r1: 0.34,
       z0: 0.0,
       z1: 1.0,
-      c: const Color(0xFFD8D4EC),
+      c: const ui.Color(0xFFD8D4EC),
       em: 0.0,
       gl: 0.35,
       ao0: 0.5,
@@ -456,7 +465,7 @@ class ShowcaseAssets() {
             position: Vector3(cx * radius, cy * radius, z),
             normal: Vector3(cx, cy, 0.18).normalized(),
             texCoord: Vector2(s / sides, t),
-            color: Color.from(
+            color: ui.Color.from(
               alpha: 1.0,
               red: 0.30 + 0.55 * t,
               green: 0.72 - 0.20 * t,
@@ -665,6 +674,559 @@ class ShowcaseAssets() {
       outlined: Model(
         nodes: buildNodes(outlineMesh),
         animations: clips,
+      ),
+    );
+  }
+
+  /// Builds a genuine 26-float `StylizedMaterial.skinnedVertexLayout` [Model]
+  /// (`StylizedMaterial.buildSurface` with `joints`, `weights`, baked
+  /// `occlusion`, `tint`, `accent`, `emissive`, `gloss`, and `sway`) plus an
+  /// attachable `Crown` node for `hideNodeByName` testing.
+  Model buildStylized26SkinnedModel(StylizedMaterial material) {
+    const rings = 6;
+    const sides = 8;
+    final pos = <double>[];
+    final nrm = <double>[];
+    final col = <double>[];
+    final occ = <double>[];
+    final tint = <double>[];
+    final accent = <double>[];
+    final emissive = <double>[];
+    final gloss = <double>[];
+    final sway = <double>[];
+    final joints = <double>[];
+    final weights = <double>[];
+    final idx = <int>[];
+
+    for (var r = 0; r <= rings; r++) {
+      final t = r / rings;
+      final z = t * 1.8;
+      final radius = 0.38 * (1.0 - 0.45 * t) + 0.08 * math.sin(t * math.pi);
+      final w1 = ((z - 0.45) / 0.9).clamp(0.0, 1.0);
+      final w0 = 1.0 - w1;
+      for (var s = 0; s < sides; s++) {
+        final a = (s / sides) * math.pi * 2;
+        final cx = math.cos(a);
+        final cy = math.sin(a);
+        pos.addAll([cx * radius, cy * radius, z]);
+        nrm.addAll([cx, cy, 0.2]);
+        col.addAll([0.88, 0.90, 0.96, 1.0]);
+        occ.add(0.45 + 0.55 * t);
+        tint.add(1.0 - t);
+        accent.add(s.isEven ? 0.85 : 0.15);
+        emissive.add(r == rings - 1 ? 0.95 : 0.0);
+        gloss.add(0.35 + 1.15 * t);
+        sway.add(0.25 * t);
+        joints.addAll([0, 1, 0, 0]);
+        weights.addAll([w0, w1, 0, 0]);
+      }
+    }
+    for (var r = 0; r < rings; r++) {
+      for (var s = 0; s < sides; s++) {
+        final sn = (s + 1) % sides;
+        final i0 = r * sides + s;
+        final i1 = r * sides + sn;
+        final i2 = (r + 1) * sides + sn;
+        final i3 = (r + 1) * sides + s;
+        idx.addAll([i0, i1, i2, i0, i2, i3]);
+      }
+    }
+
+    final wideBox = Aabb3.minMax(
+      Vector3(-1.8, -1.8, -0.2),
+      Vector3(1.8, 1.8, 2.6),
+    );
+    final skinSurface = StylizedMaterial.buildSurface(
+      positions: pos,
+      normals: nrm,
+      colors: col,
+      occlusion: occ,
+      tint: tint,
+      accent: accent,
+      emissive: emissive,
+      gloss: gloss,
+      sway: sway,
+      joints: joints,
+      weights: weights,
+      indices: idx,
+      material: material,
+      aabb: wideBox,
+    )..jointMap = const {0: 0, 1: 1};
+
+    final skinMesh = Mesh()..addSurface(skinSurface);
+    final crownMesh = ConeMesh(
+      radius: 0.26,
+      height: 0.42,
+      segments: 6,
+      material: material,
+    );
+
+    final nodes = <int, ModelNode>{
+      0: ModelNode(
+        name: 'Root',
+        nodeIndex: 0,
+        parentNodeIndex: null,
+        transform: Matrix4.identity(),
+        mesh: null,
+        joints: const {},
+      ),
+      1: ModelNode(
+        name: 'Spine',
+        nodeIndex: 1,
+        parentNodeIndex: 0,
+        transform: Matrix4.translationValues(0, 0, 0.8),
+        mesh: null,
+        joints: const {},
+      ),
+      2: ModelNode(
+        name: 'Crown',
+        nodeIndex: 2,
+        parentNodeIndex: 1,
+        transform: Matrix4.translationValues(0, 0, 1.15)..rotateX(math.pi / 2),
+        mesh: crownMesh,
+        joints: const {},
+      ),
+      3: ModelNode(
+        name: 'Body26',
+        nodeIndex: 3,
+        parentNodeIndex: null,
+        transform: Matrix4.identity(),
+        mesh: skinMesh,
+        joints: {
+          0: ModelJoint(nodeIndex: 0, inverseBindMatrix: Matrix4.identity()),
+          1: ModelJoint(
+            nodeIndex: 1,
+            inverseBindMatrix: Matrix4.translationValues(0, 0, -0.8),
+          ),
+        },
+      ),
+    };
+
+    final pulseClip = ModelAnimation(
+      name: 'Pulse',
+      nodes: {
+        1: NodeAnimation(
+          channels: [
+            AnimationController(
+              animation: RotationAnimationSpline.from(
+                interpolation: AnimationInterpolation.linear,
+                times: const [0.0, 0.5, 1.0],
+                values: [
+                  Quaternion.axisAngle(Vector3(0, 1, 0), -0.45),
+                  Quaternion.axisAngle(Vector3(0, 1, 0), 0.45),
+                  Quaternion.axisAngle(Vector3(0, 1, 0), -0.45),
+                ],
+              ),
+            ),
+          ],
+        ),
+      },
+    );
+
+    final waveClip = ModelAnimation(
+      name: 'Wave',
+      nodes: {
+        0: NodeAnimation(
+          channels: [
+            AnimationController(
+              animation: RotationAnimationSpline.from(
+                interpolation: AnimationInterpolation.linear,
+                times: const [0.0, 0.4, 0.8],
+                values: [
+                  Quaternion.identity(),
+                  Quaternion.axisAngle(Vector3(0, 0, 1), 0.9),
+                  Quaternion.identity(),
+                ],
+              ),
+            ),
+          ],
+        ),
+        1: NodeAnimation(
+          channels: [
+            AnimationController(
+              animation: RotationAnimationSpline.from(
+                interpolation: AnimationInterpolation.linear,
+                times: const [0.0, 0.4, 0.8],
+                values: [
+                  Quaternion.axisAngle(Vector3(1, 0, 0), 0.55),
+                  Quaternion.axisAngle(Vector3(1, 0, 0), -0.55),
+                  Quaternion.axisAngle(Vector3(1, 0, 0), 0.55),
+                ],
+              ),
+            ),
+          ],
+        ),
+      },
+    );
+
+    return Model(nodes: nodes, animations: [pulseClip, waveClip]);
+  }
+
+  /// Builds a multi-part overlapping statue surface (inner core + outer shell)
+  /// so naive translucent rendering reveals internal self-overlap whereas a
+  /// `RenderState.depthOnly` prepass + `CompareFunction.lessEqual` fades as one
+  /// seamless piece.
+  Mesh buildOverlappingGhostMesh(StylizedMaterial material) {
+    final pos = <double>[];
+    final nrm = <double>[];
+    final col = <double>[];
+    final occ = <double>[];
+    final gloss = <double>[];
+    final idx = <int>[];
+
+    void addSphere(double cx, double cy, double cz, double r, ui.Color c) {
+      const stacks = 10;
+      const slices = 14;
+      final base = pos.length ~/ 3;
+      for (var i = 0; i <= stacks; i++) {
+        final v = i / stacks;
+        final phi = v * math.pi;
+        final sp = math.sin(phi);
+        final cp = math.cos(phi);
+        for (var j = 0; j <= slices; j++) {
+          final u = j / slices;
+          final theta = u * math.pi * 2;
+          final nx = sp * math.cos(theta);
+          final ny = sp * math.sin(theta);
+          final nz = cp;
+          pos.addAll([cx + nx * r, cy + ny * r, cz + nz * r]);
+          nrm.addAll([nx, ny, nz]);
+          col.addAll([c.r, c.g, c.b, 1.0]);
+          occ.add(0.85);
+          gloss.add(0.75);
+        }
+      }
+      const stride = slices + 1;
+      for (var i = 0; i < stacks; i++) {
+        for (var j = 0; j < slices; j++) {
+          final a = base + i * stride + j;
+          final b = a + 1;
+          final d = a + stride;
+          final e = d + 1;
+          idx.addAll([a, d, b, b, d, e]);
+        }
+      }
+    }
+
+    // Intersecting spheres: torso, inner bright core, shoulders, head.
+    addSphere(0, 0, 0.55, 0.44, const ui.Color(0xFF72EFDD));
+    addSphere(0, 0, 0.62, 0.24, const ui.Color(0xFFFF4D6D));
+    addSphere(-0.30, 0, 0.78, 0.26, const ui.Color(0xFF64DFDF));
+    addSphere(0.30, 0, 0.78, 0.26, const ui.Color(0xFF64DFDF));
+    addSphere(0, 0, 1.12, 0.28, const ui.Color(0xFF80FFDB));
+
+    return Mesh()..addSurface(
+      StylizedMaterial.buildSurface(
+        positions: pos,
+        normals: nrm,
+        colors: col,
+        occlusion: occ,
+        gloss: gloss,
+        indices: idx,
+        material: material,
+      ),
+    );
+  }
+
+  /// Builds an asymmetric L-shaped monument so negative mirror scales
+  /// (`scale: Vector3(-1, 1, 1)`) visibly test winding compensation and BVH
+  /// raycasting.
+  Mesh buildAsymmetricMonumentMesh(StylizedMaterial material) {
+    final pos = <double>[];
+    final nrm = <double>[];
+    final col = <double>[];
+    final occ = <double>[];
+    final accent = <double>[];
+    final gloss = <double>[];
+    final idx = <int>[];
+
+    void box(
+      double x0,
+      double x1,
+      double y0,
+      double y1,
+      double z0,
+      double z1,
+      double acc,
+    ) {
+      final faces = [
+        (
+          (1.0, 0.0, 0.0),
+          [(x1, y0, z0), (x1, y1, z0), (x1, y1, z1), (x1, y0, z1)],
+        ),
+        (
+          (-1.0, 0.0, 0.0),
+          [(x0, y1, z0), (x0, y0, z0), (x0, y0, z1), (x0, y1, z1)],
+        ),
+        (
+          (0.0, 1.0, 0.0),
+          [(x1, y1, z0), (x0, y1, z0), (x0, y1, z1), (x1, y1, z1)],
+        ),
+        (
+          (0.0, -1.0, 0.0),
+          [(x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1)],
+        ),
+        (
+          (0.0, 0.0, 1.0),
+          [(x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)],
+        ),
+        (
+          (0.0, 0.0, -1.0),
+          [(x0, y1, z0), (x1, y1, z0), (x1, y0, z0), (x0, y0, z0)],
+        ),
+      ];
+      for (final (n, pts) in faces) {
+        final b = pos.length ~/ 3;
+        for (final p in pts) {
+          pos.addAll([p.$1, p.$2, p.$3]);
+          nrm.addAll([n.$1, n.$2, n.$3]);
+          col.addAll([0.92, 0.88, 0.82, 1.0]);
+          occ.add(p.$3 < 0.05 ? 0.55 : 1.0);
+          accent.add(acc);
+          gloss.add(0.45);
+        }
+        idx.addAll([b, b + 1, b + 2, b, b + 2, b + 3]);
+      }
+    }
+
+    box(-0.35, 0.05, -0.25, 0.25, 0.0, 1.35, 0.0);
+    box(0.05, 0.52, -0.18, 0.18, 0.85, 1.22, 1.0);
+    return Mesh()..addSurface(
+      StylizedMaterial.buildSurface(
+        positions: pos,
+        normals: nrm,
+        colors: col,
+        occlusion: occ,
+        accent: accent,
+        gloss: gloss,
+        indices: idx,
+        material: material,
+      ),
+    );
+  }
+
+  /// Builds a `260 x 260 = 67,600`-vertex (`> 65,535`) analytic wave terrain
+  /// into a `Float32List` + 32-bit `Uint32List` (`Surface.fromBuffers`) to
+  /// exercise 32-bit GPU index buffers (`GpuIndexType.uint32`).
+  Mesh buildHighPoly32BitWaveMesh(Material material, {int grid = 260}) {
+    final vertCount = grid * grid;
+    final stride = VertexLayout.standard.strideInFloats;
+    final vertices = Float32List(vertCount * stride);
+
+    var o = 0;
+    for (var iy = 0; iy < grid; iy++) {
+      final v = iy / (grid - 1);
+      final y = (v - 0.5) * 4.2;
+      for (var ix = 0; ix < grid; ix++) {
+        final u = ix / (grid - 1);
+        final x = (u - 0.5) * 4.2;
+        final r = math.sqrt(x * x + y * y);
+        final z = 0.24 * math.cos(r * 4.2) * math.exp(-0.28 * r);
+        final dandr =
+            -0.24 *
+            math.exp(-0.28 * r) *
+            (4.2 * math.sin(r * 4.2) + 0.28 * math.cos(r * 4.2));
+        final dzdx = r > 1e-5 ? dandr * (x / r) : 0.0;
+        final dzdy = r > 1e-5 ? dandr * (y / r) : 0.0;
+        final invN = 1.0 / math.sqrt(dzdx * dzdx + dzdy * dzdy + 1.0);
+
+        final crest = (0.5 + z * 2.0).clamp(0.0, 1.0);
+        vertices
+          ..[o] = x
+          ..[o + 1] = y
+          ..[o + 2] = z
+          ..[o + 3] = u * 4.0
+          ..[o + 4] = v * 4.0
+          ..[o + 5] = 0.12 + 0.55 * crest
+          ..[o + 6] = 0.45 + 0.48 * crest
+          ..[o + 7] = 0.78 + 0.22 * crest
+          ..[o + 8] = 1.0
+          ..[o + 9] = -dzdx * invN
+          ..[o + 10] = -dzdy * invN
+          ..[o + 11] = invN;
+        o += stride;
+      }
+    }
+
+    final quadCount = (grid - 1) * (grid - 1);
+    final indices = Uint32List(quadCount * 6);
+    var k = 0;
+    for (var iy = 0; iy < grid - 1; iy++) {
+      final row0 = iy * grid;
+      final row1 = (iy + 1) * grid;
+      for (var ix = 0; ix < grid - 1; ix++) {
+        final i0 = row0 + ix;
+        final i1 = i0 + 1;
+        final i2 = row1 + ix + 1;
+        final i3 = row1 + ix;
+        indices
+          ..[k] = i0
+          ..[k + 1] = i1
+          ..[k + 2] = i2
+          ..[k + 3] = i0
+          ..[k + 4] = i2
+          ..[k + 5] = i3;
+        k += 6;
+      }
+    }
+
+    return Mesh()..addSurface(
+      Surface.fromBuffers(
+        vertices: vertices,
+        indices: indices,
+        material: material,
+      ),
+    );
+  }
+
+  /// Procedural checker/grid texture parameterized by [sampler] (`repeat`,
+  /// `mirror`, `clamp`, `nearest` vs `linear` + mipmaps).
+  Texture buildCheckerTexture({
+    required TextureSampler sampler,
+    bool mipmaps = true,
+  }) {
+    const size = 32;
+    final bytes = Uint8List(size * size * 4);
+    for (var y = 0; y < size; y++) {
+      for (var x = 0; x < size; x++) {
+        final cell = ((x ~/ 8) + (y ~/ 8)).isEven;
+        final border = x < 2 || y < 2 || x >= size - 2 || y >= size - 2;
+        final (int r, int g, int b) = border
+            ? (255, 190, 11)
+            : (cell ? (56, 189, 248) : (30, 41, 59));
+        final i = (y * size + x) * 4;
+        bytes
+          ..[i] = r
+          ..[i + 1] = g
+          ..[i + 2] = b
+          ..[i + 3] = 255;
+      }
+    }
+    return Texture(
+      ByteData.sublistView(bytes),
+      width: size,
+      height: size,
+      mipmaps: mipmaps,
+      sampler: sampler,
+    );
+  }
+
+  /// Renders a 2D vector emblem via `ui.PictureRecorder` + `ui.Canvas` and
+  /// wraps it as a 3D GPU [ImageTexture] via `ImageTexture.create`.
+  Future<ImageTexture> createCanvasBannerTexture() async {
+    const w = 128;
+    const h = 64;
+    final recorder = ui.PictureRecorder();
+    ui.Canvas(recorder)
+      ..drawRect(
+        const ui.Rect.fromLTWH(0, 0, 128, 64),
+        ui.Paint()..color = const ui.Color(0xFF0F172A),
+      )
+      ..drawRRect(
+        ui.RRect.fromRectAndRadius(
+          const ui.Rect.fromLTWH(4, 4, 120, 56),
+          const ui.Radius.circular(10),
+        ),
+        ui.Paint()
+          ..color = const ui.Color(0xFF38BDF8)
+          ..style = ui.PaintingStyle.stroke
+          ..strokeWidth = 3,
+      )
+      ..drawCircle(
+        const ui.Offset(34, 32),
+        16,
+        ui.Paint()..color = const ui.Color(0xFFF59E0B),
+      )
+      ..drawCircle(
+        const ui.Offset(64, 32),
+        14,
+        ui.Paint()..color = const ui.Color(0xFF10B981),
+      )
+      ..drawCircle(
+        const ui.Offset(94, 32),
+        16,
+        ui.Paint()..color = const ui.Color(0xFFEC4899),
+      );
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(w, h);
+    picture.dispose();
+    final tex = await ImageTexture.create(
+      image,
+      sampler: TextureSampler.linear,
+    );
+    image.dispose();
+    return tex;
+  }
+
+  static Texture _buildFlipbookFire(int size) {
+    const cols = 4;
+    const rows = 4;
+    final cell = size ~/ cols;
+    final bytes = Uint8List(size * size * 4);
+    for (var frame = 0; frame < cols * rows; frame++) {
+      final col = frame % cols;
+      final row = frame ~/ cols;
+      final phase = frame / (cols * rows);
+      for (var py = 0; py < cell; py++) {
+        final ly = (py + 0.5) / cell * 2.0 - 1.0;
+        for (var px = 0; px < cell; px++) {
+          final lx = (px + 0.5) / cell * 2.0 - 1.0;
+          final swirl = 0.22 * math.sin(ly * 4.0 + phase * math.pi * 2);
+          final rad = math.sqrt((lx + swirl) * (lx + swirl) + ly * ly);
+          final coreRadius = 0.25 + 0.55 * (1.0 - phase * 0.55);
+          final mask = (1.0 - rad / coreRadius).clamp(0.0, 1.0);
+          final hot = mask * mask;
+          final a = (mask * (1.0 - 0.55 * phase)).clamp(0.0, 1.0);
+          final cr = (1.0 * a * 255).round();
+          final cg = ((0.35 + 0.65 * hot) * a * 255).round();
+          final cb = ((0.08 + 0.80 * hot * hot) * a * 255).round();
+          final ca = (a * 255).round();
+          final gx = col * cell + px;
+          final gy = row * cell + py;
+          final idx = (gy * size + gx) * 4;
+          bytes
+            ..[idx] = cr
+            ..[idx + 1] = cg
+            ..[idx + 2] = cb
+            ..[idx + 3] = ca;
+        }
+      }
+    }
+    return Texture(
+      ByteData.sublistView(bytes),
+      width: size,
+      height: size,
+      sampler: TextureSampler.linear,
+    );
+  }
+
+  static Texture _buildRibbonPlasma(int width, int height) {
+    final bytes = Uint8List(width * height * 4);
+    for (var y = 0; y < height; y++) {
+      final v = (y + 0.5) / height * 2.0 - 1.0;
+      final cross = 1.0 - v.abs();
+      for (var x = 0; x < width; x++) {
+        final u = x / width;
+        final wave =
+            0.55 +
+            0.45 * math.sin(u * math.pi * 6 + math.sin(v * math.pi) * 1.4);
+        final a = (cross * wave).clamp(0.0, 1.0);
+        final idx = (y * width + x) * 4;
+        bytes
+          ..[idx] = (0.45 * a * 255).round()
+          ..[idx + 1] = (0.92 * a * 255).round()
+          ..[idx + 2] = (1.0 * a * 255).round()
+          ..[idx + 3] = (a * 255).round();
+      }
+    }
+    return Texture(
+      ByteData.sublistView(bytes),
+      width: width,
+      height: height,
+      sampler: const TextureSampler(
+        minFilter: TextureFilter.linear,
+        magFilter: TextureFilter.linear,
+        wrapU: TextureWrap.repeat,
       ),
     );
   }

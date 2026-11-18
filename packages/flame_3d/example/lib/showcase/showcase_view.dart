@@ -1,12 +1,16 @@
+import 'dart:async' show unawaited;
+
 import 'package:flame/game.dart';
 import 'package:flame_3d_example/showcase/showcase_diagnostics.dart';
 import 'package:flame_3d_example/showcase/showcase_game.dart';
+import 'package:flame_3d_example/showcase/showcase_variations.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
 /// Interactive Flutter host widget for [ShowcaseGame]: renders the 3D scene
-/// with a collapsible telemetry HUD, live subsystem toggles, offscreen
-/// `renderToImage` preview card, and 1-tap 12-check engine self-test.
+/// with an 8-preset lab switcher, collapsible telemetry HUD, live subsystem
+/// toggles, offscreen `renderToImage` preview card, and 1-tap 24-check engine
+/// self-test.
 class const ShowcaseView({
   final ShowcaseGame? game,
   final EdgeInsets topPadding = const EdgeInsets.all(10),
@@ -138,7 +142,16 @@ class _ShowcaseViewState() extends State<ShowcaseView> {
                         if (_hudExpanded &&
                             sStats != null &&
                             dStats != null) ...[
-                          const SizedBox(height: 5),
+                          const SizedBox(height: 4),
+                          Text(
+                            '${ctrl.preset.label} — ${ctrl.preset.summary}',
+                            style: const TextStyle(
+                              color: Color(0xFFC4B5FD),
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
                           Text(
                             'FPS ${ctrl.fps.toStringAsFixed(1)}  •  '
                             'p50 ${ctrl.frameMsP50.toStringAsFixed(1)} ms  •  '
@@ -316,7 +329,7 @@ class _ShowcaseViewState() extends State<ShowcaseView> {
                 ),
               ),
 
-            // Bottom control bar.
+            // Bottom preset bar + subsystem control bar.
             Positioned(
               left: 10,
               right: 10,
@@ -332,106 +345,201 @@ class _ShowcaseViewState() extends State<ShowcaseView> {
                     horizontal: 8,
                     vertical: 6,
                   ),
-                  child: Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      _Chip(
-                        label: 'Retained',
-                        active: ctrl.retainedStaticLayer,
-                        onTap: () => _toggle(
-                          (c) => c.retainedStaticLayer = !c.retainedStaticLayer,
+                      SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            for (final p in ShowcasePreset.values)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 5),
+                                child: _PresetPill(
+                                  label: p.label,
+                                  selected: ctrl.preset == p,
+                                  onTap: () {
+                                    if (_game.isLoaded) {
+                                      unawaited(_game.selectPreset(p));
+                                    }
+                                  },
+                                ),
+                              ),
+                          ],
                         ),
                       ),
-                      _Chip(
-                        label: 'ShadowCache',
-                        active: ctrl.staticShadowCache,
-                        onTap: () => _toggle(
-                          (c) => c.staticShadowCache = !c.staticShadowCache,
-                        ),
-                      ),
-                      _Chip(
-                        label: 'SharedShadow',
-                        active: ctrl.sharedShadowGroup,
-                        onTap: () => _toggle(
-                          (c) => c.sharedShadowGroup = !c.sharedShadowGroup,
-                        ),
-                      ),
-                      _Chip(
-                        label: 'Bloom',
-                        active: ctrl.bloom,
-                        onTap: () => _toggle((c) => c.bloom = !c.bloom),
-                      ),
-                      _Chip(
-                        label: 'Fog',
-                        active: ctrl.fog,
-                        onTap: () => _toggle((c) => c.fog = !c.fog),
-                      ),
-                      _Chip(
-                        label: 'Outlines',
-                        active: ctrl.outlines,
-                        onTap: () => _toggle((c) => c.outlines = !c.outlines),
-                      ),
-                      _Chip(
-                        label: 'Wind v2',
-                        active: ctrl.wind,
-                        onTap: () => _toggle((c) => c.wind = !c.wind),
-                      ),
-                      _Chip(
-                        label: 'Particles',
-                        active: ctrl.particles,
-                        onTap: () => _toggle((c) => c.particles = !c.particles),
-                      ),
-                      _Chip(
-                        label: 'Decals & Ribbons',
-                        active: ctrl.ribbonsAndDecals,
-                        onTap: () => _toggle(
-                          (c) => c.ribbonsAndDecals = !c.ribbonsAndDecals,
-                        ),
-                      ),
-                      _Chip(
-                        label: 'MSAA 4x',
-                        active: ctrl.msaa4x,
-                        onTap: () => _toggle((c) => c.msaa4x = !c.msaa4x),
-                      ),
-                      _Chip(
-                        label: 'Auto-Orbit',
-                        active: ctrl.autoOrbitCamera,
-                        onTap: () => _toggle(
-                          (c) => c.autoOrbitCamera = !c.autoOrbitCamera,
-                        ),
-                      ),
-                      _Chip(
-                        label: 'Stress 1k',
-                        active: ctrl.stressInstances,
-                        onTap: () => _toggle(
-                          (c) => c.stressInstances = !c.stressInstances,
-                        ),
-                      ),
-                      _ActionChip(
-                        label: 'Clip: ${ctrl.activeClip}',
-                        color: const Color(0xFF818CF8),
-                        onTap: () {
-                          if (_game.isLoaded) {
-                            _game.crossFadeNextClip();
-                          }
-                        },
-                      ),
-                      _ActionChip(
-                        label: 'Snapshot',
-                        color: const Color(0xFF38BDF8),
-                        onTap: () {
-                          if (_game.isLoaded) {
-                            _game.captureOffscreenSnapshot();
-                          }
-                        },
-                      ),
-                      _ActionChip(
-                        label: _runningSelfTest
-                            ? 'Testing...'
-                            : 'Self-Test (12)',
-                        color: const Color(0xFF34D399),
-                        onTap: _runSelfTest,
+                      const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 5,
+                        runSpacing: 5,
+                        children: [
+                          _Chip(
+                            label: 'Retained',
+                            active: ctrl.retainedStaticLayer,
+                            onTap: () => _toggle(
+                              (c) => c.retainedStaticLayer =
+                                  !c.retainedStaticLayer,
+                            ),
+                          ),
+                          _Chip(
+                            label: 'ShadowCache',
+                            active: ctrl.staticShadowCache,
+                            onTap: () => _toggle(
+                              (c) => c.staticShadowCache = !c.staticShadowCache,
+                            ),
+                          ),
+                          _Chip(
+                            label: 'SharedShadow',
+                            active: ctrl.sharedShadowGroup,
+                            onTap: () => _toggle(
+                              (c) => c.sharedShadowGroup = !c.sharedShadowGroup,
+                            ),
+                          ),
+                          _Chip(
+                            label: 'Bloom',
+                            active: ctrl.bloom,
+                            onTap: () => _toggle((c) => c.bloom = !c.bloom),
+                          ),
+                          _Chip(
+                            label: 'Fog',
+                            active: ctrl.fog,
+                            onTap: () => _toggle((c) => c.fog = !c.fog),
+                          ),
+                          _Chip(
+                            label: 'Outlines',
+                            active: ctrl.outlines,
+                            onTap: () =>
+                                _toggle((c) => c.outlines = !c.outlines),
+                          ),
+                          _Chip(
+                            label: 'Wind v2',
+                            active: ctrl.wind,
+                            onTap: () => _toggle((c) => c.wind = !c.wind),
+                          ),
+                          _Chip(
+                            label: 'Particles',
+                            active: ctrl.particles,
+                            onTap: () =>
+                                _toggle((c) => c.particles = !c.particles),
+                          ),
+                          _Chip(
+                            label: 'Decals/Ribbons',
+                            active: ctrl.ribbonsAndDecals,
+                            onTap: () => _toggle(
+                              (c) => c.ribbonsAndDecals = !c.ribbonsAndDecals,
+                            ),
+                          ),
+                          _Chip(
+                            label: 'MSAA 4x',
+                            active: ctrl.msaa4x,
+                            onTap: () => _toggle((c) => c.msaa4x = !c.msaa4x),
+                          ),
+                          _Chip(
+                            label: 'Orbit',
+                            active: ctrl.autoOrbitCamera,
+                            onTap: () => _toggle(
+                              (c) => c.autoOrbitCamera = !c.autoOrbitCamera,
+                            ),
+                          ),
+                          _Chip(
+                            label: 'Stress 1k',
+                            active: ctrl.stressInstances,
+                            onTap: () => _toggle(
+                              (c) => c.stressInstances = !c.stressInstances,
+                            ),
+                          ),
+                          _ActionChip(
+                            label: 'Shad:${ctrl.shadowEncoding.name}',
+                            color: const Color(0xFFFBBF24),
+                            onTap: () {
+                              if (_game.isLoaded) {
+                                _game.cycleShadowEncoding();
+                              }
+                            },
+                          ),
+                          _ActionChip(
+                            label: 'Fit:${ctrl.shadowFit.name}',
+                            color: const Color(0xFFFBBF24),
+                            onTap: () {
+                              if (_game.isLoaded) {
+                                _game.toggleShadowFit();
+                              }
+                            },
+                          ),
+                          _ActionChip(
+                            label: 'PCF:${ctrl.shadowSoftness}',
+                            color: const Color(0xFFFBBF24),
+                            onTap: () {
+                              if (_game.isLoaded) {
+                                _game.cycleShadowSoftness();
+                              }
+                            },
+                          ),
+                          _ActionChip(
+                            label: 'DRS:${ctrl.renderScale}x',
+                            color: const Color(0xFFF472B6),
+                            onTap: () {
+                              if (_game.isLoaded) {
+                                _game.toggleRenderScale();
+                              }
+                            },
+                          ),
+                          _ActionChip(
+                            label: 'Clip:${ctrl.activeClip}',
+                            color: const Color(0xFF818CF8),
+                            onTap: () {
+                              if (_game.isLoaded) {
+                                _game.crossFadeNextClip(mode: ctrl.playMode);
+                              }
+                            },
+                          ),
+                          _ActionChip(
+                            label: 'Mode:${ctrl.playMode.name}',
+                            color: const Color(0xFF818CF8),
+                            onTap: () {
+                              if (_game.isLoaded) {
+                                _game.cyclePlayMode();
+                              }
+                            },
+                          ),
+                          _ActionChip(
+                            label: 'Spd:${ctrl.animSpeed}x',
+                            color: const Color(0xFF818CF8),
+                            onTap: () {
+                              if (_game.isLoaded) {
+                                _game.cycleAnimSpeed();
+                              }
+                            },
+                          ),
+                          _ActionChip(
+                            label: _game.variationRig.crownHidden
+                                ? 'Show Crown'
+                                : 'Hide Crown',
+                            color: const Color(0xFFC084FC),
+                            onTap: () {
+                              if (_game.isLoaded) {
+                                _game.toggleCrownNode();
+                              }
+                            },
+                          ),
+                          _ActionChip(
+                            label: 'Snapshot',
+                            color: const Color(0xFF38BDF8),
+                            onTap: () {
+                              if (_game.isLoaded) {
+                                _game.captureOffscreenSnapshot();
+                              }
+                            },
+                          ),
+                          _ActionChip(
+                            label: _runningSelfTest
+                                ? 'Testing...'
+                                : 'Self-Test (24)',
+                            color: const Color(0xFF34D399),
+                            onTap: _runSelfTest,
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -441,6 +549,41 @@ class _ShowcaseViewState() extends State<ShowcaseView> {
           ],
         );
       },
+    );
+  }
+}
+
+class const _PresetPill({
+  required final String label,
+  required final bool selected,
+  required final VoidCallback onTap,
+}) extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: selected ? const Color(0xFF312E81) : const Color(0xFF0F172A),
+          borderRadius: BorderRadius.circular(5),
+          border: Border.all(
+            color: selected ? const Color(0xFFA78BFA) : const Color(0xFF334155),
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected
+                  ? const Color(0xFFFFFFFF)
+                  : const Color(0xFF94A3B8),
+              fontSize: 10.5,
+              fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
