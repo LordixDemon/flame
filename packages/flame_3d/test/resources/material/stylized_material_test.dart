@@ -17,7 +17,11 @@ void main() {
     setUp(() {
       // The fake backend lays members out 1024 bytes apart.
       backend = FakeGpuBackend(
-        blockSizes: {'JointMatrices': 1024, 'Material': 32 * 1024},
+        blockSizes: {
+          'JointMatrices': 1024,
+          'Material': 32 * 1024,
+          'Wind': 16 * 1024,
+        },
       );
       device = GraphicsDevice(backend: backend);
       context = RenderContext3D(device);
@@ -68,10 +72,10 @@ void main() {
       );
     }
 
-    test('lays out 16 floats per vertex', () {
+    test('lays out 18 floats per vertex', () {
       final layout = StylizedMaterial.vertexLayout;
 
-      expect(layout.strideInFloats, 16);
+      expect(layout.strideInFloats, 18);
       expect(
         [for (final a in layout.attributes) (a.name, a.components)],
         [
@@ -80,7 +84,7 @@ void main() {
           ('vertexColor', 4),
           ('vertexMasks', 4),
           ('vertexOcclusion', 1),
-          ('vertexSway', 1),
+          ('vertexWind', 3),
         ],
       );
     });
@@ -104,10 +108,10 @@ void main() {
       );
     });
 
-    test('lays out 24 floats per skinned vertex', () {
+    test('lays out 26 floats per skinned vertex', () {
       final layout = StylizedMaterial.skinnedVertexLayout;
 
-      expect(layout.strideInFloats, 24);
+      expect(layout.strideInFloats, 26);
       expect(
         [for (final a in layout.attributes) (a.name, a.components)],
         [
@@ -335,6 +339,123 @@ void main() {
       );
     });
 
+    group('wind', () {
+      List<double> windMember(StylizedMaterial material, String name, int n) {
+        final offset =
+            material.vertexShader.slot('Wind').getMemberOffsetInBytes(name)! ~/
+            4;
+        return backend.uniforms['Wind']!.sublist(offset, offset + n);
+      }
+
+      Matcher closeToAll(List<double> expected) {
+        return pairwiseCompare<double, double>(
+          expected,
+          (a, b) => (a - b).abs() < 1e-6,
+          'close to',
+        );
+      }
+
+      test('turns the flutter, the gusts and the scaling off by default', () {
+        final material = StylizedMaterial();
+
+        draw([stylizedTriangle(material)]);
+
+        expect(material.windSpace, WindSpace.world);
+        expect(windMember(material, 'flutterAmplitude', 1), [0]);
+        expect(windMember(material, 'gustAmplitude', 1), [0]);
+        // Without an up axis, the world-space sway is not scaled.
+        expect(windMember(material, 'upAxis', 3), [0, 0, 0]);
+        expect(windMember(material, 'flutterFrequency', 1), [12]);
+        expect(
+          windMember(material, 'gustFrequency', 1),
+          closeToAll([0.8]),
+        );
+        // Along +x, half a radian per unit.
+        expect(windMember(material, 'gustWave', 3), [0.5, 0, 0]);
+        expect(material.windUpAxis, Vector3(0, 1, 0));
+        expect(material.windGustDirection, Vector3(1, 0, 0));
+      });
+
+      test('writes its flutter and its gusts', () {
+        final material = StylizedMaterial(
+          windFlutterAmplitude: 0.01,
+          windFlutterFrequency: 9,
+          windGustAmplitude: 0.4,
+          windGustFrequency: 0.25,
+          windGustDirection: Vector3(0, 3, 4),
+          windGustPhaseScale: 2,
+        );
+
+        draw([stylizedTriangle(material)]);
+
+        expect(windMember(material, 'flutterAmplitude', 1), closeToAll([0.01]));
+        expect(windMember(material, 'flutterFrequency', 1), [9]);
+        expect(windMember(material, 'gustAmplitude', 1), closeToAll([0.4]));
+        expect(windMember(material, 'gustFrequency', 1), [0.25]);
+        // The direction normalized, times the phase scale.
+        expect(windMember(material, 'gustWave', 3), closeToAll([0, 1.2, 1.6]));
+
+        // A gust direction of zero gusts every object in unison.
+        material.windGustDirection.setZero();
+        draw([stylizedTriangle(material)]);
+        expect(windMember(material, 'gustWave', 3), [0, 0, 0]);
+      });
+
+      test('scales a world-space wind along the up axis in worldScaled', () {
+        final material = StylizedMaterial(
+          windSpace: WindSpace.worldScaled,
+          windDirection: Vector3(1, 0, 0),
+          windUpAxis: Vector3(0, 0, 2),
+        );
+
+        draw([stylizedTriangle(material)]);
+
+        expect(windMember(material, 'direction', 3), [1, 0, 0]);
+        expect(windMember(material, 'modelDirection', 3), [0, 0, 0]);
+        // Normalized.
+        expect(windMember(material, 'upAxis', 3), [0, 0, 1]);
+
+        material.windSpace = WindSpace.model;
+        draw([stylizedTriangle(material)]);
+        expect(windMember(material, 'direction', 3), [0, 0, 0]);
+        expect(windMember(material, 'modelDirection', 3), [1, 0, 0]);
+        expect(windMember(material, 'upAxis', 3), [0, 0, 0]);
+      });
+
+      test('writes the same wind into the skinned variant', () {
+        final material = StylizedMaterial(
+          windSpace: WindSpace.worldScaled,
+          windFlutterAmplitude: 0.02,
+          windGustAmplitude: 0.3,
+        );
+
+        device.begin();
+        context.setCamera(Matrix4.identity(), Matrix4.identity());
+        device.beginPass(const Size(8, 8));
+        context.drawSurface(
+          skinnedTriangle(material),
+          jointTransforms: [Matrix4.identity()],
+        );
+        context.flush();
+        device
+          ..endPass()
+          ..end();
+
+        final skinned = material.vertexShaderFor(
+          StylizedMaterial.skinnedVertexLayout,
+        );
+        List<double> member(String name, int n) {
+          final offset =
+              skinned.slot('Wind').getMemberOffsetInBytes(name)! ~/ 4;
+          return backend.uniforms['Wind']!.sublist(offset, offset + n);
+        }
+
+        expect(member('upAxis', 3), [0, 1, 0]);
+        expect(member('flutterAmplitude', 1), closeToAll([0.02]));
+        expect(member('gustAmplitude', 1), closeToAll([0.3]));
+      });
+    });
+
     test('binds its MatCap texture with its strength', () {
       final matCap = ColorTexture(const Color(0xFFFF0000));
       final material = StylizedMaterial(
@@ -383,11 +504,51 @@ void main() {
         expect(
           surface.vertexData,
           Float32List.fromList([
-            1, 2, 3, 0, 1, 0, 0.1, 0.2, 0.3, 1, 0, 0, 0, 0.5, 1, 0, //
-            4, 5, 6, 0, 0, 1, 0.5, 0.6, 0.7, 0.8, 0, 0, 0, 2, 1, 1, //
+            1, 2, 3, 0, 1, 0, 0.1, 0.2, 0.3, 1, 0, 0, 0, 0.5, 1, 0, 0, 0, //
+            4, 5, 6, 0, 0, 1, 0.5, 0.6, 0.7, 0.8, 0, 0, 0, 2, 1, 1, 0, 0, //
           ]),
         );
         expect(surface.indices, isA<Uint16List>());
+      });
+
+      test('packs the wind of each vertex: sway, phase and flutter', () {
+        final surface = StylizedMaterial.buildSurface(
+          positions: [1, 2, 3, 4, 5, 6],
+          normals: [0, 1, 0, 0, 0, 1],
+          sway: [0.5, 1],
+          windPhase: [0.25, 0.75],
+          windFlutter: [1, 0.5],
+          indices: [0, 1, 0],
+          material: StylizedMaterial(),
+        );
+
+        final wind = StylizedMaterial.vertexLayout.offsetOf(
+          StylizedMaterial.windAttribute,
+        )!;
+        expect(wind, 15);
+        final data = surface.vertexData;
+        expect(data.sublist(wind, wind + 3), [0.5, 0.25, 1]);
+        expect(data.sublist(18 + wind, 18 + wind + 3), [1, 0.75, 0.5]);
+
+        final skinned = StylizedMaterial.buildSurface(
+          positions: [1, 2, 3],
+          normals: [0, 1, 0],
+          sway: [0.5],
+          windPhase: [0.25],
+          windFlutter: [1],
+          joints: [1, 0, 0, 0],
+          weights: [1, 0, 0, 0],
+          indices: [0, 0, 0],
+          material: StylizedMaterial(),
+        );
+        expect(
+          StylizedMaterial.skinnedVertexLayout.offsetOf(
+            StylizedMaterial.windAttribute,
+          ),
+          wind,
+        );
+        expect(skinned.vertexData.sublist(wind, wind + 3), [0.5, 0.25, 1]);
+        expect(skinned.vertexData.sublist(18, 26), [1, 0, 0, 0, 1, 0, 0, 0]);
       });
 
       test('uses 32-bit indices when they do not fit in 16 bits', () {
@@ -414,11 +575,11 @@ void main() {
         expect(surface.layout, StylizedMaterial.skinnedVertexLayout);
         expect(surface.vertexCount, 2);
         final data = surface.vertexData;
-        expect(data.length, 48);
+        expect(data.length, 52);
         expect(data.sublist(0, 6), [1, 2, 3, 0, 1, 0]);
-        expect(data.sublist(16, 24), [0, 1, 0, 0, 0.75, 0.25, 0, 0]);
+        expect(data.sublist(18, 26), [0, 1, 0, 0, 0.75, 0.25, 0, 0]);
         expect(
-          data.sublist(40, 48),
+          data.sublist(44, 52),
           pairwiseCompare<double, double>(
             [15, 2, 3, 4, 0.4, 0.3, 0.2, 0.1],
             (a, b) => (a - b).abs() < 1e-6,
@@ -483,6 +644,22 @@ void main() {
           ),
           throwsArgumentError,
         );
+        for (final (phase, flutter) in [
+          ([0.0], null),
+          (null, [0.0, 0.0, 0.0]),
+        ]) {
+          expect(
+            () => StylizedMaterial.buildSurface(
+              positions: [0, 0, 0, 1, 1, 1],
+              normals: [0, 0, 1, 0, 0, 1],
+              windPhase: phase,
+              windFlutter: flutter,
+              indices: [0, 1, 0],
+              material: StylizedMaterial(),
+            ),
+            throwsArgumentError,
+          );
+        }
       });
     });
   });

@@ -72,7 +72,7 @@ abstract class Material({
   ///
   /// A caster's shadow is rendered from its positions alone (skinned when
   /// its vertices have joints and joint weights): vertices that a material's
-  /// own vertex shader moves (`StylizedMaterial`'s wind sway, for instance)
+  /// own vertex shader moves (`StylizedMaterial`'s wind, for instance)
   /// cast the shadow of their rest position.
   bool get castsShadows => _castsShadows ?? !renderState.translucent;
   set castsShadows(bool? value) => _castsShadows = value;

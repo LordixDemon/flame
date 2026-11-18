@@ -4,7 +4,7 @@
 // (StylizedMaterial.skinnedVertexLayout): every vertex is moved by the blend
 // of up to four joint matrices of its draw (flame_3d/skinning.glsl, at most
 // 16 joints per draw), then drawn as stylized_material.vert draws it: the
-// wind sway is added to the skinned position, in model space.
+// wind offset is added to the skinned position, in model space.
 
 #include <flame_3d/stylized_material_vertex.glsl>
 #include <flame_3d/skinning.glsl>

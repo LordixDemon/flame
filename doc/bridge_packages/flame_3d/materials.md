@@ -77,12 +77,12 @@ a white surface facing it fully.
 
 `StylizedMaterial` lights low-poly meshes whose vertices carry a color, a baked ambient occlusion
 and a few masks that pick per-vertex effects: which vertices take the per-instance tint or the
-material's accent color, which ones glow, how glossy they are, and how much they sway in the wind.
+material's accent color, which ones glow, how glossy they are, and how they move in the wind.
 
 
 ### Vertex layout
 
-It reads `StylizedMaterial.vertexLayout`, 16 floats per vertex:
+It reads `StylizedMaterial.vertexLayout`, 18 floats per vertex:
 
 | Attribute         | Floats | Meaning                                                    |
 | ----------------- | ------ | ---------------------------------------------------------- |
@@ -91,13 +91,15 @@ It reads `StylizedMaterial.vertexLayout`, 16 floats per vertex:
 | `vertexColor`     | 4      | the color (rgb) and alpha                                  |
 | `vertexMasks`     | 4      | the tint, accent and emissive masks, and the gloss         |
 | `vertexOcclusion` | 1      | the ambient occlusion: `1` unoccluded, `0` fully occluded  |
-| `vertexSway`      | 1      | the wind sway weight                                       |
+| `vertexWind`      | 3      | the sway weight, the phase (in turns), the flutter weight  |
 
 The masks blend from `0` (none) to `1` (fully). The gloss is the strength of the vertex's
-highlights; it may exceed `1` for extra bright ones (gems, for instance).
+highlights; it may exceed `1` for extra bright ones (gems, for instance). The wind of a vertex is
+how much it sways, the phase of its sway and flutter in turns (`0` to `1` is a full turn, so that
+the vertices of one object need not move in step) and how much it flutters, see [Wind](#wind).
 
 `StylizedMaterial.buildSurface` packs per-vertex arrays into this layout; arrays left out take
-their defaults (white, unoccluded, no mask, no sway):
+their defaults (white, unoccluded, no mask, no sway, phase `0`, no flutter):
 
 ```dart
 final material = StylizedMaterial(
@@ -113,7 +115,9 @@ final surface = StylizedMaterial.buildSurface(
   accent: accentMask,
   emissive: emissiveMask,
   gloss: gloss,
-  sway: sway,
+  sway: sway, // the sway weight
+  windPhase: phase, // in turns, 0 by default
+  windFlutter: flutter, // the flutter weight, 0 by default
   indices: indices,
   material: material,
 );
@@ -128,16 +132,16 @@ world.add(
 
 It also draws surfaces in the standard layout, such as the built-in meshes, parsed models and
 skinned meshes: their vertex color is used, and they are unoccluded, tinted by the per-instance
-color everywhere, with no accent, emission, gloss nor sway.
+color everywhere, with no accent, emission, gloss nor wind.
 
 
 ### Skinning
 
-Surfaces in `StylizedMaterial.skinnedVertexLayout`, 24 floats per vertex, are skinned: the 16
+Surfaces in `StylizedMaterial.skinnedVertexLayout`, 26 floats per vertex, are skinned: the 18
 floats above followed by `vertexJoints` (up to four joint indices) and `vertexWeights` (their
 weights), 4 floats each. Each vertex is moved by the weighted sum of the joint matrices of its draw,
 `sum(weight * joint) * position` (and its normal by the same matrix), then shaded like any other
-vertex; its wind sway is added in model space after the skinning. A vertex whose weights are all
+vertex; its wind is added in model space after the skinning. A vertex whose weights are all
 `0` keeps its position, and weights need not add up to `1` when the joints are built for it (for
 example two joints that differ only in a translation, weighted `1 - w` and `w`, move a vertex by
 `w` times the difference).
@@ -189,7 +193,7 @@ see [Rendering](rendering.md#per-instance-color-and-data)):
 | --------- | ----------------------------------------------------------------------------- |
 | `x`       | emissive boost: added to `emissiveStrength`, moves the glow color (see below) |
 | `y`       | highlight: `highlightColor` times it is added to every vertex                 |
-| `z`       | wind strength, added to 1: `-1` stills the object's sway, `1` doubles it      |
+| `z`       | wind strength, added to 1: `-1` stills the object's wind, `1` doubles it      |
 | `w`       | fade: the object's opacity is `1 - w`, shown by a translucent material        |
 
 From `0` to `1`, the emissive boost also moves the color of the glowing vertices from
@@ -286,6 +290,11 @@ color.
 | `matCapMetallic`                              | `0`                         | MatCap as reflection   |
 | `windDirection`, `windAmplitude`, `windSpace` | `(1, 0, 0)`, `0.032`, world | sway way and reach     |
 | `windFrequency`, `windPhase`, `windTime`      | `2.3`, `(0.7, 0, 0.5)`, `0` | sway timing            |
+| `windUpAxis`                                  | `(0, 1, 0)`                 | up, for `worldScaled`  |
+| `windFlutterAmplitude`                        | `0` (off)                   | flutter reach          |
+| `windFlutterFrequency`                        | `12`                        | flutter timing         |
+| `windGustAmplitude`, `windGustFrequency`      | `0` (off), `0.8`            | gusts                  |
+| `windGustDirection`, `windGustPhaseScale`     | `(1, 0, 0)`, `0.5`          | gusts' travel          |
 | `saturation`, `overlayColor`                  | `1`, transparent            | color grade            |
 
 With the defaults, the MatCap texture is added in proportion to the gloss of every vertex. For a
@@ -346,25 +355,74 @@ Graded objects still batch with each other, as long as they share their material
 
 ### Wind
 
-A vertex with a sway weight `w` moves by
-`windDirection * windAmplitude * sin(windTime * windFrequency + dot(origin, windPhase)) * w`, times
-the wind strength of its object (`1 + instanceData.z`), where `origin` is the world position of its
-object. With `windSpace: WindSpace.world` (the default), the direction and the amplitude are in world
-space: every object sways the same way. With `WindSpace.model` they are in the model space of each
-object, as if the sway were part of its mesh: it turns with the object's rotation and scales with
-its scale, so one material serves objects of every orientation and size:
+A vertex moves along `windDirection` by
+
+```text
+offset  = (sway + flutter) * gust * (1 + instanceData.z)
+sway    = windAmplitude * sway weight
+          * sin(windTime * windFrequency + dot(origin, windPhase) + phase)
+flutter = windFlutterAmplitude * flutter weight
+          * sin(windTime * windFlutterFrequency + dot(origin, windPhase)
+                + phase)
+gust    = 1 + windGustAmplitude
+              * sin(windTime * windGustFrequency
+                    - dot(origin, windGustDirection) * windGustPhaseScale)
+```
+
+where `origin` is the world position of its object, `phase` the phase of the vertex in radians
+(its phase in turns times `2π`) and `1 + instanceData.z` the wind strength of its object.
+
+- The sway is the slow swing of the whole object, more at the vertices of higher sway weight
+  (the tip of a tree more than its trunk). The phase of the vertices delays some of them, so that
+  branches or blades of one mesh do not swing in step.
+- The flutter is a fast, small sway of the vertices with a flutter weight: leaves, a flag, grass
+  tips. It takes the same phases.
+- The gust is a slow wave that crosses the scene along `windGustDirection` (normalized, in world
+  space), at `windGustFrequency / windGustPhaseScale` world units per second: the wind of the
+  objects it reaches strengthens up to `1 + windGustAmplitude` times, and weakens down to
+  `1 - windGustAmplitude` times, between its crests. A phase scale of `0` gusts the whole scene in
+  unison.
+
+The flutter and the gusts are off by default (their amplitudes are `0`), and vertices built
+without a phase have a phase of `0`: a material that does not set them renders as it did before
+they existed.
+
+`windSpace` is the space of the direction and of the amplitudes:
+
+| `windSpace`             | Direction    | Amplitudes                                  |
+| ----------------------- | ------------ | ------------------------------------------- |
+| `WindSpace.world`       | world        | in world units                              |
+| `WindSpace.model`       | each model's | in model units: they scale with each object |
+| `WindSpace.worldScaled` | world        | times each object's scale along its up axis |
+
+With `WindSpace.world` (the default), every object sways the same way by the same distance. With
+`WindSpace.model`, the sway is part of each object, as if it were in its mesh: it turns with the
+object's rotation and scales with its scale, so one material serves objects of every orientation
+and size, each swaying along its own axes. With `WindSpace.worldScaled`, every object sways the
+same world way, whatever its rotation, by a distance scaled by its size along its up axis,
+`windUpAxis` (in model space, normalized): a field of trees of every yaw and height bends as one
+wind, a tree scaled twice as tall swaying twice as far. Its scale along its up axis is the length
+its transform gives `windUpAxis`.
 
 ```dart
 final trees = StylizedMaterial(
-  windSpace: WindSpace.model,
-  windDirection: Vector3(1, -0.55, 0), // along the model's own axes
-  windAmplitude: 0.032, // in model units
-  windPhase: Vector3(0.7, 0.5, 0), // from the world position of each tree
+  windSpace: WindSpace.worldScaled,
+  windDirection: Vector3(1, 0, 0.3), // the world way of the wind
+  windUpAxis: Vector3(0, 1, 0), // the up axis of the tree meshes
+  windAmplitude: 0.032, // for a tree of scale 1
+  windPhase: Vector3(0.7, 0, 0.5), // from the world position of each tree
+  windFlutterAmplitude: 0.006, // the leaves
+  windFlutterFrequency: 13,
+  windGustAmplitude: 0.5, // gusts from 0.5 to 1.5 times the wind
+  windGustDirection: Vector3(1, 0, 0.3),
 );
 ```
 
-Advance `windTime` every frame, and drive `emissiveStrength` from the time of day to light windows at
-dusk:
+The wind moves the vertices only where they are drawn: the shadows are cast from the rest
+positions, so the wind does not move them (see [Shadows](shadows.md)).
+
+Advance `windTime` every frame, and drive `emissiveStrength` from the time of day to light
+windows at dusk:
 
 ```dart
 @override

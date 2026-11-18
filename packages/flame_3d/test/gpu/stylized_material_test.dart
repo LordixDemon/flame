@@ -19,6 +19,8 @@ class _Vertex({
   final double emissive = 0,
   final double gloss = 0,
   final double sway = 0,
+  final double windPhase = 0,
+  final double flutter = 0,
 });
 
 /// A square of side `2 * halfSize` centered on ([x], [y]) at z = -5, facing
@@ -52,6 +54,8 @@ Surface _square(
     emissive: List.filled(4, vertex.emissive),
     gloss: List.filled(4, vertex.gloss),
     sway: List.filled(4, vertex.sway),
+    windPhase: List.filled(4, vertex.windPhase),
+    windFlutter: List.filled(4, vertex.flutter),
     indices: [0, 1, 2, 2, 3, 0],
     material: material,
   );
@@ -829,6 +833,184 @@ void main() {
         expect(bottomEdgeOf(frame.pixels, 48), closeTo(bottom, 1));
       },
     );
+
+    testGpuEngine(
+      'sways in world space scaled along the up axis of each instance',
+      () async {
+        const time = 0.5;
+        final material = newMaterial()
+          ..windSpace = WindSpace.worldScaled
+          ..windDirection = Vector3(1, 0, 0)
+          ..windUpAxis = Vector3(0, 0, 1)
+          ..windAmplitude = 0.1
+          ..windPhase = Vector3.zero()
+          ..windTime = time;
+        final surface = _square(
+          material,
+          _Vertex(normal: Vector3(0, 0, 1), sway: 1),
+        );
+        // One instance as modeled; one turned a quarter turn about its up
+        // axis (z, towards the camera), scaled 1.5 times across it and twice
+        // along it (and moved back to z = -5).
+        final turned = Matrix4.translationValues(0.5, 0, 5)
+          ..rotateZ(math.pi / 2)
+          ..scaleByDouble(1.5, 1.5, 2, 1);
+
+        final frame = await renderFrame(
+          draw: (context) => context
+            ..drawSurface(
+              surface,
+              transform: Matrix4.translationValues(-0.5, 0, 0),
+            )
+            ..drawSurface(surface, transform: turned),
+          lights: lights(),
+        );
+
+        expect(frame.stats.drawCalls, 1);
+        final sway = math.sin(time * 2.3) * 0.1;
+        // Both move right, along the world x axis whatever their turn: the
+        // first by the amplitude, the second by twice the amplitude (its
+        // scale along its up axis). Its left edge is at x = 0.5 - 0.3 at
+        // rest.
+        final edges = [
+          for (var px = 0; px < 64; px++)
+            if (!frame.pixels.isClear(px, 32) &&
+                (px == 0 || frame.pixels.isClear(px - 1, 32)))
+              px,
+        ];
+        expect(edges, hasLength(2));
+        expect(edges[0], closeTo((-0.5 - 0.2 + sway + 1) * 32, 1));
+        expect(edges[1], closeTo((0.5 - 0.3 + 2 * sway + 1) * 32, 1));
+        // It does not move along the world y axis, as it would in model
+        // space: its bottom edge stays at y = -0.3.
+        expect(bottomEdgeOf(frame.pixels, 48), closeTo((1 + 0.3) * 32, 1));
+      },
+    );
+
+    testGpuEngine('shifts the sway of each vertex by its phase', () async {
+      const time = 0.5;
+      final material = newMaterial()
+        ..windAmplitude = 0.25
+        ..windPhase = Vector3.zero()
+        ..windTime = time;
+      // (y, phase in turns)
+      const squares = [(0.5, 0.0), (0.0, 0.25), (-0.5, 0.5)];
+
+      final frame = await renderFrame(
+        draw: (context) {
+          for (final (y, phase) in squares) {
+            context.drawSurface(
+              _square(
+                material,
+                _Vertex(normal: Vector3(0, 0, 1), sway: 1, windPhase: phase),
+                y: y,
+                halfSize: 0.15,
+              ),
+            );
+          }
+        },
+        lights: lights(),
+      );
+
+      for (final (y, phase) in squares) {
+        final offset = math.sin(time * 2.3 + phase * 2 * math.pi) * 0.25;
+        final (_, py) = pixelAt(0, y);
+        expect(
+          leftEdgeOf(frame.pixels, py),
+          closeTo((-0.15 + offset + 1) * 32, 1),
+          reason: 'phase $phase',
+        );
+      }
+    });
+
+    testGpuEngine('flutters the vertices with a flutter weight', () async {
+      const time = 0.5;
+      final material = newMaterial()
+        ..windAmplitude = 0
+        ..windPhase = Vector3.zero()
+        ..windFlutterAmplitude = 0.2
+        ..windFlutterFrequency = 9
+        ..windTime = time;
+      // (y, flutter weight, phase in turns)
+      const squares = [(0.5, 0.0, 0.0), (0.0, 1.0, 0.0), (-0.5, 0.5, 0.1)];
+
+      final frame = await renderFrame(
+        draw: (context) {
+          for (final (y, flutter, phase) in squares) {
+            context.drawSurface(
+              _square(
+                material,
+                _Vertex(
+                  normal: Vector3(0, 0, 1),
+                  flutter: flutter,
+                  windPhase: phase,
+                ),
+                y: y,
+                halfSize: 0.15,
+              ),
+            );
+          }
+        },
+        lights: lights(),
+      );
+
+      for (final (y, flutter, phase) in squares) {
+        final offset = math.sin(time * 9 + phase * 2 * math.pi) * 0.2 * flutter;
+        final (_, py) = pixelAt(0, y);
+        expect(
+          leftEdgeOf(frame.pixels, py),
+          closeTo((-0.15 + offset + 1) * 32, 1),
+          reason: 'flutter $flutter, phase $phase',
+        );
+      }
+      // Without a sway weight, the vertices do not sway: the first square
+      // stays where it is.
+      expect(leftEdgeOf(frame.pixels, pixelAt(0, 0.5).$2), 27);
+    });
+
+    testGpuEngine('strengthens and weakens the wind with gusts', () async {
+      const time = 0.5;
+      final material = newMaterial()
+        ..windAmplitude = 0.25
+        ..windPhase = Vector3.zero()
+        ..windGustAmplitude = 0.6
+        ..windGustFrequency = 1
+        ..windGustDirection = Vector3(2, 0, 0)
+        ..windGustPhaseScale = 2
+        ..windTime = time;
+      final surface = _square(
+        material,
+        _Vertex(normal: Vector3(0, 0, 1), sway: 1),
+        halfSize: 0.15,
+      );
+      // (x, y, wind strength offset)
+      const instances = [(-0.5, 0.5, 0.0), (0.5, 0.0, 0.0), (0.5, -0.5, 1.0)];
+
+      final frame = await renderFrame(
+        draw: (context) {
+          for (final (x, y, strength) in instances) {
+            context.drawSurface(
+              surface,
+              transform: Matrix4.translationValues(x, y, 0),
+              instanceData: Vector4(0, 0, strength, 0),
+            );
+          }
+        },
+        lights: lights(),
+      );
+
+      final sway = math.sin(time * 2.3) * 0.25;
+      for (final (x, y, strength) in instances) {
+        // The gust wave travels along +x, half a unit per unit of time.
+        final gust = 1 + 0.6 * math.sin(time * 1 - x * 2);
+        final (_, py) = pixelAt(x, y);
+        expect(
+          leftEdgeOf(frame.pixels, py),
+          closeTo((x - 0.15 + sway * gust * (1 + strength) + 1) * 32, 1),
+          reason: 'instance at ($x, $y)',
+        );
+      }
+    });
 
     testGpuEngine('weighs the sky fill per channel', () async {
       final material = newMaterial()

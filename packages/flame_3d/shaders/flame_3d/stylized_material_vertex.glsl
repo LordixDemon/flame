@@ -14,19 +14,34 @@ in vec4 vertexColor;
 in vec4 vertexMasks;
 // Ambient occlusion: 1 is unoccluded, 0 fully occluded.
 in float vertexOcclusion;
-// How much the vertex sways in the wind.
-in float vertexSway;
+// The wind of the vertex. x: how much it sways (its sway weight), y: the
+// phase of its sway and flutter, in turns (1 is a full turn), z: how much it
+// flutters (its flutter weight).
+in vec3 vertexWind;
 
 #include <flame_3d/instancing.glsl>
 #include <flame_3d/camera.glsl>
 
-// The wind sway: a vertex moves by
-// `amplitude * sin(time * frequency + dot(origin, phaseScale))` times its sway
-// weight and the strength of its instance (`1 + instanceData.z`), along
-// `direction` in world space and along `modelDirection` in the model space of
-// its object (so that it turns and scales with the object), where `origin` is
-// the world position of its object. The material sets one of the two
-// directions and zeroes the other.
+// The wind. A vertex moves by
+//
+//   offset  = (sway + flutter) * gust * (1 + instanceData.z)
+//   sway    = amplitude * sin(time * frequency + dot(origin, phaseScale)
+//                             + vertexPhase) * sway weight
+//   flutter = flutterAmplitude * sin(time * flutterFrequency
+//                                    + dot(origin, phaseScale) + vertexPhase)
+//             * flutter weight
+//   gust    = 1 + gustAmplitude * sin(time * gustFrequency
+//                                     - dot(origin, gustWave))
+//
+// where `origin` is the world position of its object and `vertexPhase` the
+// phase of the vertex in radians. The offset goes along `direction` in world
+// space and along `modelDirection` in the model space of its object (so that
+// it turns and scales with the object): the material sets one of the two
+// directions and zeroes the other. When `upAxis` (a unit vector in model
+// space) is not zero, the world-space offset is scaled by the length the
+// object's transform gives it, the scale of the object along its up axis.
+// `gustWave` is the direction gusts travel in, in world space, times how fast
+// their phase changes along it.
 uniform Wind {
   vec3 direction;
   float amplitude;
@@ -34,6 +49,12 @@ uniform Wind {
   float frequency;
   vec3 phaseScale;
   float time;
+  vec3 upAxis;
+  float flutterAmplitude;
+  vec3 gustWave;
+  float flutterFrequency;
+  float gustAmplitude;
+  float gustFrequency;
 } wind;
 
 out vec3 fragPosition;
@@ -57,15 +78,33 @@ vec3 transformNormal(mat4 model, vec3 normal) {
 }
 
 // Emits the vertex whose model-space position and normal are [position] and
-// [normal] (the vertex's own, or skinned): the wind sway is added in model
+// [normal] (the vertex's own, or skinned): the wind offset is added in model
 // space, then the instance's model matrix places it in the world.
+//
+// With the per-vertex phase and flutter weight at 0, the flutter is 0 and,
+// with the gust amplitude at 0, the gust is 1: the offset is the sway alone,
+// computed as it was before they existed.
 void emitStylizedVertex(vec3 position, vec3 normal) {
   mat4 model = instanceModelMatrix();
-  float phase = wind.time * wind.frequency + dot(model[3].xyz, wind.phaseScale);
-  float sway = sin(phase) * wind.amplitude * vertexSway *
-    (1.0 + instanceData.z);
-  vec4 worldPosition = model * vec4(position + wind.modelDirection * sway, 1.0);
-  worldPosition.xyz += wind.direction * sway;
+  vec3 origin = model[3].xyz;
+  float objectPhase = dot(origin, wind.phaseScale);
+  float vertexPhase = vertexWind.y * 6.283185307;
+  float phase = wind.time * wind.frequency + objectPhase + vertexPhase;
+  float sway = sin(phase) * wind.amplitude * vertexWind.x;
+  float flutter = sin(
+    wind.time * wind.flutterFrequency + objectPhase + vertexPhase
+  ) * wind.flutterAmplitude * vertexWind.z;
+  float gust = 1.0 + wind.gustAmplitude *
+    sin(wind.time * wind.gustFrequency - dot(origin, wind.gustWave));
+  float offset = (sway + flutter) * gust * (1.0 + instanceData.z);
+  // The scale of the object along its up axis, in WindSpace.worldScaled.
+  float worldScale = dot(wind.upAxis, wind.upAxis) > 0.0
+    ? length(mat3(model) * wind.upAxis)
+    : 1.0;
+
+  vec4 worldPosition =
+    model * vec4(position + wind.modelDirection * offset, 1.0);
+  worldPosition.xyz += wind.direction * (offset * worldScale);
   gl_Position = camera.viewProjection * worldPosition;
 
   fragPosition = worldPosition.xyz;
