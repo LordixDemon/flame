@@ -362,6 +362,15 @@ class MyGame extends FlameGame with HasPerformanceTracker {
   the game consumes, such as an overlay, do not reach the game: call `notifyActivity()` from those
   widgets if they should keep the game at full rate. With `idleFps = 0` the loop does not run at
   all while idle, so only input or `notifyActivity()` wakes it.
+- **Timer pacing while idle (`idleTimerPacing`)**: Flutter draws every frame that is requested,
+  whether anything was painted or not, so a loop that runs on display frames has every refresh
+  drawn even while it skips most of them. While the idle throttle is engaged, the loop therefore
+  stops requesting frames and runs its ticks from a timer, outside of any frame (`idleTimerPacing`,
+  `true` by default; `GameLoop.isTimerPaced` tells whether it does). A frame is only drawn when a
+  tick paints, so with `IdleRenderMode.onDemandWhenIdle` an idle scene that does not change draws
+  nothing at all, and one that changes is drawn at the idle rate instead of every refresh. Input
+  and `notifyActivity()` bring the loop back to display frames at once; with `idleFps = 0` no tick
+  runs until then.
 - **Background Spike Clamping (`maxDeltaTime` & `clampedDeltaTime`)**: Set `maxDeltaTime` and
   `clampedDeltaTime` on `FlameGame` so large frame hitches after tab switches or OS backgrounding
   are replaced by `clampedDeltaTime` (counted in `clampedDeltaSpikes`) instead of tunneling physics

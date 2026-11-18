@@ -181,6 +181,7 @@ class GameRenderBox(
       minFrameIntervalGetter: () => game.minFrameIntervalSeconds,
       vsyncDivisorGetter: () => game.effectiveVsyncDivisor,
       displayRefreshRateGetter: () => game.displayRefreshRate,
+      timerPacingGetter: () => game.idleTimerPacing && game.isIdleThrottled,
     );
 
     if (!game.isPaused) {
@@ -663,10 +664,7 @@ class GameRenderBox(
       (comp, _) => !activeSet.contains(comp),
     );
 
-    node.updateWith(
-      config: config,
-      childrenInInversePaintOrder: orderedNodes,
-    );
+    node.updateWith(config: config, childrenInInversePaintOrder: orderedNodes);
   }
 
   void _collectSemanticsInSubtree(

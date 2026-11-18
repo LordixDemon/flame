@@ -178,6 +178,8 @@ a **zero-`toImageSync` direct bypass** (`bypassedLastFrame == true`) onto the ca
   not move them (`sprite`, the `current` sprite or animation, animation frames, parallax scrolling,
   typed text, `paint`) through `Component.markSubtreeDirty()` and `Game.notifyVisualMutation()`;
   a component that draws by itself does the same, or calls `game.markSceneDirty()`.
+  While idle, the loop is paced by a timer (`Game.idleTimerPacing`), so the ticks whose paint is
+  skipped request no display frame either: Flutter composites only the frames that paint.
 
 
 ## Hardware `FrameTiming` Telemetry & `FrameBudgetScheduler`

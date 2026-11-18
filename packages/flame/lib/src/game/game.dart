@@ -117,12 +117,10 @@ abstract mixin class Game() {
 
   @internal
   FutureOr<void> load() async {
-    assert(
-      () {
-        _debugOnLoadStarted = true;
-        return true;
-      }(),
-    );
+    assert(() {
+      _debugOnLoadStarted = true;
+      return true;
+    }());
     return await _onLoadFuture;
   }
 
@@ -294,10 +292,7 @@ abstract mixin class Game() {
 
   /// Overrides [rawDevicePixelRatio] and/or [displayRefreshRate] (pass `null`
   /// to clear overrides and return to live `FlutterView` hardware metrics).
-  void overrideDisplayMetrics({
-    double? devicePixelRatio,
-    double? refreshRate,
-  }) {
+  void overrideDisplayMetrics({double? devicePixelRatio, double? refreshRate}) {
     final prevDpr = this.devicePixelRatio;
     final prevHz = displayRefreshRate;
     _overrideDevicePixelRatio = devicePixelRatio;
@@ -444,9 +439,7 @@ abstract mixin class Game() {
   @mustCallSuper
   void recordRawPointerEvent(PointerEvent event) {
     final sample = _pointerTelemetryByPointer[event.pointer] ??=
-        PointerHardwareSample(
-          pointerId: event.pointer,
-        );
+        PointerHardwareSample(pointerId: event.pointer);
     sample.updateFromPointerEvent(event);
     _latestPointerTelemetry = sample;
     if (event is PointerUpEvent || event is PointerCancelEvent) {
@@ -519,12 +512,10 @@ abstract mixin class Game() {
   /// Should not be called manually.
   void attach(PipelineOwner owner, GameRenderBox gameRenderBox) {
     if (isAttached) {
-      throw UnsupportedError(
-        '''
+      throw UnsupportedError('''
       Game attachment error:
       A game instance can only be attached to one widget at a time.
-      ''',
-      );
+      ''');
     }
     _gameRenderBox = gameRenderBox;
     if (!_isInternalRefresh) {
@@ -616,11 +607,7 @@ abstract mixin class Game() {
     String path,
     SpriteAnimationData data,
   ) {
-    return SpriteAnimation.load(
-      path,
-      data,
-      images: images,
-    );
+    return SpriteAnimation.load(path, data, images: images);
   }
 
   bool _isPaused = false;
@@ -863,6 +850,19 @@ abstract mixin class Game() {
   /// Seconds of inactivity before [idleFps] throttling engages.
   double idleTimeoutSeconds = 2.5;
 
+  /// Whether the game loop paces its ticks with a timer while it is throttled
+  /// to [idleFps] ([isIdleThrottled]), instead of running on display frames.
+  ///
+  /// Flutter draws every frame that is requested, whether anything was painted
+  /// or not, so a loop on display frames has every display refresh drawn even
+  /// when it skips most of them. Paced by a timer, the throttled loop requests
+  /// a frame only when a tick has something to paint (see [idleRenderMode]):
+  /// a scene that does not change draws nothing at all while idle. Ticks then
+  /// run between frames, and a picture they paint shows on the next frame.
+  /// User input and [notifyActivity] bring the loop back to display frames at
+  /// once. Defaults to `true`.
+  bool idleTimerPacing = true;
+
   double _idleElapsedSeconds = 0.0;
   double _boostRemainingSeconds = 0.0;
 
@@ -944,6 +944,9 @@ abstract mixin class Game() {
     if (boostSeconds > _boostRemainingSeconds) {
       _boostRemainingSeconds = boostSeconds;
     }
+    // A loop paced by a timer while idle goes back to display frames now,
+    // not on its next idle tick.
+    _gameRenderBox?.gameLoop?.wake();
   }
 
   /// Whether low-overhead CPU/GPU canvas draw-call and timing telemetry is
