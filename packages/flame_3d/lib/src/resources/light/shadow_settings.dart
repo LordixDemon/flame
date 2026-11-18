@@ -86,6 +86,11 @@ class ShadowSettings({
   /// moves, so that the edges of the shadows stay still instead of
   /// shimmering. Only turn it off to compare.
   var bool stabilize = true,
+
+  /// Whether the shadow pass is skipped on frames where the light direction,
+  /// shadow settings, fitted shadow projection, and shadow-casting scene
+  /// geometry have not changed since the previous shadow map was rendered.
+  var bool cacheWhenStatic = false,
 }) {
   /// {@macro shadow_settings}
   this {

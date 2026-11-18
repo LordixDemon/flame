@@ -67,6 +67,45 @@ data, or whatever the material's vertex shader makes of them) when the draws are
 draw is never batched with others; a translucent one is ordered by the `center` it is given. See
 [Particles](particles.md).
 
+For hundreds or thousands of static or semi-static copies of a `Mesh` (tiles, props, trees, fence
+posts), `InstancedGroup3D` stores all instances in a single contiguous `Float32List` (`addInstance`,
+`setTransform`, `setColor`, `setInstanceData`, `removeAtSwapLast`) and submits one `drawInstances`
+call per surface with zero per-instance `Component` overhead, while still supporting BVH raycasting
+returning the exact `instanceIndex`.
+
+`LodMeshComponent` switches automatically between `MeshLodLevel`s by distance from the camera or
+minimum screen-height coverage (`minScreenFraction`), and optionally casts shadows from a cheaper
+`shadowMesh`.
+
+
+## BVH raycasting
+
+Every `Surface` builds a flat, zero-allocation median-split Bounding Volume Hierarchy on first
+query (`surface.bvh`), supporting `O(log T)` narrowphase ray-triangle intersection
+(`SurfaceBvh.raycastLocal` and `raycastTransform` for arbitrary world transforms including negative
+mirror scales).
+
+`World3D.raycast` and `World3D.raycastAll` prune invisible subtrees by world `Aabb3` before testing
+`MeshComponent`, `ModelComponent`, `LodMeshComponent` and `InstancedGroup3D` surfaces, returning
+`RayHit3D` records (`component`, `position`, `normal`, `distance`, `barycentric`, `surfaceIndex`,
+`triangleIndex`, `instanceIndex`).
+
+
+## Models, animation crossfades, and bone sockets
+
+`ModelComponent` evaluates glTF animations through a zero-allocation `AnimationState` +
+`ModelPoseWorkspace` pipeline with `O(log K)` binary keyframe lookup:
+
+- `playAnimationByName(name, mode: AnimationPlayMode.loop | once | pingPong, speed: 1.0)` and
+  `crossFadeToByName(name, duration: 0.2)` smoothly blend translations, rest-preserving scales and
+  shortest-hemisphere quaternion rotations across clips without per-frame heap allocations.
+- `ModelParser` precomputes `Model.animatedAabb`, conservative local-space bounds across all
+  animation keyframes, so animated `ModelComponent`s are never frustum-culled prematurely when an
+  animation reaches outside the rest pose.
+- `BoneSocket3D(model: character, nodeName: 'Hand_R', localOffset: ...)` attaches any child
+  `Component3D` (weapons, lanterns, particle emitters, `RibbonTrail3D`) to a named glTF joint or
+  node every frame.
+
 
 ## Render state
 
@@ -169,6 +208,9 @@ Custom shaders can include the chunks `flame_3d` ships:
 - `flame_3d/shadows.glsl` declares the `Shadows` block and the `shadowMap` sampler, and
   `shadowVisibility()`, `shadowFactor()` and `castsShadows()` to receive shadows, see
   [Shadows](shadows.md#receiving-shadows).
+- `flame_3d/fog.glsl` declares the `Fog` block (`RenderContext3D.fogBlock`, driven by
+  `World3D.fog`) and `applyFog(color, worldPos, cameraPos)` for linear or exponential distance +
+  height fog.
 
 Blocks named `CameraMatrices`, `Camera` (`position`, and any of the `CameraMatrices` members),
 `AmbientLight`, `Lights`, `DirectionalLights` and `HemisphereLight` are filled once per render pass
@@ -206,6 +248,12 @@ reused.
 
 Shadow maps render into textures that later passes sample (`GraphicsDevice.textureTarget`), created
 once for each size and format and kept while they are used.
+
+Setting `World3D.bloom = const BloomSettings(...)` renders the scene into a texture target, extracts
+bright pixels at half resolution with a soft threshold knee, blurs them with a multi-pass 5-tap
+Kawase filter, and composites the additive glow back while preserving target alpha. Calling
+`World3D.renderToImage(size, view: ..., projection: ...)` renders a standalone snapshot into a
+dedicated render target (even when the world is not mounted in a game).
 
 `FlameGame3D.renderStats` holds the statistics of the last rendered frame: render passes, draw
 calls, instances, triangles, pipeline changes, render state changes, material changes, uniform

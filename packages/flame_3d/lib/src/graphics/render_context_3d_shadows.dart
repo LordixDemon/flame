@@ -33,6 +33,8 @@ class _ShadowPass(final RenderContext3D _context) {
   // The shadow map, as the texture bound to the receivers.
   GpuTextureTarget? _target;
   Texture? _texture;
+  Object? _cachedStaticKey;
+  final Float32List _cachedLightVp = Float32List(16);
 
   // The camera of the main pass, set back when the shadow pass ends.
   final Matrix4 _mainView = Matrix4.identity();
@@ -79,7 +81,11 @@ class _ShadowPass(final RenderContext3D _context) {
 
   final Map<VertexLayout, _CasterPipeline> _pipelines = Map.identity();
 
-  bool begin(DirectionalShadowProjection projection, Aabb3? sceneBounds) {
+  bool begin(
+    DirectionalShadowProjection projection,
+    Aabb3? sceneBounds, {
+    Object? castersKey,
+  }) {
     if (recording) {
       throw StateError('A shadow pass is already being recorded');
     }
@@ -134,14 +140,57 @@ class _ShadowPass(final RenderContext3D _context) {
       return _none();
     }
     RenderProfile.lap(RenderPhase.shadowSetup);
-    // From here on, the values of the last map are replaced.
-    version++;
 
     final float = switch (settings.encoding) {
       ShadowMapEncoding.auto => device.backend.supportsFloatTextureTargets,
       ShadowMapEncoding.float32 => true,
       ShadowMapEncoding.rgba8 => false,
     };
+
+    // Static shadow map reuse: when `cacheWhenStatic` is enabled and the caster
+    // key, encoding, resolution, and fitted light view-projection match the
+    // already-rendered shadow map, keep binding `_texture` with 0 shadow draws.
+    final vpStorage = projection.viewProjection.storage;
+    if (settings.cacheWhenStatic &&
+        castersKey != null &&
+        _texture != null &&
+        _target != null &&
+        _target!.width == resolution &&
+        _packDepth == !float &&
+        _cachedStaticKey == castersKey &&
+        _sameMatrix(vpStorage, _cachedLightVp)) {
+      device.touchTextureTarget(_target!);
+      _toLight.setValues(
+        -direction.x,
+        -direction.y,
+        -direction.z,
+        index.toDouble(),
+      );
+      final color = settings.color;
+      _color.setValues(
+        color.r,
+        color.g,
+        color.b,
+        settings.strength.clamp(0, 1).toDouble(),
+      );
+      _bias.setValues(
+        math.max(projection.texelWidth, projection.texelHeight),
+        settings.depthBias,
+        settings.normalBias,
+        settings.softness.toDouble(),
+      );
+      active = true;
+      RenderProfile.switchPass(RenderPhase.shadowSetup, shadow: false);
+      return false;
+    }
+
+    // From here on, the values of the last map are replaced.
+    version++;
+    _cachedStaticKey = settings.cacheWhenStatic ? castersKey : null;
+    for (var i = 0; i < 16; i++) {
+      _cachedLightVp[i] = vpStorage[i];
+    }
+
     final target = device.textureTarget(
       resolution,
       resolution,
@@ -407,6 +456,15 @@ class _ShadowPass(final RenderContext3D _context) {
   static Texture shadowMapTexture(RenderContext3D context) {
     final shadows = context._shadows;
     return shadows.active ? shadows._texture! : Texture.standard;
+  }
+
+  static bool _sameMatrix(Float32List a, Float32List b) {
+    for (var i = 0; i < 16; i++) {
+      if ((a[i] - b[i]).abs() > 1e-9) {
+        return false;
+      }
+    }
+    return true;
   }
 }
 

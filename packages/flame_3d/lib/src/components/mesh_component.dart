@@ -1,5 +1,6 @@
 import 'dart:ui';
 
+import 'package:flame_3d/camera.dart' show Ray, RayHit3D;
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
@@ -61,6 +62,22 @@ class MeshComponent({
       color: color,
       instanceData: instanceData,
       jointTransforms: jointTransforms,
+    );
+  }
+
+  @override
+  RayHit3D? raycast(
+    Ray worldRay, {
+    double maxDistance = double.infinity,
+    CullMode? cullMode,
+  }) {
+    return RayHit3D.intersectMesh(
+      owner: this,
+      mesh: mesh,
+      modelMatrix: worldTransformMatrix,
+      worldRay: worldRay,
+      maxDistance: maxDistance,
+      cullMode: cullMode,
     );
   }
 }

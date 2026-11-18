@@ -107,6 +107,12 @@ camera. With `stabilize` (the default), the width and height of the map only tak
 of the light's view: as the camera pans, a point of the world keeps landing on the same spot of a
 texel, and the edges of the shadows stay still instead of shimmering.
 
+With `ShadowSettings(cacheWhenStatic: true)` (most effective alongside `ShadowFit.scene`), the world
+skips both the shadow caster traversal and the shadow GPU pass (`shadowPasses == 0`) whenever no
+shadow-casting component has mounted, unmounted, moved or animated (`World3D.castersVersion`), and
+the sun direction, shadow settings and fitted light projection match the cached map. Call
+`world.markShadowsDirty()` if custom vertex buffers mutate in place.
+
 
 ### How depths are stored
 

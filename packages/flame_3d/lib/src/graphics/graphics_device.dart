@@ -3,6 +3,7 @@ import 'dart:ui';
 
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/graphics/bloom_pass.dart';
 import 'package:meta/meta.dart';
 
 /// {@template graphics_device}
@@ -158,6 +159,41 @@ class GraphicsDevice({
     RenderProfile.lap(RenderPhase.passBegin);
   }
 
+  /// Begins a render pass into a caller-owned [target] (created with
+  /// [GpuBackend.createRenderTarget]) instead of the shared rotating pool.
+  ///
+  /// The [Image] returned by [endPass] is backed by [target]'s own color
+  /// texture and is never overwritten by subsequent passes on other targets.
+  void beginOwnedPass(
+    GpuRenderTarget target, {
+    WindingOrder frontFace = WindingOrder.counterClockwise,
+  }) {
+    final frame = _gpuFrame;
+    if (frame == null) {
+      throw StateError('beginOwnedPass must be called between begin and end');
+    }
+    RenderProfile.lap(RenderPhase.setup);
+    _renderTarget = target;
+    _startPass(frame.beginRenderPass(target), frontFace);
+    RenderProfile.lap(RenderPhase.passBegin);
+  }
+
+  late final BloomPass _bloom = BloomPass(this);
+
+  /// Applies GPU [BloomSettings] to [sceneTarget] inside the active frame and
+  /// returns the composited [Image].
+  Image applyBloomFromTarget(
+    GpuTextureTarget sceneTarget,
+    BloomSettings settings, {
+    GpuRenderTarget? outputTarget,
+  }) {
+    return _bloom.applyFromTarget(
+      sceneTarget,
+      settings,
+      outputTarget: outputTarget,
+    );
+  }
+
   void _startPass(GpuRenderPass renderPass, WindingOrder frontFace) {
     _renderPass = renderPass;
     stats.renderPasses++;
@@ -221,6 +257,18 @@ class GraphicsDevice({
   final _textureTargets =
       <(int, int, GpuPixelFormat, Color), GpuTextureTarget>{};
   final _textureTargetsLastUsed = <(int, int, GpuPixelFormat, Color), int>{};
+
+  /// Marks [target] as used in the current frame so [targetRetainFrames] does
+  /// not evict a cached texture target (such as a static shadow map).
+  @internal
+  void touchTextureTarget(GpuTextureTarget target) {
+    for (final entry in _textureTargets.entries) {
+      if (identical(entry.value, target)) {
+        _textureTargetsLastUsed[entry.key] = _frame;
+        return;
+      }
+    }
+  }
 
   /// Begin a render pass into [target], whose texture later passes sample.
   ///

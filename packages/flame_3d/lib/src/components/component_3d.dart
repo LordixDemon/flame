@@ -137,6 +137,13 @@ abstract class Component3D({
   // The slot of this component in its owner.
   int _boundsSlot = 0;
 
+  World3D? _cachedWorld;
+
+  /// Enclosing [World3D], or `null` when mounted outside of one (e.g. in
+  /// standalone component tests).
+  @internal
+  World3D? get worldOrNull => _cachedWorld;
+
   /// Compute the local-space AABB for this component's own geometry.
   ///
   /// The base implementation returns `null` (no geometry). Subclasses with
@@ -147,14 +154,24 @@ abstract class Component3D({
   @override
   void onMount() {
     super.onMount();
+    _cachedWorld = null;
+    for (final ancestor in ancestors()) {
+      if (ancestor is World3D) {
+        _cachedWorld = ancestor;
+        break;
+      }
+    }
     _markWorldTransformDirty();
     if (parent case final Component3D parent) {
       parent.markAabbDirty();
     }
+    _cachedWorld?.markSceneDirty(shadows: this is! LightComponent);
   }
 
   @override
   void onRemove() {
+    _cachedWorld?.markSceneDirty(shadows: this is! LightComponent);
+    _cachedWorld = null;
     if (parent case final Component3D parent) {
       parent.markAabbDirty();
     }
@@ -233,6 +250,7 @@ abstract class Component3D({
     } else {
       _boundsOwner?._changed(this);
     }
+    _cachedWorld?.markSceneDirty();
   }
 }
 

@@ -200,6 +200,11 @@ class StylizedMaterial({
   /// Multiplies the color of the vertices of the accent mask.
   var Color accentColor = const Color(0xFFFFFFFF),
 
+  /// Optional palette of up to [maxAccentPaletteSize] (`16`) accent colors that
+  /// individual instances can select through [packAccentAndFade] in
+  /// `instanceData.w` without breaking instanced batching.
+  List<Color> accentPalette = const [],
+
   /// The color the vertices of the emissive mask glow with.
   var Color emissiveColor = const Color(0xFFFFFFFF),
 
@@ -399,6 +404,29 @@ class StylizedMaterial({
   static const RenderState translucentRenderState =
       RenderState.premultipliedAlphaBlend;
 
+  /// Maximum number of entries supported in [accentPalette].
+  static const int maxAccentPaletteSize = 16;
+
+  /// Optional per-instance accent palette (up to [maxAccentPaletteSize]
+  /// colors).
+  final List<Color> accentPalette = List.of(accentPalette);
+
+  /// Encodes an [accentIndex] (`0` to `maxAccentPaletteSize - 1`) into
+  /// [accentPalette] together with a [fade] in `[0, 1]` as a single float for
+  /// `instanceData.w`.
+  ///
+  /// Plain `instanceData.w` values below `2.0` keep their ordinary `[0, 1]`
+  /// fade meaning and use [accentColor].
+  static double packAccentAndFade(int accentIndex, {double fade = 0.0}) {
+    RangeError.checkValueInInterval(
+      accentIndex,
+      0,
+      maxAccentPaletteSize - 1,
+      'accentIndex',
+    );
+    return (accentIndex + 1) * 4.0 + fade.clamp(0.0, 1.0);
+  }
+
   /// The weight of each channel of the sky fill, see [skyFill].
   Vector3 skyFillWeight = skyFillWeight ?? Vector3.all(1);
 
@@ -512,6 +540,14 @@ class StylizedMaterial({
     final matCap = matCapTexture;
     final gemMatCap = gemMatCapTexture;
     final weight = skyFillWeight;
+    final paletteCount = accentPalette.length < maxAccentPaletteSize
+        ? accentPalette.length
+        : maxAccentPaletteSize;
+    final matBlock = fragmentShader.block('Material')
+      ..setFloat('accentPaletteCount', paletteCount.toDouble());
+    for (var i = 0; i < paletteCount; i++) {
+      matBlock.setColor('accentPalette', accentPalette[i], index: i);
+    }
     fragmentShader
       ..setTexture('matCapTexture', matCap ?? Texture.empty)
       ..setTexture('gemMatCapTexture', gemMatCap ?? Texture.empty)

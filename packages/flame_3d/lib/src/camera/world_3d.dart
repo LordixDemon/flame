@@ -1,11 +1,14 @@
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flame/components.dart' as flame;
+import 'package:flame/game.dart' show Game;
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/embedding/embedded_renderer.dart';
 import 'package:meta/meta.dart';
 
 part 'shadow_group.dart';
@@ -15,36 +18,72 @@ part 'shadow_group.dart';
 ///
 /// The primary feature of this component is that it allows [Component3D]s to
 /// render directly to a [GraphicsDevice] instead of the regular rendering.
-///
-/// A world renders with the device and render context of its [host], the
-/// nearest ancestor that is a [Scene3DHost]:
-///
-/// - In a [Game3D] game such as [FlameGame3D], each camera that looks at the
-///   world renders it into an image of the camera's viewport size in physical
-///   pixels, times [renderScale], which is then drawn into the viewport.
-/// - In a [Scene3DComponent], the component renders the world as one layer of
-///   a 2D game, see there.
-///
-/// When one of its directional lights casts shadows (see [ShadowSettings]),
-/// the world is rendered a first time from the light into its shadow map,
-/// before each main pass, see [renderShadows]. Worlds of one [shadowGroup]
-/// share one shadow map, into which all of them cast.
 /// {@endtemplate}
 class World3D({
   super.children,
   super.priority,
-
-  /// The fraction of the device pixels the world is rendered at, in `(0, 1]`
-  /// to render fewer pixels than the viewport covers (the image is scaled up
-  /// when drawn), or above `1` to render more pixels than it covers.
   double renderScale = 1.0,
+  FogSettings? fog,
+  BloomSettings? bloom,
 }) extends flame.World {
+  /// {@macro world_3d}
+  this;
+
   final List<Light> _lights = [];
+
+  int _sceneVersion = 0;
+  int _castersVersion = 0;
+
+  /// Monotonically increasing counter incremented whenever components, lights,
+  /// animations, active particles, [fog], or [bloom] mutate the visual output
+  /// of this world (or when [markSceneDirty] is called manually).
+  int get sceneVersion => _sceneVersion;
+
+  /// Monotonically increasing counter incremented whenever shadow-casting
+  /// components change, used by [ShadowSettings.cacheWhenStatic].
+  int get castersVersion => _castersVersion;
+
+  /// Marks this world's rendered output (and optionally its static shadow map)
+  /// as changed, waking idle-throttled game loops and invalidating retained
+  /// `Scene3DComponent` caches.
+  void markSceneDirty({bool shadows = true}) {
+    _sceneVersion++;
+    if (shadows) {
+      _castersVersion++;
+    }
+    Game.notifyVisualMutation();
+  }
+
+  /// Marks this world's shadow casters as changed so a cached static shadow map
+  /// ([ShadowSettings.cacheWhenStatic]) re-renders on the next pass.
+  void markShadowsDirty() => markSceneDirty();
+
+  /// Atmospheric distance/height fog applied to materials in this world (`null`
+  /// disables fog).
+  FogSettings? get fog => _fog;
+  FogSettings? _fog = fog;
+  set fog(FogSettings? value) {
+    if (identical(value, _fog)) {
+      return;
+    }
+    _fog = value;
+    markSceneDirty(shadows: false);
+  }
+
+  /// Optional GPU bloom post-processing applied to this world's rendered pass
+  /// (`null` disables bloom).
+  BloomSettings? get bloom => _bloom;
+  BloomSettings? _bloom = bloom;
+  set bloom(BloomSettings? value) {
+    if (identical(value, _bloom)) {
+      return;
+    }
+    _bloom = value;
+    markSceneDirty(shadows: false);
+  }
 
   /// The [Scene3DHost] this world renders with: the nearest ancestor that is
   /// one, such as a [Scene3DComponent] or a [Game3D] game.
-  ///
-  /// Throws a [StateError] when there is none.
   Scene3DHost get host => _host ??= _findHost();
   Scene3DHost? _host;
 
@@ -57,11 +96,17 @@ class World3D({
   bool get isRendering => _rendering;
   bool _rendering = false;
 
-  /// The fraction of the device pixels the world is rendered at, see
-  /// [World3D.new].
+  /// The fraction of the device pixels the world is rendered at.
   double get renderScale => _renderScale;
   double _renderScale = _checkRenderScale(renderScale);
-  set renderScale(double value) => _renderScale = _checkRenderScale(value);
+  set renderScale(double value) {
+    final checked = _checkRenderScale(value);
+    if (checked == _renderScale) {
+      return;
+    }
+    _renderScale = checked;
+    markSceneDirty(shadows: false);
+  }
 
   /// The filter used to scale the rendered image to the viewport when
   /// [renderScale] is not `1`.
@@ -70,21 +115,13 @@ class World3D({
   /// The union of the world-space bounds ([Component3D.aabb]) of the
   /// [Component3D]s of this world, lights excepted, or `null` when there are
   /// none.
-  ///
-  /// It is kept up to date incrementally: reading it visits only the
-  /// components whose bounds changed since the last read (because they or
-  /// one of their descendants moved, were added or were removed), at a cost
-  /// of up to `log2(n)` unions each for `n` components, and nothing when
-  /// none changed. It is always the exact union of the current bounds. Call
-  /// [Component3D.markAabbDirty] when the geometry of a component changes
-  /// without it moving. The box belongs to the world and changes when the
-  /// bounds change; copy it to keep it.
   Aabb3? get sceneBounds => _sceneBounds.value;
   final ComponentBounds _sceneBounds = ComponentBounds();
 
   @override
   void onChildrenChanged(flame.Component child, flame.ChildrenChangeType type) {
     super.onChildrenChanged(child, type);
+    markSceneDirty(shadows: child is! LightComponent);
     if (child is! Component3D || child is LightComponent) {
       return;
     }
@@ -98,11 +135,17 @@ class World3D({
 
   /// Register a [light] with this world.
   @internal
-  void addLight(Light light) => _lights.add(light);
+  void addLight(Light light) {
+    _lights.add(light);
+    markSceneDirty();
+  }
 
   /// Unregister a [light] from this world.
   @internal
-  void removeLight(Light light) => _lights.remove(light);
+  void removeLight(Light light) {
+    _lights.remove(light);
+    markSceneDirty();
+  }
 
   @override
   void onRemove() {
@@ -155,43 +198,64 @@ class World3D({
     _shadowGroup?._worlds.remove(this);
     _shadowGroup = group;
     group?._worlds.add(this);
+    markSceneDirty();
   }
 
   ShadowGroup? _shadowGroup;
 
-  /// Renders the shadow map of this world, when one of its directional lights
-  /// casts shadows (see [ShadowSettings]), and returns whether it did.
-  ///
-  /// This is how a host that runs the render passes itself renders the
-  /// shadows: call it once the camera of the main pass is set with
-  /// [RenderContext3D.setCamera], before the main pass begins (see
-  /// [renderScene]). The draws of the main pass then receive the shadows.
-  /// The components are traversed as for the main pass, with the light's view
-  /// as the camera; [canvas] is passed on to them.
-  ///
-  /// In a [shadowGroup], the map of the group is rendered by the first world
-  /// of the group that renders in a frame, with the components of every
-  /// world of the group, and reused by the others: see [ShadowGroup]. It then
-  /// returns whether the main pass receives that map.
-  bool renderShadows(Canvas canvas) {
-    final context = this.context..lights = _lights;
+  /// Renders (or reuses) the shadow map of this world, returning whether the
+  /// upcoming main pass receives shadows.
+  bool renderShadows(Canvas canvas, {RenderContext3D? overrideContext}) {
+    final ctx = (overrideContext ?? context)
+      ..lights = _lights
+      ..fog = _fog;
     final group = _shadowGroup;
-    if (group != null) {
-      return group._renderFor(this, context, canvas);
+    if (group != null && overrideContext == null) {
+      return group._renderFor(this, ctx, canvas);
     }
-    if (!context.beginShadowPass(
+    if (!ctx.beginShadowPass(
       projection: _shadowProjection,
       sceneBounds: sceneBounds,
+      castersKey: _shadowCasterKey(this, _castersVersion, _lights),
     )) {
-      return false;
+      return ctx.hasActiveShadows;
     }
     try {
       _recordCasters(canvas);
     } finally {
-      context.endShadowPass();
+      ctx.endShadowPass();
     }
     return true;
   }
+
+  static Object _shadowCasterKey(
+    Object owner,
+    int castersVersion,
+    List<Light> lights,
+  ) {
+    for (var i = 0; i < lights.length; i++) {
+      final source = lights[i].source;
+      if (source is DirectionalLight && source.shadows != null) {
+        final s = source.shadows!;
+        final d = lights[i].direction(_keyDir);
+        return Object.hash(
+          owner,
+          castersVersion,
+          i,
+          d.x,
+          d.y,
+          d.z,
+          s.resolution,
+          s.fit,
+          s.maxDistance,
+          s.stabilize,
+        );
+      }
+    }
+    return (owner, castersVersion);
+  }
+
+  static final Vector3 _keyDir = Vector3.zero();
 
   /// Traverses the components into the shadow pass being recorded.
   void _recordCasters(Canvas canvas) {
@@ -206,16 +270,12 @@ class World3D({
   }
 
   /// Records the draws of every component of this world into [context], with
-  /// the lights of this world.
-  ///
-  /// This is how a host that runs the render pass itself, such as a
-  /// [Scene3DComponent], renders the world: the [host]'s device must be in a
-  /// render pass and the camera of [context] set with
-  /// [RenderContext3D.setCamera]; the host then flushes the context and ends
-  /// the pass. [canvas] is passed on to the components, which do not draw on
-  /// it.
-  void renderScene(Canvas canvas) {
-    context.lights = _lights;
+  /// the lights and [fog] of this world.
+  void renderScene(Canvas canvas, {RenderContext3D? overrideContext}) {
+    final ctx = overrideContext ?? context;
+    ctx
+      ..lights = _lights
+      ..fog = _fog;
     _rendering = true;
     try {
       for (final child in children) {
@@ -225,6 +285,273 @@ class World3D({
       _rendering = false;
     }
   }
+
+  /// Renders this world once at [size] physical pixels from [view] and
+  /// [projection] into an independent [Image] whose backing GPU texture is
+  /// never overwritten by subsequent passes.
+  ///
+  /// Works even when this [World3D] is not mounted inside a [Game3D] or
+  /// [Scene3DComponent], making it ideal for offscreen thumbnails, inventory
+  /// icons, and snapshots. The caller owns the returned [Image] and should
+  /// `dispose()` it when no longer needed.
+  Image renderToImage(
+    Size size, {
+    required Matrix4 view,
+    required Matrix4 projection,
+    Msaa msaa = Msaa.off,
+    Color clearValue = const Color(0x00000000),
+    GraphicsDevice? device,
+    RenderContext3D? context,
+  }) {
+    final width = math.max(1, size.width.round());
+    final height = math.max(1, size.height.round());
+
+    GraphicsDevice resolvedDevice;
+    RenderContext3D resolvedContext;
+    var closeFrame = false;
+
+    if (device != null && context != null) {
+      resolvedDevice = device;
+      resolvedContext = context;
+      if (resolvedDevice.frame == 0 || !resolvedDevice.isInPass) {
+        // Open a frame only if the caller has not already opened one.
+      }
+    } else {
+      final hostRef = _contextOrNull != null ? host : null;
+      if (hostRef is Game3D) {
+        resolvedDevice = hostRef.device;
+        resolvedContext = hostRef.context;
+        if (!hostRef.isRenderingFrame) {
+          resolvedDevice.begin();
+          closeFrame = true;
+        }
+      } else {
+        final embedded = EmbeddedRenderer.of(findGame() ?? this);
+        resolvedDevice = embedded.device;
+        resolvedContext = embedded.context;
+        closeFrame = embedded.open();
+      }
+    }
+
+    final dummyRecorder = PictureRecorder();
+    final dummyCanvas = Canvas(dummyRecorder);
+    final prevHost = _host;
+    final tempHost = _SnapshotHost(resolvedDevice, resolvedContext, msaa);
+    if (_contextOrNull == null) {
+      _host = tempHost;
+    }
+
+    try {
+      resolvedContext
+        ..lights = _lights
+        ..fog = _fog
+        ..setCamera(view, projection);
+      renderShadows(dummyCanvas, overrideContext: resolvedContext);
+
+      final bloomSettings = _bloom;
+      final useBloom =
+          bloomSettings != null &&
+          bloomSettings.intensity > 0 &&
+          bloomSettings.radius > 0 &&
+          resolvedDevice.backend.supportsTextureTargets;
+
+      final Image image;
+      if (useBloom) {
+        final texTarget = resolvedDevice.textureTarget(
+          width,
+          height,
+          GpuPixelFormat.rgba8888,
+          clearValue: clearValue,
+        );
+        resolvedDevice.beginTexturePass(
+          texTarget,
+          frontFace: resolvedContext.frontFace,
+        );
+        renderScene(dummyCanvas, overrideContext: resolvedContext);
+        resolvedContext.flush();
+        resolvedDevice.endTexturePass();
+
+        final bloomTarget = resolvedDevice.backend.createRenderTarget(
+          width: width,
+          height: height,
+          clearValue: const Color(0x00000000),
+        );
+        image = resolvedDevice.applyBloomFromTarget(
+          texTarget,
+          bloomSettings,
+          outputTarget: bloomTarget,
+        );
+      } else {
+        final sceneTarget = resolvedDevice.backend.createRenderTarget(
+          width: width,
+          height: height,
+          clearValue: clearValue,
+          msaaSampleCount: msaa.sampleCount,
+        );
+        resolvedDevice.beginOwnedPass(
+          sceneTarget,
+          frontFace: resolvedContext.frontFace,
+        );
+        renderScene(dummyCanvas, overrideContext: resolvedContext);
+        resolvedContext.flush();
+        image = resolvedDevice.endPass();
+      }
+      return image;
+    } finally {
+      _host = prevHost;
+      dummyRecorder.endRecording().dispose();
+      if (closeFrame) {
+        if (_contextOrNull != null && host is Game3D) {
+          resolvedDevice.end();
+        } else {
+          EmbeddedRenderer.of(findGame() ?? this).close();
+        }
+      }
+    }
+  }
+
+  /// Casts [ray] (in world space) against all [Object3D]s in this world within
+  /// [maxDistance], returning the closest [RayHit3D] or `null` when missed.
+  ///
+  /// Whole subtrees whose world [Component3D.aabb] misses [ray] are skipped in
+  /// `O(1)` before testing any surface BVH.
+  RayHit3D? raycast(
+    Ray ray, {
+    double maxDistance = double.infinity,
+    CullMode? cullMode,
+    bool Function(Object3D object)? filter,
+  }) {
+    if (!(maxDistance > 0)) {
+      return null;
+    }
+    final dirLen = ray.direction.length;
+    if (dirLen <= 1e-12) {
+      return null;
+    }
+    _unitRay.origin.setFrom(ray.origin);
+    _unitRay.direction
+      ..setFrom(ray.direction)
+      ..scale(1.0 / dirLen);
+
+    RayHit3D? best;
+    var limit = maxDistance;
+
+    void visit(flame.Component component) {
+      if (component is Component3D) {
+        if (!_rayHitsAabb(_unitRay, component.aabb, limit)) {
+          return;
+        }
+        if (component is Object3D && (filter == null || filter(component))) {
+          final hit = component.raycast(
+            _unitRay,
+            maxDistance: limit,
+            cullMode: cullMode,
+          );
+          if (hit != null && hit.distance < limit) {
+            limit = hit.distance;
+            best = hit;
+          }
+        }
+      }
+      for (final child in component.children) {
+        visit(child);
+      }
+    }
+
+    for (final child in children) {
+      visit(child);
+    }
+    return best;
+  }
+
+  /// Casts [ray] against all [Object3D]s in this world within [maxDistance],
+  /// returning every hit sorted from nearest to farthest.
+  List<RayHit3D> raycastAll(
+    Ray ray, {
+    double maxDistance = double.infinity,
+    CullMode? cullMode,
+    bool Function(Object3D object)? filter,
+  }) {
+    final hits = <RayHit3D>[];
+    if (!(maxDistance > 0)) {
+      return hits;
+    }
+    final dirLen = ray.direction.length;
+    if (dirLen <= 1e-12) {
+      return hits;
+    }
+    _unitRay.origin.setFrom(ray.origin);
+    _unitRay.direction
+      ..setFrom(ray.direction)
+      ..scale(1.0 / dirLen);
+
+    void visit(flame.Component component) {
+      if (component is Component3D) {
+        if (!_rayHitsAabb(_unitRay, component.aabb, maxDistance)) {
+          return;
+        }
+        if (component is Object3D && (filter == null || filter(component))) {
+          final hit = component.raycast(
+            _unitRay,
+            maxDistance: maxDistance,
+            cullMode: cullMode,
+          );
+          if (hit != null) {
+            hits.add(hit);
+          }
+        }
+      }
+      for (final child in component.children) {
+        visit(child);
+      }
+    }
+
+    for (final child in children) {
+      visit(child);
+    }
+    hits.sort((a, b) => a.distance.compareTo(b.distance));
+    return hits;
+  }
+
+  static bool _rayHitsAabb(Ray ray, Aabb3 box, double maxT) {
+    var tMin = 0.0;
+    var tMax = maxT;
+    final ox = ray.origin.x;
+    final oy = ray.origin.y;
+    final oz = ray.origin.z;
+    final dx = ray.direction.x;
+    final dy = ray.direction.y;
+    final dz = ray.direction.z;
+
+    bool slab(double o, double d, double lo, double hi) {
+      final minVal = lo - 1e-5;
+      final maxVal = hi + 1e-5;
+      if (d.abs() < 1e-12) {
+        return o >= minVal && o <= maxVal;
+      }
+      final inv = 1.0 / d;
+      var t1 = (minVal - o) * inv;
+      var t2 = (maxVal - o) * inv;
+      if (t1 > t2) {
+        final s = t1;
+        t1 = t2;
+        t2 = s;
+      }
+      if (t1 > tMin) {
+        tMin = t1;
+      }
+      if (t2 < tMax) {
+        tMax = t2;
+      }
+      return tMin <= tMax;
+    }
+
+    return slab(ox, dx, box.min.x, box.max.x) &&
+        slab(oy, dy, box.min.y, box.max.y) &&
+        slab(oz, dz, box.min.z, box.max.z);
+  }
+
+  static final Ray _unitRay = Ray();
 
   @internal
   @override
@@ -236,28 +563,54 @@ class World3D({
     final scale = host.pixelRatio * _renderScale;
     final renderSize = Size(size.x * scale, size.y * scale);
 
-    // The camera's matrices are read once per pass, everything derived from
-    // them is computed by the context.
     final context = host.context
       ..lights = _lights
+      ..fog = _fog
       ..setCamera(camera.viewMatrix, camera.projectionMatrix);
     renderShadows(canvas);
 
     final device = host.device;
-    device.beginPass(
-      renderSize,
-      msaaSampleCount: host.msaaSampleCount,
-      frontFace: context.frontFace,
-    );
-    _rendering = true;
-    try {
-      super.renderFromCamera(canvas);
-    } finally {
-      _rendering = false;
-    }
-    context.flush();
+    final bloomSettings = _bloom;
+    final useBloom =
+        bloomSettings != null &&
+        bloomSettings.intensity > 0 &&
+        bloomSettings.radius > 0 &&
+        device.backend.supportsTextureTargets;
 
-    final image = device.endPass();
+    final Image image;
+    if (useBloom) {
+      final texTarget = device.textureTarget(
+        math.max(1, renderSize.width.round()),
+        math.max(1, renderSize.height.round()),
+        GpuPixelFormat.rgba8888,
+        clearValue: device.clearValue,
+      );
+      device.beginTexturePass(texTarget, frontFace: context.frontFace);
+      _rendering = true;
+      try {
+        super.renderFromCamera(canvas);
+      } finally {
+        _rendering = false;
+      }
+      context.flush();
+      device.endTexturePass();
+      image = device.applyBloomFromTarget(texTarget, bloomSettings);
+    } else {
+      device.beginPass(
+        renderSize,
+        msaaSampleCount: host.msaaSampleCount,
+        frontFace: context.frontFace,
+      );
+      _rendering = true;
+      try {
+        super.renderFromCamera(canvas);
+      } finally {
+        _rendering = false;
+      }
+      context.flush();
+      image = device.endPass();
+    }
+
     _paint.filterQuality = _renderScale == 1.0
         ? FilterQuality.none
         : scaledFilterQuality;
@@ -278,4 +631,19 @@ class World3D({
     }
     return value;
   }
+}
+
+class _SnapshotHost(this.device, this.context, final Msaa _msaa)
+    implements Scene3DHost {
+  @override
+  final GraphicsDevice device;
+
+  @override
+  final RenderContext3D context;
+
+  @override
+  int get msaaSampleCount => _msaa.sampleCount;
+
+  @override
+  double get pixelRatio => 1.0;
 }

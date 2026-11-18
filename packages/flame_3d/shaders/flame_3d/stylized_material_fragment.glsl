@@ -4,41 +4,8 @@
 // The fragment stage of StylizedMaterial: vertex-colored surfaces lit by the
 // hemisphere, directional and point lights of the scene, with per-vertex
 // masks for the instance tint, the accent color, emission and gloss, and per
-// instance data for an emissive boost, a highlight and a fade.
-//
-//   base = albedo * vertex color * mix(1, instance color, tint mask)
-//          * mix(1, accent, accent mask)
-//   lit  = occlusion * (ambient + hemisphere intensity * (ambientBase
-//          + skyFill * sky * hemi + groundBounce * ground * bounce))
-//          + sum over suns of max(0, n.l) * intensity * color * shadow
-//          + sum over points of intensity * color * falloff
-//            * max(pointLightWrap, n.l)
-//   spec = gloss > specularThreshold:
-//          sum over suns of (n.h)^specularPower * specular factor
-//          * gloss * specularStrength
-//   rim  = (1 - n.v)^rimPower * rimStrength * (sky + rimColor)
-//   cap  = gloss > gemThreshold: gemMatCap(view-space normal)
-//          * gemMatCapStrength
-//          else gloss > matCapThreshold: matCap(view-space normal)
-//          * matCapStrength * mix(1, gloss, matCapGlossWeight)
-//   surf = base * lit + rim
-//   shaded = mix(surf + cap, min(surf, 1) * reflected, matCapMetallic)
-//          + spec + highlight * highlightColor
-//   glow = clamp(emissive mask * (emissiveStrength + boost), 0, 1)
-//   lit out = clamp(mix(shaded,
-//                       mix(emissive, emissiveBoost, clamp(boost, 0, 1)),
-//                       glow), 0, 1)
-//   graded  = mix(luminosity(lit out), lit out, saturation)
-//   out     = mix(graded, overlay rgb, overlay alpha)
-//   alpha = albedo alpha * vertex alpha * (1 - fade)
-//
-// with hemi = 0.5 + 0.5 * n.up, bounce = max(0, -n.up), skyFill an rgb
-// weight, reflected the cap on vertices that get a MatCap and 1 on the
-// others, boost, highlight and fade the x, y and w of the instance data, and
-// luminosity(c) = 0.3 r + 0.59 g + 0.11 b. The color is output premultiplied
-// by its alpha. `shadow` is 1, except for the sun that casts shadows, where
-// it is shadowFactor() of flame_3d/shadows.glsl; its highlights are scaled by
-// the mean of it.
+// instance data for an emissive boost, a highlight, wind strength, fade and an
+// optional per-instance accent palette index.
 
 in vec3 fragPosition;
 in vec3 fragNormal;
@@ -56,6 +23,7 @@ uniform sampler2D gemMatCapTexture;
 uniform Material {
   vec4 albedoColor;
   vec4 accentColor;
+  vec4 accentPalette[16];
   vec4 emissiveColor;
   vec4 emissiveBoostColor;
   vec4 ambientBase;
@@ -78,14 +46,11 @@ uniform Material {
   float gemThreshold;
   float matCapMetallic;
   float saturation;
+  float accentPaletteCount;
 } material;
 
-// The camera, the lights and the shadows of the render pass, filled by
-// flame_3d once per pass: the members of the Camera, AmbientLight, Lights,
-// DirectionalLights, HemisphereLight and Shadows blocks (see
-// flame_3d/lights.glsl and flame_3d/shadows.glsl), each named after its block
-// and member (`Lights_numLights` is `numLights` of Lights). Flutter GPU binds
-// every block again for each draw: one block costs less than six.
+// The camera, the lights, the shadows and the fog of the render pass, filled
+// by flame_3d once per pass.
 uniform StylizedPass {
   mat4 Camera_view;
   mat4 Camera_projection;
@@ -95,6 +60,9 @@ uniform StylizedPass {
   vec4 Shadows_map;
   vec4 Shadows_bias;
   vec4 Shadows_decode;
+  vec4 Fog_color;
+  vec4 Fog_params;
+  vec4 Fog_height;
   vec4 AmbientLight_color;
   vec4 HemisphereLight_skyColor;
   vec4 HemisphereLight_groundColor;
@@ -102,7 +70,6 @@ uniform StylizedPass {
   float HemisphereLight_intensity;
   vec3 Camera_position;
   float AmbientLight_intensity;
-  // The sizes of the arrays of flame_3d/lights.glsl.
   vec4 DirectionalLights_directions[4];
   vec4 DirectionalLights_colors[4];
   vec3 Lights_positions[8];
@@ -116,11 +83,9 @@ uniform StylizedPass {
 #define FLAME_SHADOWS(member) scene.Shadows_##member
 #include <flame_3d/shadows.glsl>
 
-// -1 when the projection mirrors the picture compared to a standard camera,
-// 1 otherwise, as RenderContext3D.mirrors decides: the sign of the
-// determinant of the x, y and w rows of the projection (x, y and depth rows
-// for a parallel projection), negative for a standard camera. The view is
-// rigid and does not change it.
+#define FLAME_FOG(member) scene.Fog_##member
+#include <flame_3d/fog.glsl>
+
 float pictureMirror() {
   mat4 p = scene.Camera_projection;
   vec3 rowX = vec3(p[0][0], p[1][0], p[2][0]);
@@ -133,7 +98,6 @@ float pictureMirror() {
 
 void main() {
   vec3 n = normalize(fragNormal);
-  // Towards the viewer. Orthographic cameras look along one direction.
   vec3 v;
   if (scene.Camera_projection[3][3] > 0.5) {
     mat4 view = scene.Camera_view;
@@ -149,11 +113,28 @@ void main() {
 
   float boost = fragInstanceData.x;
   float highlight = fragInstanceData.y;
-  float fade = fragInstanceData.w;
+
+  // `instanceData.w` is plain fade in `[0, 1]` unless packed via
+  // `StylizedMaterial.packAccentAndFade`: `(accentIndex + 1) * 4.0 + fade`
+  // (`w >= 2.0`), which lets instances pick from `material.accentPalette`
+  // without breaking instanced batching.
+  float rawW = fragInstanceData.w;
+  vec3 instanceAccent = material.accentColor.rgb;
+  float fade;
+  if (rawW >= 2.0) {
+    int slot = int(floor(rawW * 0.25));
+    fade = clamp(rawW - float(slot) * 4.0, 0.0, 1.0);
+    int idx = slot - 1;
+    if (idx >= 0 && idx < int(material.accentPaletteCount) && idx < 16) {
+      instanceAccent = material.accentPalette[idx].rgb;
+    }
+  } else {
+    fade = clamp(rawW, 0.0, 1.0);
+  }
 
   vec3 base = material.albedoColor.rgb * fragColor.rgb;
   base *= mix(vec3(1.0), fragInstanceColor.rgb, tintMask);
-  base *= mix(vec3(1.0), material.accentColor.rgb, accentMask);
+  base *= mix(vec3(1.0), instanceAccent, accentMask);
 
   float nUp = clamp(dot(n, scene.HemisphereLight_up), -1.0, 1.0);
   float hemi = 0.5 + 0.5 * nUp;
@@ -169,9 +150,6 @@ void main() {
 
   float specular = 0.0;
   bool glossy = gloss > material.specularThreshold;
-  // The shadow only scales the direct light (and the highlights) of the sun
-  // that casts it: where the surface faces away from that sun and has no
-  // highlights, it changes nothing and the map is not sampled.
   vec3 sunShadow = vec3(1.0);
   int shadowed = int(scene.Shadows_toLight.w);
   if (shadowed >= 0 && shadowed < int(scene.DirectionalLights_numLights) &&
@@ -215,30 +193,30 @@ void main() {
   vec3 rim = fresnel * material.rimStrength *
     (scene.HemisphereLight_skyColor.rgb + material.rimColor.rgb);
 
-  // Both MatCap textures are sampled in a branch that depends on the
-  // material alone, so that their texture coordinates' derivatives are
-  // defined; a material whose MatCaps have no strength does not sample them.
-  // A MatCap is a sphere as seen in the picture: when the projection mirrors
-  // the picture, the x axis of the (rigid) view points to the left of it,
-  // and is mirrored back.
+  // Sample each MatCap texture in its own uniform-only branch so materials
+  // without a gem MatCap (or without a coat MatCap) skip the unused texture
+  // fetch completely while keeping well-defined derivatives.
   vec3 coat = vec3(0.0);
   vec3 gem = vec3(0.0);
-  if (material.matCapStrength != 0.0 || material.gemMatCapStrength != 0.0) {
+  bool hasCoat = material.matCapStrength != 0.0;
+  bool hasGem = material.gemMatCapStrength != 0.0;
+  if (hasCoat || hasGem) {
     vec3 viewNormal = normalize(mat3(scene.Camera_view) * n);
     viewNormal.x *= pictureMirror();
     vec2 matCapUv = vec2(0.5 + 0.5 * viewNormal.x, 0.5 - 0.5 * viewNormal.y);
-    coat = texture(matCapTexture, matCapUv).rgb * material.matCapStrength *
-      mix(1.0, gloss, material.matCapGlossWeight);
-    gem = texture(gemMatCapTexture, matCapUv).rgb *
-      material.gemMatCapStrength;
+    if (hasCoat) {
+      coat = texture(matCapTexture, matCapUv).rgb * material.matCapStrength *
+        mix(1.0, gloss, material.matCapGlossWeight);
+    }
+    if (hasGem) {
+      gem = texture(gemMatCapTexture, matCapUv).rgb *
+        material.gemMatCapStrength;
+    }
   }
   float gemWeight = gloss > material.gemThreshold ? 1.0 : 0.0;
   float coatWeight = gloss > material.matCapThreshold ? 1.0 - gemWeight : 0.0;
   vec3 matCap = coatWeight * coat + gemWeight * gem;
 
-  // The MatCap is a sheen added to the lit surface, or, as far as the
-  // material is metallic, the surface's own reflection: the lit surface, at
-  // most 1, scales it. Vertices without a MatCap keep their lit color.
   vec3 surface = base * lit + rim;
   vec3 reflected = mix(vec3(1.0), matCap, coatWeight + gemWeight);
   vec3 color = mix(
@@ -258,9 +236,6 @@ void main() {
   );
   color = clamp(mix(color, emissive, glow), 0.0, 1.0);
 
-  // The color grade, on the final color: desaturated towards its luminosity
-  // (the luminosity of the non-separable blend modes), then covered by the
-  // overlay color as far as its alpha goes. The defaults leave it unchanged.
   if (material.saturation != 1.0) {
     float luminosity = dot(color, vec3(0.3, 0.59, 0.11));
     color = clamp(mix(vec3(luminosity), color, material.saturation), 0.0, 1.0);
@@ -269,8 +244,15 @@ void main() {
     color = mix(color, material.overlayColor.rgb, material.overlayColor.a);
   }
 
-  float alpha = material.albedoColor.a * fragColor.a *
-    clamp(1.0 - fade, 0.0, 1.0);
+  color = applyFog(
+    color,
+    fragPosition,
+    scene.Camera_view,
+    scene.Camera_projection,
+    scene.Camera_position
+  );
+
+  float alpha = material.albedoColor.a * fragColor.a * (1.0 - fade);
   outColor = vec4(color * alpha, alpha);
 }
 

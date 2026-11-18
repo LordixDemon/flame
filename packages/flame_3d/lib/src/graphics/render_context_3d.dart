@@ -73,6 +73,7 @@ class RenderContext3D(super.device) extends RenderContext {
     registerPassUniform(directionalLightsBlock, writeDirectionalLightsUniforms);
     registerPassUniform(hemisphereLightBlock, writeHemisphereLightUniforms);
     registerPassUniform(shadowsBlock, writeShadowsUniforms);
+    registerPassUniform(fogBlock, writeFogUniforms);
     registerPassUniform(shadowCasterBlock, _ShadowPass.writeCasterUniforms);
     registerPassTexture(shadowMapSampler, _ShadowPass.shadowMapTexture);
   }
@@ -123,14 +124,12 @@ class RenderContext3D(super.device) extends RenderContext {
   /// them how to store depths.
   static const String shadowCasterBlock = 'ShadowCaster';
 
+  /// The name of the block describing atmospheric fog (`FogSettings`), see
+  /// `shaders/flame_3d/fog.glsl`.
+  static const String fogBlock = 'Fog';
+
   /// The name of the block in which `StylizedMaterial`'s fragment shader
-  /// reads the camera, the lights and the shadows of the pass: the members
-  /// of [cameraBlock], [ambientLightBlock], [lightsBlock],
-  /// [directionalLightsBlock], [hemisphereLightBlock] and [shadowsBlock],
-  /// each named after its block and member (`Lights_numLights` is
-  /// `numLights` of [lightsBlock]), written once per pass by the writers
-  /// registered for those blocks. Flutter GPU binds every block again for
-  /// each draw, so one block costs less than six.
+  /// reads the camera, the lights, the shadows and the fog of the pass.
   @internal
   static const String stylizedPassBlock = 'StylizedPass';
 
@@ -142,6 +141,7 @@ class RenderContext3D(super.device) extends RenderContext {
     directionalLightsBlock,
     hemisphereLightBlock,
     shadowsBlock,
+    fogBlock,
   ];
 
   /// The maximum number of point lights written to the [lightsBlock].
@@ -196,6 +196,9 @@ class RenderContext3D(super.device) extends RenderContext {
 
   /// The lights of the scene. Must be set before the draws are flushed.
   List<Light> lights = const [];
+
+  /// Atmospheric fog of the current pass (`null` disables fog).
+  FogSettings? fog;
 
   /// The number of draws recorded in the last flushed pass.
   int get drawCount => _lastDrawCount;
@@ -503,6 +506,10 @@ class RenderContext3D(super.device) extends RenderContext {
   /// the light that casts shadows.
   bool get isShadowPass => _shadows.recording;
 
+  /// Whether the current main pass receives a shadow map (either freshly
+  /// rendered or reused from a static cache / `ShadowGroup`).
+  bool get hasActiveShadows => _shadows.active;
+
   /// Starts the shadow pass of the scene whose [lights] are set, when its
   /// first directional light with [DirectionalLight.shadows] casts shadows,
   /// and returns whether it did.
@@ -515,14 +522,16 @@ class RenderContext3D(super.device) extends RenderContext {
   /// Record the draws of the scene as for the main pass, then call
   /// [endShadowPass].
   ///
-  /// It returns `false`, and the main pass has no shadows, when no light
+  /// It returns `false`, and the main pass has no shadows (unless reused from
+  /// [ShadowSettings.cacheWhenStatic], see [hasActiveShadows]), when no light
   /// casts shadows, when the camera sees nothing that receives them, or when
   /// the GPU backend cannot render into textures (on the web).
   bool beginShadowPass({
     required DirectionalShadowProjection projection,
     required Aabb3? sceneBounds,
+    Object? castersKey,
   }) {
-    return _shadows.begin(projection, sceneBounds);
+    return _shadows.begin(projection, sceneBounds, castersKey: castersKey);
   }
 
   /// Renders the draws recorded since [beginShadowPass] into the shadow map,
@@ -1030,6 +1039,46 @@ class RenderContext3D(super.device) extends RenderContext {
       ..setColor('groundColor', hemisphere.groundColor)
       ..setVector3('up', up)
       ..setFloat('intensity', hemisphere.intensity);
+  }
+
+  /// Writes [fog] into [block] (zero `color.a` when `fog == null`), see
+  /// `shaders/flame_3d/fog.glsl`.
+  static void writeFogUniforms(RenderContext3D context, UniformBlock block) {
+    final fog = context.fog;
+    final v = _scratchVector4;
+    if (fog == null || fog.maxOpacity <= 0) {
+      block
+        ..setVector4('color', v..setZero())
+        ..setVector4('params', v)
+        ..setVector4('height', v..setValues(0, 1, 0, 0));
+      return;
+    }
+    final up = _scratchDirection..setFrom(fog.up);
+    if (up.length2 > 0) {
+      up.normalize();
+    } else {
+      up.setValues(0, 1, 0);
+    }
+    final span = math.max(fog.end - fog.start, 1e-4);
+    final c = fog.color;
+    block
+      ..setVector4(
+        'color',
+        v..setValues(c.r, c.g, c.b, c.a * fog.maxOpacity.clamp(0.0, 1.0)),
+      )
+      ..setVector4(
+        'params',
+        v..setValues(
+          math.max(0.0, fog.start),
+          1.0 / span,
+          math.max(0.0, fog.density),
+          math.max(0.0, fog.heightFalloff),
+        ),
+      )
+      ..setVector4(
+        'height',
+        v..setValues(up.x, up.y, up.z, fog.baseHeight),
+      );
   }
 
   static final _scratchDirection = Vector3.zero();

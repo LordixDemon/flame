@@ -1,15 +1,5 @@
-/// GPU particles for `flame_3d`: [ParticleSystem3D] simulates particles on
-/// the CPU (struct of arrays, no allocations per frame) and draws them with
-/// one instanced draw per system and material, depth tested against the
-/// scene: camera-facing quads with [ParticleMaterial], or small meshes drawn
-/// with any instanced material.
-///
-/// The curves over a particle's life ([ParticleCurve], [ColorRamp]), the
-/// value ranges ([ParticleRange]) and the bursts ([EmitterBurst]) are those
-/// of Flame's 2D particles.
+/// GPU particles and 3D motion ribbons for `flame_3d`.
 library;
-
-import 'package:flame_3d/particles.dart';
 
 export 'package:flame/particles.dart'
     show
@@ -26,3 +16,5 @@ export 'src/particles/particle_forces_3d.dart';
 export 'src/particles/particle_material.dart';
 export 'src/particles/particle_presets_3d.dart';
 export 'src/particles/particle_system_3d.dart';
+export 'src/particles/ribbon_material_3d.dart';
+export 'src/particles/ribbon_trail_3d.dart';

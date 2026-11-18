@@ -14,9 +14,16 @@ lights they respond to, and textures.
   per-instance color, without lighting. It blends with premultiplied alpha and draws as translucent
   by default; set its `renderState` to `RenderState.opaque` for opaque content.
 - `StylizedMaterial` is made for stylized, vertex-colored art without textures, see
-  [below](#stylizedmaterial). It receives shadows.
+  [below](#stylizedmaterial). It receives shadows and atmospheric fog, and supports up to 16
+  per-instance palette accent colors in a single instanced draw.
 - `ShadowCatcherMaterial` makes a surface invisible except for the shadows falling on it, so that
   3D objects cast shadows onto 2D art, see [Shadows](shadows.md#shadows-on-2d-art).
+- `OutlineMaterial` draws an instanced inverted-hull silhouette contour around static or skinned
+  meshes (in world units or constant screen-space fraction).
+- `DecalMaterial` (paired with `DecalBatch3D` or `PlaneMesh`) draws procedural soft discs/rings or
+  atlas-textured surface decals with clip-space depth bias so coplanar decals never Z-fight.
+- `RibbonMaterial3D` draws camera-facing 3D polylines and motion trails for `StrokeBatch3D` and
+  `RibbonTrail3D`, see [Particles](particles.md#3d-ribbons-and-strokes).
 
 Vertices built from `Vertex` objects, the built-in meshes and parsed models have white vertex
 colors, so the vertex color only changes the look of meshes that set it.
@@ -434,11 +441,25 @@ void update(double dt) {
 ```
 
 
-### Batching and translucency
+### Batching, accent palettes, and translucency
 
 Like the other built-in materials, it is drawn instanced: components sharing a mesh with a
-`StylizedMaterial` cost one draw call per surface, whatever their tints and instance data. The
-accent color belongs to the material, so use one material per accent color.
+`StylizedMaterial` cost one draw call per surface, whatever their tints and instance data. To vary
+the accent color per instance without splitting draw calls, supply `accentPalette` (up to
+`StylizedMaterial.maxAccentPalette` = 16 colors) and pack the palette index (with an optional fade)
+into `instanceData.w` via `StylizedMaterial.packAccentAndFade(index, fade: 0.0)`:
+
+```dart
+final material = StylizedMaterial(
+  accentPalette: const [Color(0xFFE53935), Color(0xFF1E88E5), Color(0xFF43A047)],
+);
+final unit = MeshComponent(
+  mesh: unitMesh,
+  instanceData: Vector4(0, 0, 0, StylizedMaterial.packAccentAndFade(1)),
+);
+```
+
+When `instanceData.w < 2.0`, it acts purely as `fade` (`0..1`), preserving backwards compatibility.
 
 `StylizedMaterial(translucent: true)` blends its premultiplied output over what is behind it
 (`StylizedMaterial.translucentRenderState`: depth tested, without depth writes), and its draws are
@@ -450,6 +471,67 @@ keeps the inner faces of a closed mesh from showing through.
 ```{note}
 `StylizedMaterial` is not available on the web yet: creating one there throws an
 `UnsupportedError`.
+```
+
+
+## Atmospheric fog, silhouette outlines, and surface decals
+
+### Atmospheric fog (`FogSettings`)
+
+Assigning `world.fog = FogSettings(...)` fades surfaces smoothly towards `FogSettings.color` by
+distance (`FogMode.linear`, `exponential` or `exponentialSquared`) plus optional vertical ground
+mist (`heightFalloff` below `baseHeight`, along `upAxis`):
+
+```dart
+world.fog = FogSettings(
+  color: const Color(0xFF9AB4D2),
+  mode: FogMode.linear,
+  start: 12,
+  end: 48,
+  heightDensity: 0.25,
+  baseHeight: 0,
+  heightFalloff: 0.6,
+);
+```
+
+`StylizedMaterial` applies `world.fog` automatically with zero extra bindings; custom shaders
+include `flame_3d/fog.glsl` and declare `RenderContext3D.fogBlock` (`'Fog'`).
+
+### Silhouette outlines (`OutlineMaterial`)
+
+`OutlineMaterial` extrudes front-culled backfaces along smooth vertex normals to draw crisp
+cel-shaded or selection contours around static and 4-joint skinned meshes. With
+`screenSpace: true`, `thickness` is scaled by clip `w` so silhouettes stay a uniform width across
+distances, and `instanceData.x` scales thickness per instance (`0` defaults to `1`):
+
+```dart
+final outline = OutlineMaterial(
+  color: const Color(0xFF1A1423),
+  thickness: 0.025,
+  screenSpace: true,
+);
+```
+
+### Surface decals (`DecalMaterial` and `DecalBatch3D`)
+
+`DecalBatch3D` batches ground rings, selection markers, footprints and scorch marks into a single
+instanced draw call, nudged towards the viewer in clip space (`DecalMaterial.depthBias`) to prevent
+Z-fighting on coplanar floors. Without a texture, `DecalMaterial` renders a procedural soft disc or
+annular ring (`innerRadius`, `softness`); with an atlas texture, each decal can specify its own
+normalized `uvRect`:
+
+```dart
+final decals = DecalBatch3D(
+  material: DecalMaterial(innerRadius: 0.72, softness: 0.08),
+)
+  ..addFlatDecal(
+    center: Vector3(3, 4, 0),
+    width: 1.4,
+    height: 1.4,
+    normal: Vector3(0, 0, 1),
+    color: const Color(0xFFFFD54F),
+  );
+world.add(decals);
 ```
 
 

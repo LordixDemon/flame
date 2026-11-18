@@ -91,7 +91,10 @@ Elsewhere, convert further with `layer.positionOf` (to the layer's parent) or
 `layer.absolutePositionOf`.
 
 `localPointToRay` goes the other way: it returns the ray of the scene points that land on a local
-point, starting on the near plane and pointing away from the viewer. A tap becomes a ray like this:
+point, starting on the near plane and pointing away from the viewer. `raycastLocal` (and
+`raycastAllLocal`) intersects that ray against the triangle BVHs of every visible mesh, model, LOD
+and instanced group in the layer's world, returning the nearest `RayHit3D` with its exact world hit
+point, world normal, surface/triangle index and component:
 
 ```dart
 @override
@@ -99,9 +102,10 @@ void onTapUp(TapUpEvent event) {
   final local = layer.absoluteToLocal(
     camera.globalToLocal(event.canvasPosition),
   );
-  final ray = layer.localPointToRay(local);
-  // The object whose box the ray enters first is the one under the finger.
-  final distance = ray.intersectsWithAabb3(house.aabb);
+  final hit = layer.raycastLocal(local);
+  if (hit != null) {
+    // `hit.component`, `hit.position`, `hit.normal`, `hit.distance`
+  }
 }
 ```
 
@@ -173,6 +177,36 @@ layer.world.addAll([
 ```
 
 
+## Retained layer caching, bloom, and offscreen snapshots
+
+A layer whose 3D objects sit still on most frames (buildings, terrain, idle props) can skip its GPU
+passes altogether while nothing in its scene or camera changes:
+
+```dart
+final buildings = Scene3DComponent(
+  projection: boardProjection,
+  cacheMode: Scene3DCacheMode.retained,
+  bloom: const BloomSettings(threshold: 0.75, intensity: 0.6),
+);
+```
+
+With `Scene3DCacheMode.retained`, the layer renders into a dedicated GPU target and reuses the
+cached `Image` (`renderPasses == 0`, tracked by `layer.cacheHitCount`) until a component mounts,
+unmounts or moves (`World3D.sceneVersion`), a shadow caster changes, the 2D camera pans or zooms,
+or `layer.markDirty()` is called explicitly (for example after mutating material properties in
+place).
+
+Setting `bloom` on the layer (or `world.bloom`) runs a half-resolution bright-pass and Kawase blur
+over pixels above `BloomSettings.threshold` and adds the glow back while preserving the scene's
+alpha channel, so glowing 3D embankments and crystals cast soft halos onto the 2D art underneath the
+layer without darkening it.
+
+To capture a standalone `dart:ui` `Image` of the layer (or of an unmounted `World3D`, for inventory
+thumbnails and UI cards), call `layer.renderToImage(logicalSize)` or
+`world.renderToImage(pixelSize, view: ..., projection: ...)`. Dispose the returned `Image` when no
+longer needed.
+
+
 ## Hosts
 
 A `World3D` renders with the device and render context of its host, the nearest ancestor that
@@ -191,7 +225,8 @@ game share a device of their own, `layer.device`, whose `lastFrameStats` cover a
 - A layer drawn into an offscreen picture whose transform already includes the device pixel ratio
   (for example by a camera with a `worldRenderScale` other than `1`) renders at a higher
   resolution than needed; lower its `renderScale`.
-- Retained camera caches and idle rendering only know about changes to the 2D component tree: a
-  3D scene that animates on its own needs the game to render every frame.
+- Mutating a material's uniform fields directly does not automatically invalidate a
+  `Scene3DCacheMode.retained` layer; call `layer.markDirty()` (or `world.markSceneDirty()`) when
+  animating material fields on an otherwise static scene.
 - The image is aligned to the device's pixel grid when the game is painted in its own layer at a
   whole number of physical pixels, as a full-screen `GameWidget` is.

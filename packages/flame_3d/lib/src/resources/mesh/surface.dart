@@ -130,6 +130,10 @@ class Surface extends Resource<GpuBuffer> {
   /// as `[x0, y0, z0, x1, y1, z1, ...]`. Computed on first access.
   late final Float32List positions = _extractPositions();
 
+  /// Lazy flat Bounding Volume Hierarchy (`O(log T)` narrowphase ray queries)
+  /// over this surface's triangles, built once on first access.
+  late final SurfaceBvh bvh = SurfaceBvh.build(this);
+
   int? _resourceSizeInBytes;
 
   int get _sizeInBytes => verticesBytes + _align4(indicesBytes);

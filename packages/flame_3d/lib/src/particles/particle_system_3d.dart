@@ -531,6 +531,7 @@ class ParticleSystem3D({
     if (hadParticles || particles.length > 0) {
       // Repaint even when the game only renders frames that change.
       Game.notifyVisualMutation();
+      worldOrNull?.markSceneDirty(shadows: castsShadows && mesh != null);
     }
     if (removeOnFinish && isFinished) {
       removeFromParent();

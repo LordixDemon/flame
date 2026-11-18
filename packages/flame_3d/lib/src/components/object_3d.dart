@@ -95,4 +95,15 @@ abstract class Object3D({
   bool isVisible(Frustum frustum) {
     return frustum.intersectsWithAabb3(aabb);
   }
+
+  /// Intersects [worldRay] against this object's own geometry within
+  /// [maxDistance], returning the closest [RayHit3D] or `null` when missed.
+  ///
+  /// Subclasses that draw meshes ([MeshComponent], `ModelComponent`,
+  /// [LodMeshComponent], [InstancedGroup3D]) override this using `Surface.bvh`.
+  RayHit3D? raycast(
+    Ray worldRay, {
+    double maxDistance = double.infinity,
+    CullMode? cullMode,
+  }) => null;
 }

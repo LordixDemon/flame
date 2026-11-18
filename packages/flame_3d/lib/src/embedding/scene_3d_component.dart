@@ -11,60 +11,19 @@ import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/src/embedding/embedded_renderer.dart';
 import 'package:flutter/widgets.dart' show MediaQuery;
 
+/// Caching strategy for a [Scene3DComponent]'s GPU render pass.
+enum Scene3DCacheMode() {
+  /// Renders the 3D scene pass every frame.
+  none,
+
+  /// Retains the rendered GPU [Image] in a dedicated target and reuses it with
+  /// `0` GPU passes on subsequent frames whenever the scene, shadow casters,
+  /// camera projection, canvas transform, and visible clip have not changed.
+  retained,
+}
+
 /// {@template scene_3d_component}
 /// A 2D component that shows a 3D scene as one layer of a 2D game.
-///
-/// The scene is the [world]: [Component3D]s and [LightComponent]s added to it
-/// work as they do in a [FlameGame3D]. The [projection] maps the scene to the
-/// local coordinates of this component, and the component draws it where the
-/// projection says, through whatever transforms the canvas has: the 2D
-/// camera's zoom, pan and rotation and this component's own position, scale,
-/// angle and anchor. A scene point lands on the same pixel as a 2D component
-/// drawn at the local point [scenePointToLocal] returns, at any zoom and pan.
-///
-/// The component is drawn like any other 2D component, at its [priority]:
-/// components with a lower priority are drawn below the scene and those with
-/// a higher priority above it. Its own children are drawn above the scene,
-/// which suits labels placed with [scenePointToLocal].
-///
-/// ## Rendering
-///
-/// Every time the component renders, it renders the part of the scene that
-/// is visible on screen in one render pass: the part of the canvas's clip (or
-/// of the game's area when nothing clips) that the picture of the scene's
-/// bounding box covers (see [Component3D.aabb]; lights do not count), inside
-/// the component's [size] unless that is zero. It renders at the resolution
-/// of the screen, [pixelRatio] times [renderScale] pixels per logical pixel,
-/// aligned with the device's pixel grid, and culls the objects outside that
-/// part. The image is drawn back over the same part of the screen,
-/// unfiltered when [renderScale] is `1`. Nothing is rendered when that part
-/// is empty.
-///
-/// The render target is rounded up to a multiple of 64 pixels in both
-/// directions, and the target of the last render is kept while the visible
-/// part fits in it and covers at least half of it, so that panning, zooming
-/// and moving objects reuse the same target. It is at most [maxTextureSize]
-/// pixels wide and high: a larger visible part is rendered at a lower
-/// resolution.
-///
-/// When a directional light of the scene casts shadows (see
-/// `ShadowSettings`), a shadow pass renders its shadow map first, fitted to
-/// the visible part. A `ShadowCatcherMaterial` on an invisible ground in the
-/// scene draws the shadows falling on it over the 2D components below the
-/// layer, so that 3D objects cast shadows onto 2D art.
-///
-/// In a [Game3D] game, the components use the game's [GraphicsDevice] and
-/// [RenderContext3D], so its `renderStats` count their passes. In any other
-/// game, all the components of the game share a device and a context of
-/// their own. [renderStats] are the statistics of the last pass of this
-/// component.
-///
-/// ## Size
-///
-/// With a zero [size] (the default) the layer is unbounded: the scene is drawn
-/// wherever the projection puts it. With a non-zero [size], only the part of
-/// the scene that falls inside the rectangle from `(0, 0)` to [size] is
-/// drawn, and the component can receive pointer events there.
 /// {@endtemplate}
 class Scene3DComponent({
   required Scene3DProjection projection,
@@ -72,6 +31,8 @@ class Scene3DComponent({
   Msaa msaa = Msaa.off,
   double? renderScale,
   int maxTextureSize = 4096,
+  Scene3DCacheMode cacheMode = Scene3DCacheMode.none,
+  BloomSettings? bloom,
   super.position,
   super.size,
   super.scale,
@@ -82,12 +43,12 @@ class Scene3DComponent({
   super.key,
 }) extends PositionComponent implements Scene3DHost {
   /// {@macro scene_3d_component}
-  ///
-  /// [world] defaults to a new [World3D]; [renderScale], when given, replaces
-  /// the world's [World3D.renderScale].
   this {
     if (renderScale != null) {
       this.world.renderScale = renderScale;
+    }
+    if (bloom != null) {
+      this.world.bloom = bloom;
     }
     this.maxTextureSize = maxTextureSize;
     add(this.world);
@@ -102,6 +63,39 @@ class Scene3DComponent({
   /// The multisample anti-aliasing of the render pass.
   Msaa msaa = msaa;
 
+  /// Caching policy for this layer's GPU output.
+  Scene3DCacheMode get cacheMode => _cacheMode;
+  Scene3DCacheMode _cacheMode = cacheMode;
+  set cacheMode(Scene3DCacheMode value) {
+    if (value == _cacheMode) {
+      return;
+    }
+    _cacheMode = value;
+    if (value == Scene3DCacheMode.none) {
+      _disposeRetained();
+    }
+  }
+
+  /// Optional GPU bloom post-processing applied to this layer (forwards to
+  /// `world.bloom`).
+  BloomSettings? get bloom => world.bloom;
+  set bloom(BloomSettings? value) => world.bloom = value;
+
+  /// Number of frames satisfied directly from the [Scene3DCacheMode.retained]
+  /// image cache without opening a GPU pass.
+  int get cacheHitCount => _cacheHitCount;
+  int _cacheHitCount = 0;
+
+  int _manualVersion = 0;
+
+  /// Marks this layer's retained image cache (if any) as out of date, forcing a
+  /// fresh GPU pass on the next frame (for instance after mutating material
+  /// uniforms or `MeshComponent.instanceData` in place).
+  void markDirty() {
+    _manualVersion++;
+    Game.notifyVisualMutation();
+  }
+
   /// The largest width and height in pixels of the render target, at least
   /// 64.
   int get maxTextureSize => _maxTextureSize;
@@ -114,53 +108,112 @@ class Scene3DComponent({
 
   int _maxTextureSize = 4096;
 
-  /// The fraction of the device pixels the scene is rendered at: the
-  /// [world]'s [World3D.renderScale].
+  /// The fraction of the device pixels the scene is rendered at.
   double get renderScale => world.renderScale;
   set renderScale(double value) => world.renderScale = value;
 
   /// The filter used to draw the image when it is not rendered at the
-  /// device's resolution: the [world]'s [World3D.scaledFilterQuality].
+  /// device's resolution.
   FilterQuality get scaledFilterQuality => world.scaledFilterQuality;
   set scaledFilterQuality(FilterQuality value) {
     world.scaledFilterQuality = value;
   }
 
   /// The statistics of the last render pass of this component.
-  ///
-  /// All zero when the last render found nothing to render.
   RenderStats get renderStats => _stats;
   final RenderStats _stats = RenderStats();
 
   /// The part of the canvas, in the canvas's device coordinates (logical
-  /// pixels, without the canvas transform), that the last render covered; it
-  /// is [Rect.zero] when nothing was rendered.
+  /// pixels, without the canvas transform), that the last render covered.
   Rect get renderedRect => _renderedRect;
   Rect _renderedRect = Rect.zero;
 
-  /// The time the last render took on the CPU: recording, sorting and
-  /// submitting the draws.
+  /// The time the last render took on the CPU.
   Duration get lastRenderTime => Duration(microseconds: _renderMicroseconds);
   int _renderMicroseconds = 0;
 
-  /// The local 2D point that [scenePoint] lands on, see
-  /// [Scene3DProjection.scenePointToLocal].
-  ///
-  /// Convert it further with [positionOf] (to the parent's coordinates) or
-  /// [absolutePositionOf] to place 2D components on scene points.
+  /// The local 2D point that [scenePoint] lands on.
   Vector2 scenePointToLocal(Vector3 scenePoint, {Vector2? output}) {
     return projection.scenePointToLocal(scenePoint, output: output);
   }
 
-  /// The ray of the scene points that land on the local 2D point
-  /// [localPoint], see [Scene3DProjection.localPointToRay].
-  ///
-  /// [localPoint] is in the coordinates of this component, such as the
-  /// `localPosition` of a pointer event it receives, or [absoluteToLocal] of
-  /// a point of the world it is in.
+  /// The ray of the scene points that land on the local 2D point [localPoint].
   Ray localPointToRay(Vector2 localPoint, {Ray? output}) {
     return projection.localPointToRay(localPoint, output: output);
   }
+
+  /// Casts a ray from [localPoint] (in this component's 2D coordinates) against
+  /// all [Object3D]s in [world], returning the closest [RayHit3D] or `null`.
+  RayHit3D? raycastLocal(
+    Vector2 localPoint, {
+    double maxDistance = double.infinity,
+    CullMode? cullMode,
+    bool Function(Object3D object)? filter,
+  }) {
+    localPointToRay(localPoint, output: _pickRay);
+    return world.raycast(
+      _pickRay,
+      maxDistance: maxDistance,
+      cullMode: cullMode,
+      filter: filter,
+    );
+  }
+
+  /// Casts a ray from [localPoint] against all [Object3D]s in [world],
+  /// returning all hits sorted from nearest to farthest.
+  List<RayHit3D> raycastAllLocal(
+    Vector2 localPoint, {
+    double maxDistance = double.infinity,
+    CullMode? cullMode,
+    bool Function(Object3D object)? filter,
+  }) {
+    localPointToRay(localPoint, output: _pickRay);
+    return world.raycastAll(
+      _pickRay,
+      maxDistance: maxDistance,
+      cullMode: cullMode,
+      filter: filter,
+    );
+  }
+
+  /// Renders this layer once into an independent [Image] of [size] logical
+  /// pixels (scaled by [pixelRatio]), placing the projection's local origin at
+  /// [origin] and scaling by [zoom].
+  ///
+  /// The caller owns the returned [Image] and should `dispose()` it when done.
+  Image renderToImage(
+    Size size, {
+    Offset origin = Offset.zero,
+    double zoom = 1.0,
+    double pixelRatio = 1.0,
+    Color clearValue = const Color(0x00000000),
+  }) {
+    final pScale = pixelRatio * world.renderScale;
+    final targetW = math.max(1, (size.width * pScale).round());
+    final targetH = math.max(1, (size.height * pScale).round());
+    _writeCamera(
+      zoom,
+      0.0,
+      0.0,
+      zoom,
+      origin.dx,
+      origin.dy,
+      pScale,
+      0,
+      0,
+      targetW,
+      targetH,
+    );
+    return world.renderToImage(
+      Size(targetW.toDouble(), targetH.toDouble()),
+      view: _viewMatrix,
+      projection: _projectionMatrix,
+      msaa: msaa,
+      clearValue: clearValue,
+    );
+  }
+
+  static final Ray _pickRay = Ray();
 
   @override
   GraphicsDevice get device {
@@ -177,8 +230,6 @@ class Scene3DComponent({
   @override
   int get msaaSampleCount => msaa.sampleCount;
 
-  /// The device pixel ratio of the view the game is shown in, or `1` when it
-  /// is not shown.
   @override
   double get pixelRatio => _pixelRatioOf(findGame());
 
@@ -193,6 +244,28 @@ class Scene3DComponent({
   RenderContext3D? _context;
   Game3D? _game3D;
   EmbeddedRenderer? _renderer;
+
+  // Retained GPU cache state.
+  GpuRenderTarget? _retainedSceneTarget;
+  GpuRenderTarget? _retainedBloomTarget;
+  int _retainedTargetW = 0;
+  int _retainedTargetH = 0;
+  int _retainedMsaa = 0;
+  Image? _retainedImage;
+  Object? _retainedKey;
+  final Float32List _retainedView = Float32List(16);
+  final Float32List _retainedProj = Float32List(16);
+
+  void _disposeRetained() {
+    _retainedImage?.dispose();
+    _retainedImage = null;
+    _retainedKey = null;
+    _retainedSceneTarget = null;
+    _retainedBloomTarget = null;
+    _retainedTargetW = 0;
+    _retainedTargetH = 0;
+    _retainedMsaa = 0;
+  }
 
   void _resolveRenderer() {
     if (_context != null) {
@@ -212,6 +285,7 @@ class Scene3DComponent({
 
   @override
   void onRemove() {
+    _disposeRetained();
     super.onRemove();
     _device = null;
     _context = null;
@@ -237,8 +311,6 @@ class Scene3DComponent({
   }
 
   void _renderScene(Canvas canvas) {
-    // The canvas maps local coordinates to its device coordinates (logical
-    // pixels); the device pixel ratio maps those to physical pixels.
     final transform = canvas.getTransform();
     final a = transform[0];
     final b = transform[1];
@@ -251,9 +323,6 @@ class Scene3DComponent({
       return;
     }
 
-    // The part of the screen to render, in device coordinates: the clip, or
-    // the game's area when nothing clips the canvas (the game is painted in
-    // a layer of its own, starting at its top left corner).
     var visible = canvas.getDestinationClipBounds();
     final game = findGame();
     if (visible.width > _unclipped || visible.height > _unclipped) {
@@ -282,7 +351,6 @@ class Scene3DComponent({
       return;
     }
 
-    // Whole pixels of the render target, aligned with the pixel grid.
     final fullScale = _pixelRatioOf(game) * world.renderScale;
     var pixelScale = fullScale;
     var left = (visible.left * pixelScale).floor();
@@ -300,9 +368,7 @@ class Scene3DComponent({
     if (pixelWidth <= 0 || pixelHeight <= 0) {
       return;
     }
-    // Keep the target of the last render while the part fits in it and
-    // covers at least half of it: a part whose size changes a little from
-    // frame to frame keeps rendering into the same target.
+
     final neededWidth = math.min(_roundUp(pixelWidth), maxSize);
     final neededHeight = math.min(_roundUp(pixelHeight), maxSize);
     if (_targetWidth < neededWidth ||
@@ -330,6 +396,63 @@ class Scene3DComponent({
       targetHeight,
     );
 
+    final destination = Rect.fromLTRB(
+      left / pixelScale,
+      top / pixelScale,
+      (left + pixelWidth) / pixelScale,
+      (top + pixelHeight) / pixelScale,
+    );
+
+    final isRetained = _cacheMode == Scene3DCacheMode.retained;
+    Object? nextKey;
+    if (isRetained) {
+      final bloomSettings = world.bloom;
+      nextKey = Object.hash(
+        world.sceneVersion,
+        _manualVersion,
+        world.shadowGroup?.castersVersion ?? world.castersVersion,
+        left,
+        top,
+        pixelWidth,
+        pixelHeight,
+        targetWidth,
+        targetHeight,
+        pixelScale,
+        msaa.sampleCount,
+        bloomSettings?.threshold,
+        bloomSettings?.softKnee,
+        bloomSettings?.intensity,
+        bloomSettings?.radius,
+        bloomSettings?.passes,
+      );
+      if (_retainedImage != null &&
+          _retainedKey == nextKey &&
+          _sameFloats(_viewMatrix.storage, _retainedView) &&
+          _sameFloats(_projectionMatrix.storage, _retainedProj)) {
+        _cacheHitCount++;
+        _compositeImage(
+          canvas,
+          _retainedImage!,
+          pixelWidth,
+          pixelHeight,
+          destination,
+          a,
+          b,
+          c,
+          d,
+          tx,
+          ty,
+          determinant,
+          bounded,
+          width,
+          height,
+          pixelScale,
+          fullScale,
+        );
+        return;
+      }
+    }
+
     _resolveRenderer();
     final device = _device!;
     final context = _context!;
@@ -348,14 +471,80 @@ class Scene3DComponent({
     context.setCamera(_viewMatrix, _projectionMatrix);
     RenderProfile.lap(RenderPhase.setup);
     world.renderShadows(canvas);
-    device.beginPass(
-      Size(targetWidth.toDouble(), targetHeight.toDouble()),
-      msaaSampleCount: msaa.sampleCount,
-      frontFace: context.frontFace,
-    );
-    world.renderScene(canvas);
-    context.flush();
-    final image = device.endPass();
+
+    final bloomSettings = world.bloom;
+    final useBloom =
+        bloomSettings != null &&
+        bloomSettings.intensity > 0 &&
+        bloomSettings.radius > 0 &&
+        device.backend.supportsTextureTargets;
+
+    final Image image;
+    if (useBloom) {
+      final texTarget = device.textureTarget(
+        targetWidth,
+        targetHeight,
+        GpuPixelFormat.rgba8888,
+        clearValue: device.clearValue,
+      );
+      device.beginTexturePass(texTarget, frontFace: context.frontFace);
+      world.renderScene(canvas);
+      context.flush();
+      device.endTexturePass();
+
+      if (isRetained) {
+        if (_retainedBloomTarget == null ||
+            _retainedTargetW != targetWidth ||
+            _retainedTargetH != targetHeight) {
+          _retainedTargetW = targetWidth;
+          _retainedTargetH = targetHeight;
+          _retainedBloomTarget = device.backend.createRenderTarget(
+            width: targetWidth,
+            height: targetHeight,
+            clearValue: device.clearValue,
+          );
+        }
+        image = device.applyBloomFromTarget(
+          texTarget,
+          bloomSettings,
+          outputTarget: _retainedBloomTarget,
+        );
+      } else {
+        image = device.applyBloomFromTarget(texTarget, bloomSettings);
+      }
+    } else {
+      if (isRetained) {
+        if (_retainedSceneTarget == null ||
+            _retainedTargetW != targetWidth ||
+            _retainedTargetH != targetHeight ||
+            _retainedMsaa != msaa.sampleCount) {
+          _retainedTargetW = targetWidth;
+          _retainedTargetH = targetHeight;
+          _retainedMsaa = msaa.sampleCount;
+          _retainedSceneTarget = device.backend.createRenderTarget(
+            width: targetWidth,
+            height: targetHeight,
+            clearValue: device.clearValue,
+            msaaSampleCount: msaa.sampleCount,
+          );
+          _retainedBloomTarget = null;
+        }
+        device.beginOwnedPass(
+          _retainedSceneTarget!,
+          frontFace: context.frontFace,
+        );
+      } else {
+        device.beginPass(
+          Size(targetWidth.toDouble(), targetHeight.toDouble()),
+          msaaSampleCount: msaa.sampleCount,
+          frontFace: context.frontFace,
+        );
+      }
+      world.renderScene(canvas);
+      context.flush();
+      image = device.endPass();
+    }
+
     _subtract(device.stats, _statsBefore, _stats);
     if (closeFrame) {
       if (game3D != null) {
@@ -366,14 +555,56 @@ class Scene3DComponent({
     }
     RenderProfile.lap(RenderPhase.passEnd);
 
-    // Draw the image over the pixels it was rendered for, in device
-    // coordinates.
-    final destination = Rect.fromLTRB(
-      left / pixelScale,
-      top / pixelScale,
-      (left + pixelWidth) / pixelScale,
-      (top + pixelHeight) / pixelScale,
+    _compositeImage(
+      canvas,
+      image,
+      pixelWidth,
+      pixelHeight,
+      destination,
+      a,
+      b,
+      c,
+      d,
+      tx,
+      ty,
+      determinant,
+      bounded,
+      width,
+      height,
+      pixelScale,
+      fullScale,
     );
+
+    if (isRetained) {
+      _retainedImage?.dispose();
+      _retainedImage = image;
+      _retainedKey = nextKey;
+      _retainedView.setAll(0, _viewMatrix.storage);
+      _retainedProj.setAll(0, _projectionMatrix.storage);
+    } else {
+      image.dispose();
+    }
+  }
+
+  void _compositeImage(
+    Canvas canvas,
+    Image image,
+    int pixelWidth,
+    int pixelHeight,
+    Rect destination,
+    double a,
+    double b,
+    double c,
+    double d,
+    double tx,
+    double ty,
+    double determinant,
+    bool bounded,
+    double width,
+    double height,
+    double pixelScale,
+    double fullScale,
+  ) {
     final inverse = _inverseTransform
       ..[0] = d / determinant
       ..[1] = -b / determinant
@@ -383,7 +614,6 @@ class Scene3DComponent({
       ..[13] = (b * tx - a * ty) / determinant;
     canvas.save();
     if (bounded && (b != 0 || c != 0)) {
-      // Rotated: the bounds of the visible part are larger than the layer.
       canvas.clipRect(Rect.fromLTWH(0, 0, width, height));
     }
     canvas.transform(inverse);
@@ -397,16 +627,19 @@ class Scene3DComponent({
       _paint,
     );
     canvas.restore();
-    image.dispose();
     _renderedRect = destination;
     RenderProfile.lap(RenderPhase.composite);
   }
 
-  /// The bounding box, in device coordinates, of the picture of the bounding
-  /// box of the scene's components under the canvas transform
-  /// `(a, b, c, d, tx, ty)`, or null when it is unknown: when there is no
-  /// such component, or when the box reaches behind the eye of a perspective
-  /// projection.
+  static bool _sameFloats(Float32List a, Float32List b) {
+    for (var i = 0; i < 16; i++) {
+      if ((a[i] - b[i]).abs() > 1e-9) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   Rect? _sceneBounds(
     double a,
     double b,
@@ -415,7 +648,6 @@ class Scene3DComponent({
     double tx,
     double ty,
   ) {
-    // Kept up to date by the world as its components move.
     final box = world.sceneBounds;
     if (box == null) {
       return null;
@@ -447,14 +679,9 @@ class Scene3DComponent({
     return Rect.fromLTRB(left, top, right, bottom);
   }
 
-  // The size of the render target of the last render, in pixels.
   int _targetWidth = 0;
   int _targetHeight = 0;
 
-  /// Writes the camera of a pass whose render target of [targetWidth] by
-  /// [targetHeight] pixels starts at the pixel ([left], [top]) of a screen
-  /// with [pixelScale] pixels per device coordinate, under the canvas
-  /// transform `(a, b, c, d, tx, ty)`.
   void _writeCamera(
     double a,
     double b,
@@ -468,9 +695,6 @@ class Scene3DComponent({
     int targetWidth,
     int targetHeight,
   ) {
-    // Local coordinates -> device coordinates (the canvas transform) ->
-    // pixels of the render target -> clip space, as rows over (X, Y, W) of
-    // the local homogeneous coordinates; the depth Z is kept.
     final sx = 2 * pixelScale / targetWidth;
     final sy = 2 * pixelScale / targetHeight;
     final c00 = sx * a;
@@ -505,16 +729,11 @@ class Scene3DComponent({
   final Stopwatch _stopwatch = Stopwatch();
 
   static const int _bucket = 64;
-
-  /// The size, in logical pixels, beyond which a clip counts as no clip.
   static const double _unclipped = 1e6;
 
   static int _roundUp(int pixels) =>
       (pixels + _bucket - 1) ~/ _bucket * _bucket;
 
-  /// The bounding box, in device coordinates, of the local rectangle from
-  /// the origin to ([width], [height]) under the canvas transform
-  /// `(a, b, c, d, tx, ty)`.
   static Rect _deviceBounds(
     double a,
     double b,

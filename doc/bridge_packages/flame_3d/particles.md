@@ -218,6 +218,30 @@ shadow map only when their material (or one of their mesh's materials) casts sha
 and additive billboards are not, and their system skips the shadow pass, sorting nothing.
 
 
+## 3D ribbons and strokes
+
+`RibbonMaterial3D`, `StrokeBatch3D` and `RibbonTrail3D` draw continuous camera-facing 3D polylines
+with shared miter/join tangents in a single instanced GPU draw call (no CPU view-dependent mesh
+rebuild when the camera orbits or pans):
+
+- `StrokeBatch3D` collects one or more static or per-frame 3D polylines (`beginStroke` / `addPoint`
+  / `endStroke`, or `addPolyline`) for laser beams, trajectory arcs, lightning and spell paths.
+- `RibbonTrail3D` samples its own world position (or an explicit `target` component, such as a
+  `BoneSocket3D` on a sword tip or a flying projectile) into a pre-allocated ring buffer over
+  `lifetime` seconds, tapering width and opacity via `widthOverLife` and `opacityOverLife`.
+
+```dart
+final trail = RibbonTrail3D(
+  target: projectile,
+  lifetime: 0.4,
+  width: 0.18,
+  color: const Color(0xFF40E0FF),
+  material: RibbonMaterial3D(edgeSoftness: 0.35), // additive glow by default
+);
+world.add(trail);
+```
+
+
 ## Drawing instances of your own
 
 The systems record their draws with `RenderContext3D.drawInstances`, which other objects that build
