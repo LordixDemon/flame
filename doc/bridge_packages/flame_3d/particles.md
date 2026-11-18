@@ -213,7 +213,9 @@ they move. The system is culled with it like any `Object3D`, and it is part of t
 world, so a `Scene3DComponent` renders the part of the screen its particles cover.
 
 `RenderStats.particles` counts the particles drawn in a frame (in `FlameGame3D.renderStats` and
-`Scene3DComponent.renderStats`), besides their draw calls and instances.
+`Scene3DComponent.renderStats`), besides their draw calls and instances. Particles are drawn into a
+shadow map only when their material (or one of their mesh's materials) casts shadows: translucent
+and additive billboards are not, and their system skips the shadow pass, sorting nothing.
 
 
 ## Drawing instances of your own

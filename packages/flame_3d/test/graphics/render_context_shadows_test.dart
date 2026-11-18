@@ -216,6 +216,54 @@ void main() {
       expect(device.lastFrameStats.shadowDrawCalls, 1);
     });
 
+    test('records no draws of what casts no shadows', () {
+      final receiver = _Receiver();
+      final glass = _Receiver()
+        ..renderState = RenderState.premultipliedAlphaBlend;
+      final glow = _Receiver()..castsShadows = false;
+      final surface = triangle(receiver);
+      final instances = Float32List(VertexLayout.instanceStrideInFloats * 2);
+      void draw() {
+        for (final material in [receiver, glass, glow]) {
+          context.drawSurface(
+            surface,
+            material: material,
+            transform: Matrix4.translationValues(0, 0, -10),
+          );
+        }
+        context.drawInstances(
+          surface,
+          material: glow,
+          instances: instances,
+          count: 2,
+        );
+      }
+
+      device.begin();
+      context
+        ..lights = [sun(shadows: ShadowSettings())]
+        ..setCamera(
+          Matrix4.identity(),
+          Matrix4.identity()..setAsPerspective(60, 1, 0.1, 100),
+        );
+      expect(
+        context.beginShadowPass(projection: projection, sceneBounds: bounds),
+        isTrue,
+      );
+      draw();
+      context.endShadowPass();
+      // Only the opaque material was recorded.
+      expect(context.drawCount, 1);
+
+      device.beginPass(const Size(16, 16), frontFace: context.frontFace);
+      draw();
+      context.flush();
+      device
+        ..endPass()
+        ..end();
+      expect(context.drawCount, 4);
+    });
+
     test('tells the receivers about the light and its map', () {
       backend = FakeGpuBackend(
         textureTargets: true,

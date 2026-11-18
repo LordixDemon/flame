@@ -112,6 +112,8 @@ void main() {
       expect(frame.stats.shadowPasses, 1);
       // The ground and the particles.
       expect(frame.stats.shadowDrawCalls, 2);
+      // The particle is drawn into the map and into the picture.
+      expect(frame.stats.particles, 2);
     });
 
     testGpuEngine('translucent billboards cast no shadows', () async {
@@ -130,6 +132,8 @@ void main() {
       expect(_red(frame, 0.5, 0), closeTo(lit, 4));
       // Only the ground casts.
       expect(frame.stats.shadowDrawCalls, 1);
+      // The shadow pass skips the particles altogether.
+      expect(frame.stats.particles, 1);
     });
   });
 }

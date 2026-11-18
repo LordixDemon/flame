@@ -211,7 +211,8 @@ A scene with shadows costs one more render pass per frame, and one more traversa
 components (recording their draws a second time, `ModelComponent`s posing their nodes again):
 
 - the shadow pass draws one draw call per caster surface, objects sharing a surface in one
-  instanced draw, with depth-only shaders;
+  instanced draw, with depth-only shaders; draws whose material casts no shadows are not even
+  recorded, and particle systems that cast none skip the shadow pass altogether;
 - the receivers sample the map `(2 * softness + 2)²` times per fragment;
 - the map takes `resolution² * 4` bytes, plus a depth attachment that lives in tile memory where
   the GPU has it.

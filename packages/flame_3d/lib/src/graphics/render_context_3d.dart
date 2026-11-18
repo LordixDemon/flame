@@ -316,6 +316,11 @@ class RenderContext3D(super.device) extends RenderContext {
     Material? material,
   }) {
     final drawMaterial = material ?? surface.material;
+    final shadowPass = _shadows.recording;
+    if (shadowPass && !drawMaterial.castsShadows) {
+      // Not drawn into the shadow map.
+      return;
+    }
     final i = _count;
     if (i == _capacity) {
       _grow();
@@ -324,7 +329,11 @@ class RenderContext3D(super.device) extends RenderContext {
 
     _surfaces[i] = surface;
     _materials[i] = drawMaterial;
-    _pipelines[i] = _pipelineFor(drawMaterial, surface.layout);
+    // A shadow pass draws with the pipelines of its casters, see
+    // [_ShadowPass.flushCasters].
+    _pipelines[i] = shadowPass
+        ? null
+        : _pipelineFor(drawMaterial, surface.layout);
     _joints[i] = jointTransforms != null && jointTransforms.isNotEmpty
         ? jointTransforms
         : null;
@@ -405,6 +414,10 @@ class RenderContext3D(super.device) extends RenderContext {
       'instances holds fewer than $count instances',
     );
     final drawMaterial = material ?? surface.material;
+    if (_shadows.recording && !drawMaterial.castsShadows) {
+      // Not drawn into the shadow map.
+      return;
+    }
     final pipeline = _pipelineFor(drawMaterial, surface.layout);
     if (!pipeline.instanced) {
       throw StateError(

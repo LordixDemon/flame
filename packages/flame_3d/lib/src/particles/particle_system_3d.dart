@@ -1186,7 +1186,7 @@ class ParticleSystem3D({
   @override
   void draw(covariant RenderContext3D context) {
     final count = particles.length;
-    if (count == 0) {
+    if (count == 0 || (context.isShadowPass && !_castsShadows)) {
       return;
     }
     RenderProfile.lap(RenderPhase.recording);
@@ -1228,6 +1228,22 @@ class ParticleSystem3D({
       }
     }
     context.device.stats.particles += count;
+  }
+
+  /// Whether the material, or one of the materials of the mesh, casts
+  /// shadows: otherwise the particles are not drawn into shadow maps.
+  bool get _castsShadows {
+    final material = this.material;
+    if (material != null) {
+      return material.castsShadows;
+    }
+    final mesh = this.mesh!;
+    for (var i = 0; i < mesh.surfaceCount; i++) {
+      if (mesh.surfaces.elementAt(i).material.castsShadows) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /// The instance data of the last draw, for tests and custom renderers.
