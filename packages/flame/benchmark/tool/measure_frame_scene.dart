@@ -30,6 +30,10 @@ import 'package:vm_service/vm_service_io.dart';
 ///                          this package and has a runner for the device
 ///                          (`flutter create --platforms=macos .` adds one).
 ///     --device=macos       The device to run on. It needs to be a desktop one.
+///     --entry=path         The app to run instead of `frame_scene_app.dart`
+///                          next to this tool, such as a copy of it in a
+///                          checkout of another branch (whose package the app
+///                          directory then depends on).
 ///     --repetitions=5      The timings of each phase.
 ///     --frames=2000        The frames of each timing.
 ///     --trace-frames=240   The frames that the allocations are counted for.
@@ -175,6 +179,8 @@ class _Options(List<String> arguments) {
           appDir = value;
         case 'device':
           device = value;
+        case 'entry':
+          entry = value;
         case 'repetitions':
           repetitions = int.parse(value);
         case 'frames':
@@ -197,6 +203,7 @@ class _Options(List<String> arguments) {
 
   String? appDir;
   String device = 'macos';
+  String? entry;
   int repetitions = 5;
   int frames = 2000;
   int traceFrames = 240;
@@ -230,7 +237,9 @@ class _App._(final Process _process) {
   int components = 0;
 
   static Future<_App> start(_Options options) async {
-    final entry = Platform.script.resolve('../frame_scene_app.dart');
+    final entry = options.entry == null
+        ? Platform.script.resolve('../frame_scene_app.dart')
+        : File(options.entry!).absolute.uri;
     final appDir = options.appDir == null
         ? Platform.script.resolve('../../../../examples').toFilePath()
         : Directory(options.appDir!).absolute.path;

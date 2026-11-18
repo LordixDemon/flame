@@ -69,8 +69,10 @@ which takes minutes. To compare a change, run it on both branches.
 time step, tiles in culling sectors, buildings with tap and hover callbacks,
 pieces that hop from tile to tile with effects, camera billboards and pinned
 bubbles, particles, ribbon trails, text chips, a drag area, a moving camera,
-idle rendering on demand and frame telemetry. A frame of it has four phases:
-the update, the render into a picture, a coalesced hover and a tap hit-test.
+idle rendering on demand and frame telemetry. A frame of it has five phases:
+the update, the render into a picture, the emissive auxiliary pass that a
+glow post process draws (where only `MultiPassComponent`s paint), a coalesced
+hover and a tap hit-test.
 
 `frame_scene_benchmark.dart` times each phase in `flutter test`:
 

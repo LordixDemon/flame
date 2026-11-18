@@ -32,7 +32,7 @@ class _Overriding({super.position, super.size, super.children})
 }
 
 /// Throws from its hit check once [armed].
-class _Throwing({super.position, super.size}) extends PositionComponent {
+class _Throwing({super.size}) extends PositionComponent {
   bool armed = false;
 
   @override
@@ -122,10 +122,7 @@ Iterable<Component> _referenceAtPoint(
 
 extension on ClipComponent {
   /// What `ClipComponent.containsClipPoint`, which is protected, answers.
-  bool clipShapeContains(Vector2 point) {
-    // ignore: invalid_use_of_protected_member
-    return containsClipPoint(point);
-  }
+  bool clipShapeContains(Vector2 point) => containsClipPoint(point);
 }
 
 /// What a consumer sees for each component: the component and the contexts
@@ -291,7 +288,7 @@ void main() {
       throwing.armed = true;
       final iterator = root.componentsAtPoint(Vector2(1, 1)).iterator;
       expect(iterator.moveNext(), isTrue);
-      expect(() => iterator.moveNext(), throwsStateError);
+      expect(iterator.moveNext, throwsStateError);
       expect(iterator.moveNext(), isFalse);
     });
 
