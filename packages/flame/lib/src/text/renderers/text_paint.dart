@@ -81,11 +81,39 @@ class TextPaint({
     Vector2 position, {
     Anchor anchor = Anchor.topLeft,
   }) {
-    final element = format(text);
+    if (runtimeType != TextPaint) {
+      // A subclass may format differently.
+      final element = format(text);
+      try {
+        element.render(canvas, position, anchor: anchor);
+      } finally {
+        element.dispose();
+      }
+      return;
+    }
+    // Draws what `format(text).render(canvas, position, anchor: anchor)`
+    // draws, with the same arithmetic as the `LineMetrics` of that element,
+    // but without allocating the element, its metrics and its offsets for
+    // every string in every frame. The painter is held while it draws, like
+    // the element would hold it.
+    final shared = _obtain(text);
+    shared.holders++;
     try {
-      element.render(canvas, position, anchor: anchor);
+      final painter = shared.painter;
+      final ascent = painter.computeDistanceToActualBaseline(
+        TextBaseline.alphabetic,
+      );
+      final width = painter.width;
+      final descent = painter.height - ascent;
+      final height = ascent + descent;
+      // The element starts at a left edge and a baseline of 0, and
+      // `InlineTextElement.render` moves it by these.
+      final top = 0.0 - ascent;
+      final left = 0.0 + (position.x - width * anchor.x);
+      final baseline = 0.0 + (position.y - height * anchor.y - top);
+      painter.paint(canvas, Offset(left, baseline - ascent));
     } finally {
-      element.dispose();
+      shared.release();
     }
   }
 
