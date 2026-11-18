@@ -176,20 +176,22 @@ final surface = Surface.fromBuffers(
 );
 ```
 
-The statistics of the last rendered frame (draw calls, instances, triangles,
-pipeline and state changes, uploads) are available from
-`FlameGame3D.renderStats`. `World3D.renderScale` renders the world at a
-fraction of the device pixels. The images of the render passes are drawn by
+The statistics of the last rendered frame (passes, draw calls, instances,
+triangles, pipeline and state changes, uploads, shadow passes and their draw
+calls) are available from `FlameGame3D.renderStats`. `World3D.renderScale`
+renders the world at a fraction of the device pixels. The images of the render passes are drawn by
 Flutter straight from textures that each render target creates once and takes
 turns rendering into.
 
 
 ## Materials and lighting
 
-`flame_3d` ships three materials:
+`flame_3d` ships four materials:
 
 - `SpatialMaterial`, physically based (metallic and roughness);
 - `UnlitMaterial`, without lighting;
+- `ShadowCatcherMaterial`, for invisible surfaces that show only the shadows
+  falling on them (see [Shadows](#shadows));
 - `StylizedMaterial`, for stylized, vertex-colored art without textures: its
   vertices carry a color, a baked ambient occlusion and masks for the
   per-instance tint, an accent color, emission, gloss and wind sway. It is lit
@@ -202,7 +204,8 @@ turns rendering into.
   available on the web yet.
 
 All of them multiply their color by the vertex color and by the per-instance
-color (`StylizedMaterial` by the latter only where its tint mask says).
+color (`StylizedMaterial` by the latter only where its tint mask says; the
+shadow catcher by the latter only).
 
 Lights are components of the world:
 
@@ -228,6 +231,42 @@ See the [Materials and Lighting][materials-docs] documentation for the
 details.
 
 [materials-docs]: https://docs.flame-engine.org/latest/bridge_packages/flame_3d/materials.html
+
+
+## Shadows
+
+A directional light casts real-time shadows when it is given `ShadowSettings`:
+
+```dart
+world.addAll([
+  LightComponent.hemisphere(skyColor: const Color(0xFF9CC2F0)),
+  LightComponent.directional(
+    direction: Vector3(-0.4, -1, -0.3),
+    shadows: ShadowSettings(
+      strength: 0.85,
+      color: const Color(0xFF2E3A66), // tinted rather than black shadows
+    ),
+  ),
+  ...buildings,
+]);
+```
+
+Before the main pass, the objects that cast shadows are rendered from the
+light into a shadow map (1024 by 1024 texels by default), fitted to what the
+camera sees and aligned with its texels so that shadows do not shimmer as the
+camera moves; skinned and instanced draws cast as they are drawn. Opaque
+materials cast shadows and translucent ones do not, unless their
+`castsShadows` says otherwise, and `Object3D.castsShadows` turns them off per
+object. `StylizedMaterial` receives shadows with soft edges: they take away the
+light's own light, by their `strength` and `color`, and ambient light stays.
+`ShadowCatcherMaterial` on an invisible ground lets a `Scene3DComponent` cast
+shadows onto the 2D art below it.
+
+The shadow pass costs one more render pass, with one draw call per caster
+surface. The `shadows` scenario of the example casts shadows onto a 2D board. Shadows are not available on the web yet, and `SpatialMaterial` and
+`UnlitMaterial` do not receive them. See the
+[Shadows](https://docs.flame-engine.org/latest/bridge_packages/flame_3d/shadows.html)
+documentation for the details.
 
 ## Embedding 3D in a 2D game
 
@@ -304,11 +343,14 @@ Including ones that `flame_3d` itself ships:
   skinned draws are filled by `flame_3d`.
 - `#include <flame_3d/lights.glsl>` declares the light blocks (`AmbientLight`,
   `Lights`, `DirectionalLights` and `HemisphereLight`).
+- `#include <flame_3d/shadows.glsl>` declares the `Shadows` block and the
+  `shadowMap` sampler, and `shadowVisibility()` to receive shadows.
 
 Uniform blocks named `CameraMatrices`, `Camera`, `AmbientLight`, `Lights`,
-`DirectionalLights` and `HemisphereLight` are filled by `flame_3d` once per
-render pass, and your own blocks can be added with
-`RenderContext3D.registerPassUniform`. A shader must use every vertex input
+`DirectionalLights`, `HemisphereLight` and `Shadows`, and the `shadowMap`
+sampler, are filled by `flame_3d` once per render pass, and your own blocks
+and textures can be added with `RenderContext3D.registerPassUniform` and
+`RenderContext3D.registerPassTexture`. A shader must use every vertex input
 it declares, or `impellerc` rejects it; surfaces must provide every input the
 shader declares, except the per-instance ones.
 

@@ -4,6 +4,7 @@ import 'package:flame_3d_example/scenarios/colors_scenario.dart';
 import 'package:flame_3d_example/scenarios/culling_scenario.dart';
 import 'package:flame_3d_example/scenarios/houses_scenario.dart';
 import 'package:flame_3d_example/scenarios/models_scenario.dart';
+import 'package:flame_3d_example/scenarios/shadows_scenario.dart';
 
 abstract class GameScenario() {
   Future<void> onLoad();
@@ -18,6 +19,7 @@ abstract class GameScenario() {
     'culling': CullingScenario(),
     'houses': HousesScenario(),
     'models': ModelsScenario(),
+    'shadows': ShadowsScenario(),
   };
 
   static void defaultSetup(ExampleGame3D game) {
