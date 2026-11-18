@@ -36,6 +36,13 @@ class RenderStats() {
   /// The number of bytes of uniform and instance data uploaded.
   int uploadedBytes = 0;
 
+  /// The number of the [renderPasses] that rendered a shadow map.
+  int shadowPasses = 0;
+
+  /// The number of the [drawCalls] issued by the passes that rendered a
+  /// shadow map.
+  int shadowDrawCalls = 0;
+
   /// Resets every counter to zero.
   void reset() {
     renderPasses = 0;
@@ -47,6 +54,8 @@ class RenderStats() {
     materialChanges = 0;
     uniformUploads = 0;
     uploadedBytes = 0;
+    shadowPasses = 0;
+    shadowDrawCalls = 0;
   }
 
   /// Copies every counter from [other].
@@ -60,6 +69,8 @@ class RenderStats() {
     materialChanges = other.materialChanges;
     uniformUploads = other.uniformUploads;
     uploadedBytes = other.uploadedBytes;
+    shadowPasses = other.shadowPasses;
+    shadowDrawCalls = other.shadowDrawCalls;
   }
 
   @override
@@ -68,6 +79,7 @@ class RenderStats() {
         'instances: $instances, triangles: $triangles, '
         'pipelineChanges: $pipelineChanges, stateChanges: $stateChanges, '
         'materialChanges: $materialChanges, uniformUploads: $uniformUploads, '
-        'uploadedBytes: $uploadedBytes)';
+        'uploadedBytes: $uploadedBytes, shadowPasses: $shadowPasses, '
+        'shadowDrawCalls: $shadowDrawCalls)';
   }
 }

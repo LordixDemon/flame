@@ -122,6 +122,13 @@ class GraphicsDevice({
       }
       return false;
     });
+    _textureTargetsLastUsed.removeWhere((key, lastUsed) {
+      if (_frame - lastUsed < targetRetainFrames) {
+        return false;
+      }
+      _textureTargets.remove(key);
+      return true;
+    });
   }
 
   /// Begin a render pass at the given [size], in physical pixels.
@@ -145,7 +152,11 @@ class GraphicsDevice({
       throw StateError('beginPass must be called between begin and end');
     }
     _renderTarget = _acquireRenderTarget(size, msaaSampleCount);
-    final renderPass = _renderPass = frame.beginRenderPass(_renderTarget);
+    _startPass(frame.beginRenderPass(_renderTarget), frontFace);
+  }
+
+  void _startPass(GpuRenderPass renderPass, WindingOrder frontFace) {
+    _renderPass = renderPass;
     stats.renderPasses++;
 
     // The state every pass starts with, see `GpuFrame.beginRenderPass`.
@@ -172,6 +183,63 @@ class GraphicsDevice({
     _arena.flush();
     _renderPass = null;
     return renderPass.submit(onCompleted: _arena.passCompletion());
+  }
+
+  /// The render target of [width]x[height] pixels that renders into a
+  /// texture of [format] for later passes to sample (a shadow map, for
+  /// instance), see [GpuTextureTarget].
+  ///
+  /// It is created on first use and kept: every call with the same size and
+  /// format returns the same target, until a frame ends in which it was not
+  /// used for [targetRetainFrames] frames. Throws an [UnsupportedError] when
+  /// the backend cannot render into textures, see
+  /// [GpuBackend.supportsTextureTargets].
+  GpuTextureTarget textureTarget(
+    int width,
+    int height,
+    GpuPixelFormat format, {
+    Color clearValue = const Color(0xFFFFFFFF),
+  }) {
+    final key = (width, height, format, clearValue);
+    final target = _textureTargets[key] ??= backend.createTextureTarget(
+      width: width,
+      height: height,
+      format: format,
+      clearValue: clearValue,
+    );
+    _textureTargetsLastUsed[key] = _frame;
+    return target;
+  }
+
+  final _textureTargets =
+      <(int, int, GpuPixelFormat, Color), GpuTextureTarget>{};
+  final _textureTargetsLastUsed = <(int, int, GpuPixelFormat, Color), int>{};
+
+  /// Begin a render pass into [target], whose texture later passes sample.
+  ///
+  /// The texture and the depth are cleared first. Bind and draw as in any
+  /// pass, then call [endTexturePass]. [frontFace] is as for [beginPass].
+  void beginTexturePass(
+    GpuTextureTarget target, {
+    WindingOrder frontFace = WindingOrder.counterClockwise,
+  }) {
+    final frame = _gpuFrame;
+    if (frame == null) {
+      throw StateError('beginTexturePass must be called between begin and end');
+    }
+    _renderTarget = target;
+    _startPass(frame.beginRenderPass(target), frontFace);
+  }
+
+  /// Submit the pass begun by [beginTexturePass] to the GPU.
+  ///
+  /// The passes of a device run on the GPU in the order they end, so the
+  /// passes that follow can sample the texture of its target.
+  void endTexturePass() {
+    final renderPass = _pass;
+    _arena.flush();
+    _renderPass = null;
+    renderPass.commit(onCompleted: _arena.passCompletion());
   }
 
   GpuRenderPass get _pass {

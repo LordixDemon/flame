@@ -150,6 +150,16 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 /// instance. Translucent draws of one surface that are consecutive in that
 /// order are still batched.
 ///
+/// ## Shadows
+///
+/// It receives the shadows of the directional light that casts them (see
+/// [ShadowSettings]): where a surface is in shadow, that light's direct light
+/// (and its highlights) is multiplied by `mix(white, color, strength)` of the
+/// settings, so that colored shadows tint the surface rather than darken it;
+/// ambient, hemisphere and the other lights stay. Opaque stylized materials
+/// cast shadows and translucent ones do not (see [Material.castsShadows]);
+/// the wind sway does not move the shadows.
+///
 /// Not available on the web yet: creating one there throws an
 /// [UnsupportedError].
 /// {@endtemplate}
@@ -308,6 +318,8 @@ class StylizedMaterial({
             RenderContext3D.directionalLightsBlock,
             RenderContext3D.hemisphereLightBlock,
             RenderContext3D.cameraBlock,
+            RenderContext3D.shadowsBlock,
+            RenderContext3D.shadowMapSampler,
           ],
         ),
       ) {

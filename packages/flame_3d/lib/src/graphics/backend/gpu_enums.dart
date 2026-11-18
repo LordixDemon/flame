@@ -21,6 +21,10 @@ enum GpuPixelFormat() {
   /// 32-bit float per channel, RGBA order.
   rgbaFloat32,
 
+  /// A single 32-bit float channel (red), for instance depth written by a
+  /// shader into a texture that later passes sample.
+  r32Float,
+
   /// The backend's default depth/stencil format.
   depthStencil,
 }

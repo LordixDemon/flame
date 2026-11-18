@@ -62,6 +62,22 @@ abstract class Material({
   /// ```
   RenderState renderState = RenderState.opaque;
 
+  /// Whether the surfaces drawn with this material cast shadows (see
+  /// [ShadowSettings]).
+  ///
+  /// By default opaque materials do and translucent ones (see
+  /// [RenderState.translucent]: glass, glows, additive effects) do not. Set
+  /// it to override that, for instance to `false` for an opaque glow, and to
+  /// `null` to go back to the default.
+  ///
+  /// A caster's shadow is rendered from its positions alone (skinned when
+  /// its vertices have joints and joint weights): vertices that a material's
+  /// own vertex shader moves (`StylizedMaterial`'s wind sway, for instance)
+  /// cast the shadow of their rest position.
+  bool get castsShadows => _castsShadows ?? !renderState.translucent;
+  set castsShadows(bool? value) => _castsShadows = value;
+  bool? _castsShadows;
+
   /// The pipeline this material drew with last, managed by the
   /// [RenderContext3D].
   @internal

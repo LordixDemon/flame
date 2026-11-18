@@ -4,3 +4,4 @@ export 'light/hemisphere_light.dart';
 export 'light/light.dart';
 export 'light/light_source.dart';
 export 'light/point_light.dart';
+export 'light/shadow_settings.dart';

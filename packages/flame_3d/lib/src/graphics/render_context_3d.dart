@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
 
@@ -6,6 +7,8 @@ import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/graphics/material_pipeline_cache.dart';
+
+part 'render_context_3d_shadows.dart';
 
 /// Fills a uniform block that the [RenderContext3D] uploads once per render
 /// pass, see [RenderContext3D.registerPassUniform].
@@ -16,6 +19,10 @@ typedef PassUniformWriter = void Function(
   RenderContext3D context,
   UniformBlock block,
 );
+
+/// The texture a sampler gets for a whole render pass, see
+/// [RenderContext3D.registerPassTexture].
+typedef PassTextureProvider = Texture Function(RenderContext3D context);
 
 /// {@template render_context_3d}
 /// Records the draws of a render pass and submits them to the
@@ -47,6 +54,11 @@ typedef PassUniformWriter = void Function(
 /// Uniform blocks registered with [registerPassUniform] (the camera matrices
 /// and the ambient, point, directional and hemisphere lights by default) are
 /// written and uploaded once per pass for each shader that declares them.
+///
+/// When a directional light of the scene casts shadows (see
+/// [ShadowSettings]), the host renders its shadow map before the main pass,
+/// between [beginShadowPass] and [endShadowPass], and the [shadowsBlock] and
+/// the [shadowMapSampler] give it to the shaders that receive shadows.
 /// {@endtemplate}
 class RenderContext3D(super.device) extends RenderContext {
   /// {@macro render_context_3d}
@@ -57,6 +69,9 @@ class RenderContext3D(super.device) extends RenderContext {
     registerPassUniform(lightsBlock, writeLightsUniforms);
     registerPassUniform(directionalLightsBlock, writeDirectionalLightsUniforms);
     registerPassUniform(hemisphereLightBlock, writeHemisphereLightUniforms);
+    registerPassUniform(shadowsBlock, writeShadowsUniforms);
+    registerPassUniform(shadowCasterBlock, _ShadowPass.writeCasterUniforms);
+    registerPassTexture(shadowMapSampler, _ShadowPass.shadowMapTexture);
   }
 
   /// The name of the vertex stage block holding the camera matrices
@@ -90,6 +105,20 @@ class RenderContext3D(super.device) extends RenderContext {
   /// draw, see `shaders/flame_3d/skinning.glsl`. The context fills it for
   /// every skinned draw.
   static const String jointMatricesBlock = 'JointMatrices';
+
+  /// The name of the block describing the shadow map of the pass, see
+  /// `shaders/flame_3d/shadows.glsl`: the light's view-projection, its
+  /// direction and index, the color and strength of the shadows, the size of
+  /// the map, the biases and how its texels decode to depths. Without
+  /// shadows, the `w` of its `toLight` member is `-1`.
+  static const String shadowsBlock = 'Shadows';
+
+  /// The name of the sampler of the shadow map, see [shadowsBlock].
+  static const String shadowMapSampler = 'shadowMap';
+
+  /// The name of the block of the shaders that render shadow maps, telling
+  /// them how to store depths.
+  static const String shadowCasterBlock = 'ShadowCaster';
 
   /// The maximum number of point lights written to the [lightsBlock].
   static const int maxPointLights = 8;
@@ -153,6 +182,7 @@ class RenderContext3D(super.device) extends RenderContext {
   final Float64List _depthRow = Float64List(4);
 
   final Map<String, PassUniformWriter> _passUniforms = {};
+  final Map<String, PassTextureProvider> _passTextures = {};
   int _passUniformsVersion = 0;
   int _pass = 0;
 
@@ -174,12 +204,28 @@ class RenderContext3D(super.device) extends RenderContext {
     _passUniformsVersion++;
   }
 
+  /// Registers [provider] to give the texture of every sampler named [name],
+  /// once per render pass, for every shader that declares it.
+  ///
+  /// Use this for textures shared by every draw of a pass, such as the
+  /// shadow map. Pass `null` to stop providing it.
+  void registerPassTexture(String name, PassTextureProvider? provider) {
+    if (provider == null) {
+      _passTextures.remove(name);
+    } else {
+      _passTextures[name] = provider;
+    }
+    _passUniformsVersion++;
+  }
+
   /// Set the camera matrices for the next pass.
   ///
   /// Everything derived from them (the view-projection matrix, camera
-  /// position, frustum and mirroring) is computed here once per pass.
+  /// position, frustum and mirroring) is computed here once per pass. The
+  /// pass has no shadows until [endShadowPass] says otherwise.
   void setCamera(Matrix4 viewMatrix, Matrix4 projectionMatrix) {
     _pass++;
+    _shadows.active = false;
     _viewMatrix.setFrom(viewMatrix);
     _projectionMatrix.setFrom(projectionMatrix);
     _viewProjectionMatrix
@@ -353,9 +399,56 @@ class RenderContext3D(super.device) extends RenderContext {
     return pipeline;
   }
 
+  /// Whether the draws being recorded are those of a shadow map: between
+  /// [beginShadowPass] and [endShadowPass], when the camera is the view of
+  /// the light that casts shadows.
+  bool get isShadowPass => _shadows.recording;
+
+  /// Starts the shadow pass of the scene whose [lights] are set, when its
+  /// first directional light with [DirectionalLight.shadows] casts shadows,
+  /// and returns whether it did.
+  ///
+  /// Call it once the camera of the main pass is set with [setCamera] and
+  /// before the main pass begins. It fits [projection] (one per scene, see
+  /// [DirectionalShadowProjection]) to what [sceneBounds] (the bounds of
+  /// every caster, see `World3D.sceneBounds`) and the camera call for, makes
+  /// the light's view the camera, and begins a pass into the shadow map.
+  /// Record the draws of the scene as for the main pass, then call
+  /// [endShadowPass].
+  ///
+  /// It returns `false`, and the main pass has no shadows, when no light
+  /// casts shadows, when the camera sees nothing that receives them, or when
+  /// the GPU backend cannot render into textures (on the web).
+  bool beginShadowPass({
+    required DirectionalShadowProjection projection,
+    required Aabb3? sceneBounds,
+  }) {
+    return _shadows.begin(projection, sceneBounds);
+  }
+
+  /// Renders the draws recorded since [beginShadowPass] into the shadow map,
+  /// ends the shadow pass, and sets the camera of the main pass back, whose
+  /// draws then receive the shadows.
+  void endShadowPass() => _shadows.end();
+
+  /// Writes the shadow map of the current pass into [block], see
+  /// [shadowsBlock].
+  static void writeShadowsUniforms(
+    RenderContext3D context,
+    UniformBlock block,
+  ) {
+    context._shadows.writeShadows(block);
+  }
+
+  late final _ShadowPass _shadows = _ShadowPass(this);
+
   /// Sorts the draws recorded since the last flush and submits them to the
   /// device, which must be in a render pass.
   void flush() {
+    if (_shadows.recording) {
+      _shadows.flushCasters();
+      return;
+    }
     final count = _count;
     var opaqueCount = 0;
     var translucentCount = 0;
@@ -518,6 +611,8 @@ class RenderContext3D(super.device) extends RenderContext {
             slot,
             shader.texture(plan.names[i]) ?? Texture.standard,
           );
+        case _passSampler when scope == _passScope:
+          device.bindTexture(slot, _passTextures[plan.names[i]]!(this));
         case _material when scope == _materialScope:
           device.bindUniformBlock(shader.block(plan.names[i]));
         case _passBlock when scope == _passScope:
@@ -553,6 +648,7 @@ class RenderContext3D(super.device) extends RenderContext {
       slots.add(slot);
       writers.add(writer);
       kinds.add(switch (slot.sizeInBytes) {
+        null when _passTextures.containsKey(name) => _passSampler,
         null => _sampler,
         _ when writer != null => _passBlock,
         _ when name == jointMatricesBlock => _jointsBlock,
@@ -904,6 +1000,7 @@ class RenderContext3D(super.device) extends RenderContext {
   static const _material = 1;
   static const _passBlock = 2;
   static const _jointsBlock = 3;
+  static const _passSampler = 4;
 
   static const _materialScope = 0;
   static const _passScope = 1;

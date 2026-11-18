@@ -1,6 +1,9 @@
 import 'dart:typed_data';
 import 'dart:ui';
 
+import 'package:flame_3d/src/graphics/backend/gpu_backend.dart';
+import 'package:flame_3d/src/graphics/backend/gpu_enums.dart';
+
 /// Handle to a GPU texture.
 abstract interface class GpuTexture() {
   /// The number of mip levels of the texture, `1` without mipmaps.
@@ -127,4 +130,22 @@ abstract interface class GpuRenderTarget() {
 
   /// The height of the render target in pixels.
   int get height;
+}
+
+/// A render target whose passes render into one color [texture] that later
+/// passes of the same device sample, such as a shadow map, with a depth
+/// attachment of its own.
+///
+/// Flutter never draws its texture: end its passes with
+/// [GpuRenderPass.commit]. Each pass clears the texture and the depth first,
+/// and the passes of a device run on the GPU in the order they are
+/// committed or submitted, so a pass that samples the texture sees what the
+/// last pass committed before it rendered.
+abstract interface class GpuTextureTarget() implements GpuRenderTarget {
+  /// The texture the passes render into, to bind to the samplers of later
+  /// passes.
+  GpuTexture get texture;
+
+  /// The format of [texture].
+  GpuPixelFormat get format;
 }

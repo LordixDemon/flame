@@ -49,18 +49,22 @@ class LightComponent({
 
   /// A [DirectionalLight] travelling in [direction] (world space), or, when
   /// it is `null`, along the -Z axis of the component's world [rotation].
+  ///
+  /// With [shadows] it casts shadows, see [ShadowSettings].
   LightComponent.directional({
     Color color = const Color(0xFFFFFFFF),
     double intensity = 1.0,
     Vector3? direction,
     Quaternion? rotation,
     double specular = 1.0,
+    ShadowSettings? shadows,
   }) : this(
          source: DirectionalLight(
            color: color,
            intensity: intensity,
            direction: direction,
            specular: specular,
+           shadows: shadows,
          ),
          rotation: rotation,
        );

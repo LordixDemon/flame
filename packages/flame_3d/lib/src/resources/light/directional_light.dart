@@ -15,6 +15,9 @@ import 'package:flame_3d/resources.dart';
 ///
 /// At most `RenderContext3D.maxDirectionalLights` directional lights are used
 /// per scene.
+///
+/// With [shadows], it casts shadows: see [ShadowSettings]. Only the first
+/// directional light of a scene with shadows casts them.
 /// {@endtemplate}
 class DirectionalLight({
   super.color = const Color(0xFFFFFFFF),
@@ -28,4 +31,7 @@ class DirectionalLight({
   /// How strongly the light makes specular highlights, from `0` (none) to `1`
   /// (fully).
   var double specular = 1.0,
+
+  /// How the light casts shadows, or `null` (the default) when it casts none.
+  var ShadowSettings? shadows,
 }) extends LightSource;

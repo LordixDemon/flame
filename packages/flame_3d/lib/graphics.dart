@@ -7,4 +7,5 @@ export 'src/graphics/render_context.dart';
 export 'src/graphics/render_context_3d.dart';
 export 'src/graphics/render_state.dart';
 export 'src/graphics/render_stats.dart';
+export 'src/graphics/shadow_projection.dart';
 export 'src/graphics/vertex_layout.dart';
