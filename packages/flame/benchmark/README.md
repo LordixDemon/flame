@@ -62,6 +62,37 @@ are documented at the top of the file. The first run makes a profile build,
 which takes minutes. To compare a change, run it on both branches.
 
 
+## A whole frame
+
+`frame_scene.dart` builds a scene shaped like a mobile board game at
+120 Hz, a few hundred components: a world with its spatial index and a fixed
+time step, tiles in culling sectors, buildings with tap and hover callbacks,
+pieces that hop from tile to tile with effects, camera billboards and pinned
+bubbles, particles, ribbon trails, text chips, a drag area, a moving camera,
+idle rendering on demand and frame telemetry. A frame of it has four phases:
+the update, the render into a picture, a coalesced hover and a tap hit-test.
+
+`frame_scene_benchmark.dart` times each phase in `flutter test`:
+
+```console
+flutter test benchmark/frame_scene_benchmark.dart
+```
+
+`tool/measure_frame_scene.dart` measures the same scene in a profile build:
+the time of each phase, the objects that each phase allocates per frame (by
+class and by allocation site, exact, from tracing the allocations of every
+class) and, with `--cpu=<frames>`, where the time of each phase goes. It
+runs `frame_scene_app.dart` the way the raycast tool runs its app, from a
+directory with a Flutter app that depends on this package and has a macOS
+runner (`flutter create --platforms=macos .` adds one):
+
+```console
+dart run benchmark/tool/measure_frame_scene.dart --app-dir=<app> --cpu=3000
+```
+
+The options are documented at the top of the tool.
+
+
 ## Suites
 
 - `children_traversal_benchmark.dart`: pure update-pass and render-pass
@@ -122,6 +153,8 @@ which takes minutes. To compare a change, run it on both branches.
 - `tool/measure_raycast_allocations.dart`: the tool that drives that app and
   prints the objects and the time per ray for each case, and can also show
   which stacks allocate the objects of a class.
+- `frame_scene_benchmark.dart`: a whole frame of `frame_scene.dart`, see
+  "A whole frame" above. A standalone suite, not part of `main.dart`.
 - `transform2d_benchmark.dart`: the `Transform2D` hot paths: matrix
   recalculation after position and angle changes, point conversion, matrix
   assignment, and copying transforms.
