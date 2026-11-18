@@ -562,6 +562,12 @@ class Component({
   /// Avoids the creation of the children container if not necessary.
   bool get hasChildren => _children?.isNotEmpty ?? false;
 
+  /// Whether the children container of this component exists, which it does
+  /// once a child was added, even when it is empty again. [renderTree] walks
+  /// it (and calls [afterChildrenRendered]) only then.
+  @internal
+  bool get hasChildrenContainer => _children != null;
+
   /// This method creates the children container for the current component.
   /// Override this method if you need a customized [ComponentList] for a
   /// particular class, for example one with a custom ordering:

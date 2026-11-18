@@ -599,6 +599,18 @@ class PositionComponent({
     final decorator = this.decorator;
     if (identical(decorator, _transformDecorator) &&
         decorator.isLastDecorator) {
+      if (!hasChildrenContainer &&
+          !debugMode &&
+          this is! MultiPassComponent &&
+          !CameraComponent.paintsOrdinaryComponents(
+            CameraComponent.currentRenderPass,
+          )) {
+        // A pass that only [MultiPassComponent]s paint in (such as the glow
+        // mask of a post process): `Component.renderTree` would draw nothing
+        // for an ordinary component without children, so there is no need
+        // to transform the canvas for it either.
+        return;
+      }
       // What `Transform2DDecorator.apply` does, which ignores the bounds.
       canvas.save();
       canvas.transform2D(transform);

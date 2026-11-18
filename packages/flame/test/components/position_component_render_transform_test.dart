@@ -176,6 +176,74 @@ void main() {
     });
   });
 
+  group('PositionComponent in a pass that only multi-pass components paint '
+      'in', () {
+    test('draws the multi-pass components at the same matrices as in a '
+        'pass that everything paints in', () {
+      final matrices = <(RenderPass, Float64List)>[];
+      final leaf = _PassProbe(position: Vector2(1, 2));
+      final multi = _MultiPassProbe(
+        matrices: matrices,
+        position: Vector2(5, 6),
+        children: [_PassProbe(position: Vector2(7, 8))],
+      );
+      final nestedMulti = _MultiPassProbe(
+        matrices: matrices,
+        position: Vector2(-2, 3),
+      );
+      final container = _PassProbe(
+        position: Vector2(10, 20),
+        children: [
+          _PassProbe(position: Vector2(1, 1)),
+          PositionComponent(position: Vector2(2, 2), children: [nestedMulti]),
+        ],
+      );
+      final roots = [leaf, multi, container];
+
+      _renderInPass(roots, RenderPass.opaque);
+      final opaque = [for (final (_, m) in matrices) m];
+      matrices.clear();
+      _renderInPass(roots, RenderPass.emissiveMask);
+      expect(
+        [for (final (pass, _) in matrices) pass],
+        [
+          RenderPass.emissiveMask,
+          RenderPass.emissiveMask,
+        ],
+      );
+      expect([for (final (_, m) in matrices) m], opaque);
+      expect(leaf.rendered, 1);
+      expect(container.rendered, 1);
+    });
+
+    test('still draws the debug view of a leaf and calls the hook after the '
+        'children of an empty children container', () {
+      final debugLeaf = _PassProbe()..debugMode = true;
+      final emptied = _PassProbe();
+      // Reading the children creates their (empty) container.
+      expect(emptied.children, isEmpty);
+      _renderInPass([debugLeaf, emptied], RenderPass.emissiveMask);
+      expect(debugLeaf.rendered, 0);
+      expect(debugLeaf.debugRendered, 1);
+      expect(emptied.afterChildren, 1);
+    });
+
+    test('leaves a component with a decorator chain to the chain', () {
+      final passthrough = _Passthrough();
+      final probe = _PassProbe()..decorator.addLast(passthrough);
+      _renderInPass([probe], RenderPass.emissiveMask);
+      expect(passthrough.applied, 1);
+      expect(probe.rendered, 0);
+    });
+
+    test('draws an ordinary leaf in a pass that everything paints in', () {
+      final leaf = _PassProbe();
+      _renderInPass([leaf], null);
+      _renderInPass([leaf], RenderPass.opaque);
+      expect(leaf.rendered, 2);
+    });
+  });
+
   group('canvasTransform', () {
     Float32List matrixOf(Transform2D transform) =>
         transform.transformMatrix.storage;
@@ -255,4 +323,54 @@ class _Ordered(final int index, final List<int> order) extends Decorator {
     order.add(index);
     draw(canvas);
   }
+}
+
+/// Counts what is drawn of it, in every pass.
+class _PassProbe({super.position, super.children}) extends PositionComponent {
+  this : super(size: Vector2(10, 6));
+
+  int rendered = 0;
+  int debugRendered = 0;
+  int afterChildren = 0;
+
+  @override
+  void render(Canvas canvas) => rendered++;
+
+  @override
+  void renderDebugMode(Canvas canvas) => debugRendered++;
+
+  @override
+  void afterChildrenRendered(Canvas canvas) => afterChildren++;
+}
+
+/// Writes its canvas matrix in every pass it is drawn in.
+class _MultiPassProbe({
+  required this.matrices,
+  super.position,
+  super.children,
+}) extends PositionComponent with MultiPassComponent {
+  final List<(RenderPass, Float64List)> matrices;
+
+  @override
+  void renderPass(Canvas canvas, RenderPass pass) =>
+      matrices.add((pass, canvas.getTransform()));
+}
+
+void _renderInPass(List<Component> roots, RenderPass? pass) {
+  final recorder = PictureRecorder();
+  final canvas = Canvas(recorder)..translate(3, 4);
+  if (pass != null) {
+    CameraComponent.pushRenderPass(pass);
+  }
+  try {
+    for (final root in roots) {
+      root.renderTree(canvas);
+    }
+  } finally {
+    if (pass != null) {
+      CameraComponent.popRenderPass();
+    }
+  }
+  expect(canvas.getSaveCount(), 1);
+  recorder.endRecording().dispose();
 }
