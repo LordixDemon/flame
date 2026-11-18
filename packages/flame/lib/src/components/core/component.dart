@@ -12,6 +12,7 @@ import 'package:flutter/painting.dart';
 import 'package:meta/meta.dart';
 
 part 'component_list.dart';
+part 'components_at_location.dart';
 part 'component_tree_root.dart';
 part 'custom_traversal.dart';
 
@@ -1364,52 +1365,18 @@ class Component({
     List<T>? nestedContexts,
     T? Function(CoordinateTransform, T) transformContext,
     bool Function(Component, T) checkContains,
-  ) sync* {
-    // A component that is not ticked and not drawn at the current graphics
-    // tier must not receive events either.
-    if (!isActiveForCurrentGraphicsTier) {
-      return;
-    }
-    final activeCamera = CameraComponent.currentCamera;
-    if (activeCamera != null && (_cameraMask & activeCamera.cameraMask) == 0) {
-      return;
-    }
-    nestedContexts?.add(locationContext);
-    if (clipsChildEvents &&
-        locationContext is Vector2 &&
-        !containsClipPoint(locationContext)) {
-      nestedContexts?.removeLast();
-      return;
-    }
-    final children = _children;
-    if (children != null) {
-      for (final child in children.reversed) {
-        if (child is IgnoreEvents && child.ignoreEvents) {
-          continue;
-        }
-        T? childPoint = locationContext;
-        if (child is CoordinateTransform) {
-          childPoint = transformContext(
-            child as CoordinateTransform,
-            locationContext,
-          );
-        }
-        if (childPoint != null) {
-          yield* child.componentsAtLocation(
-            childPoint,
-            nestedContexts,
-            transformContext,
-            checkContains,
-          );
-        }
-      }
-    }
-    final shouldIgnoreEvents =
-        this is IgnoreEvents && (this as IgnoreEvents).ignoreEvents;
-    if (checkContains(this, locationContext) && !shouldIgnoreEvents) {
-      yield this;
-    }
-    nestedContexts?.removeLast();
+  ) {
+    // A lazy iterable with the same contents, side effects and timing as a
+    // recursive `sync*` generator, see [_ComponentsAtLocation]: a component
+    // that is not ticked and not drawn at the current graphics tier does not
+    // receive events either, nor does one that the active camera masks out.
+    return _ComponentsAtLocation<T>(
+      this,
+      locationContext,
+      nestedContexts,
+      transformContext,
+      checkContains,
+    );
   }
 
   //#endregion
