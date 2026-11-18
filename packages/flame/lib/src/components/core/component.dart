@@ -202,6 +202,12 @@ class Component({
   static const int _removed = 16;
 
   bool _ticksDisabled = false;
+
+  /// What the spatial index of the enclosing `World` keeps on this
+  /// component (when the world has `spatialIndexEnabled`), so that a render
+  /// pass finds it without a map lookup per component.
+  @internal
+  Object? spatialIndexEntry;
   GraphicsQualityTier? _minQualityTier = minQualityTier;
   int _cameraMask = cameraMask ?? 0xFFFFFFFF;
   int _subtreeVersion = 0;

@@ -14,10 +14,17 @@ import 'package:flame/src/game/transform2d.dart';
 import 'package:flame/src/geometry/spatial_grid_2d.dart';
 import 'package:meta/meta.dart';
 
-class _IndexedNode({
-  required final PositionComponent component,
-  required final bool isDirectWorldChild,
-}) {
+/// What the index keeps on an indexed leaf, in its
+/// [Component.spatialIndexEntry].
+class _IndexedNode(
+  final WorldSpatialIndex owner,
+  final PositionComponent component,
+) {
+  bool isDirectWorldChild = false;
+
+  /// The membership sweep that last found this node in the tree; a node from
+  /// an older sweep is no longer part of the index.
+  int generation = -1;
   int lastTxVersion = -1;
   double lastSizeX = double.nan;
   double lastSizeY = double.nan;
@@ -28,6 +35,49 @@ class _IndexedNode({
   int visibleStamp = -1;
 }
 
+/// What the index keeps on a pure container (one whose children are all
+/// indexed leaves or pure containers), in its [Component.spatialIndexEntry].
+///
+/// It holds the visible children of the container in the outermost render
+/// pass, so that neither collecting them nor reading them back needs a map
+/// lookup or an allocation per frame.
+class _ContainerEntry(
+  final WorldSpatialIndex owner,
+  final Component component,
+) {
+  /// The membership sweep that last found this container to be pure.
+  int generation = -1;
+
+  /// Whether hit-testing may skip the container, see
+  /// [WorldSpatialIndex._isHitInertContainer].
+  bool hitSkippable = false;
+
+  /// The visible children in draw order, valid while [stamp] is the stamp of
+  /// the outermost render pass. The list is overwritten in place, so that it
+  /// keeps its storage from frame to frame.
+  final List<Component> visible = <Component>[];
+
+  /// The number of children collected into [visible] so far in this pass.
+  int visibleCount = 0;
+
+  /// The stamp of the outermost pass that [visible] belongs to.
+  int stamp = -1;
+
+  /// The stamp of the outermost pass in which this container was added to
+  /// the visible children of its own parent.
+  int listedStamp = -1;
+
+  void addVisible(Component child) {
+    final count = visibleCount;
+    if (count < visible.length) {
+      visible[count] = child;
+    } else {
+      visible.add(child);
+    }
+    visibleCount = count + 1;
+  }
+}
+
 /// What one camera pass sees. A pass that is started while another pass over
 /// the same index is still rendering (a camera or render texture inside the
 /// world that looks at this world again) gets a state of its own, so the pass
@@ -35,6 +85,9 @@ class _IndexedNode({
 class _RenderPassState() {
   int stamp = 0;
 
+  /// The visible children of the pure containers in this pass. Only nested
+  /// passes use it; the outermost pass keeps them in the [_ContainerEntry]
+  /// of each container.
   final Map<Component, List<Component>> visibleByContainer =
       HashMap<Component, List<Component>>.identity();
 
@@ -90,15 +143,25 @@ class WorldSpatialIndex({
         initialCapacity: initialCapacity,
       );
 
-  final Map<PositionComponent, _IndexedNode> _indexedNodes =
-      HashMap<PositionComponent, _IndexedNode>.identity();
-  final List<_IndexedNode> _nodeList = <_IndexedNode>[];
-  final List<Component> _unindexed = <Component>[];
-  final Set<Component> _pureIndexedContainers = HashSet<Component>.identity();
+  /// The indexed leaves. Each one also hangs on its component, as its
+  /// [Component.spatialIndexEntry], which is how the render pass finds it.
+  List<_IndexedNode> _nodeList = <_IndexedNode>[];
+  List<_IndexedNode> _previousNodes = <_IndexedNode>[];
 
-  /// Pure containers that hit-testing may skip when none of their leaves is
-  /// under the point: neither they nor any container below them can be hit.
-  final Set<Component> _hitSkippableContainers = HashSet<Component>.identity();
+  /// The pure containers, whose entries also hang on their components.
+  List<_ContainerEntry> _containerList = <_ContainerEntry>[];
+  List<_ContainerEntry> _previousContainers = <_ContainerEntry>[];
+
+  /// The number of the current membership sweep, see
+  /// [_IndexedNode.generation].
+  int _generation = 0;
+
+  /// The entries whose visible children the current outermost pass
+  /// collects; [_touchedCount] of them are valid.
+  final List<_ContainerEntry> _touched = <_ContainerEntry>[];
+  int _touchedCount = 0;
+
+  final List<Component> _unindexed = <Component>[];
 
   /// One state per nesting level of render passes; index `0` is the outermost
   /// pass (and the state used by a stand-alone [collectVisibleForRender]).
@@ -177,7 +240,21 @@ class WorldSpatialIndex({
 
   /// Returns `true` when [component] is currently tracked in the spatial grid.
   bool containsIndexed(PositionComponent component) =>
-      _indexedNodes.containsKey(component);
+      _nodeOf(component) != null;
+
+  /// The leaf node of [component] in this index, if it is an indexed leaf.
+  _IndexedNode? _nodeOf(Component component) {
+    final entry = component.spatialIndexEntry;
+    return entry is _IndexedNode && identical(entry.owner, this) ? entry : null;
+  }
+
+  /// The entry of [container] in this index, if it is a pure container.
+  _ContainerEntry? _containerOf(Component container) {
+    final entry = container.spatialIndexEntry;
+    return entry is _ContainerEntry && identical(entry.owner, this)
+        ? entry
+        : null;
+  }
 
   /// Rebuilds the underlying [SpatialGrid2D] with [nextCellSize] on the next
   /// synchronization sweep.
@@ -304,11 +381,11 @@ class WorldSpatialIndex({
   /// Clears all cached entries.
   void clear() {
     _grid.clear();
-    _indexedNodes.clear();
+    _detachEntries(_nodeList, _containerList);
     _nodeList.clear();
+    _containerList.clear();
+    _touchedCount = 0;
     _unindexed.clear();
-    _pureIndexedContainers.clear();
-    _hitSkippableContainers.clear();
     for (final state in _passStates) {
       _releaseVisibleBuckets(state);
       state.visibleNodes.clear();
@@ -320,17 +397,62 @@ class WorldSpatialIndex({
     _lastGlobalTxMutation = -1;
   }
 
+  /// Takes the entries that are still attached to their components off them.
+  void _detachEntries(
+    List<_IndexedNode> nodes,
+    List<_ContainerEntry> containers,
+  ) {
+    for (var i = 0; i < nodes.length; i++) {
+      final node = nodes[i];
+      if (identical(node.component.spatialIndexEntry, node)) {
+        node.component.spatialIndexEntry = null;
+      }
+    }
+    for (var i = 0; i < containers.length; i++) {
+      final entry = containers[i];
+      if (identical(entry.component.spatialIndexEntry, entry)) {
+        entry.component.spatialIndexEntry = null;
+      }
+    }
+  }
+
   void _registerLeaf(PositionComponent pc, {required bool isDirectWorldChild}) {
-    final node = _IndexedNode(
-      component: pc,
-      isDirectWorldChild: isDirectWorldChild,
-    );
-    _indexedNodes[pc] = node;
+    // A leaf that was already indexed keeps its node, and with it its place
+    // in the grid and the bounds it was measured with, so that a membership
+    // sweep neither reallocates nor re-measures the whole index.
+    var node = _nodeOf(pc);
+    final bool force;
+    if (node == null || node.generation == _generation) {
+      node = _IndexedNode(this, pc);
+      pc.spatialIndexEntry = node;
+      force = true;
+    } else {
+      // Its bounds are measured differently in the other case.
+      force = node.isDirectWorldChild != isDirectWorldChild;
+    }
+    node
+      ..generation = _generation
+      ..isDirectWorldChild = isDirectWorldChild;
     _nodeList.add(node);
     if (pc is CullWhenOffscreen) {
       _indexedCullableCount++;
     }
-    _updateNodeBounds(node, force: true);
+    _updateNodeBounds(node, force: force);
+  }
+
+  void _registerPureContainer(
+    Component container, {
+    required bool hitSkippable,
+  }) {
+    var entry = _containerOf(container);
+    if (entry == null || entry.generation == _generation) {
+      entry = _ContainerEntry(this, container);
+      container.spatialIndexEntry = entry;
+    }
+    entry
+      ..generation = _generation
+      ..hitSkippable = hitSkippable;
+    _containerList.add(entry);
   }
 
   /// Recursively indexes eligible descendants inside [container], returning
@@ -350,7 +472,10 @@ class WorldSpatialIndex({
         if (!subPure) {
           allChildrenPure = false;
         }
-        if (!_hitSkippableContainers.contains(child)) {
+        final childEntry = _containerOf(child);
+        if (childEntry == null ||
+            childEntry.generation != _generation ||
+            !childEntry.hitSkippable) {
           hitSkippable = false;
         }
       } else {
@@ -358,10 +483,10 @@ class WorldSpatialIndex({
       }
     }
     if (allChildrenPure) {
-      _pureIndexedContainers.add(container);
-      if (hitSkippable) {
-        _hitSkippableContainers.add(container);
-      }
+      _registerPureContainer(
+        container,
+        hitSkippable: hitSkippable,
+      );
     }
     return allChildrenPure;
   }
@@ -378,23 +503,7 @@ class WorldSpatialIndex({
     }
     if (_dirtyMembership) {
       _dirtyMembership = false;
-      _grid.clear();
-      _indexedNodes.clear();
-      _nodeList.clear();
-      _unindexed.clear();
-      _pureIndexedContainers.clear();
-      _hitSkippableContainers.clear();
-      _indexedCullableCount = 0;
-      for (final child in children) {
-        if (_isEligibleLeafForSpatialGrid(child)) {
-          _registerLeaf(child as PositionComponent, isDirectWorldChild: true);
-        } else {
-          _unindexed.add(child);
-          if (_canDescendIntoContainer(child)) {
-            _indexContainerSubtree(child);
-          }
-        }
-      }
+      _rebuildMembership(children);
       _lastGlobalTxMutation = Transform2D.globalMutationCount;
       _syncPassCount++;
       return;
@@ -416,6 +525,55 @@ class WorldSpatialIndex({
       }
       _updateNodeBounds(node, force: false);
     }
+  }
+
+  /// Finds the leaves and pure containers of the tree again.
+  ///
+  /// Leaves and containers that are still there keep their entries and their
+  /// cells in the grid; only the ones that are gone are taken out.
+  void _rebuildMembership(Iterable<Component> children) {
+    _generation++;
+    final previousNodes = _nodeList;
+    final previousContainers = _containerList;
+    _nodeList = _previousNodes..clear();
+    _containerList = _previousContainers..clear();
+    _previousNodes = previousNodes;
+    _previousContainers = previousContainers;
+    _touchedCount = 0;
+    _unindexed.clear();
+    _indexedCullableCount = 0;
+    for (final child in children) {
+      if (_isEligibleLeafForSpatialGrid(child)) {
+        _registerLeaf(child as PositionComponent, isDirectWorldChild: true);
+      } else {
+        _unindexed.add(child);
+        if (_canDescendIntoContainer(child)) {
+          _indexContainerSubtree(child);
+        }
+      }
+    }
+    final generation = _generation;
+    for (var i = 0; i < previousNodes.length; i++) {
+      final node = previousNodes[i];
+      if (node.generation != generation) {
+        final current = _nodeOf(node.component);
+        if (current == null || current.generation != generation) {
+          _grid.remove(node.component);
+        }
+        if (identical(node.component.spatialIndexEntry, node)) {
+          node.component.spatialIndexEntry = null;
+        }
+      }
+    }
+    for (var i = 0; i < previousContainers.length; i++) {
+      final entry = previousContainers[i];
+      if (entry.generation != generation &&
+          identical(entry.component.spatialIndexEntry, entry)) {
+        entry.component.spatialIndexEntry = null;
+      }
+    }
+    previousNodes.clear();
+    previousContainers.clear();
   }
 
   void _updateNodeBounds(_IndexedNode node, {required bool force}) {
@@ -502,17 +660,23 @@ class WorldSpatialIndex({
   /// to render only the `O(visible)` children of pure-indexed layer containers.
   @internal
   List<Component>? visibleChildrenForPureContainer(Component container) {
-    if (!_pureIndexedContainers.contains(container)) {
+    final entry = _containerOf(container);
+    if (entry == null) {
       return null;
     }
-    return _activePass.visibleByContainer[container] ?? const <Component>[];
+    if (_openPassCount > 1) {
+      return _activePass.visibleByContainer[container] ?? const <Component>[];
+    }
+    return entry.stamp == _passStates[0].stamp
+        ? entry.visible
+        : const <Component>[];
   }
 
   /// Internal check used by mixed-child containers to skip offscreen indexed
   /// leaves in `O(1)`.
   @internal
   bool shouldRenderChild(Component child) {
-    final node = child is PositionComponent ? _indexedNodes[child] : null;
+    final node = _nodeOf(child);
     if (node == null) {
       return true;
     }
@@ -533,15 +697,20 @@ class WorldSpatialIndex({
     List<Component> out, {
     int cameraMask = 0xFFFFFFFF,
   }) {
-    out.clear();
+    // [out] and the scratch list are overwritten and then cut to length
+    // rather than cleared first: clearing a list gives up its storage, which
+    // would then be allocated again, every frame.
+    var outCount = 0;
     final state = _activePass;
     final nested = _openPassCount > 1;
     _releaseVisibleBuckets(state);
     state.visibleNodes.clear();
-    _gridScratch.clear();
+    if (!nested) {
+      _touchedCount = 0;
+    }
     final stamp = ++_renderPassStamp;
     state.stamp = stamp;
-    _grid.queryRect(visibleWorldRect, _gridScratch);
+    _grid.queryRectInto(visibleWorldRect, _gridScratch);
     var visibleIndexed = 0;
     var visibleCullables = 0;
 
@@ -550,7 +719,7 @@ class WorldSpatialIndex({
       if ((comp.cameraMask & cameraMask) == 0) {
         continue;
       }
-      final node = _indexedNodes[comp];
+      final node = _nodeOf(comp);
       if (node == null) {
         continue;
       }
@@ -566,11 +735,11 @@ class WorldSpatialIndex({
         visibleCullables++;
       }
       if (node.isDirectWorldChild) {
-        out.add(comp);
-      } else {
+        outCount = _put(out, outCount, comp);
+      } else if (nested) {
         var cursor = comp as Component;
         var parent = cursor.parent;
-        while (parent != null && _pureIndexedContainers.contains(parent)) {
+        while (parent != null && _containerOf(parent) != null) {
           final bucket = _acquireBucket(state, parent);
           if (identical(cursor, comp) || !bucket.contains(cursor)) {
             bucket.add(cursor);
@@ -578,23 +747,87 @@ class WorldSpatialIndex({
           cursor = parent;
           parent = cursor.parent;
         }
+      } else {
+        _bucketForOutermostPass(comp, stamp);
       }
     }
 
-    for (final bucket in state.visibleByContainer.values) {
-      if (bucket.length > 1) {
-        _shellSortComponents(bucket);
+    if (nested) {
+      for (final bucket in state.visibleByContainer.values) {
+        if (bucket.length > 1) {
+          _shellSortComponents(bucket);
+        }
+      }
+    } else {
+      for (var i = 0; i < _touchedCount; i++) {
+        final entry = _touched[i];
+        final bucket = entry.visible;
+        // Drops what is left from an earlier frame; a list keeps its storage
+        // unless it shrinks by more than two thirds.
+        bucket.length = entry.visibleCount;
+        if (bucket.length > 1) {
+          _shellSortComponents(bucket);
+        }
       }
     }
 
     for (var i = 0; i < _unindexed.length; i++) {
       final c = _unindexed[i];
       if ((c.cameraMask & cameraMask) != 0) {
-        out.add(c);
+        outCount = _put(out, outCount, c);
       }
     }
+    out.length = outCount;
     _shellSortComponents(out);
     return (visibleIndexed, visibleCullables);
+  }
+
+  /// Writes [component] at [index] of [list], which is either the length of
+  /// the list or a slot to overwrite, and returns the next index.
+  static int _put(List<Component> list, int index, Component component) {
+    if (index < list.length) {
+      list[index] = component;
+    } else {
+      list.add(component);
+    }
+    return index + 1;
+  }
+
+  /// Adds the visible indexed [leaf] to the visible children of its pure
+  /// parent container, and that container (once) to the visible children of
+  /// its own pure parent, and so on up, in the outermost render pass.
+  void _bucketForOutermostPass(Component leaf, int stamp) {
+    var cursor = leaf;
+    var parent = cursor.parent;
+    while (parent != null) {
+      final entry = _containerOf(parent);
+      if (entry == null) {
+        return;
+      }
+      if (entry.stamp != stamp) {
+        entry
+          ..stamp = stamp
+          ..visibleCount = 0;
+        if (_touchedCount < _touched.length) {
+          _touched[_touchedCount] = entry;
+        } else {
+          _touched.add(entry);
+        }
+        _touchedCount++;
+      }
+      if (!identical(cursor, leaf)) {
+        // [cursor] is a pure container of this index: it is listed in its
+        // parent once, and when it already was, so were the ones above.
+        final cursorEntry = _containerOf(cursor)!;
+        if (cursorEntry.listedStamp == stamp) {
+          return;
+        }
+        cursorEntry.listedStamp = stamp;
+      }
+      entry.addVisible(cursor);
+      cursor = parent;
+      parent = cursor.parent;
+    }
   }
 
   /// Populates [out] with top-level candidate components at `(x, y)` in reverse
@@ -614,7 +847,7 @@ class WorldSpatialIndex({
       if ((comp.cameraMask & cameraMask) == 0) {
         continue;
       }
-      final node = _indexedNodes[comp];
+      final node = _nodeOf(comp);
       if (node != null && node.isDirectWorldChild) {
         if (addedTopLevel.add(comp)) {
           out.add(comp);
@@ -638,7 +871,7 @@ class WorldSpatialIndex({
       // any container below it can be hit: then the leaves found above are
       // everything there is to hit inside of it.
       if ((c.cameraMask & cameraMask) != 0 &&
-          !_hitSkippableContainers.contains(c) &&
+          !(_containerOf(c)?.hitSkippable ?? false) &&
           addedTopLevel.add(c)) {
         out.add(c);
       }

@@ -2,6 +2,8 @@ import 'dart:collection';
 import 'dart:typed_data';
 import 'dart:ui';
 
+import 'package:meta/meta.dart';
+
 /// Zero-query-allocation uniform 2D spatial hash grid supporting points and
 /// axis-aligned bounding rectangles across arbitrary negative/positive world
 /// coordinates.
@@ -243,6 +245,55 @@ class SpatialGrid2D<T>({
         }
       }
     }
+    return added;
+  }
+
+  /// Like [queryRect], but replaces the contents of [out] instead of adding
+  /// to them, without giving up its storage as clearing it first would: a
+  /// list that is queried into every frame then allocates nothing.
+  ///
+  /// Returns the number of items found, which is the new length of [out].
+  @internal
+  int queryRectInto(Rect bounds, List<T> out) {
+    final l = bounds.left;
+    final t = bounds.top;
+    final r = bounds.right;
+    final b = bounds.bottom;
+    final cx0 = _cellCoord(l);
+    final cy0 = _cellCoord(t);
+    final cx1 = _cellCoord(r);
+    final cy1 = _cellCoord(b);
+    final stamp = _nextQueryStamp();
+    var added = 0;
+
+    for (var cy = cy0; cy <= cy1; cy++) {
+      for (var cx = cx0; cx <= cx1; cx++) {
+        final bucket = _cells[_packCell(cx, cy)];
+        if (bucket == null) {
+          continue;
+        }
+        for (var i = 0; i < bucket.length; i++) {
+          final slot = bucket[i];
+          if (_visitStamp[slot] == stamp) {
+            continue;
+          }
+          _visitStamp[slot] = stamp;
+          if (_maxX[slot] >= l &&
+              _minX[slot] <= r &&
+              _maxY[slot] >= t &&
+              _minY[slot] <= b) {
+            final item = _items[slot] as T;
+            if (added < out.length) {
+              out[added] = item;
+            } else {
+              out.add(item);
+            }
+            added++;
+          }
+        }
+      }
+    }
+    out.length = added;
     return added;
   }
 
