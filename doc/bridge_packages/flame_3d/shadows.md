@@ -237,10 +237,20 @@ sharing a mesh on a ground in a `Scene3DComponent` render with 2 draw calls in 1
 shadows, and 4 draw calls in 2 passes with them (2 of them in the shadow pass).
 
 
+## Two-cascade directional shadow atlas and spot-light shadows
+
+- **2-Cascade Directional Shadow Maps (`ShadowSettings(cascades: 2, cascadeSplitRatio: 0.28)`):**
+  setting `cascades: 2` renders a crisp high-texel-density near cascade (`Cascade 0`) and a full
+  scene/view far cascade (`Cascade 1`), packing them side-by-side into a `2 * resolution x resolution`
+  shadow atlas (`shaders/shadow_atlas_pack`) sampled seamlessly with zero extra texture bindings.
+- **Perspective `SpotLight` Shadows:** giving a `SpotLight` (`LightComponent.spot(shadows: ShadowSettings(...))`)
+  shadow settings renders a perspective spot shadow map along its cone when no directional light is
+  claiming the pass's shadow map (or when directional lights are masked out via `LightComponent.lightMask`).
+
+
 ## Limitations
 
-- One directional light casts shadows per scene, with one shadow map (no cascades): very large
-  scenes seen in perspective get softer shadows far away; use `maxDistance`.
-- Point lights and spot lights cast no shadow maps (use `DecalBatch3D.addBlobShadow` for cheap
-  grounded unit contact shadows).
+- One shadow-casting light (either a 1- or 2-cascade `DirectionalLight`, or a perspective
+  `SpotLight`) casts a shadow map per pass; point lights cast no shadow maps (use
+  `DecalBatch3D.addBlobShadow` for grounded contact shadows).
 - `UnlitMaterial` receives no shadows, and shadows are not available on the web yet.

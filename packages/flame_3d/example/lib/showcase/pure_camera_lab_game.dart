@@ -5,6 +5,7 @@ import 'package:flame/events.dart';
 import 'package:flame/game.dart';
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
+import 'package:flame_3d/debug.dart';
 import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
@@ -17,6 +18,9 @@ enum PureCameraMode(final String label) {
   orthographic('Orthographic (-near)'),
   thirdPerson('ThirdPersonCamera'),
   firstPerson('FirstPersonCamera'),
+  orbitController3D('OrbitController3D'),
+  springArm3D('SpringArmCamera3D'),
+  dollyTrack3D('CameraDollyTrack3D'),
   customMirrored('Custom Mirrored Matrix'),
 }
 
@@ -51,13 +55,20 @@ class PureCameraLabGame() extends FlameGame3D with TapCallbacks {
   bool bloomEnabled = true;
   bool fogEnabled = true;
   bool acesPostEnabled = true;
+  bool debugOverlayEnabled = false;
 
   late final SkyboxComponent3D skybox;
+  late final DebugRenderer3D debugRenderer;
   late final MeshComponent rover;
   late final MeshComponent beaconA;
   late final MeshComponent beaconB;
+  late final MeshComponent occluderWall;
   late final ThirdPersonCamera _thirdPersonCam;
   late final FirstPersonCamera _firstPersonCam;
+  late final OrbitCameraController3D orbitController;
+  late final SpringArmCamera3D springArm;
+  late final CameraDollyTrack3D dollyTrack;
+  late final CameraShake3D cameraShake;
 
   Vector2 beaconAScreen = Vector2.zero();
   Vector2 beaconBScreen = Vector2.zero();
@@ -184,6 +195,19 @@ class PureCameraLabGame() extends FlameGame3D with TapCallbacks {
       beaconB,
     ]);
 
+    occluderWall = MeshComponent(
+      mesh: CuboidMesh(
+        size: Vector3(2.8, 2.2, 0.32),
+        material: SpatialMaterial(
+          albedoColor: const ui.Color(0xFF475569),
+          roughness: 0.65,
+        )..renderState = const RenderState(cullMode: CullMode.backFace),
+      ),
+      position: Vector3(0, 1.1, 4.4),
+    );
+    debugRenderer = DebugRenderer3D(enabled: debugOverlayEnabled);
+    world.addAll([occluderWall, debugRenderer]);
+
     _thirdPersonCam = ThirdPersonCamera(
       following: rover.position,
       followDamping: 8.0,
@@ -192,6 +216,39 @@ class PureCameraLabGame() extends FlameGame3D with TapCallbacks {
     _firstPersonCam = FirstPersonCamera(
       following: Vector3(2.5, 0.85, 0),
       fovY: 68,
+    );
+    orbitController = OrbitCameraController3D(
+      camera: camera,
+      target: Vector3(0, 0.7, 0),
+      yaw: 0.6,
+      pitch: 0.42,
+      distance: 8.2,
+      damping: 10.0,
+    );
+    springArm = SpringArmCamera3D(
+      camera: camera,
+      world: world,
+      targetComponent: rover,
+      socketOffset: Vector3(0, 0.65, 0),
+      armLength: 5.2,
+      collisionFilter: (obj) => !identical(obj, rover),
+    );
+    dollyTrack = CameraDollyTrack3D(
+      camera: camera,
+      eyeSpline: CatmullRomSpline3D([
+        Vector3(-6.5, 3.8, 6.0),
+        Vector3(0.0, 5.2, 7.2),
+        Vector3(6.8, 3.6, 4.5),
+        Vector3(5.5, 2.8, -5.5),
+      ]),
+      lookAtTarget: Vector3(0, 0.75, 0),
+      duration: 6.0,
+      loop: true,
+    );
+    cameraShake = CameraShake3D(
+      camera: camera,
+      maxPositionOffset: 0.42,
+      maxAngleRad: 0.065,
     );
   }
 
@@ -221,9 +278,12 @@ class PureCameraLabGame() extends FlameGame3D with TapCallbacks {
           ..up.setValues(0, 1, 0);
       case PureCameraMode.thirdPerson:
       case PureCameraMode.firstPerson:
+      case PureCameraMode.orbitController3D:
+      case PureCameraMode.springArm3D:
+      case PureCameraMode.dollyTrack3D:
         camera
           ..projection = CameraProjection.perspective
-          ..fovY = next == PureCameraMode.firstPerson ? 68 : 58
+          ..fovY = next == PureCameraMode.firstPerson ? 68 : 56
           ..near = 0.1
           ..far = 100
           ..up.setValues(0, 1, 0);
@@ -281,12 +341,19 @@ class PureCameraLabGame() extends FlameGame3D with TapCallbacks {
             )
           : null;
     if (isLoaded) {
+      debugRenderer.enabled = debugOverlayEnabled;
       if (skyboxEnabled && !skybox.isMounted) {
         world.add(skybox);
       } else if (!skyboxEnabled && skybox.isMounted) {
         skybox.removeFromParent();
       }
     }
+    hudTick.value++;
+  }
+
+  /// Adds a 6-DOF trauma shake impulse to [cameraShake].
+  void triggerTraumaShake([double amount = 0.78]) {
+    cameraShake.addTrauma(amount);
     hudTick.value++;
   }
 
@@ -335,6 +402,20 @@ class PureCameraLabGame() extends FlameGame3D with TapCallbacks {
         camera
           ..position.setFrom(_firstPersonCam.position)
           ..target.setFrom(_firstPersonCam.target);
+      case PureCameraMode.orbitController3D:
+        orbitController
+          ..yaw += dt * 0.45
+          ..update(dt);
+      case PureCameraMode.springArm3D:
+        springArm
+          ..yaw = yaw + math.pi
+          ..pitch = 0.28
+          ..update(dt);
+      case PureCameraMode.dollyTrack3D:
+        dollyTrack.update(dt);
+    }
+    if (_mode != PureCameraMode.customMirrored) {
+      cameraShake.update(dt);
     }
 
     camera.worldToViewportPoint(
@@ -539,6 +620,24 @@ class _PureCameraLabViewState() extends State<PureCameraLabView> {
                         child: _ToggleBadge(
                           label: 'ACES+FXAA',
                           on: _game.acesPostEnabled,
+                        ),
+                      ),
+                      GestureDetector(
+                        onTap: () {
+                          _game
+                            ..debugOverlayEnabled = !_game.debugOverlayEnabled
+                            ..syncEffects();
+                        },
+                        child: _ToggleBadge(
+                          label: 'Debug3D',
+                          on: _game.debugOverlayEnabled,
+                        ),
+                      ),
+                      GestureDetector(
+                        onTap: _game.triggerTraumaShake,
+                        child: const _ToggleBadge(
+                          label: '⚡ Shake 6-DOF',
+                          on: true,
                         ),
                       ),
                     ],

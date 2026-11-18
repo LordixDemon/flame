@@ -4,16 +4,24 @@ import 'dart:ui' as ui;
 
 import 'package:flame/components.dart'
     show Anchor, PositionComponent, TextComponent, TextPaint;
+import 'package:flame_3d/audio.dart';
 import 'package:flame_3d/camera.dart';
+import 'package:flame_3d/collisions.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
+import 'package:flame_3d/debug.dart';
+import 'package:flame_3d/effects.dart';
 import 'package:flame_3d/graphics.dart';
+import 'package:flame_3d/input.dart';
 import 'package:flame_3d/model.dart';
+import 'package:flame_3d/navigation.dart';
 import 'package:flame_3d/parser.dart';
 import 'package:flame_3d/particles.dart';
+import 'package:flame_3d/physics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d_example/showcase/showcase_meshes.dart';
 import 'package:flame_3d_example/showcase/showcase_v2_builders.dart';
+import 'package:flame_3d_example/showcase/showcase_v3_builders.dart';
 import 'package:flutter/painting.dart' show Shadow, TextStyle;
 
 /// Curated testbed variations exercising distinct feature matrices of
@@ -66,6 +74,22 @@ enum ShowcasePreset(final String label, final String summary) {
   spotLightsCullingAndPost(
     '12. SpotLights, BVH & ACES',
     '4 SpotLights + 32 Culled PointLights + SceneSpatialIndex3D + ACES/FXAA',
+  ),
+  inputEffectsAndCameraRigs(
+    '13. 3D Input, Effects & Rigs',
+    'Tap/Hover/Drag3D + Gizmo + Arc/Spline/Squash Effects + FixedInterp + Rigs',
+  ),
+  physicsCollidersKinematicAndNavMesh(
+    '14. Physics, NavMesh & Audio',
+    'RigidBody3D Dice + HingeJoint + Trigger + Kinematic + NavMesh + Audio3D',
+  ),
+  blendTreesCrowdSceneLoaderAndIsolate(
+    '15. Blend, Crowd64 & Scene',
+    'BlendSpace 1D/2D + Events + RootMotion + 64 Crowd + SceneLoader + Isolate',
+  ),
+  ssaoDofCsmPortalAndDebug3D(
+    '16. SSAO, DoF, CSM & Portal',
+    'DepthNormal SSAO/DoF + SoftPtcl + CSM 2x + SpotShadow + Portal + Debug3D',
   ),
 }
 
@@ -129,6 +153,13 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
   final List<PositionComponent> viewportExtras = [];
 
   final ShowcaseV2Builders v2 = ShowcaseV2Builders();
+  final ShowcaseV3Builders v3 = ShowcaseV3Builders();
+  final AssetScope3D assetScope3D = AssetScope3D();
+
+  Model? isolateGlbModel;
+  List<PreparedSurfaceBvh3D> isolatePreparedBvhs = const [];
+  LoadedScene3D? loadedExtendedScene;
+  int sceneExtrasCallbackHits = 0;
 
   // Inspected live objects for diagnostics & interactive controls.
   DepthPrepassGhostObject3D? depthPrepassGhost;
@@ -167,6 +198,43 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
   final List<LightComponent> sweepingSpotLights = [];
   final List<LightComponent> culledStreetLamps = [];
 
+  // Next-Gen Lab 13–16 live handles:
+  PointerRouter3D? pointerRouter3D;
+  InteractiveCrystalTotem3D? interactiveTotem;
+  AxisGizmoSlider3D? axisGizmoSlider;
+  MeshComponent? splineShuttle;
+  MeshComponent? arcJumpOrb;
+
+  PhysicsWorld3D? physicsWorld;
+  final List<RigidBody3D> diceRigidBodies = [];
+  HingeJoint3D? pendulumHinge;
+  RigidBody3D? pendulumBobBody;
+  CollisionSystem3D? collisionSystem;
+  TriggerVolume3D? triggerPad;
+  CollisionBeacon3D? collisionBeacon;
+  int triggerEnters = 0;
+  int triggerExits = 0;
+  MeshComponent? kinematicActor;
+  KinematicCharacterController3D? kinematicController;
+  NavMesh3D? steppedNavMesh;
+  CrowdSteering3D? crowdSteering;
+  SkinnedHitboxRig3D? skinnedHitboxRig;
+  SpatialAudioListener3D? audioListener3D;
+  SpatialAudioEmitter3D? audioEmitter3D;
+
+  ModelComponent? blend1DWalker;
+  ModelComponent? blend2DWalker;
+  RootMotionExtractor3D? walkerRootMotion;
+  int animEventsFired = 0;
+  SkinnedCrowdBatch3D? skinnedCrowd64;
+
+  RenderTexture3D? portalRenderTexture;
+  MeshComponent? portalMonitorScreen;
+  LightComponent? shadowSpotLight;
+  ParticleMaterial? softMistMaterial;
+  WaterMaterial? shoreFoamWaterMaterial;
+  DebugRenderer3D? labDebugRenderer;
+
   final List<StylizedMaterial> animatedWindMaterials = [];
   final List<Component3D> airships = [];
   final List<ModelComponent> extraSkinnedRigs = [];
@@ -203,6 +271,38 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
           // ignore: avoid_catches_without_on_clauses
         } catch (_) {}
       }
+    }
+    if (isolateGlbModel == null || loadedExtendedScene == null) {
+      final glbBytes = v3.buildProceduralExtendedGlbBytes();
+      isolateGlbModel ??= await AsyncModelLoader3D.parseGlbBytesAsync(
+        glbBytes,
+        scope: assetScope3D,
+      );
+      isolatePreparedBvhs = await AsyncModelLoader3D.buildSurfaceBvhsInIsolate(
+        isolateGlbModel!,
+      );
+      sceneExtrasCallbackHits = 0;
+      loadedExtendedScene = await SceneLoader3D.loadGlbBytes(
+        glbBytes,
+        onNodeExtras: (ctx) {
+          if (ctx.extrasMap?['spawnTag'] == 'obelisk_anchor') {
+            sceneExtrasCallbackHits++;
+            ctx.addComponent(
+              MeshComponent(
+                mesh: SphereMesh(
+                  radius: 0.22,
+                  segments: 12,
+                  material: UnlitMaterial(
+                    albedoColor: const ui.Color(0xFF00F5D4),
+                  )..renderState = RenderState.opaque,
+                ),
+                position: ctx.worldPosition + Vector3(0, 0, 1.45),
+                castsShadows: false,
+              ),
+            );
+          }
+        },
+      );
     }
   }
 
@@ -261,6 +361,46 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
 
     sweepingSpotLights.clear();
     culledStreetLamps.clear();
+
+    pointerRouter3D = null;
+    interactiveTotem = null;
+    axisGizmoSlider = null;
+    splineShuttle = null;
+    arcJumpOrb = null;
+
+    physicsWorld?.removeFromParent();
+    physicsWorld = null;
+    diceRigidBodies.clear();
+    pendulumHinge = null;
+    pendulumBobBody = null;
+    collisionSystem?.removeFromParent();
+    collisionSystem = null;
+    triggerPad = null;
+    collisionBeacon = null;
+    triggerEnters = 0;
+    triggerExits = 0;
+    kinematicActor = null;
+    kinematicController = null;
+    steppedNavMesh = null;
+    crowdSteering = null;
+    skinnedHitboxRig?.removeFromParent();
+    skinnedHitboxRig = null;
+    audioListener3D = null;
+    audioEmitter3D = null;
+
+    blend1DWalker = null;
+    blend2DWalker = null;
+    walkerRootMotion = null;
+    animEventsFired = 0;
+    skinnedCrowd64 = null;
+
+    portalRenderTexture?.dispose();
+    portalRenderTexture = null;
+    portalMonitorScreen = null;
+    shadowSpotLight = null;
+    softMistMaterial = null;
+    shoreFoamWaterMaterial = null;
+    labDebugRenderer = null;
   }
 
   void buildMaterialsAndGradingLab() {
@@ -1461,6 +1601,654 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
     }
   }
 
+  /// Lab 13: 3D Input (`TapCallbacks3D`, `HoverCallbacks3D`, `DragCallbacks3D`,
+  /// 1D axis gizmo), 3D Effects (`ArcMoveEffect3D`, `SplinePathEffect3D`,
+  /// `SquashStretchEffect3D`, `RotateAroundEffect3D`, `InstanceDataEffect3D`),
+  /// and `FixedTransformInterpolation3D`.
+  void buildInputEffectsAndCameraRigsLab({
+    required Scene3DComponent dynamicLayer,
+    required StylizedMaterial gemMat,
+  }) {
+    final upright = Quaternion.axisAngle(Vector3(1, 0, 0), math.pi / 2);
+
+    pointerRouter3D = PointerRouter3D.forScene(
+      dynamicLayer,
+      defaultDragNormal: Vector3(0, 0, 1),
+      priority: 10,
+    );
+    world2DExtras.add(pointerRouter3D!);
+
+    // 1. Free ray-plane draggable + tap + hover + FixedTransformInterpolation3D
+    //    crystal totem.
+    final totemMat = StylizedMaterial(
+      matCapTexture: assets.coatMatCap,
+      gemMatCapTexture: assets.gemMatCap,
+      emissiveColor: const ui.Color(0xFF38BDF8),
+      emissiveBoostColor: const ui.Color(0xFFFFBE0B),
+      emissiveStrength: 1.1,
+    )..renderState = const RenderState(cullMode: CullMode.backFace);
+    interactiveTotem = InteractiveCrystalTotem3D(
+      mesh: assets.buildCrystalTowerLodMesh(
+        totemMat,
+        segments: 16,
+        crystalTint: const ui.Color(0xFF67E8F9),
+      ),
+      position: Vector3(4.2, 8.8, 0.05),
+    )..instanceData.x = 0.25;
+    dynamicExtras.add(interactiveTotem!);
+
+    // 2. 1D X-axis gizmo slider (`dragAxisConstraint = Vector3(1, 0, 0)`) on a
+    //    rail.
+    staticExtras.add(
+      MeshComponent(
+        mesh: CuboidMesh(
+          size: Vector3(6.6, 0.10, 0.08),
+          material: SpatialMaterial(
+            albedoColor: const ui.Color(0xFF64748B),
+            metallic: 0.7,
+            roughness: 0.3,
+          )..renderState = const RenderState(cullMode: CullMode.backFace),
+        ),
+        position: Vector3(7.0, 10.8, 0.45),
+      ),
+    );
+    axisGizmoSlider = AxisGizmoSlider3D(
+      mesh: CuboidMesh(
+        size: Vector3(0.75, 0.55, 0.55),
+        material: SpatialMaterial(
+          albedoColor: const ui.Color(0xFFF59E0B),
+          metallic: 0.4,
+          roughness: 0.25,
+        )..renderState = const RenderState(cullMode: CullMode.backFace),
+      ),
+      position: Vector3(7.0, 10.8, 0.55),
+    );
+    dynamicExtras.add(axisGizmoSlider!);
+
+    // 3. `SplinePathEffect3D(orientToTangent: true)` gliding shuttle.
+    final flightSpline = CatmullRomSpline3D([
+      Vector3(2.8, 3.2, 1.35),
+      Vector3(6.8, 2.2, 2.25),
+      Vector3(11.2, 4.8, 1.55),
+      Vector3(9.6, 8.6, 2.35),
+      Vector3(2.8, 3.2, 1.35),
+    ]);
+    splineShuttle =
+        MeshComponent(
+          mesh: ConeMesh(
+            radius: 0.28,
+            height: 0.85,
+            segments: 14,
+            material: gemMat,
+          ),
+          position: Vector3(2.8, 3.2, 1.35),
+          color: const ui.Color(0xFFA78BFA),
+        )..add(
+          SplinePathEffect3D(
+            flightSpline,
+            EffectController(duration: 4.5, infinite: true),
+            orientToTangent: true,
+            upAxis: Vector3(0, 0, 1),
+          ),
+        );
+    dynamicExtras.add(splineShuttle!);
+
+    // 4. `ArcMoveEffect3D` + `RotateAroundEffect3D` + `InstanceDataEffect3D`.
+    arcJumpOrb =
+        MeshComponent(
+          mesh: SphereMesh(
+            radius: 0.34,
+            segments: 16,
+            material: gemMat,
+          ),
+          position: Vector3(3.2, 4.6, 0.45),
+          color: const ui.Color(0xFF34D399),
+        )..addAll([
+          ArcMoveEffect3D(
+            Vector3(6.2, 4.6, 0.45),
+            EffectController(duration: 1.25, alternate: true, infinite: true),
+            arcHeight: 1.65,
+            upAxis: Vector3(0, 0, 1),
+          ),
+          InstanceDataEffect3D(
+            Vector4(0.95, 0.5, 0.0, 0.0),
+            EffectController(duration: 0.9, alternate: true, infinite: true),
+          ),
+        ]);
+    final moonOrb =
+        MeshComponent(
+          mesh: CapsuleMesh(
+            radius: 0.16,
+            height: 0.52,
+            material: SpatialMaterial(
+              albedoColor: const ui.Color(0xFFF472B6),
+              metallic: 0.65,
+              roughness: 0.2,
+            )..renderState = const RenderState(cullMode: CullMode.backFace),
+          ),
+          position: Vector3(10.6, 5.2, 1.15),
+          rotation: upright,
+        )..add(
+          RotateAroundEffect3D(
+            axis: Vector3(0, 0, 1),
+            radians: math.pi * 2.0,
+            pivot: Vector3(9.6, 5.2, 1.15),
+            controller: EffectController(duration: 2.8, infinite: true),
+          ),
+        );
+    dynamicExtras.addAll([arcJumpOrb!, moonOrb]);
+  }
+
+  /// Lab 14: `PhysicsWorld3D` (`RigidBody3D`, `throwDice3D`, `HingeJoint3D`),
+  /// `CollisionSystem3D` + `TriggerVolume3D`, `KinematicCharacterController3D`,
+  /// `NavMesh3D` + `CrowdSteering3D`, `SkinnedHitboxRig3D`, and
+  /// `SpatialAudio3D`.
+  void buildPhysicsCollidersKinematicAndNavMeshLab({
+    required World3D dynamicWorld,
+    required ModelComponent automaton,
+  }) {
+    final upright = Quaternion.axisAngle(Vector3(1, 0, 0), math.pi / 2);
+
+    // 1. Sequential Impulse `PhysicsWorld3D` (`+Z` up -> gravity `(0,0,-9.81)`)
+    //    with tumbling dice & a hinged pendulum!
+    physicsWorld = PhysicsWorld3D(gravity: Vector3(0, 0, -9.81));
+    dynamicWorld.add(physicsWorld!);
+
+    final arenaFloorBody = RigidBody3D(
+      shape: BoxShape3D(halfExtents: Vector3(7.0, 7.0, 0.25)),
+      bodyType: BodyType3D.static,
+      restitution: 0.42,
+      friction: 0.60,
+      syncParent: false,
+      position: Vector3(7.0, 7.0, -0.25),
+    );
+    dynamicExtras.add(arenaFloorBody);
+
+    final dieColors = [
+      const ui.Color(0xFFEF4444),
+      const ui.Color(0xFF3B82F6),
+      const ui.Color(0xFF10B981),
+      const ui.Color(0xFFF59E0B),
+    ];
+    for (var i = 0; i < 4; i++) {
+      final body = RigidBody3D(
+        shape: BoxShape3D(halfExtents: Vector3.all(0.28)),
+        restitution: 0.46,
+        friction: 0.55,
+      );
+      final dieMesh = MeshComponent(
+        mesh: CuboidMesh(
+          size: Vector3.all(0.56),
+          material: SpatialMaterial(
+            albedoColor: dieColors[i],
+            metallic: 0.20,
+            roughness: 0.32,
+          )..renderState = const RenderState(cullMode: CullMode.backFace),
+        ),
+        position: Vector3(5.6 + i * 0.85, 9.8, 2.4),
+        children: [body],
+      );
+      diceRigidBodies.add(body);
+      dynamicExtras.add(dieMesh);
+    }
+    physicsWorld!.throwDice3D(
+      diceRigidBodies,
+      seed: 2026,
+      origin: Vector3(6.8, 9.8, 2.8),
+      throwVelocity: Vector3(0.35, -0.55, -2.4),
+    );
+
+    // Hinged pendulum at `(2.8, 10.6, 2.8)`
+    final hingeAnchor = RigidBody3D(
+      shape: SphereShape3D(radius: 0.12),
+      bodyType: BodyType3D.static,
+      syncParent: false,
+      position: Vector3(2.8, 10.6, 2.8),
+    );
+    pendulumBobBody = RigidBody3D(
+      shape: SphereShape3D(radius: 0.30),
+      mass: 1.5,
+      linearDamping: 0.02,
+      angularDamping: 0.02,
+    );
+    final pendulumBob = MeshComponent(
+      mesh: SphereMesh(
+        radius: 0.30,
+        segments: 14,
+        material: SpatialMaterial(
+          albedoColor: const ui.Color(0xFFEAB308),
+          metallic: 0.85,
+          roughness: 0.20,
+        )..renderState = const RenderState(cullMode: CullMode.backFace),
+      ),
+      position: Vector3(3.75, 10.6, 2.05),
+      children: [pendulumBobBody!],
+    );
+    pendulumHinge = HingeJoint3D(
+      bodyA: hingeAnchor,
+      bodyB: pendulumBobBody!,
+      localAnchorB: Vector3(-0.95, 0.0, 0.75),
+      localAxisA: Vector3(0, 1, 0),
+      minAngle: -1.35,
+      maxAngle: 1.35,
+    );
+    physicsWorld!.addJoint(pendulumHinge!);
+    dynamicExtras.addAll([hingeAnchor, pendulumBob]);
+
+    // 2. `CollisionSystem3D` + `TriggerVolume3D` + `CollisionBeacon3D` +
+    //    `KinematicCharacterController3D` climbing a 2-step staircase!
+    collisionSystem = CollisionSystem3D();
+    dynamicWorld.add(collisionSystem!);
+
+    // Ground & 2 walkable steps (`z = 0.0..0.22`, `0.22..0.44`) inside
+    // `dynamicWorld` so `collisionSystem` indexes them!
+    final stepMat = SpatialMaterial(
+      albedoColor: const ui.Color(0xFF64748B),
+      roughness: 0.62,
+    )..renderState = const RenderState(cullMode: CullMode.backFace);
+    dynamicExtras.add(
+      Collider3D(
+        shape: BoxShape3D(halfExtents: Vector3(7.0, 7.0, 0.25)),
+        isStatic: true,
+        position: Vector3(7.0, 7.0, -0.25),
+      ),
+    );
+    for (var s = 0; s < 2; s++) {
+      final topZ = (s + 1) * 0.22;
+      final widthX = s == 1 ? 1.55 : 0.95;
+      final cx = s == 1 ? 10.45 : 9.2;
+      dynamicExtras.add(
+        MeshComponent(
+          mesh: CuboidMesh(
+            size: Vector3(widthX, 1.4, topZ),
+            material: stepMat,
+          ),
+          position: Vector3(cx, 11.4, topZ * 0.5),
+          children: [
+            Collider3D(
+              shape: BoxShape3D(
+                halfExtents: Vector3(widthX * 0.5, 0.70, topZ * 0.5),
+              ),
+              isStatic: true,
+            ),
+          ],
+        ),
+      );
+    }
+
+    triggerPad = TriggerVolume3D(
+      shape: BoxShape3D(halfExtents: Vector3(0.65, 0.65, 0.55)),
+      position: Vector3(10.35, 11.4, 0.75),
+      onEnter3D: (_, _) => triggerEnters++,
+      onExit3D: (_) => triggerExits++,
+    );
+    collisionBeacon = CollisionBeacon3D(
+      mesh: TorusMesh(
+        majorRadius: 0.45,
+        minorRadius: 0.07,
+        material: UnlitMaterial()..renderState = RenderState.opaque,
+      ),
+      colliderShape: SphereShape3D(radius: 0.35),
+      position: Vector3(10.65, 11.4, 0.82),
+      color: const ui.Color(0xFF38BDF8),
+    )..rotation.setFrom(upright);
+
+    kinematicController = KinematicCharacterController3D(
+      radius: 0.26,
+      height: 0.86,
+      upAxis: Axis3D.z,
+      stepOffset: 0.28,
+      capsuleOffset: Vector3(0, 0, 0.43),
+    );
+    kinematicActor = MeshComponent(
+      mesh: CapsuleMesh(
+        radius: 0.26,
+        height: 0.86,
+        material: SpatialMaterial(
+          albedoColor: const ui.Color(0xFFEC4899),
+          metallic: 0.35,
+          roughness: 0.30,
+        )..renderState = const RenderState(cullMode: CullMode.backFace),
+      ),
+      position: Vector3(8.1, 11.4, 0.0),
+      rotation: upright,
+      children: [
+        kinematicController!,
+        Collider3D(
+          shape: SphereShape3D(radius: 0.28),
+          localOffset: Vector3(0, 0.43, 0),
+        ),
+      ],
+    );
+    dynamicExtras.addAll([triggerPad!, collisionBeacon!, kinematicActor!]);
+
+    // 3. `NavMesh3D.fromMesh` + `CrowdSteering3D` (4 RVO agents crossing ramp).
+    final navTerrainMesh = v3.buildSteppedPlazaNavMesh(
+      SpatialMaterial(
+        albedoColor: const ui.Color(0xFF1E3A5F),
+        roughness: 0.55,
+      )..renderState = RenderState.opaque,
+    );
+    staticExtras.add(MeshComponent(mesh: navTerrainMesh));
+    steppedNavMesh = NavMesh3D.fromMesh(
+      navTerrainMesh,
+      upAxis: Vector3(0, 0, 1),
+    );
+    crowdSteering = CrowdSteering3D(
+      navMesh: steppedNavMesh,
+      upAxis: Vector3(0, 0, 1),
+    );
+    const agentStarts = [
+      (2.8, 3.6, 11.2, 6.2),
+      (2.8, 6.4, 11.2, 4.6),
+      (11.2, 4.6, 2.8, 6.4),
+      (11.2, 6.2, 2.8, 3.6),
+    ];
+    for (var i = 0; i < agentStarts.length; i++) {
+      final (sx, sy, gx, gy) = agentStarts[i];
+      final sz = steppedNavMesh!.sampleHeightAt(Vector3(sx, sy, 0.5)) ?? 0.05;
+      final gz = steppedNavMesh!.sampleHeightAt(Vector3(gx, gy, 0.8)) ?? 0.65;
+      final marker = MeshComponent(
+        mesh: ConeMesh(
+          radius: 0.22,
+          height: 0.62,
+          segments: 12,
+          material: SpatialMaterial(
+            albedoColor: ShowcaseAssets.accentPalette[(i * 3) % 16],
+            roughness: 0.35,
+          )..renderState = const RenderState(cullMode: CullMode.backFace),
+        ),
+        position: Vector3(sx, sy, sz + 0.31),
+        rotation: upright,
+      );
+      dynamicExtras.add(marker);
+      final agent = CrowdAgent3D(
+        position: Vector3(sx, sy, sz),
+        radius: 0.28,
+        maxSpeed: 2.4,
+        targetComponent: marker,
+      )..setDestination(Vector3(gx, gy, gz), steppedNavMesh!);
+      crowdSteering!.addAgent(agent);
+    }
+
+    // 4. `SkinnedHitboxRig3D` (`BoneHitbox3D`) on the articulated `automaton`!
+    skinnedHitboxRig = SkinnedHitboxRig3D(
+      model: automaton,
+      hitboxes: [
+        BoneHitbox3D.byName(
+          'Base',
+          shape: SphereShape3D(radius: 0.42),
+        ),
+        BoneHitbox3D.byName(
+          'ArmTip',
+          shape: SphereShape3D(radius: 0.36),
+          damageMultiplier: 2.0,
+        ),
+      ],
+    );
+    automaton.add(skinnedHitboxRig!);
+
+    // 5. `SpatialAudioListener3D` + orbiting `SpatialAudioEmitter3D`!
+    audioListener3D = SpatialAudioListener3D(
+      position: Vector3(7.0, 7.0, 1.5),
+    );
+    audioEmitter3D = SpatialAudioEmitter3D(
+      minDistance: 1.2,
+      maxDistance: 18.0,
+      enableOcclusion: true,
+      position: Vector3(10.0, 7.0, 1.5),
+    );
+    dynamicExtras.addAll([audioListener3D!, audioEmitter3D!]);
+  }
+
+  /// Lab 15: `BlendSpace1D` & `BlendSpace2D`, `AnimationEvent3D`,
+  /// `RootMotionExtractor3D`, `OffscreenAnimationPolicy`, 64-agent
+  /// `SkinnedCrowdBatch3D`, `SceneLoader3D` (6 glTF extensions + `extras`),
+  /// and `AsyncModelLoader3D` + `AssetScope3D`.
+  void buildBlendTreesCrowdSceneLoaderAndIsolateLab({
+    required Model crowdModel,
+  }) {
+    final locoMat = SpatialMaterial(
+      albedoColor: const ui.Color(0xFF38BDF8),
+      metallic: 0.35,
+      roughness: 0.32,
+    )..renderState = const RenderState(cullMode: CullMode.backFace);
+    final locoModel = v3.buildLocomotionBlendModel(locoMat);
+    final clips = {for (final a in locoModel.animations) a.name!: a};
+
+    // 1. `BlendSpace1D` (`Idle` @ 0, `Walk` @ 2, `Run` @ 5) +
+    //    `AnimationEvent3D` + `RootMotionExtractor3D`.
+    final space1D = BlendSpace1D(
+      samples: [
+        BlendSample1D(animation: clips['Idle']!, position: 0.0),
+        BlendSample1D(animation: clips['Walk']!, position: 2.0),
+        BlendSample1D(animation: clips['Run']!, position: 5.0),
+      ],
+    );
+    walkerRootMotion = RootMotionExtractor3D(
+      rootNodeName: 'Hips',
+      horizontalPlane: RootMotionPlane3D.xy,
+    );
+    blend1DWalker = ModelComponent(
+      model: locoModel,
+      position: Vector3(3.2, 9.6, 0.05),
+      color: const ui.Color(0xFF38BDF8),
+      rootMotion: walkerRootMotion,
+      onAnimationEvent: (_) => animEventsFired++,
+    )..playBlendSpace1D(space1D, initialValue: 3.2);
+
+    // 2. `BlendSpace2D` (`Idle`, `Walk`, `StrafeL`, `StrafeR`) +
+    //    `OffscreenAnimationPolicy.tickOnlyEvaluateWhenVisible`.
+    final space2D = BlendSpace2D(
+      samples: [
+        BlendSample2D(animation: clips['Idle']!, point: Vector2(0, 0)),
+        BlendSample2D(animation: clips['Walk']!, point: Vector2(0, 1)),
+        BlendSample2D(animation: clips['StrafeL']!, point: Vector2(-1, 0)),
+        BlendSample2D(animation: clips['StrafeR']!, point: Vector2(1, 0)),
+      ],
+    );
+    blend2DWalker = ModelComponent(
+      model: locoModel,
+      position: Vector3(4.8, 9.6, 0.05),
+      color: const ui.Color(0xFFF472B6),
+      offscreenPolicy: OffscreenAnimationPolicy.tickOnlyEvaluateWhenVisible,
+    )..playBlendSpace2D(space2D, initialValue: Vector2(0.55, 0.65));
+    dynamicExtras.addAll([blend1DWalker!, blend2DWalker!]);
+
+    // 3. `SkinnedCrowdBatch3D`: **64** animated instanced agents in an 8x8
+    //    formation with baked pose-bank lookups!
+    skinnedCrowd64 = SkinnedCrowdBatch3D(
+      model: crowdModel,
+      bakedFps: 24.0,
+    );
+    for (var i = 0; i < 64; i++) {
+      final row = i ~/ 8;
+      final col = i % 8;
+      skinnedCrowd64!.addAgent(
+        position: Vector3(1.6 + col * 0.72, 1.8 + row * 0.72, 0.02),
+        scale: Vector3.all(0.42),
+        clipIndex: i % crowdModel.animations.length,
+        initialClock: (i * 0.13) % 1.2,
+        speed: 0.85 + (i % 5) * 0.12,
+        color: ShowcaseAssets.accentPalette[i % 16],
+      );
+    }
+    dynamicExtras.add(skinnedCrowd64!);
+
+    // 4. `SceneLoader3D` extended `.glb` scene (`KHR_lights_punctual`,
+    //    `EXT_mesh_gpu_instancing`, `KHR_materials_unlit`,
+    //    `KHR_materials_emissive_strength`, `KHR_mesh_quantization`, `extras`).
+    if (loadedExtendedScene case final scene?) {
+      for (final comp in scene.allComponents) {
+        if (comp is Component3D) {
+          dynamicExtras.add(comp);
+        }
+      }
+    }
+  }
+
+  /// Lab 16: Half-res `DepthNormalPrepass` (`SSAO`, `3D DoF`, Soft Particles,
+  /// Shoreline Water Foam), **2-Cascade CSM** + Shadowing `SpotLight`,
+  /// `EnvironmentProbe3D.skyDome` `SH9` IBL, live GPU `RenderTexture3D` portal,
+  /// `cameraMask` & `lightMask` isolation, and `DebugRenderer3D`.
+  void buildSsaoDofCsmPortalAndDebug3DLab({required bool debugEnabled}) {
+    final upright = Quaternion.axisAngle(Vector3(1, 0, 0), math.pi / 2);
+
+    // 1. Stepped architectural stone crease blocks showcasing SSAO contact
+    //    occlusion + 2-Cascade Directional Shadows + SpotLight Shadows!
+    final stoneMat = SpatialMaterial(
+      albedoColor: const ui.Color(0xFFCBD5E1),
+      roughness: 0.72,
+      metallic: 0.05,
+    )..renderState = const RenderState(cullMode: CullMode.backFace);
+    for (var i = 0; i < 5; i++) {
+      final w = 3.4 - i * 0.55;
+      staticExtras.add(
+        MeshComponent(
+          mesh: CuboidMesh(
+            size: Vector3(w, w, 0.28),
+            material: stoneMat,
+          ),
+          position: Vector3(4.2, 4.2, 0.14 + i * 0.28),
+        ),
+      );
+    }
+
+    // 2. Shadow-casting `SpotLight` illuminating the stepped shrine +
+    //    `lightMask` selective accent lamp (`lightMask: 0x02`).
+    shadowSpotLight = LightComponent.spot(
+      position: Vector3(1.6, 1.6, 4.2),
+      direction: Vector3(2.6, 2.6, -3.2),
+      color: const ui.Color(0xFFFFD166),
+      intensity: 18.0,
+      range: 12.0,
+      innerConeAngle: 0.18,
+      outerConeAngle: 0.55,
+      shadows: ShadowSettings(
+        resolution: 512,
+        maxDistance: 12.0,
+        color: const ui.Color(0xFF0F172A),
+      ),
+    );
+    final maskedMagentaLight = LightComponent.point(
+      position: Vector3(9.8, 4.2, 1.3),
+      color: const ui.Color(0xFFFF00FF),
+      intensity: 8.0,
+      range: 4.0,
+      lightMask: 0x02,
+    );
+    final maskedTargetCrystal = MeshComponent(
+      mesh: SphereMesh(
+        radius: 0.42,
+        segments: 18,
+        material: SpatialMaterial(
+          albedoColor: const ui.Color(0xFFE2E8F0),
+          roughness: 0.35,
+        )..renderState = const RenderState(cullMode: CullMode.backFace),
+      ),
+      position: Vector3(9.8, 3.5, 0.55),
+      cameraMask: 0x03, // receives both layer 0x01 camera & 0x02 lightMask!
+    );
+    dynamicExtras.addAll([
+      shadowSpotLight!,
+      maskedMagentaLight,
+      maskedTargetCrystal,
+    ]);
+
+    // 3. `EnvironmentProbe3D.skyDome` (`SH9` diffuse irradiance + mipmapped
+    //    specular reflection) on 3 metallic/roughness PBR spheres!
+    for (var i = 0; i < 3; i++) {
+      staticExtras.add(
+        MeshComponent(
+          mesh: SphereMesh(
+            radius: 0.40,
+            segments: 20,
+            material: SpatialMaterial(
+              albedoColor: const ui.Color(0xFFF8FAFC),
+              metallic: i * 0.5,
+              roughness: 0.14 + i * 0.34,
+              environmentProbe: v3.skyDomeProbe,
+            )..renderState = const RenderState(cullMode: CullMode.backFace),
+          ),
+          position: Vector3(3.4 + i * 1.15, 10.4, 0.52),
+        ),
+      );
+    }
+
+    // 4. Shoreline Intersection Foam (`shoreFoamDepth: 0.12`) + Soft Particles
+    //    (`softDepthFade: 0.14`)!
+    shoreFoamWaterMaterial = WaterMaterial(
+      shallowColor: const ui.Color(0xBF38BDF8),
+      deepColor: const ui.Color(0xDF0F294A),
+      waveAmplitude: 0.05,
+      shoreFoamDepth: 0.12,
+      foamColor: const ui.Color(0xFFF8FAFC),
+    );
+    final basinWater = MeshComponent(
+      mesh: TerrainMesh3D(
+        columns: 20,
+        rows: 20,
+        width: 3.6,
+        depth: 3.6,
+        upAxis: TerrainUpAxis.z,
+        heights: Float32List(20 * 20),
+        material: shoreFoamWaterMaterial,
+      ),
+      position: Vector3(4.2, 4.2, 0.34),
+      castsShadows: false,
+    );
+    softMistMaterial = ParticleMaterial(
+      color: const ui.Color(0x88BAE6FD),
+      softness: 0.65,
+      softDepthFade: 0.14,
+    );
+    final softMist = ParticleSystem3D(
+      capacity: 96,
+      position: Vector3(4.2, 4.2, 0.45),
+      material: softMistMaterial,
+      emitters: [
+        ParticleEmitter3D(
+          rate: 28,
+          shape: const BoxEmitterShape3D(1.2, 1.2, 0.25),
+          speed: (0.12, 0.35),
+          lifespan: (1.2, 2.0),
+          size: (0.65, 1.15),
+        ),
+      ],
+      opacityOverLife: ParticleCurve(0.85, 0.0),
+    )..prewarm(1.0);
+    dynamicExtras.addAll([basinWater, softMist]);
+
+    // 5. Live GPU `RenderTexture3D` security monitor portal (`cameraMask: 0x04`
+    //    excluded from portal capture `0x01`!).
+    portalRenderTexture = RenderTexture3D(
+      width: 160,
+      height: 160,
+      clearValue: const ui.Color(0xFF0F172A),
+    );
+    portalMonitorScreen = MeshComponent(
+      mesh: PlaneMesh(
+        size: Vector2(2.4, 2.4),
+        material: UnlitMaterial(albedoTexture: portalRenderTexture!.texture)
+          ..renderState = RenderState.opaque,
+      ),
+      position: Vector3(10.4, 9.8, 1.55),
+      rotation:
+          Quaternion.axisAngle(Vector3(0, 0, 1), -math.pi * 0.25) * upright,
+      // Visible to main layer (`0xFFFFFFFF`), excluded from portal (`0x01`).
+      cameraMask: 0x04,
+      castsShadows: false,
+    );
+    dynamicExtras.add(portalMonitorScreen!);
+
+    // 6. Batched 1-draw-call `DebugRenderer3D` wireframe overlay!
+    labDebugRenderer = DebugRenderer3D(
+      enabled: debugEnabled,
+      lineThickness: 0.024,
+    )..drawAxes(Matrix4.translationValues(7.0, 7.0, 0.15), size: 1.4);
+    dynamicExtras.add(labDebugRenderer!);
+  }
+
   void update(double time, double dt) {
     for (final mat in animatedWindMaterials) {
       mat.windTime = time;
@@ -1514,6 +2302,55 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
           2.6 + i * 0.45,
         )
         ..rotation.setAxisAngle(Vector3(0, 0, 1), ang + math.pi / 2);
+    }
+    if (interactiveTotem case final totem?) {
+      totem
+        ..captureFixedState()
+        ..rotation.setAxisAngle(Vector3(0, 0, 1), time * 1.1)
+        ..commitFixedState()
+        ..applyInterpolationAlpha(0.5);
+    }
+    if (kinematicController case final kcc?) {
+      final dirX = math.sin(time * 0.95) >= 0 ? 1.55 : -1.55;
+      kcc.moveAndSlide(
+        Vector3(dirX, 0, -4.5),
+        dt,
+        collisionSystem: collisionSystem,
+      );
+    }
+    if (crowdSteering case final crowd?) {
+      crowd.update(dt);
+      for (var i = 0; i < crowd.agents.length; i++) {
+        final ag = crowd.agents[i];
+        if (ag.hasReachedGoal && steppedNavMesh != null) {
+          final toEast = ag.position.x < 7.0;
+          final gx = toEast ? 11.2 : 2.8;
+          final gy = i.isEven ? 4.6 : 6.2;
+          final gz =
+              steppedNavMesh!.sampleHeightAt(Vector3(gx, gy, 0.8)) ?? 0.35;
+          ag.setDestination(Vector3(gx, gy, gz), steppedNavMesh!);
+        }
+      }
+    }
+    if (audioEmitter3D case final emitter?) {
+      final a = time * 1.6;
+      emitter.position.setValues(
+        7.0 + math.cos(a) * 3.2,
+        7.0 + math.sin(a) * 3.2,
+        1.5,
+      );
+    }
+    if (blend1DWalker case final w1?) {
+      w1.blendParameter1D = 2.5 + 2.3 * math.sin(time * 1.2);
+    }
+    if (blend2DWalker case final w2?) {
+      w2.blendParameter2D = Vector2(
+        math.cos(time * 1.1),
+        math.sin(time * 1.1),
+      );
+    }
+    if (shoreFoamWaterMaterial case final wMat?) {
+      wMat.time = time;
     }
   }
 }

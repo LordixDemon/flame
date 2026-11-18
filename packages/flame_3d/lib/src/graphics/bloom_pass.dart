@@ -52,7 +52,12 @@ class BloomPass(final GraphicsDevice _device) {
   late final Shader _compositeVert = VertexShader.fromAsset(_compositeBundle);
   late final Shader _compositeFrag = FragmentShader.fromAsset(
     _compositeBundle,
-    slots: const ['BloomComposite', 'sceneTexture', 'bloomTexture'],
+    slots: const [
+      'BloomComposite',
+      'sceneTexture',
+      'bloomTexture',
+      'depthNormalTexture',
+    ],
   );
 
   final Vector4 _curve = Vector4.zero();
@@ -61,6 +66,8 @@ class BloomPass(final GraphicsDevice _device) {
   final Vector4 _params = Vector4.zero();
   final Vector4 _grading = Vector4.zero();
   final Vector4 _tint = Vector4.zero();
+  final Vector4 _ssao = Vector4.zero();
+  final Vector4 _dof = Vector4.zero();
 
   /// Applies optional [bloom] and optional [postProcess] to [sceneTarget]
   /// (into which the 3D scene pass has just ended via `endTexturePass`),
@@ -70,6 +77,7 @@ class BloomPass(final GraphicsDevice _device) {
     GpuTextureTarget sceneTarget,
     BloomSettings? bloom, {
     PostProcessSettings? postProcess,
+    Texture? depthNormalTexture,
     GpuRenderTarget? outputTarget,
   }) {
     final fullWidth = sceneTarget.width;
@@ -163,18 +171,30 @@ class BloomPass(final GraphicsDevice _device) {
     final fxaa = (postProcess?.fxaa ?? false) ? 1.0 : 0.0;
     final c = postProcess?.tint ?? const Color(0xFFFFFFFF);
 
+    final ssaoIntensity = postProcess?.ssaoIntensity ?? 0.0;
+    final ssaoRadius = postProcess?.ssaoRadius ?? 1.5;
+    final dofBlur = postProcess?.dofBlurStrength ?? 0.0;
+    final dofFocus = postProcess?.dofFocusDepth ?? 0.5;
+    final dofRange = postProcess?.dofFocusRange ?? 0.15;
+    final hasDn = depthNormalTexture != null ? 1.0 : 0.0;
+
     _params.setValues(bloomIntensity, exposure, contrast, saturation);
     _grading.setValues(toneMap, vigIntensity, vigSmooth, fxaa);
     _tint.setValues(c.r, c.g, c.b, 1.0);
     _texel.setValues(1.0 / fullWidth, 1.0 / fullHeight, 0, 0);
+    _ssao.setValues(ssaoIntensity, ssaoRadius, hasDn, 0);
+    _dof.setValues(dofBlur, dofFocus, dofRange, 0);
 
     _compositeFrag
       ..setTexture('sceneTexture', sceneTexture)
       ..setTexture('bloomTexture', bloomReadTex)
+      ..setTexture('depthNormalTexture', depthNormalTexture ?? Texture.standard)
       ..setVector4('BloomComposite.params', _params)
       ..setVector4('BloomComposite.grading', _grading)
       ..setVector4('BloomComposite.tint', _tint)
-      ..setVector4('BloomComposite.texel', _texel);
+      ..setVector4('BloomComposite.texel', _texel)
+      ..setVector4('BloomComposite.ssao', _ssao)
+      ..setVector4('BloomComposite.dof', _dof);
 
     if (outputTarget != null) {
       _device.beginOwnedPass(outputTarget);

@@ -7,6 +7,7 @@ import 'package:flame/game.dart';
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
+import 'package:flame_3d/debug.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/model.dart';
 import 'package:flame_3d/particles.dart';
@@ -36,6 +37,10 @@ class ShowcaseController() extends ChangeNotifier {
   bool prioritizeNearestLights = true;
   bool fxaa = false;
   bool vignette = false;
+  bool ssao = false;
+  bool dof = false;
+  bool csm2Cascades = false;
+  bool debug3D = false;
 
   ToneMapMode toneMap = ToneMapMode.none;
   ShadowMapEncoding shadowEncoding = ShadowMapEncoding.auto;
@@ -147,6 +152,10 @@ class ShowcaseGame({ShowcaseController? controller})
   late final FogSettings _fogSettings;
   late final BloomSettings _bloomSettings;
   late final PostProcessSettings _postProcessSettings;
+  late final DebugRenderer3D globalDebugRenderer;
+
+  final Matrix4 _portalView = Matrix4.identity();
+  final Matrix4 _portalProj = Matrix4.identity();
 
   double _time = 0;
   double _burstTimer = 0;
@@ -226,6 +235,8 @@ class ShowcaseGame({ShowcaseController? controller})
     _buildMaterials();
     _populateStaticLayer();
     _populateDynamicLayer();
+    globalDebugRenderer = DebugRenderer3D(enabled: false);
+    dynamicLayer.world.add(globalDebugRenderer);
     syncControllerState();
 
     camera.viewfinder.position = staticLayer.scenePointToLocal(
@@ -843,6 +854,10 @@ class ShowcaseGame({ShowcaseController? controller})
           ..toneMap = ToneMapMode.none
           ..fxaa = false
           ..vignette = false
+          ..ssao = false
+          ..dof = false
+          ..csm2Cascades = false
+          ..debug3D = false
           ..renderScale = 1.0;
       case ShowcasePreset.materialsAndGrading:
         controller
@@ -922,6 +937,46 @@ class ShowcaseGame({ShowcaseController? controller})
           ..vignette = true
           ..stressInstances = false;
         variationRig.buildSpotLightsCullingAndPostLab();
+      case ShowcasePreset.inputEffectsAndCameraRigs:
+        controller
+          ..retainedStaticLayer = true
+          ..staticShadowCache = true
+          ..stressInstances = false;
+        variationRig.buildInputEffectsAndCameraRigsLab(
+          dynamicLayer: dynamicLayer,
+          gemMat: crystalMaterial,
+        );
+      case ShowcasePreset.physicsCollidersKinematicAndNavMesh:
+        controller
+          ..retainedStaticLayer = false
+          ..staticShadowCache = true
+          ..stressInstances = false;
+        variationRig.buildPhysicsCollidersKinematicAndNavMeshLab(
+          dynamicWorld: dynamicLayer.world,
+          automaton: automaton,
+        );
+      case ShowcasePreset.blendTreesCrowdSceneLoaderAndIsolate:
+        controller
+          ..retainedStaticLayer = true
+          ..staticShadowCache = true
+          ..stressInstances = false;
+        variationRig.buildBlendTreesCrowdSceneLoaderAndIsolateLab(
+          crowdModel: automaton.model,
+        );
+      case ShowcasePreset.ssaoDofCsmPortalAndDebug3D:
+        controller
+          ..retainedStaticLayer = false
+          ..staticShadowCache = false
+          ..ssao = true
+          ..dof = true
+          ..csm2Cascades = true
+          ..debug3D = true
+          ..toneMap = ToneMapMode.acesFilmic
+          ..fxaa = true
+          ..stressInstances = false;
+        variationRig.buildSsaoDofCsmPortalAndDebug3DLab(
+          debugEnabled: controller.debug3D,
+        );
     }
 
     if (variationRig.staticExtras.isNotEmpty) {
@@ -1041,7 +1096,17 @@ class ShowcaseGame({ShowcaseController? controller})
       ..toneMap = controller.toneMap
       ..exposure = controller.toneMap == ToneMapMode.none ? 1.0 : 1.08
       ..vignetteIntensity = controller.vignette ? 0.35 : 0.0
-      ..fxaa = controller.fxaa;
+      ..fxaa = controller.fxaa
+      ..ssaoIntensity = controller.ssao ? 0.72 : 0.0
+      ..ssaoRadius = 0.032
+      ..dofBlurStrength = controller.dof ? 0.45 : 0.0
+      ..dofFocusDepth = 0.50
+      ..dofFocusRange = 0.16;
+
+    final needDepthPrepass =
+        controller.ssao ||
+        controller.dof ||
+        controller.preset == ShowcasePreset.ssaoDofCsmPortalAndDebug3D;
 
     staticLayer
       ..msaa = msaa
@@ -1061,18 +1126,29 @@ class ShowcaseGame({ShowcaseController? controller})
           ? _postProcessSettings
           : null;
     dynamicLayer.world
+      ..depthPrepassEnabled = needDepthPrepass
       ..spatialIndex3DEnabled = controller.spatialIndex3D
       ..prioritizeNearestLights = controller.prioritizeNearestLights;
 
+    final desiredCascades = controller.csm2Cascades ? 2 : 1;
     _staticShadows
       ..cacheWhenStatic = controller.staticShadowCache
       ..encoding = controller.shadowEncoding
       ..fit = controller.shadowFit
-      ..softness = controller.shadowSoftness;
+      ..softness = controller.shadowSoftness
+      ..cascades = desiredCascades;
     _dynamicShadows
       ..encoding = controller.shadowEncoding
       ..fit = controller.shadowFit
-      ..softness = controller.shadowSoftness;
+      ..softness = controller.shadowSoftness
+      ..cascades = desiredCascades;
+
+    if (variationRig.labDebugRenderer case final labDbg?) {
+      labDbg.enabled = controller.debug3D;
+      globalDebugRenderer.enabled = false;
+    } else {
+      globalDebugRenderer.enabled = controller.debug3D;
+    }
 
     if (controller.sharedShadowGroup) {
       staticLayer.world.shadowGroup = shadowGroup;
@@ -1289,6 +1365,32 @@ class ShowcaseGame({ShowcaseController? controller})
     }
 
     variationRig.update(_time, dt);
+
+    if (variationRig.portalRenderTexture case final portal?) {
+      _portalView.setAsViewMatrix(
+        Vector3(
+          boardCells / 2 + math.cos(_time * 0.6) * 4.5,
+          boardCells / 2 + math.sin(_time * 0.6) * 4.5,
+          3.4,
+        ),
+        Vector3(boardCells / 2, boardCells / 2, 0.9),
+        Vector3(0, 0, 1),
+      );
+      _portalProj.setAsPerspective(52, 1.0, 0.25, 40.0);
+      portal.renderWorld(
+        dynamicLayer.world,
+        view: _portalView,
+        projection: _portalProj,
+        cameraMask: 0x01,
+      );
+      if (variationRig.portalMonitorScreen case final screen?) {
+        final mat = screen.mesh.surfaces.first.material;
+        if (mat is UnlitMaterial &&
+            !identical(mat.albedoTexture, portal.texture)) {
+          mat.albedoTexture = portal.texture;
+        }
+      }
+    }
 
     _hudRefreshTimer += dt;
     if (_hudRefreshTimer >= 0.25) {

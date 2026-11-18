@@ -10,6 +10,7 @@ import 'package:flame_3d/src/graphics/material_pipeline_cache.dart';
 import 'package:flame_3d/src/graphics/prefixed_uniform_block.dart';
 import 'package:meta/meta.dart';
 
+part 'render_context_3d_depth_normal.dart';
 part 'render_context_3d_shadows.dart';
 
 /// Fills a uniform block that the [RenderContext3D] uploads once per render
@@ -75,8 +76,10 @@ class RenderContext3D(super.device) extends RenderContext {
     registerPassUniform(hemisphereLightBlock, writeHemisphereLightUniforms);
     registerPassUniform(shadowsBlock, writeShadowsUniforms);
     registerPassUniform(fogBlock, writeFogUniforms);
+    registerPassUniform(depthNormalBlock, _DepthNormalPass.writeUniforms);
     registerPassUniform(shadowCasterBlock, _ShadowPass.writeCasterUniforms);
     registerPassTexture(shadowMapSampler, _ShadowPass.shadowMapTexture);
+    registerPassTexture(depthNormalSampler, _DepthNormalPass.passTexture);
   }
 
   /// The name of the vertex stage block holding the camera matrices
@@ -134,6 +137,12 @@ class RenderContext3D(super.device) extends RenderContext {
   /// The name of the block describing atmospheric fog (`FogSettings`), see
   /// `shaders/flame_3d/fog.glsl`.
   static const String fogBlock = 'Fog';
+
+  /// The name of the block describing the half-res scene depth-normal prepass.
+  static const String depthNormalBlock = 'DepthNormal';
+
+  /// The name of the sampler providing the half-res depth-normal texture.
+  static const String depthNormalSampler = 'depthNormalTexture';
 
   /// The name of the block in which `StylizedMaterial`'s fragment shader
   /// reads the camera, the lights, the shadows and the fog of the pass.
@@ -210,6 +219,10 @@ class RenderContext3D(super.device) extends RenderContext {
 
   /// Atmospheric fog of the current pass (`null` disables fog).
   FogSettings? fog;
+
+  /// 32-bit layer bitmask filtering `Object3D.cameraMask` and `Light.lightMask`
+  /// for the current pass (`0xFFFFFFFF` renders all layers by default).
+  int cameraMask = 0xFFFFFFFF;
 
   /// The number of draws recorded in the last flushed pass.
   int get drawCount => _lastDrawCount;
@@ -610,6 +623,35 @@ class RenderContext3D(super.device) extends RenderContext {
   /// ends the shadow pass, and sets the camera of the main pass back, whose
   /// draws then receive the shadows.
   void endShadowPass() => _shadows.end();
+
+  /// Whether a second cascade pass is queued for a 2-cascade shadow atlas.
+  bool get needsShadowCascade1 => _shadows.needsCascade1;
+
+  /// Begins recording shadow casters for the far cascade of a 2-cascade atlas.
+  void beginShadowCascade1() => _shadows.beginCascade1();
+
+  /// Flushes the far cascade and packs both cascades into the shadow atlas.
+  void endShadowCascade1() => _shadows.endCascade1();
+
+  /// Whether the draws being recorded belong to the half-res depth-normal
+  /// prepass.
+  bool get isDepthNormalPass => _depthNormal.recording;
+
+  /// The active half-res depth-normal texture of the current pass, or `null`.
+  Texture? get activeDepthNormalTexture =>
+      _depthNormal.active ? _depthNormal._texture : null;
+
+  /// Begins the half-res depth-normal prepass for a scene of [width]x[height].
+  bool beginDepthNormalPass(int width, int height) =>
+      _depthNormal.begin(width, height);
+
+  /// Flushes opaque geometry into the half-res depth-normal target.
+  void endDepthNormalPass() => _depthNormal.end();
+
+  /// Marks the depth-normal prepass inactive when skipped for a pass.
+  void clearDepthNormalPass() => _depthNormal.clear();
+
+  late final _DepthNormalPass _depthNormal = _DepthNormalPass(this);
 
   /// A number that changes every time a shadow pass renders a shadow map
   /// (between [beginShadowPass] and [endShadowPass]): while it stays the
@@ -1030,6 +1072,9 @@ class RenderContext3D(super.device) extends RenderContext {
     AmbientLight? ambient;
     var hasHemisphere = false;
     for (var i = 0; i < lights.length && ambient == null; i++) {
+      if ((lights[i].lightMask & context.cameraMask) == 0) {
+        continue;
+      }
       final source = lights[i].source;
       if (source is AmbientLight) {
         ambient = source;
@@ -1093,7 +1138,8 @@ class RenderContext3D(super.device) extends RenderContext {
     final lights = context.lights;
     var totalPointLights = 0;
     for (var i = 0; i < lights.length; i++) {
-      if (lights[i].source is PointLight) {
+      if ((lights[i].lightMask & context.cameraMask) != 0 &&
+          lights[i].source is PointLight) {
         totalPointLights++;
       }
     }
@@ -1104,6 +1150,9 @@ class RenderContext3D(super.device) extends RenderContext {
       var slots = 0;
       for (var i = 0; i < lights.length && slots < maxPointLights; i++) {
         final light = lights[i];
+        if ((light.lightMask & context.cameraMask) == 0) {
+          continue;
+        }
         final source = light.source;
         if (source is! PointLight) {
           continue;
@@ -1127,6 +1176,9 @@ class RenderContext3D(super.device) extends RenderContext {
     } else {
       for (var i = 0; i < lights.length; i++) {
         final light = lights[i];
+        if ((light.lightMask & context.cameraMask) == 0) {
+          continue;
+        }
         final source = light.source;
         if (source is! PointLight || source.intensity <= 0) {
           continue;
@@ -1186,7 +1238,8 @@ class RenderContext3D(super.device) extends RenderContext {
     final lights = context.lights;
     var totalSpot = 0;
     for (var i = 0; i < lights.length; i++) {
-      if (lights[i].source is SpotLight) {
+      if ((lights[i].lightMask & context.cameraMask) != 0 &&
+          lights[i].source is SpotLight) {
         totalSpot++;
       }
     }
@@ -1194,6 +1247,9 @@ class RenderContext3D(super.device) extends RenderContext {
     var count = 0;
     if (totalSpot <= maxSpotLights) {
       for (var i = 0; i < lights.length && count < maxSpotLights; i++) {
+        if ((lights[i].lightMask & context.cameraMask) == 0) {
+          continue;
+        }
         if (lights[i].source is SpotLight) {
           final s = lights[i].source as SpotLight;
           if (s.intensity > 0) {
@@ -1203,6 +1259,9 @@ class RenderContext3D(super.device) extends RenderContext {
       }
     } else {
       for (var i = 0; i < lights.length; i++) {
+        if ((lights[i].lightMask & context.cameraMask) == 0) {
+          continue;
+        }
         final s = lights[i].source;
         if (s is! SpotLight || s.intensity <= 0) {
           continue;
@@ -1284,6 +1343,9 @@ class RenderContext3D(super.device) extends RenderContext {
     var count = 0;
     for (var i = 0; i < lights.length && count < maxDirectionalLights; i++) {
       final light = lights[i];
+      if ((light.lightMask & context.cameraMask) == 0) {
+        continue;
+      }
       final source = light.source;
       if (source is! DirectionalLight) {
         continue;
@@ -1320,6 +1382,9 @@ class RenderContext3D(super.device) extends RenderContext {
     final lights = context.lights;
     HemisphereLight? hemisphere;
     for (var i = 0; i < lights.length && hemisphere == null; i++) {
+      if ((lights[i].lightMask & context.cameraMask) == 0) {
+        continue;
+      }
       final source = lights[i].source;
       if (source is HemisphereLight) {
         hemisphere = source;

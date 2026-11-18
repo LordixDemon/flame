@@ -157,6 +157,10 @@ The material's `renderState` decides how particles blend:
 `ParticleSystem3D.sort` overrides the sorting. The whole system is ordered among the other
 translucent draws of the scene by the center of its bounds.
 
+When `World3D.depthPrepassEnabled` is `true`, setting `ParticleMaterial(softDepthFade: 0.12)` fades
+billboard alpha smoothly (`smoothstep`) near intersections with opaque walls and floors using the
+half-resolution clip-depth prepass, eliminating hard billboard clipping lines.
+
 
 ## Mesh particles
 

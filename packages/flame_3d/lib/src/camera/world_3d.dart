@@ -28,6 +28,7 @@ class World3D({
   PostProcessSettings? postProcess,
   var bool spatialIndex3DEnabled = false,
   var bool prioritizeNearestLights = false,
+  var bool depthPrepassEnabled = false,
 }) extends flame.World {
   /// {@macro world_3d}
   this;
@@ -244,6 +245,40 @@ class World3D({
     } finally {
       ctx.endShadowPass();
     }
+    if (ctx.needsShadowCascade1) {
+      ctx.beginShadowCascade1();
+      try {
+        _recordCasters(canvas);
+      } finally {
+        ctx.endShadowCascade1();
+      }
+    }
+    return true;
+  }
+
+  /// Renders the half-resolution clip-depth + view-normal prepass when
+  /// [depthPrepassEnabled] or [PostProcessSettings.needsDepthNormal] is active.
+  bool renderDepthNormals(
+    Canvas canvas,
+    int width,
+    int height, {
+    RenderContext3D? overrideContext,
+  }) {
+    final ctx = overrideContext ?? context;
+    final needed =
+        depthPrepassEnabled || (_postProcess?.needsDepthNormal ?? false);
+    if (!needed) {
+      ctx.clearDepthNormalPass();
+      return false;
+    }
+    if (!ctx.beginDepthNormalPass(width, height)) {
+      return false;
+    }
+    try {
+      _recordCasters(canvas);
+    } finally {
+      ctx.endDepthNormalPass();
+    }
     return true;
   }
 
@@ -367,6 +402,12 @@ class World3D({
         ..fog = _fog
         ..setCamera(view, projection);
       renderShadows(dummyCanvas, overrideContext: resolvedContext);
+      renderDepthNormals(
+        dummyCanvas,
+        width,
+        height,
+        overrideContext: resolvedContext,
+      );
 
       final bloomSettings = _bloom;
       final postSettings = _postProcess;
@@ -404,6 +445,7 @@ class World3D({
           texTarget,
           bloomSettings,
           postProcess: postSettings,
+          depthNormalTexture: resolvedContext.activeDepthNormalTexture,
           outputTarget: bloomTarget,
         );
       } else {
@@ -611,8 +653,12 @@ class World3D({
     final context = host.context
       ..lights = _lights
       ..fog = _fog
+      ..cameraMask = camera.cameraMask
       ..setCamera(camera.viewMatrix, camera.projectionMatrix);
     renderShadows(canvas);
+    final wPx = math.max(1, renderSize.width.round());
+    final hPx = math.max(1, renderSize.height.round());
+    renderDepthNormals(canvas, wPx, hPx);
 
     final device = host.device;
     final bloomSettings = _bloom;
@@ -627,8 +673,8 @@ class World3D({
     final Image image;
     if (usePost) {
       final texTarget = device.textureTarget(
-        math.max(1, renderSize.width.round()),
-        math.max(1, renderSize.height.round()),
+        wPx,
+        hPx,
         GpuPixelFormat.rgba8888,
         clearValue: device.clearValue,
       );
@@ -645,6 +691,7 @@ class World3D({
         texTarget,
         bloomSettings,
         postProcess: postSettings,
+        depthNormalTexture: context.activeDepthNormalTexture,
       );
     } else {
       device.beginPass(

@@ -11,6 +11,7 @@ out vec4 outColor;
 
 uniform sampler2D sceneTexture;
 uniform sampler2D bloomTexture;
+uniform sampler2D depthNormalTexture;
 
 uniform BloomComposite {
   // x: bloomIntensity, y: exposure, z: contrast, w: saturation
@@ -22,7 +23,82 @@ uniform BloomComposite {
   vec4 tint;
   // xy: 1 / resolution, zw: unused
   vec4 texel;
+  // x: ssaoIntensity, y: ssaoRadius (in pixels), z: hasDepthNormal, w: unused
+  vec4 ssao;
+  // x: dofBlurStrength, y: dofFocusDepth [0..1], z: dofFocusRange, w: unused
+  vec4 dof;
 } composite;
+
+float decodeDepth16(vec4 dn) {
+  return (dn.r * 255.0 * 256.0 + dn.g * 255.0) / 65535.0;
+}
+
+vec3 decodeViewNormal(vec4 dn) {
+  vec2 xy = dn.ba * 2.0 - 1.0;
+  float z = sqrt(max(0.0, 1.0 - dot(xy, xy)));
+  return normalize(vec3(xy, z));
+}
+
+float computeSpiralSsao(vec2 uv, vec2 invRes, float dCenter, vec3 nCenter) {
+  if (composite.ssao.x <= 1e-4 || composite.ssao.z < 0.5 || dCenter >= 0.999) {
+    return 1.0;
+  }
+  float radiusPx = max(composite.ssao.y, 0.5) * 4.0;
+  float occ = 0.0;
+  for (int i = 0; i < 8; i++) {
+    float fi = float(i) + 0.5;
+    float ang = fi * 2.39996323;
+    float r = (fi / 8.0) * radiusPx;
+    vec2 sUv = clamp(
+      uv + vec2(cos(ang), sin(ang)) * invRes * r,
+      vec2(0.001),
+      vec2(0.999)
+    );
+    vec4 sDn = texture(depthNormalTexture, sUv);
+    float dSample = decodeDepth16(sDn);
+    float diff = dCenter - dSample;
+    // Sample is closer to viewer than center within local thickness band.
+    if (diff > 0.0006 && diff < 0.065) {
+      vec3 sNorm = decodeViewNormal(sDn);
+      float crease = clamp(1.0 - dot(nCenter, sNorm), 0.15, 1.0);
+      float rangeW = 1.0 - smoothstep(0.015, 0.065, diff);
+      occ += crease * rangeW;
+    }
+  }
+  float ao = 1.0 - clamp((occ / 8.0) * composite.ssao.x * 2.4, 0.0, 0.88);
+  return ao;
+}
+
+vec4 sampleDofBokeh(vec2 uv, vec2 invRes, vec4 sharpColor, float dCenter) {
+  if (composite.dof.x <= 1e-4 || composite.ssao.z < 0.5) {
+    return sharpColor;
+  }
+  float distFromFocus = abs(dCenter - composite.dof.y);
+  float coc = clamp(
+    (distFromFocus - composite.dof.z) / max(composite.dof.z, 0.02),
+    0.0,
+    1.0
+  ) * composite.dof.x;
+  if (coc <= 0.01) {
+    return sharpColor;
+  }
+  float radiusPx = coc * 5.5;
+  vec4 acc = sharpColor;
+  float wSum = 1.0;
+  for (int i = 0; i < 8; i++) {
+    float fi = float(i) + 1.0;
+    float ang = fi * 2.39996323;
+    float r = sqrt(fi / 8.0) * radiusPx;
+    vec2 bUv = clamp(
+      uv + vec2(cos(ang), sin(ang)) * invRes * r,
+      vec2(0.001),
+      vec2(0.999)
+    );
+    acc += texture(sceneTexture, bUv);
+    wSum += 1.0;
+  }
+  return vec4((acc / wSum).rgb, sharpColor.a);
+}
 
 float luma(vec3 rgb) {
   return dot(rgb, vec3(0.299, 0.587, 0.114));
@@ -98,11 +174,19 @@ vec3 agxApprox(vec3 x) {
 
 void main() {
   vec4 base = sampleSceneFxaa(fragUv, composite.texel.xy);
+  float ao = 1.0;
+  if (composite.ssao.z > 0.5) {
+    vec4 dn = texture(depthNormalTexture, fragUv);
+    float dCenter = decodeDepth16(dn);
+    vec3 nCenter = decodeViewNormal(dn);
+    base = sampleDofBokeh(fragUv, composite.texel.xy, base, dCenter);
+    ao = computeSpiralSsao(fragUv, composite.texel.xy, dCenter, nCenter);
+  }
   vec3 glow = composite.params.x > 0.0
       ? texture(bloomTexture, fragUv).rgb * composite.params.x
       : vec3(0.0);
 
-  vec3 color = (base.rgb + glow) * composite.params.y;
+  vec3 color = (base.rgb * ao + glow) * composite.params.y;
 
   float mode = composite.grading.x;
   if (mode > 2.5) {

@@ -5,22 +5,52 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/src/model/animation_state.dart';
+import 'package:flame_3d/src/model/blend_space_3d.dart';
 import 'package:flame_3d/src/model/model.dart';
+import 'package:flame_3d/src/model/model_animation.dart';
 import 'package:flame_3d/src/model/procedural_rigging_3d.dart';
+import 'package:flame_3d/src/model/root_motion_3d.dart';
+
+/// Controls how [ModelComponent] advances clocks and evaluates skeletal poses
+/// when culled outside the camera frustum.
+enum OffscreenAnimationPolicy() {
+  /// Evaluates the full skeletal pose on every [ModelComponent.update] tick
+  /// whenever the animation changes (default, 100% backward-compatible).
+  always,
+
+  /// Advances clocks and dispatches [AnimationEvent3D]s every tick, but defers
+  /// matrix hierarchy & skinning evaluation until [ModelComponent.draw],
+  /// [ModelComponent.nodeTransform], `BoneSocket3D`, or
+  /// [ModelComponent.raycast] requests the pose.
+  tickOnlyEvaluateWhenVisible,
+
+  /// Pauses clock advancement completely unless [ModelComponent.draw] ran on
+  /// the preceding rendered frame.
+  pauseWhenOffscreen,
+}
 
 /// A component wrapper over a 3D [Model], using an allocation-free
-/// [ModelPoseWorkspace] and [AnimationState] to evaluate animations, crossfades
-/// and attached `BoneSocket3D` children.
+/// [ModelPoseWorkspace] and [AnimationState] to evaluate animations,
+/// crossfades, 1D/2D blend spaces, root motion, and attached `BoneSocket3D`
+/// children.
 class ModelComponent({
   required final Model model,
   var Color color = const Color(0xFFFFFFFF),
   Vector4? instanceData,
+  var OffscreenAnimationPolicy offscreenPolicy =
+      OffscreenAnimationPolicy.always,
+  var RootMotionExtractor3D? rootMotion,
+  var AnimationEventCallback3D? onAnimationEvent,
   super.position,
   super.rotation,
   super.scale,
   super.children,
   super.castsShadows,
 }) extends Object3D {
+  this {
+    _animation.addEventListener(_forwardAnimationEvent);
+  }
+
   /// Four floats of per-instance data forwarded to materials.
   final Vector4 instanceData = instanceData?.clone() ?? Vector4.zero();
 
@@ -29,6 +59,8 @@ class ModelComponent({
   late final ModelPoseWorkspace _workspace = ModelPoseWorkspace.forModel(model);
   bool _poseDirty = true;
   double _pendingModifierDt = 0.0;
+  bool _drawnSinceLastUpdate = false;
+  int _poseEvaluationsCount = 0;
 
   /// Procedural post-animation bone modifiers (`SpringBone3D`,
   /// `LookAtConstraint3D`, `TwoBoneIkConstraint3D`) applied every frame.
@@ -37,20 +69,52 @@ class ModelComponent({
   final Matrix4 _invWorld = Matrix4.identity();
   final List<double> _morphScratch = [];
 
-  /// Underlying animation state (supports speed, playback mode, crossfades, and
-  /// masked `layers`).
+  void _forwardAnimationEvent(AnimationEvent3D event) {
+    onAnimationEvent?.call(event);
+  }
+
+  /// Underlying animation state (supports speed, playback mode, crossfades,
+  /// 1D/2D blend spaces, events, and masked `layers`).
   AnimationState get animationState => _animation;
+
+  /// Total number of times [evaluatePose] has recomputed this component's
+  /// node hierarchy and skinning matrices.
+  int get poseEvaluationsCount => _poseEvaluationsCount;
+
+  /// Resets [poseEvaluationsCount] back to `0` (useful for profiling/tests).
+  void resetPoseEvaluationsCount() {
+    _poseEvaluationsCount = 0;
+  }
+
+  /// Current 1D parameter driving [AnimationState.activeBlendSpace1D].
+  double get blendParameter1D => _animation.blendParameter1D;
+  set blendParameter1D(double value) {
+    if (_animation.blendParameter1D != value) {
+      _animation.blendParameter1D = value;
+      _markPoseChanged();
+    }
+  }
+
+  /// Current 2D parameter driving [AnimationState.activeBlendSpace2D].
+  Vector2 get blendParameter2D => _animation.blendParameter2D;
+  set blendParameter2D(Vector2 value) {
+    if (_animation.blendParameter2D != value) {
+      _animation.blendParameter2D = value;
+      _markPoseChanged();
+    }
+  }
 
   @override
   Aabb3? computeLocalAabb() => model.animatedAabb;
 
   final Matrix4 _nodeTransform = Matrix4.identity();
 
-  /// Ensures the node transforms reflect the current [animationState] clock and
-  /// any [boneModifiers].
+  /// Ensures the node transforms reflect the current [animationState] clock,
+  /// optional [rootMotion] pose lock, and any [boneModifiers].
   ModelPoseWorkspace evaluatePose() {
     if (_poseDirty) {
       _poseDirty = false;
+      _poseEvaluationsCount++;
       final dt = _pendingModifierDt;
       _pendingModifierDt = 0.0;
       if (boneModifiers.isNotEmpty) {
@@ -63,21 +127,22 @@ class ModelComponent({
           worldMatrix: w,
           invWorldMatrix: _invWorld,
           dt: dt,
+          rootMotion: rootMotion,
         );
       } else {
-        model.evaluateInto(_animation, _workspace);
+        model.evaluateInto(
+          _animation,
+          _workspace,
+          rootMotion: rootMotion,
+        );
       }
       _evaluateAnimatedMorphTargets();
     }
     return _workspace;
   }
 
-  final List<double> _layerMorphScratch = [];
-
   void _evaluateAnimatedMorphTargets() {
-    final baseAnim = _animation.animationRef;
-    final layers = _animation.layers;
-    if (baseAnim == null && layers.isEmpty) {
+    if (!_animation.hasActiveEvaluation && _animation.layers.isEmpty) {
       return;
     }
 
@@ -86,61 +151,13 @@ class ModelComponent({
       if (mesh == null) {
         continue;
       }
-      final idx = node.nodeIndex;
-      final baseMorph = baseAnim?.nodes[idx]?.morphWeights;
-      var hasLayerMorph = false;
-      var targetCount = baseMorph?.targetCount ?? 0;
-      for (var li = 0; li < layers.length; li++) {
-        final layer = layers[li];
-        if (layer.weight <= 0 || !layer.nodeIndices.contains(idx)) {
-          continue;
-        }
-        final lm = layer.state.animationRef?.nodes[idx]?.morphWeights;
-        if (lm != null) {
-          hasLayerMorph = true;
-          if (lm.targetCount > targetCount) {
-            targetCount = lm.targetCount;
-          }
-        }
-      }
-      if (baseMorph == null && !hasLayerMorph) {
+      final targetCount = _animation.sampleNodeMorphWeights(
+        node.nodeIndex,
+        _morphScratch,
+      );
+      if (targetCount <= 0) {
         continue;
       }
-
-      while (_morphScratch.length < targetCount) {
-        _morphScratch.add(0.0);
-      }
-      for (var k = 0; k < targetCount; k++) {
-        _morphScratch[k] = 0.0;
-      }
-      if (baseMorph != null) {
-        baseMorph.sampleInto(_animation.clock, _morphScratch);
-      }
-
-      if (hasLayerMorph) {
-        while (_layerMorphScratch.length < targetCount) {
-          _layerMorphScratch.add(0.0);
-        }
-        for (var li = 0; li < layers.length; li++) {
-          final layer = layers[li];
-          final w = layer.weight.clamp(0.0, 1.0);
-          if (w <= 0 || !layer.nodeIndices.contains(idx)) {
-            continue;
-          }
-          final lm = layer.state.animationRef?.nodes[idx]?.morphWeights;
-          if (lm == null) {
-            continue;
-          }
-          for (var k = 0; k < targetCount; k++) {
-            _layerMorphScratch[k] = 0.0;
-          }
-          lm.sampleInto(layer.state.clock, _layerMorphScratch);
-          for (var k = 0; k < lm.targetCount; k++) {
-            _morphScratch[k] += (_layerMorphScratch[k] - _morphScratch[k]) * w;
-          }
-        }
-      }
-
       for (final surface in mesh.surfaces) {
         if (surface.morphTargets.isNotEmpty) {
           surface.applyMorphWeights(_morphScratch);
@@ -213,6 +230,7 @@ class ModelComponent({
 
   @override
   void draw(covariant RenderContext3D context) {
+    _drawnSinceLastUpdate = true;
     final workspace = evaluatePose();
     context.beginDepthPrepassGroup();
     try {
@@ -279,17 +297,86 @@ class ModelComponent({
   @override
   void update(double dt) {
     super.update(dt);
+    final wasDrawn = _drawnSinceLastUpdate;
+    _drawnSinceLastUpdate = false;
+
+    if (offscreenPolicy == OffscreenAnimationPolicy.pauseWhenOffscreen &&
+        !wasDrawn) {
+      rootMotion?.clearStepDeltas();
+      return;
+    }
+
+    final extractor = rootMotion;
+    extractor?.ensureSeededBeforeTick(model, _animation);
+
     final animChanged = _animation.update(dt);
     final hasModifiers = boneModifiers.any((m) => m.weight > 0.0);
+
+    if (extractor != null) {
+      if (animChanged) {
+        extractor.extractStep(model, _animation, worldTransformMatrix);
+        if (extractor.applyToComponentTransform) {
+          position.add(extractor.deltaPositionWorld);
+          if (extractor.deltaYawRad.abs() > 1e-9) {
+            final up = extractor.horizontalPlane == RootMotionPlane3D.xz
+                ? _upY
+                : _upZ;
+            _yawDeltaQ.setAxisAngle(up, extractor.deltaYawRad);
+            rotation
+              ..setFrom(_yawDeltaQ * rotation)
+              ..normalize();
+          }
+        }
+      } else {
+        extractor.clearStepDeltas();
+      }
+    }
+
     if (animChanged || (hasModifiers && dt > 0.0)) {
-      _pendingModifierDt = dt;
+      _pendingModifierDt += dt;
       _poseDirty = true;
-      evaluatePose();
+      if (offscreenPolicy == OffscreenAnimationPolicy.always) {
+        evaluatePose();
+      }
       worldOrNull?.markSceneDirty(shadows: castsShadows);
     }
   }
 
   Set<String> get animationNames => model.animationNames;
+
+  /// Activates a 1D [BlendSpace1D] on this component's [animationState].
+  void playBlendSpace1D(
+    BlendSpace1D space, {
+    double initialValue = 0.0,
+    bool resetClock = true,
+  }) {
+    if (resetClock) {
+      rootMotion?.reset();
+    }
+    _animation.playBlendSpace1D(
+      space,
+      initialValue: initialValue,
+      resetClock: resetClock,
+    );
+    _markPoseChanged();
+  }
+
+  /// Activates a 2D [BlendSpace2D] on this component's [animationState].
+  void playBlendSpace2D(
+    BlendSpace2D space, {
+    Vector2? initialValue,
+    bool resetClock = true,
+  }) {
+    if (resetClock) {
+      rootMotion?.reset();
+    }
+    _animation.playBlendSpace2D(
+      space,
+      initialValue: initialValue,
+      resetClock: resetClock,
+    );
+    _markPoseChanged();
+  }
 
   void playAnimationByName(
     String name, {
@@ -300,6 +387,9 @@ class ModelComponent({
     final animation = model.animations.where((e) => e.name == name).firstOrNull;
     if (animation == null) {
       throw ArgumentError('No animation with name $name');
+    }
+    if (resetClock) {
+      rootMotion?.reset();
     }
     _animation.startAnimation(
       animation,
@@ -317,6 +407,9 @@ class ModelComponent({
     VoidCallback? onComplete,
   }) {
     final animation = model.animations[index];
+    if (resetClock) {
+      rootMotion?.reset();
+    }
     _animation.startAnimation(
       animation,
       resetClock: resetClock,
@@ -338,6 +431,9 @@ class ModelComponent({
     if (animation == null) {
       throw ArgumentError('No animation with name $name');
     }
+    if (resetClock) {
+      rootMotion?.reset();
+    }
     _animation.crossFadeTo(
       animation,
       duration: duration,
@@ -357,6 +453,9 @@ class ModelComponent({
     VoidCallback? onComplete,
   }) {
     final animation = model.animations[index];
+    if (resetClock) {
+      rootMotion?.reset();
+    }
     _animation.crossFadeTo(
       animation,
       duration: duration,
@@ -368,6 +467,7 @@ class ModelComponent({
   }
 
   void stopAnimation() {
+    rootMotion?.reset();
     _animation.startAnimation(null);
     _markPoseChanged();
   }
@@ -386,4 +486,8 @@ class ModelComponent({
     _poseDirty = true;
     worldOrNull?.markSceneDirty(shadows: castsShadows);
   }
+
+  static final Vector3 _upY = Vector3(0, 1, 0);
+  static final Vector3 _upZ = Vector3(0, 0, 1);
+  static final Quaternion _yawDeltaQ = Quaternion.identity();
 }

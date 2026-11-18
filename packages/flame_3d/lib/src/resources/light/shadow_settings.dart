@@ -91,11 +91,20 @@ class ShadowSettings({
   /// shadow settings, fitted shadow projection, and shadow-casting scene
   /// geometry have not changed since the previous shadow map was rendered.
   var bool cacheWhenStatic = false,
+
+  /// Number of directional shadow cascades (`1` single map, or `2` near + far
+  /// side-by-side shadow atlas).
+  int cascades = 1,
+
+  /// Fraction `(0..1)` of `maxDistance` (or scene span) covered by Cascade `0`
+  /// when [cascades] is `2`.
+  var double cascadeSplitRatio = 0.28,
 }) {
   /// {@macro shadow_settings}
   this {
     this.resolution = resolution;
     this.softness = softness;
+    this.cascades = cascades;
   }
 
   /// The width and height of the shadow map, in texels, from 16 to 8192.
@@ -120,6 +129,17 @@ class ShadowSettings({
   }
 
   int _softness = 1;
+
+  /// Number of directional shadow cascades (`1` or `2`).
+  int get cascades => _cascades;
+  set cascades(int value) {
+    if (value < 1 || value > 2) {
+      throw ArgumentError.value(value, 'cascades', 'Must be 1 or 2');
+    }
+    _cascades = value;
+  }
+
+  int _cascades = 1;
 
   /// The largest [softness].
   static const int maxSoftness = 3;

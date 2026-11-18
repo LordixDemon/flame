@@ -8,8 +8,8 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
 /// Interactive Flutter host widget for [ShowcaseGame]: renders the 3D scene
-/// with a 12-preset lab switcher, collapsible telemetry HUD, live subsystem
-/// toggles, offscreen `renderToImage` preview card, and 1-tap 36-check engine
+/// with a 16-preset lab switcher, collapsible telemetry HUD, live subsystem
+/// toggles, offscreen `renderToImage` preview card, and 1-tap 48-check engine
 /// self-test.
 class const ShowcaseView({
   final ShowcaseGame? game,
@@ -414,6 +414,28 @@ class _ShowcaseViewState() extends State<ShowcaseView> {
                                 _toggle((c) => c.vignette = !c.vignette),
                           ),
                           _Chip(
+                            label: 'SSAO',
+                            active: ctrl.ssao,
+                            onTap: () => _toggle((c) => c.ssao = !c.ssao),
+                          ),
+                          _Chip(
+                            label: '3D DoF',
+                            active: ctrl.dof,
+                            onTap: () => _toggle((c) => c.dof = !c.dof),
+                          ),
+                          _Chip(
+                            label: 'CSM 2x',
+                            active: ctrl.csm2Cascades,
+                            onTap: () => _toggle(
+                              (c) => c.csm2Cascades = !c.csm2Cascades,
+                            ),
+                          ),
+                          _Chip(
+                            label: 'Debug3D',
+                            active: ctrl.debug3D,
+                            onTap: () => _toggle((c) => c.debug3D = !c.debug3D),
+                          ),
+                          _Chip(
                             label: 'BVH3D',
                             active: ctrl.spatialIndex3D,
                             onTap: () => _toggle(
@@ -566,7 +588,7 @@ class _ShowcaseViewState() extends State<ShowcaseView> {
                           _ActionChip(
                             label: _runningSelfTest
                                 ? 'Testing...'
-                                : 'Self-Test (36)',
+                                : 'Self-Test (48)',
                             color: const Color(0xFF34D399),
                             onTap: _runSelfTest,
                           ),

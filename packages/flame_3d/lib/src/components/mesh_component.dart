@@ -21,6 +21,7 @@ class MeshComponent({
   super.rotation,
   super.children,
   super.castsShadows,
+  super.cameraMask,
 
   /// The per-instance color of this component, available to the material's
   /// shaders (the built-in materials multiply their base color by it).

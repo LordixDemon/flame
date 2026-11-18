@@ -10,5 +10,6 @@ export 'src/components/mesh_component.dart';
 export 'src/components/object_3d.dart';
 export 'src/components/skybox_component_3d.dart';
 export 'src/components/text_3d_component.dart';
+export 'src/embedding/canvas_3d_fallback_component.dart';
 export 'src/embedding/scene_3d_component.dart';
 export 'src/embedding/scene_3d_projection.dart';

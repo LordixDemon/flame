@@ -23,12 +23,29 @@ class _ShadowPass(final RenderContext3D _context) {
 
   // The values of the Shadows block of the main pass.
   final Matrix4 _lightViewProjection = Matrix4.identity();
+  final Matrix4 _cascadeViewProjection = Matrix4.identity();
   final Vector4 _toLight = Vector4(0, 0, 0, -1);
   final Vector4 _color = Vector4.zero();
   final Vector4 _map = Vector4.zero();
   final Vector4 _bias = Vector4.zero();
   final Vector4 _decode = Vector4.zero();
+  final Vector4 _cascadeParams = Vector4(1, 0, 0, 0);
   bool _packDepth = false;
+
+  // Two-cascade CSM & SpotLight shadow helpers.
+  final DirectionalShadowProjection _farProjection =
+      DirectionalShadowProjection();
+  bool _pendingCascade1 = false;
+  int _csmResolution = 1024;
+  GpuTextureTarget? _csmTarget0;
+  GpuTextureTarget? _csmTarget1;
+  GpuTextureTarget? _csmAtlasTarget;
+  final Matrix4 _spotView = Matrix4.identity();
+  final Matrix4 _spotProj = Matrix4.identity();
+  final Vector3 _spotTarget = Vector3.zero();
+  final Vector3 _spotUp = Vector3(0, 1, 0);
+
+  bool get needsCascade1 => _pendingCascade1;
 
   // The shadow map, as the texture bound to the receivers.
   GpuTextureTarget? _target;
@@ -57,6 +74,27 @@ class _ShadowPass(final RenderContext3D _context) {
       'packages/flame_3d/assets/shaders/shadow_caster.shaderbundle';
   static const _skinnedBundle =
       'packages/flame_3d/assets/shaders/shadow_caster_skinned.shaderbundle';
+  static const _atlasPackBundle =
+      'packages/flame_3d/assets/shaders/shadow_atlas_pack.shaderbundle';
+
+  static final Surface _atlasQuad = Surface.fromBuffers(
+    vertices: Float32List.fromList(const [
+      -1.0, -1.0, 0.0, //
+      1.0, -1.0, 0.0, //
+      1.0, 1.0, 0.0, //
+      -1.0, 1.0, 0.0, //
+    ]),
+    indices: Uint16List.fromList(const [0, 1, 2, 0, 2, 3]),
+    layout: VertexLayout(const [
+      VertexAttribute(VertexLayout.positionAttribute, 3),
+    ]),
+  );
+
+  late final Shader _atlasVert = VertexShader.fromAsset(_atlasPackBundle);
+  late final Shader _atlasFrag = FragmentShader.fromAsset(
+    _atlasPackBundle,
+    slots: const ['cascade0Texture', 'cascade1Texture'],
+  );
 
   late final Shader _vertexShader = VertexShader.fromAsset(
     _bundle,
@@ -96,13 +134,17 @@ class _ShadowPass(final RenderContext3D _context) {
       return _none();
     }
 
-    // The first directional light with shadows, among the ones the
-    // directional lights block holds.
+    // The first directional light with shadows (matching `cameraMask`), or else
+    // the first spot light with shadows.
     final lights = context.lights;
     Light? light;
     ShadowSettings? settings;
     var index = 0;
+    var isSpotShadow = false;
     for (var i = 0; i < lights.length; i++) {
+      if ((lights[i].lightMask & context.cameraMask) == 0) {
+        continue;
+      }
       final source = lights[i].source;
       if (source is! DirectionalLight) {
         continue;
@@ -119,24 +161,145 @@ class _ShadowPass(final RenderContext3D _context) {
       index++;
     }
     if (light == null || settings == null) {
+      var spotIdx = 0;
+      for (var i = 0; i < lights.length; i++) {
+        if ((lights[i].lightMask & context.cameraMask) == 0) {
+          continue;
+        }
+        final source = lights[i].source;
+        if (source is! SpotLight || source.intensity <= 0) {
+          continue;
+        }
+        if (spotIdx == RenderContext3D.maxSpotLights) {
+          break;
+        }
+        if (source.shadows != null) {
+          light = lights[i];
+          settings = source.shadows;
+          index = 100 + spotIdx;
+          isSpotShadow = true;
+          break;
+        }
+        spotIdx++;
+      }
+    }
+    if (light == null || settings == null) {
       return _none();
     }
 
+    _pendingCascade1 = false;
+    _cascadeParams.setValues(1, 0, 0, 0);
+
     final direction = light.direction(_direction);
     final resolution = settings.resolution;
-    if (!projection.update(
-      direction: direction,
-      casters: sceneBounds,
-      receivers: settings.bounds,
-      cameraViewProjection: settings.fit == ShadowFit.view
-          ? context._viewProjectionMatrix
-          : null,
-      cameraView: context._viewMatrix,
-      maxDistance: settings.maxDistance,
-      resolution: resolution,
-      stabilize: settings.stabilize,
-    )) {
-      return _none();
+    final Matrix4 activeLightView;
+    final Matrix4 activeLightProj;
+    final double texelWorldSize;
+
+    if (isSpotShadow) {
+      final spot = light.source as SpotLight;
+      final eye = light.position;
+      _spotTarget
+        ..setFrom(eye)
+        ..add(direction);
+      _spotUp.setValues(0, 1, 0);
+      if (direction.y.abs() > 0.92) {
+        _spotUp.setValues(0, 0, 1);
+      }
+      _spotView.setAsViewMatrix(eye, _spotTarget, _spotUp);
+      final fovDeg = (spot.outerConeAngle * 2.0 * 180.0 / math.pi).clamp(
+        10.0,
+        165.0,
+      );
+      final zFar = math.max(1.0, spot.range ?? 32.0);
+      _spotProj.setAsPerspective(fovDeg, 1.0, 0.12, zFar);
+      _lightViewProjection
+        ..setFrom(_spotProj)
+        ..multiply(_spotView);
+      activeLightView = _spotView;
+      activeLightProj = _spotProj;
+      texelWorldSize =
+          (2.0 * math.tan(spot.outerConeAngle.clamp(0.05, 1.4)) * zFar * 0.35) /
+          resolution;
+    } else if (settings.cascades == 2) {
+      final farDist = settings.maxDistance;
+      final split = settings.cascadeSplitRatio.clamp(0.08, 0.85);
+      if (!_farProjection.update(
+        direction: direction,
+        casters: sceneBounds,
+        receivers: settings.bounds,
+        cameraViewProjection: settings.fit == ShadowFit.view
+            ? context._viewProjectionMatrix
+            : null,
+        cameraView: context._viewMatrix,
+        maxDistance: farDist,
+        resolution: resolution,
+        stabilize: settings.stabilize,
+      )) {
+        return _none();
+      }
+      final isPerspectiveCam =
+          context._projectionMatrix.storage[15].abs() < 0.5;
+      var nearFitted = false;
+      if (isPerspectiveCam) {
+        final nearDist = (farDist ?? 40.0) * split;
+        nearFitted = projection.update(
+          direction: direction,
+          casters: sceneBounds,
+          receivers: settings.bounds,
+          cameraViewProjection: context._viewProjectionMatrix,
+          cameraView: context._viewMatrix,
+          maxDistance: nearDist,
+          resolution: resolution,
+          stabilize: settings.stabilize,
+        );
+      }
+      if (!nearFitted) {
+        final fullBox = settings.bounds ?? sceneBounds;
+        final c = fullBox.center;
+        final half = (fullBox.max - fullBox.min)..scale(0.5 * split);
+        final innerBox = Aabb3.minMax(c - half, c + half);
+        nearFitted = projection.update(
+          direction: direction,
+          casters: sceneBounds,
+          receivers: innerBox,
+          resolution: resolution,
+          stabilize: settings.stabilize,
+        );
+      }
+      if (!nearFitted) {
+        return _none();
+      }
+      _lightViewProjection.setFrom(projection.viewProjection);
+      _cascadeViewProjection.setFrom(_farProjection.viewProjection);
+      _cascadeParams.setValues(
+        2.0,
+        math.max(_farProjection.texelWidth, _farProjection.texelHeight),
+        0,
+        0,
+      );
+      activeLightView = projection.view;
+      activeLightProj = projection.projection;
+      texelWorldSize = math.max(projection.texelWidth, projection.texelHeight);
+    } else {
+      if (!projection.update(
+        direction: direction,
+        casters: sceneBounds,
+        receivers: settings.bounds,
+        cameraViewProjection: settings.fit == ShadowFit.view
+            ? context._viewProjectionMatrix
+            : null,
+        cameraView: context._viewMatrix,
+        maxDistance: settings.maxDistance,
+        resolution: resolution,
+        stabilize: settings.stabilize,
+      )) {
+        return _none();
+      }
+      _lightViewProjection.setFrom(projection.viewProjection);
+      activeLightView = projection.view;
+      activeLightProj = projection.projection;
+      texelWorldSize = math.max(projection.texelWidth, projection.texelHeight);
     }
     RenderProfile.lap(RenderPhase.shadowSetup);
 
@@ -148,12 +311,11 @@ class _ShadowPass(final RenderContext3D _context) {
 
     final format = float ? GpuPixelFormat.r32Float : GpuPixelFormat.rgba8888;
     final size = resolution.toDouble();
-    final vpStorage = projection.viewProjection.storage;
+    final vpStorage = _lightViewProjection.storage;
+    final isTwoCascade = !isSpotShadow && settings.cascades == 2;
 
-    // Static shadow map reuse: each `DirectionalShadowProjection` with
-    // `cacheWhenStatic` owns a dedicated shadow map texture so dynamic shadow
-    // passes of other layers in the same frame never overwrite it.
-    if (settings.cacheWhenStatic && castersKey != null) {
+    // Static shadow map reuse (`cascades == 1` directional/spot).
+    if (!isTwoCascade && settings.cacheWhenStatic && castersKey != null) {
       final cached = _staticMaps[projection];
       if (cached != null &&
           cached.resolution == resolution &&
@@ -171,7 +333,6 @@ class _ShadowPass(final RenderContext3D _context) {
         } else {
           _decode.setFrom(_packedDecode);
         }
-        _lightViewProjection.setFrom(projection.viewProjection);
         _toLight.setValues(
           -direction.x,
           -direction.y,
@@ -187,7 +348,7 @@ class _ShadowPass(final RenderContext3D _context) {
         );
         _map.setValues(size, size, 1 / size, 1 / size);
         _bias.setValues(
-          math.max(projection.texelWidth, projection.texelHeight),
+          texelWorldSize,
           settings.depthBias,
           settings.normalBias,
           settings.softness.toDouble(),
@@ -201,7 +362,36 @@ class _ShadowPass(final RenderContext3D _context) {
     // From here on, a fresh shadow map will be rendered.
     version++;
     final GpuTextureTarget target;
-    if (settings.cacheWhenStatic && castersKey != null) {
+    if (isTwoCascade) {
+      _staticMaps[projection] = null;
+      _csmResolution = resolution;
+      _csmTarget0 = device.textureTarget(
+        resolution,
+        resolution,
+        format,
+        clearValue: const Color(0xFFFFFFFE),
+      );
+      _csmTarget1 = device.textureTarget(
+        resolution,
+        resolution,
+        format,
+        clearValue: const Color(0xFFFFFFFD),
+      );
+      _csmAtlasTarget = device.textureTarget(
+        resolution * 2,
+        resolution,
+        format,
+      );
+      target = _csmTarget0!;
+      _target = _csmAtlasTarget;
+      _texture = Texture(
+        null,
+        width: resolution * 2,
+        height: resolution,
+        gpuTexture: _csmAtlasTarget!.texture,
+      );
+      _pendingCascade1 = true;
+    } else if (settings.cacheWhenStatic && castersKey != null) {
       var entry = _staticMaps[projection];
       if (entry == null ||
           entry.resolution != resolution ||
@@ -251,7 +441,6 @@ class _ShadowPass(final RenderContext3D _context) {
     } else {
       _decode.setFrom(_packedDecode);
     }
-    _lightViewProjection.setFrom(projection.viewProjection);
     _toLight.setValues(
       -direction.x,
       -direction.y,
@@ -265,9 +454,14 @@ class _ShadowPass(final RenderContext3D _context) {
       color.b,
       settings.strength.clamp(0, 1).toDouble(),
     );
-    _map.setValues(size, size, 1 / size, 1 / size);
+    if (isTwoCascade) {
+      final atlasW = size * 2.0;
+      _map.setValues(atlasW, size, 1.0 / atlasW, 1.0 / size);
+    } else {
+      _map.setValues(size, size, 1 / size, 1 / size);
+    }
     _bias.setValues(
-      math.max(projection.texelWidth, projection.texelHeight),
+      texelWorldSize,
       settings.depthBias,
       settings.normalBias,
       settings.softness.toDouble(),
@@ -275,7 +469,7 @@ class _ShadowPass(final RenderContext3D _context) {
 
     _mainView.setFrom(context._viewMatrix);
     _mainProjection.setFrom(context._projectionMatrix);
-    context.setCamera(projection.view, projection.projection);
+    context.setCamera(activeLightView, activeLightProj);
     recording = true;
     _drawCallsBefore = device.stats.drawCalls;
     device.beginTexturePass(target, frontFace: context.frontFace);
@@ -469,6 +663,74 @@ class _ShadowPass(final RenderContext3D _context) {
     return caster;
   }
 
+  void beginCascade1() {
+    if (!_pendingCascade1) {
+      return;
+    }
+    final context = _context;
+    final device = context.device;
+    context.setCamera(_farProjection.view, _farProjection.projection);
+    recording = true;
+    _drawCallsBefore = device.stats.drawCalls;
+    device.beginTexturePass(_csmTarget1!, frontFace: context.frontFace);
+    device.stats.shadowPasses++;
+  }
+
+  void endCascade1() {
+    if (!recording || !_pendingCascade1) {
+      return;
+    }
+    _pendingCascade1 = false;
+    final context = _context;
+    final device = context.device;
+    try {
+      flushCasters();
+    } finally {
+      device.endTexturePass();
+      device.stats.shadowDrawCalls += device.stats.drawCalls - _drawCallsBefore;
+      recording = false;
+    }
+
+    // Pack cascade 0 and cascade 1 side-by-side into the `2W x H` shadow atlas.
+    final res = _csmResolution;
+    final tex0 = Texture(
+      null,
+      width: res,
+      height: res,
+      gpuTexture: _csmTarget0!.texture,
+    );
+    final tex1 = Texture(
+      null,
+      width: res,
+      height: res,
+      gpuTexture: _csmTarget1!.texture,
+    );
+    _atlasVert.resource;
+    _atlasFrag
+      ..resource
+      ..setTexture('cascade0Texture', tex0)
+      ..setTexture('cascade1Texture', tex1);
+    final pipeline = device.pipelineFor(
+      _atlasVert,
+      _atlasFrag,
+      _atlasQuad.layout,
+    );
+    device
+      ..beginTexturePass(_csmAtlasTarget!)
+      ..bindPipeline(pipeline)
+      ..setRenderState(
+        const RenderState(depthTest: false, depthWrite: false),
+      )
+      ..bindTexture(_atlasFrag.slot('cascade0Texture'), tex0)
+      ..bindTexture(_atlasFrag.slot('cascade1Texture'), tex1)
+      ..bindSurface(_atlasQuad)
+      ..drawSurface(_atlasQuad)
+      ..endTexturePass();
+
+    context.setCamera(_mainView, _mainProjection);
+    active = true;
+  }
+
   void writeShadows(UniformBlock block) {
     if (!active) {
       block.setVector4('toLight', _noShadows);
@@ -476,11 +738,13 @@ class _ShadowPass(final RenderContext3D _context) {
     }
     block
       ..setMatrix4('lightViewProjection', _lightViewProjection)
+      ..setMatrix4('cascadeViewProjection', _cascadeViewProjection)
       ..setVector4('toLight', _toLight)
       ..setVector4('color', _color)
       ..setVector4('map', _map)
       ..setVector4('bias', _bias)
-      ..setVector4('decode', _decode);
+      ..setVector4('decode', _decode)
+      ..setVector4('cascadeParams', _cascadeParams);
   }
 
   /// Writes how the shaders that render shadow maps store depths.

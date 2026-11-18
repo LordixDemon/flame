@@ -51,6 +51,10 @@ class SpatialMaterial({
   /// Reflection strength for [environmentTexture] (`0` when unset).
   var double environmentIntensity = 1.0,
 
+  /// Optional pre-filtered `SH9` diffuse irradiance + specular reflection
+  /// probe (`EnvironmentProbe3D`).
+  var EnvironmentProbe3D? environmentProbe,
+
   /// UV scale (`(1, 1)` by default).
   Vector2? uvScale,
 
@@ -128,6 +132,7 @@ class SpatialMaterial({
   static final Vector4 _paramsVec = Vector4.zero();
   static final Vector4 _flagsVec = Vector4.zero();
   static final Vector4 _flags2Vec = Vector4.zero();
+  static final Vector4 _shScratch = Vector4.zero();
 
   @override
   void apply(RenderContext context) {
@@ -135,7 +140,8 @@ class SpatialMaterial({
     final ormTex = metallicRoughnessTexture;
     final occTex = occlusionTexture;
     final emiTex = emissiveTexture;
-    final envTex = environmentTexture;
+    final probe = environmentProbe;
+    final envTex = environmentTexture ?? probe?.reflectionTexture;
     final premul = renderState.blend == BlendState.premultipliedAlpha;
 
     fragmentShader
@@ -186,5 +192,23 @@ class SpatialMaterial({
           emiTex != null ? 1.0 : 0.0,
         ),
       );
+
+    final matBlock = fragmentShader.block('Material');
+    if (probe != null && probe.intensity > 0) {
+      for (var i = 0; i < 9; i++) {
+        final c = probe.shCoefficients[i];
+        matBlock.setVector4(
+          'shCoeffs',
+          _shScratch..setValues(c.x, c.y, c.z, i == 0 ? probe.intensity : 0.0),
+          index: i,
+        );
+      }
+    } else {
+      matBlock.setVector4(
+        'shCoeffs',
+        _shScratch..setZero(),
+        index: 0,
+      );
+    }
   }
 }

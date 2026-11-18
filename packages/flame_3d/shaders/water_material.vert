@@ -22,6 +22,7 @@ out vec3 fragNormal;
 out vec2 fragUv;
 out vec4 fragColor;
 out float fragCrest;
+out vec4 fragClipPos;
 
 void addGerstnerWave(
   vec2 d,
@@ -146,4 +147,5 @@ void main() {
   fragCrest = amp > 1e-5 ? clamp(0.5 + dispH / (amp * 2.2), 0.0, 1.0) : 0.0;
 
   gl_Position = camera.viewProjection * vec4(displaced, 1.0);
+  fragClipPos = gl_Position;
 }

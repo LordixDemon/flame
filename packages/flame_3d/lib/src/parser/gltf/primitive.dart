@@ -7,7 +7,6 @@ import 'package:flame_3d/graphics.dart' as flame_gfx;
 import 'package:flame_3d/resources.dart' as flame_3d;
 import 'package:flame_3d/src/parser/gltf/accessor.dart';
 import 'package:flame_3d/src/parser/gltf/accessor_type.dart';
-import 'package:flame_3d/src/parser/gltf/component_type.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_node.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_ref.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_root.dart';
@@ -348,30 +347,25 @@ class Primitive({
       return null;
     }
     final raw = accRef.get();
-    final scale = switch (raw.componentType) {
-      ComponentType.unsignedByte => raw.normalized ? 1.0 / 255.0 : 1.0,
-      ComponentType.unsignedShort => raw.normalized ? 1.0 / 65535.0 : 1.0,
-      _ => 1.0,
-    };
     final out = Float32List(expectedCount * 4);
     if (raw.type == AccessorType.vec4) {
       final list = raw.asVector4().typedData();
       final len = math.min(expectedCount, list.length);
       for (var i = 0; i < len; i++) {
         final c = list[i];
-        out[i * 4] = (c.x * scale).clamp(0.0, 1.0);
-        out[i * 4 + 1] = (c.y * scale).clamp(0.0, 1.0);
-        out[i * 4 + 2] = (c.z * scale).clamp(0.0, 1.0);
-        out[i * 4 + 3] = (c.w * scale).clamp(0.0, 1.0);
+        out[i * 4] = c.x.clamp(0.0, 1.0);
+        out[i * 4 + 1] = c.y.clamp(0.0, 1.0);
+        out[i * 4 + 2] = c.z.clamp(0.0, 1.0);
+        out[i * 4 + 3] = c.w.clamp(0.0, 1.0);
       }
     } else if (raw.type == AccessorType.vec3) {
       final list = raw.asVector3().typedData();
       final len = math.min(expectedCount, list.length);
       for (var i = 0; i < len; i++) {
         final c = list[i];
-        out[i * 4] = (c.x * scale).clamp(0.0, 1.0);
-        out[i * 4 + 1] = (c.y * scale).clamp(0.0, 1.0);
-        out[i * 4 + 2] = (c.z * scale).clamp(0.0, 1.0);
+        out[i * 4] = c.x.clamp(0.0, 1.0);
+        out[i * 4 + 1] = c.y.clamp(0.0, 1.0);
+        out[i * 4 + 2] = c.z.clamp(0.0, 1.0);
         out[i * 4 + 3] = 1.0;
       }
     } else {

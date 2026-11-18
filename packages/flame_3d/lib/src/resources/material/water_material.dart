@@ -29,6 +29,11 @@ class WaterMaterial({
   var double specularStrength = 0.85,
   var double specularPower = 48.0,
   var double opacity = 0.86,
+
+  /// Clip-depth thickness span (`> 0` generates shoreline intersection foam
+  /// where opaque scene geometry meets the water surface when
+  /// `World3D.depthPrepassEnabled` is active).
+  var double shoreFoamDepth = 0.0,
 }) extends Material {
   /// {@macro water_material}
   this
@@ -43,6 +48,8 @@ class WaterMaterial({
             'WaterMaterial',
             RenderContext3D.stylizedPassBlock,
             RenderContext3D.shadowMapSampler,
+            RenderContext3D.depthNormalSampler,
+            RenderContext3D.depthNormalBlock,
           ],
         ),
       ) {
@@ -62,6 +69,7 @@ class WaterMaterial({
   static final Vector4 _upSteep = Vector4.zero();
   static final Vector4 _fragParams = Vector4.zero();
   static final Vector4 _fragParams2 = Vector4.zero();
+  static final Vector4 _shoreVec = Vector4.zero();
 
   @override
   void apply(RenderContext context) {
@@ -96,6 +104,10 @@ class WaterMaterial({
           opacity,
           rippleScale,
         ),
+      )
+      ..setVector4(
+        'WaterMaterial.shoreParams',
+        _shoreVec..setValues(shoreFoamDepth, 0, 0, 0),
       );
   }
 }

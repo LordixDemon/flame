@@ -22,6 +22,9 @@ class Light({
   /// It is read when the lights are written, once per render pass, so it may
   /// be a matrix that is updated in place.
   final Matrix4? transform,
+
+  /// 32-bit layer bitmask controlling which camera passes receive this light.
+  var int lightMask = 0xFFFFFFFF,
 }) extends Resource<void> {
   @override
   void createResource() {}

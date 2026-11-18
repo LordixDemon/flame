@@ -11,10 +11,11 @@ lights they respond to, and textures.
   (including `SpotLight`s and directional PCF shadows on native), atmospheric fog, tangent-free
   cotangent `normalTexture` (`normalScale`), `metallicRoughnessTexture` (glTF `G` = roughness,
   `B` = metallic), `occlusionTexture` (`occlusionStrength`), `emissiveTexture` + `emissiveColor` /
-  `emissiveStrength`, equirectangular `environmentTexture` (`environmentIntensity`), `uvScale` /
-  `uvOffset`, `alphaCutoff` cutout, `doubleSided`, `ditherFade` (Bayer 4x4 screen-door opacity),
-  `singlePieceTranslucent` (`RenderState.depthPrepass`), and `instanceData` (`x` = emissive boost,
-  `y` = highlight, `w` = fade).
+  `emissiveStrength`, equirectangular `environmentTexture` (`environmentIntensity`) + `SH9` diffuse
+  irradiance `EnvironmentProbe3D` (`environmentProbe`, `EnvironmentProbe3D.skyDome` /
+  `fromEquirectangular`), `uvScale` / `uvOffset` / `uvRotation`, `alphaCutoff` cutout, `doubleSided`,
+  `ditherFade` (Bayer 4x4 screen-door opacity), `singlePieceTranslucent` (`RenderState.depthPrepass`),
+  and `instanceData` (`x` = emissive boost, `y` = highlight, `w` = fade).
 - `UnlitMaterial` outputs `albedoTexture` times `albedoColor`, times the vertex color, times the
   per-instance color, without lighting. It blends with premultiplied alpha and draws as translucent
   by default; set its `renderState` to `RenderState.opaque` for opaque content.

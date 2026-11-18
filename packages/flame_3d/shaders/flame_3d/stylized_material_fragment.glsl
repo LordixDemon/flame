@@ -56,11 +56,13 @@ uniform StylizedPass {
   mat4 Camera_view;
   mat4 Camera_projection;
   mat4 Shadows_lightViewProjection;
+  mat4 Shadows_cascadeViewProjection;
   vec4 Shadows_toLight;
   vec4 Shadows_color;
   vec4 Shadows_map;
   vec4 Shadows_bias;
   vec4 Shadows_decode;
+  vec4 Shadows_cascadeParams;
   vec4 Fog_color;
   vec4 Fog_params;
   vec4 Fog_height;
@@ -215,12 +217,16 @@ void main() {
         falloff = 1.0 / max(dist * dist, 0.00000001);
       }
       vec4 spotColor = scene.SpotLights_colors[i];
+      vec3 spotSh = spotCastsShadows(i)
+          ? shadowFactor(shadowVisibility(fragPosition, n))
+          : vec3(1.0);
       float atten = spotColor.a * falloff * angular;
       float wrapped = max(material.pointLightWrap * 0.5, dot(n, l));
-      lit += atten * max(wrapped, 0.0) * spotColor.rgb;
+      lit += atten * max(wrapped, 0.0) * spotColor.rgb * spotSh;
       if (glossy && dot(n, l) > 0.0) {
         float ndoth = max(dot(n, normalize(l + v)), 0.0);
-        spotSpecular += pow(ndoth, material.specularPower) * spotDir.w * atten;
+        spotSpecular += pow(ndoth, material.specularPower) * spotDir.w * atten *
+          (spotSh.r + spotSh.g + spotSh.b) / 3.0;
       }
     }
   }

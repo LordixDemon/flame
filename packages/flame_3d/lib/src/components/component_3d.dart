@@ -39,6 +39,7 @@ abstract class Component3D({
   Vector3? scale,
   Quaternion? rotation,
   List<Component3D> children = const [],
+  super.cameraMask,
 }) extends Component with HasWorldRef<World3D> {
   final Transform3D transform = Transform3D()
     ..position = position ?? Vector3.zero()

@@ -23,6 +23,8 @@ class Material({
   required final AlphaMode alphaMode,
   required final double alphaCutoff,
   required final bool doubleSided,
+  final Map<String, Object?>? extensions,
+  final Object? extras,
 }) extends GltfNode {
   Material.parse(
     GltfRoot root,
@@ -59,10 +61,43 @@ class Material({
         alphaMode: AlphaMode.parse(map, 'alphaMode') ?? AlphaMode.opaque,
         alphaCutoff: Parser.float(map, 'alphaCutoff') ?? 0.5,
         doubleSided: Parser.boolean(map, 'doubleSided') ?? false,
+        extensions: Parser.extensions(map),
+        extras: Parser.extras(map),
       );
+
+  /// Whether `KHR_materials_unlit` is enabled on this material.
+  bool get isUnlit => extensions?['KHR_materials_unlit'] != null;
+
+  /// Emissive multiplier from `KHR_materials_emissive_strength` (`1.0` by
+  /// default).
+  double get emissiveStrength {
+    final ext = extensions?['KHR_materials_emissive_strength'];
+    if (ext is Map<String, Object?>) {
+      return Parser.float(ext, 'emissiveStrength') ?? 1.0;
+    }
+    return 1.0;
+  }
 
   flame_3d.Material toFlameMaterial() {
     final pbr = pbrMetallicRoughness;
+    final cullMode = doubleSided
+        ? flame_gfx.CullMode.none
+        : flame_gfx.CullMode.backFace;
+
+    if (isUnlit) {
+      final unlit = flame_3d.UnlitMaterial(
+        albedoColor: pbr?.baseColorFactor?.toColor() ?? const Color(0xFFFFFFFF),
+        albedoTexture: pbr?.baseColorTexture?.toFlameTexture(),
+      );
+      unlit.renderState = switch (alphaMode) {
+        AlphaMode.opaque || AlphaMode.mask => flame_gfx.RenderState.opaque,
+        AlphaMode.blend => flame_gfx.RenderState.alphaBlend.copyWith(
+          cullMode: cullMode,
+        ),
+      };
+      return unlit;
+    }
+
     final emissive = Color.fromARGB(
       255,
       (emissiveFactor.x.clamp(0.0, 1.0) * 255).round(),
@@ -71,9 +106,7 @@ class Material({
     );
     final translucent = alphaMode == AlphaMode.blend;
     final cutoff = alphaMode == AlphaMode.mask ? alphaCutoff : 0.0;
-    final cullMode = doubleSided
-        ? flame_gfx.CullMode.none
-        : flame_gfx.CullMode.backFace;
+    final uvTransform = pbr?.baseColorTexture?.textureTransform;
 
     final mat = flame_3d.SpatialMaterial(
       albedoColor: pbr?.baseColorFactor?.toColor() ?? const Color(0xFFFFFFFF),
@@ -87,6 +120,9 @@ class Material({
       occlusionStrength: occlusionTexture?.strength ?? 1.0,
       emissiveTexture: emissiveTexture?.toFlameTexture(),
       emissiveColor: emissive,
+      emissiveStrength: emissiveStrength,
+      uvOffset: uvTransform?.offset.clone(),
+      uvScale: uvTransform?.scale.clone(),
       alphaCutoff: cutoff,
       doubleSided: doubleSided,
       translucent: translucent,

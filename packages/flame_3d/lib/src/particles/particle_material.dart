@@ -101,6 +101,10 @@ class ParticleMaterial({
   /// Fragments whose alpha is below this are discarded, for cut-out
   /// particles drawn with an opaque [renderState].
   var double alphaCutoff = 0,
+
+  /// Clip-depth fade span (`> 0` smoothly fades particles near opaque scene
+  /// geometry when `World3D.depthPrepassEnabled` is active).
+  var double softDepthFade = 0,
   RenderState renderState = RenderState.premultipliedAlphaBlend,
 }) extends Material {
   /// {@macro particle_material}
@@ -119,7 +123,12 @@ class ParticleMaterial({
         ),
         fragmentShader: FragmentShader.fromAsset(
           _bundle,
-          slots: ['particleTexture', 'ParticleLook'],
+          slots: [
+            'particleTexture',
+            RenderContext3D.depthNormalSampler,
+            RenderContext3D.depthNormalBlock,
+            'ParticleLook',
+          ],
         ),
       ) {
     if (kIsWeb) {
@@ -190,7 +199,12 @@ class ParticleMaterial({
       )
       ..setVector4(
         'ParticleLook.options',
-        _value..setValues(alphaCutoff, frameBlending ? 1 : 0, 0, 0),
+        _value..setValues(
+          alphaCutoff,
+          frameBlending ? 1 : 0,
+          softDepthFade,
+          0,
+        ),
       );
   }
 

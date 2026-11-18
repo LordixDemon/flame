@@ -175,8 +175,8 @@ class Model {
     return null;
   }
 
-  /// Evaluates [animation] (and optional procedural [modifiers]) into
-  /// [workspace] with zero heap allocations.
+  /// Evaluates [animation] (and optional [rootMotion] pose lock and procedural
+  /// [modifiers]) into [workspace] with zero heap allocations.
   void evaluateInto(
     AnimationState animation,
     ModelPoseWorkspace workspace, {
@@ -184,6 +184,7 @@ class Model {
     Matrix4? worldMatrix,
     Matrix4? invWorldMatrix,
     double dt = 0.0,
+    RootMotionExtractor3D? rootMotion,
   }) {
     final byIndex = workspace.nodesByIndex;
     final scratch = workspace._scratchLocal;
@@ -195,6 +196,7 @@ class Model {
         scratch,
       );
     }
+    rootMotion?.applyPoseLock(this, workspace);
     if (modifiers != null &&
         modifiers.isNotEmpty &&
         worldMatrix != null &&

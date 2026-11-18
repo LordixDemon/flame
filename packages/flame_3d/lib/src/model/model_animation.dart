@@ -488,12 +488,45 @@ class NodeAnimation({
   }
 }
 
+/// Timed event marker along a [ModelAnimation] clip timeline (with [time] in
+/// seconds within `[0..duration]`).
+class AnimationEvent3D({
+  required final String name,
+  required final double time,
+  final Object? payload,
+});
+
 /// Groups the animations for all nodes of a `Model`.
 class ModelAnimation({
   required final String? name,
   required final Map<int, NodeAnimation> nodes,
+  List<AnimationEvent3D> events = const [],
 }) {
-  final double lastTime = nodes.isEmpty
-      ? 0.0
-      : nodes.values.map((e) => e.lastTime).reduce(max);
+  /// Timed events sorted in ascending [AnimationEvent3D.time] order.
+  final List<AnimationEvent3D> events = _sortEvents(events);
+
+  final double lastTime = _computeLastTime(nodes, events);
+
+  static List<AnimationEvent3D> _sortEvents(List<AnimationEvent3D> source) {
+    if (source.isEmpty) {
+      return const [];
+    }
+    final sorted = List<AnimationEvent3D>.of(source)
+      ..sort((a, b) => a.time.compareTo(b.time));
+    return List<AnimationEvent3D>.unmodifiable(sorted);
+  }
+
+  static double _computeLastTime(
+    Map<int, NodeAnimation> nodes,
+    List<AnimationEvent3D> events,
+  ) {
+    var best = 0.0;
+    for (final node in nodes.values) {
+      best = max(best, node.lastTime);
+    }
+    for (final event in events) {
+      best = max(best, event.time);
+    }
+    return best;
+  }
 }

@@ -84,6 +84,7 @@ class CameraComponent3D({
   CameraProjection projection = CameraProjection.perspective,
   Matrix4? customViewMatrix,
   Matrix4? customProjectionMatrix,
+  super.cameraMask,
   World3D? super.world,
   super.viewport,
   super.viewfinder,

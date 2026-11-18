@@ -115,8 +115,66 @@ raycasting (`lastRaycastCandidatesTested`).
   constraints in pose space before skinning: `TwoBoneIkConstraint3D` (analytical foot/hand IK),
   `LookAtConstraint3D` (clamped head/turret tracking) and `SpringBone3D` (inertial hair/cape/tail
   secondary motion), plus `BoneSocket3D` joint attachments.
+- **Blend spaces, frame events, root motion, offscreen policies, crowd batching & scene streaming:**
+  - `BlendSpace1D` (`playBlendSpace1D`, `blendParameter1D`) and `BlendSpace2D` (`playBlendSpace2D`,
+    `blendParameter2D`) blend locomotion/strafe clips continuously with phase-locked normalized
+    cycles;
+  - `AnimationEvent3D` (`ModelComponent.onAnimationEvent`) dispatches boundary-exact frame events
+    across `loop`, `once` and `pingPong` playback;
+  - `RootMotionExtractor3D` extracts per-tick local/world root bone displacement and yaw without
+    loop-wrap spikes, optionally locking horizontal root motion in place;
+  - `OffscreenAnimationPolicy` (`always`, `tickOnlyEvaluateWhenVisible`, `pauseWhenOffscreen`)
+    eliminates wasted offscreen skeletal matrix evaluations;
+  - `SkinnedCrowdBatch3D` pre-bakes clips into `BakedClipPoseBank3D` tables so dozens or hundreds
+    of animated agents advance in `O(1)` lookup time;
+  - `AsyncModelLoader3D` + ref-counted `AssetScope3D` stream `.glb` / `.obj` geometry, mipmaps and
+    `SurfaceBvh` hierarchies on background isolates via `TransferableTypedData`;
+  - `SceneLoader3D` (`loadAsset`, `loadGlbBytes`, `loadGltfJson`, `fromRoot`) loads complete glTF
+    2.0 scenes including `KHR_lights_punctual`, `KHR_materials_unlit`,
+    `KHR_materials_emissive_strength`, `KHR_texture_transform`, `KHR_mesh_quantization`,
+    `EXT_mesh_gpu_instancing` and `onNodeExtras` gameplay spawn hooks.
 - `ModelParser` precomputes `Model.animatedAabb`, conservative local-space bounds across all
   animation keyframes, so animated `ModelComponent`s are never frustum-culled prematurely.
+
+
+## 3D input, 3D effects, collisions, physics, navmesh, spatial audio, and debug gizmos
+
+Beyond rendering, `package:flame_3d` ships modular 3D gameplay libraries:
+
+- **`package:flame_3d/input.dart`:** `PointerRouter3D.forScene` and `PointerRouter3D.forCamera`
+  route taps, hover enter/move/exit transitions, ray-plane drags and 1D `dragAxisConstraint` gizmo
+  drags to `Object3D`s mixing in `TapCallbacks3D`, `HoverCallbacks3D` and `DragCallbacks3D`
+  (including `InstancedGroup3D` `instanceIndex` hits).
+- **`package:flame_3d/effects.dart` & `camera.dart`:** `MoveToEffect3D`, `MoveByEffect3D`,
+  `ArcMoveEffect3D`, `SplinePathEffect3D(orientToTangent: true)`, `RotateToEffect3D`,
+  `RotateAroundEffect3D`, `ScaleToEffect3D`, `SquashStretchEffect3D`, `ColorTintEffect3D`,
+  `InstanceDataEffect3D`, `FixedTransformInterpolation3D`, plus `OrbitCameraController3D`
+  (`fitAabb`), raycast-occluded `SpringArmCamera3D`, `CameraDollyTrack3D` and 6-DOF trauma
+  `CameraShake3D`.
+- **`package:flame_3d/collisions.dart` & `physics.dart`:** `SphereShape3D`, `CapsuleShape3D`,
+  `BoxShape3D` (OBB) and `ConvexHullShape3D` with analytical + SAT + GJK/EPA `CollisionManifold3D`,
+  `CollisionSystem3D`, `TriggerVolume3D`, posed skeletal `SkinnedHitboxRig3D` (`BoneHitbox3D`),
+  swept `ShapeCast3D` (`sphereCast`, `capsuleCast`, `convexCast`), stair-climbing
+  `KinematicCharacterController3D` (`moveAndSlide`), and deterministic Sequential Impulse
+  `PhysicsWorld3D` (`RigidBody3D`, `throwDice3D`, `DistanceJoint3D`, `BallSocketJoint3D`,
+  `HingeJoint3D`).
+- **`package:flame_3d/navigation.dart` & `audio.dart`:** `NavMesh3D.fromMesh` (A* + 3D Simple
+  Stupid Funnel `findPath`, `sampleHeightAt`), RVO `CrowdSteering3D` (`CrowdAgent3D`), and
+  `SpatialAudioListener3D` / `SpatialAudioEmitter3D` (stereo pan, rolloff, cones, raycast
+  occlusion, 3D Doppler).
+- **`package:flame_3d/debug.dart`, `RenderTexture3D`, `cameraMask`/`lightMask` & Depth-Normal Prepass:**
+  - `Component3D.cameraMask` and `LightComponent.lightMask` filter visibility and lighting per
+    pass;
+  - `World3D.depthPrepassEnabled` runs a half-resolution clip-depth + view-normal prepass powering
+    8-tap Spiral **SSAO** (`PostProcessSettings.ssaoIntensity`), **3D Depth of Field**
+    (`dofBlurStrength`), **Soft Particles** (`ParticleMaterial.softDepthFade`) and **Shoreline
+    Water Foam** (`WaterMaterial.shoreFoamDepth`);
+  - `RenderTexture3D` renders live 3D portals, security monitors and mirrors directly into a
+    sampleable GPU `Texture` with zero CPU readback;
+  - `GraphicsDevice.warmupMaterial` pre-builds PSOs at load time and `estimatedTargetVramBytes`
+    tracks pooled render-target VRAM;
+  - `DebugRenderer3D` renders scene AABBs, OBBs, bone skeletons, light cones/spheres and custom
+    wireframes in 1 instanced GPU draw call.
 
 
 ## Render state

@@ -9,8 +9,15 @@ in vec3 fragNormal;
 in vec2 fragUv;
 in vec4 fragColor;
 in float fragCrest;
+in vec4 fragClipPos;
 
 out vec4 outColor;
+
+uniform sampler2D depthNormalTexture;
+
+uniform DepthNormal {
+  vec4 params;
+} depthNormal;
 
 uniform WaterMaterial {
   vec4 shallowColor;
@@ -20,17 +27,21 @@ uniform WaterMaterial {
   vec4 params;
   // x: fresnelPower, y: specularStrength, z: opacity, w: rippleScale
   vec4 params2;
+  // x: shoreFoamDepth (clip-depth span), yzw: unused
+  vec4 shoreParams;
 } waterMat;
 
 uniform StylizedPass {
   mat4 Camera_view;
   mat4 Camera_projection;
   mat4 Shadows_lightViewProjection;
+  mat4 Shadows_cascadeViewProjection;
   vec4 Shadows_toLight;
   vec4 Shadows_color;
   vec4 Shadows_map;
   vec4 Shadows_bias;
   vec4 Shadows_decode;
+  vec4 Shadows_cascadeParams;
   vec4 Fog_color;
   vec4 Fog_params;
   vec4 Fog_height;
@@ -139,13 +150,28 @@ void main() {
       (pow(ndoth, waterMat.params.w) * waterMat.params2.y * e);
   }
 
-  // Crest + micro-ripple foam.
+  // Crest + micro-ripple foam + optional shoreline depth intersection foam.
   float rippleCrest = fragCrest + 0.14 * (rx + ry);
   float foamMask = smoothstep(
     waterMat.params.z,
     min(waterMat.params.z + 0.22, 1.0),
     rippleCrest
   );
+  float shoreAlphaFade = 1.0;
+  if (waterMat.shoreParams.x > 1e-5 && depthNormal.params.x > 0.5) {
+    vec3 ndc = fragClipPos.xyz / max(fragClipPos.w, 1e-6);
+    vec2 screenUv = clamp(
+      vec2(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y),
+      vec2(0.001),
+      vec2(0.999)
+    );
+    vec4 dn = texture(depthNormalTexture, screenUv);
+    float sceneDepth = (dn.r * 255.0 * 256.0 + dn.g * 255.0) / 65535.0;
+    float columnDepth = max(sceneDepth - ndc.z, 0.0);
+    float shore = 1.0 - clamp(columnDepth / waterMat.shoreParams.x, 0.0, 1.0);
+    foamMask = max(foamMask, shore * shore * 0.95);
+    shoreAlphaFade = clamp(columnDepth / (waterMat.shoreParams.x * 0.25), 0.15, 1.0);
+  }
 
   vec3 color = mix(
     waterBody * (vec3(0.35) + directDiffuse),
@@ -167,6 +193,6 @@ void main() {
     waterMat.params2.z + foamMask * 0.25 + fresnel * 0.15,
     0.0,
     1.0
-  ) * fragColor.a;
+  ) * fragColor.a * shoreAlphaFade;
   outColor = vec4(color, alpha);
 }

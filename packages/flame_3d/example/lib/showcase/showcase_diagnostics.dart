@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flame_3d/camera.dart';
+import 'package:flame_3d/collisions.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
@@ -45,10 +46,10 @@ class ShowcaseDiagnosticReport({
   };
 }
 
-/// Automated 36-point functional & rendering health suite for
+/// Automated 48-point functional & rendering health suite for
 /// `package:flame_3d`.
 ///
-/// Exercises all 12 [ShowcasePreset] feature labs plus [PureCameraLabGame],
+/// Exercises all 16 [ShowcasePreset] feature labs plus [PureCameraLabGame],
 /// both interactively on desktop/mobile and headlessly under
 /// `flutter test --enable-impeller --enable-flutter-gpu`.
 class ShowcaseDiagnostics() {
@@ -81,6 +82,10 @@ class ShowcaseDiagnostics() {
     final savedToneMap = ctrl.toneMap;
     final savedFxaa = ctrl.fxaa;
     final savedVignette = ctrl.vignette;
+    final savedSsao = ctrl.ssao;
+    final savedDof = ctrl.dof;
+    final savedCsm2 = ctrl.csm2Cascades;
+    final savedDebug3D = ctrl.debug3D;
     final savedEncoding = ctrl.shadowEncoding;
     final savedFit = ctrl.shadowFit;
     final savedSoftness = ctrl.shadowSoftness;
@@ -593,6 +598,42 @@ class ShowcaseDiagnostics() {
       renderPureLab(lab);
       final mirroredOk =
           lab.context.isMirrored && lab.renderStats.drawCalls >= 6;
+
+      // Also test the 4 production 3D camera rigs inside `PureCameraLabGame`:
+      // OrbitCameraController3D, SpringArmCamera3D, CameraDollyTrack3D,
+      // CameraShake3D.
+      lab.setCameraMode(PureCameraMode.orbitController3D);
+      lab.orbitController.fitAabb(
+        Aabb3.minMax(Vector3(-3, 0, -3), Vector3(3, 2, 3)),
+      );
+      lab.update(0.05);
+      renderPureLab(lab);
+      final orbitRigOk = lab.orbitController.distance > 1.0;
+
+      lab.setCameraMode(PureCameraMode.springArm3D);
+      // Place rover at `(0, 0.35, 2.2)` so the spring-arm boom (`yaw = 0`,
+      // `+Z` toward `z = 7.4`) intersects `occluderWall` at `z = 4.4`.
+      lab.rover.position.setValues(0, 0.35, 2.2);
+      lab.springArm
+        ..yaw = 0.0
+        ..pitch = 0.12
+        ..update(0.05);
+      final springOccludedOk =
+          lab.springArm.isOccluded &&
+          lab.springArm.currentArmLength < lab.springArm.armLength;
+
+      lab
+        ..setCameraMode(PureCameraMode.dollyTrack3D)
+        ..update(0.25);
+      final dollyOk = lab.dollyTrack.progress > 0.0;
+
+      lab.triggerTraumaShake(0.85);
+      final traumaBefore = lab.cameraShake.trauma;
+      lab.update(0.05);
+      renderPureLab(lab);
+      final shakeOk =
+          traumaBefore >= 0.8 && lab.cameraShake.trauma < traumaBefore;
+
       lab.onRemove();
       lab.hudTick.dispose();
 
@@ -990,6 +1031,380 @@ class ShowcaseDiagnostics() {
             'passes=$dynPasses, size=${snapshot.width}x${snapshot.height}, '
             'litPixels=$nonBgPixels',
       );
+
+      // --- LAB 13: 3D Input, 3D Effects, Fixed Interpolation & Camera Rigs ---
+      game.applyPreset(ShowcasePreset.inputEffectsAndCameraRigs);
+      await pumpFrame();
+      await pumpFrame();
+
+      // 37. `PointerRouter3D` (`TapCallbacks3D`, `HoverCallbacks3D`,
+      //     ray-plane `DragCallbacks3D`, and 1D `dragAxisConstraint` gizmo).
+      final router = rig.pointerRouter3D;
+      final totem = rig.interactiveTotem;
+      final slider = rig.axisGizmoSlider;
+      var input3DOk = false;
+      if (router != null && totem != null && slider != null) {
+        final totemPt = game.dynamicLayer.scenePointToLocal(
+          totem.position + Vector3(0, 0, 0.6),
+        );
+        final totemDragTo = game.dynamicLayer.scenePointToLocal(
+          totem.position + Vector3(0.9, 0.7, 0.6),
+        );
+        final startTotemPos = totem.position.clone();
+        router
+          ..dispatchHover(totemPt)
+          ..dispatchTapDown(totemPt)
+          ..dispatchTapUp(totemPt)
+          ..dispatchDragStart(totemPt, pointerId: 2)
+          ..dispatchDragUpdate(totemDragTo, pointerId: 2)
+          ..dispatchDragEnd(pointerId: 2, point: totemDragTo);
+
+        final sliderPt = game.dynamicLayer.scenePointToLocal(slider.position);
+        final sliderDragTo = game.dynamicLayer.scenePointToLocal(
+          slider.position + Vector3(1.4, 1.8, 0.0),
+        );
+        final sliderYBefore = slider.position.y;
+        final sliderXBefore = slider.position.x;
+        router
+          ..dispatchDragStart(sliderPt, pointerId: 3)
+          ..dispatchDragUpdate(sliderDragTo, pointerId: 3)
+          ..dispatchDragEnd(pointerId: 3, point: sliderDragTo);
+
+        input3DOk =
+            totem.hoverEnterCount >= 1 &&
+            totem.tapCount >= 1 &&
+            totem.dragUpdateCount >= 1 &&
+            totem.position.distanceTo(startTotemPos) > 0.2 &&
+            slider.dragMoves >= 1 &&
+            (slider.position.x - sliderXBefore).abs() > 0.2 &&
+            (slider.position.y - sliderYBefore).abs() < 1e-5;
+      }
+      record(
+        'input_3d_tap_hover_drag_and_gizmo',
+        'PointerRouter3D (Tap/Hover/Plane-Drag & 1D Axis Gizmo)',
+        ok: input3DOk,
+        detail:
+            'taps=${totem?.tapCount ?? 0}, '
+            'drags=${totem?.dragUpdateCount ?? 0}, '
+            'gizmoMoves=${slider?.dragMoves ?? 0}',
+      );
+
+      // 38. `SplinePathEffect3D`, `ArcMoveEffect3D`, `InstanceDataEffect3D`,
+      //     `SquashStretchEffect3D`, and `FixedTransformInterpolation3D`.
+      final shuttleStart = rig.splineShuttle?.position.clone();
+      for (var i = 0; i < 6; i++) {
+        await pumpFrame();
+      }
+      final shuttleMoved =
+          shuttleStart != null &&
+          (rig.splineShuttle?.position.distanceTo(shuttleStart) ?? 0) > 0.05;
+      final arcLifted = (rig.arcJumpOrb?.position.z ?? 0) > 0.46;
+      var interpOk = false;
+      if (totem != null) {
+        final wasInterp = totem.isInterpolated;
+        totem.restoreSimulatedState();
+        interpOk = wasInterp && !totem.isInterpolated;
+      }
+      record(
+        'effects_3d_and_fixed_interpolation',
+        '3D Effects (Spline/Arc/Squash/Color/InstanceData) & FixedInterp3D',
+        ok: shuttleMoved && arcLifted && interpOk,
+        detail:
+            'shuttleMoved=$shuttleMoved, arcLifted=$arcLifted, '
+            'fixedInterp=$interpOk',
+      );
+
+      // 39. Production 3D Camera Rigs (`OrbitCameraController3D`,
+      //     `SpringArmCamera3D`, `CameraDollyTrack3D`, `CameraShake3D`).
+      record(
+        'camera_rigs_orbit_spring_dolly_shake',
+        'Camera Rigs (Orbit fitAabb, Occluded SpringArm, Dolly, 6-DOF Shake)',
+        ok: orbitRigOk && springOccludedOk && dollyOk && shakeOk,
+        detail:
+            'orbit=$orbitRigOk, springOccluded=$springOccludedOk, '
+            'dolly=$dollyOk, shake=$shakeOk',
+      );
+
+      // --- LAB 14: PhysicsWorld3D, Colliders, Kinematic, NavMesh & Audio3D ---
+      game.applyPreset(ShowcasePreset.physicsCollidersKinematicAndNavMesh);
+      for (var i = 0; i < 20; i++) {
+        await pumpFrame();
+      }
+
+      // 40. `PhysicsWorld3D` (`RigidBody3D` `throwDice3D` + `HingeJoint3D`).
+      final diceOk =
+          rig.diceRigidBodies.length == 4 &&
+          rig.diceRigidBodies.every(
+            (b) => b.bodyPosition.z > 0.10 && b.bodyPosition.z < 5.0,
+          );
+      final hingeAngle = rig.pendulumHinge?.jointAngle ?? 99.0;
+      final hingeOk =
+          rig.pendulumHinge != null &&
+          hingeAngle.isFinite &&
+          hingeAngle.abs() <= 1.45;
+      record(
+        'rigid_body_3d_dice_and_hinge_joint',
+        'PhysicsWorld3D (Seeded 3D Dice Throw & HingeJoint3D Pendulum)',
+        ok: diceOk && hingeOk,
+        detail:
+            'dice=${rig.diceRigidBodies.length}, '
+            'hingeAngle=${hingeAngle.toStringAsFixed(2)} rad',
+      );
+
+      // 41. `CollisionSystem3D`, `TriggerVolume3D`, `ShapeCast3D` &
+      //     `KinematicCharacterController3D` stair step-up!
+      final sweepHit = ShapeCast3D.sphereCast(
+        origin: Vector3(8.2, 11.4, 0.15),
+        radius: 0.25,
+        delta: Vector3(1.2, 0.0, 0.0),
+        collisionSystem: rig.collisionSystem,
+      );
+      // Drive the kinematic character straight up the 2-step staircase into
+      // `triggerPad` & `collisionBeacon` at `x = 10.15`.
+      final kcc = rig.kinematicController;
+      final actor = rig.kinematicActor;
+      if (kcc != null && actor != null) {
+        actor.position.setValues(8.3, 11.4, 0.0);
+        for (var i = 0; i < 15; i++) {
+          kcc.moveAndSlide(
+            Vector3(4.5, 0.0, -4.0),
+            1.0 / 30.0,
+            collisionSystem: rig.collisionSystem,
+          );
+          rig.collisionSystem?.step();
+        }
+      }
+      final climbedStairs = (actor?.position.z ?? 0) > 0.35;
+      final triggersOk =
+          rig.triggerEnters >= 1 &&
+          (rig.collisionBeacon?.collisionStarts ?? 0) >= 1;
+      record(
+        'colliders_trigger_shapecast_and_kinematic',
+        'CollisionSystem3D + TriggerVolume3D + ShapeCast3D + Kinematic Step-Up',
+        ok:
+            sweepHit != null &&
+            sweepHit.toi < 1.0 &&
+            climbedStairs &&
+            triggersOk,
+        detail:
+            'toi=${sweepHit?.toi.toStringAsFixed(2)}, '
+            'actorZ=${actor?.position.z.toStringAsFixed(2)}, '
+            'triggers=${rig.triggerEnters}',
+      );
+
+      // 42. `NavMesh3D` funnel path + `CrowdSteering3D` + `SkinnedHitboxRig3D`
+      //     + `SpatialAudio3D`!
+      final navPath =
+          rig.steppedNavMesh?.findPath(
+            Vector3(2.8, 5.0, 0.05),
+            Vector3(11.2, 5.0, 0.65),
+          ) ??
+          const [];
+      final navOk = navPath.length >= 2 && navPath.last.z > 0.55;
+      final crowdOk =
+          (rig.crowdSteering?.agents.length ?? 0) == 4 &&
+          rig.crowdSteering!.agents.every((a) => a.position.x > 2.9);
+
+      BoneRayHit3D? boneHit;
+      if (rig.skinnedHitboxRig case final sRig?) {
+        sRig.syncTransforms();
+        final tipBox = sRig.hitboxes.last;
+        final tipCenter = tipBox.worldMatrix.getTranslation();
+        boneHit = sRig.raycast(
+          Ray.originDirection(
+            tipCenter + Vector3(0, 0, 2.0),
+            Vector3(0, 0, -1),
+          ),
+        );
+      }
+      final mix = rig.audioEmitter3D?.lastMix;
+      final audioOk =
+          mix != null && mix.volume > 0.05 && mix.pan >= -1.0 && mix.pan <= 1.0;
+      record(
+        'navmesh_crowd_bone_hitbox_and_audio3d',
+        'NavMesh3D Funnel + CrowdSteering3D + BoneHitbox3D + SpatialAudio3D',
+        ok: navOk && crowdOk && boneHit != null && audioOk,
+        detail:
+            'navPts=${navPath.length}, bone=${boneHit?.boneName}, '
+            'vol=${mix?.volume.toStringAsFixed(2)}',
+      );
+
+      // --- LAB 15: BlendSpaces, Crowd64, SceneLoader3D & Isolate Streaming ---
+      game.applyPreset(ShowcasePreset.blendTreesCrowdSceneLoaderAndIsolate);
+      for (var i = 0; i < 18; i++) {
+        await pumpFrame();
+      }
+
+      // 43. `BlendSpace1D` / `BlendSpace2D`, `AnimationEvent3D`,
+      //     `RootMotionExtractor3D`, and `OffscreenAnimationPolicy`.
+      final w1 = rig.blend1DWalker;
+      final w2 = rig.blend2DWalker;
+      var offscreenDeferredOk = false;
+      if (w2 != null) {
+        w2.resetPoseEvaluationsCount();
+        w2.update(0.05);
+        // `tickOnlyEvaluateWhenVisible` defers pose evaluation until draw!
+        final evalsDuringUpdate = w2.poseEvaluationsCount;
+        w2.evaluatePose();
+        offscreenDeferredOk =
+            evalsDuringUpdate == 0 && w2.poseEvaluationsCount == 1;
+      }
+      final blendAndEventsOk =
+          w1 != null &&
+          w1.animationState.activeBlendSpace1D != null &&
+          w2?.animationState.activeBlendSpace2D != null &&
+          rig.animEventsFired >= 1 &&
+          offscreenDeferredOk;
+      record(
+        'blend_spaces_events_rootmotion_offscreen',
+        'BlendSpace 1D/2D + AnimationEvent3D + RootMotion + OffscreenPolicy',
+        ok: blendAndEventsOk,
+        detail:
+            'events=${rig.animEventsFired}, '
+            'deferredOffscreen=$offscreenDeferredOk',
+      );
+
+      // 44. `SkinnedCrowdBatch3D` (64 agents) + `AsyncModelLoader3D` Isolate +
+      //     `AssetScope3D`.
+      final crowd64 = rig.skinnedCrowd64;
+      final crowd64Ok =
+          crowd64 != null &&
+          crowd64.length == 64 &&
+          (crowd64.lastSkinnedNodeDraws >= 64 ||
+              crowd64.lastInstancedSubNodeDraws >= 1);
+      final isolateOk =
+          rig.isolateGlbModel != null &&
+          rig.isolatePreparedBvhs.isNotEmpty &&
+          rig.assetScope3D.refCountOf(rig.isolateGlbModel!) >= 1;
+      record(
+        'skinned_crowd_64_and_isolate_streaming',
+        'SkinnedCrowdBatch3D (64 Agents) + Isolate GLB/BVH + AssetScope3D',
+        ok: crowd64Ok && isolateOk,
+        detail:
+            'crowd=${crowd64?.length ?? 0}, '
+            'bvhs=${rig.isolatePreparedBvhs.length}',
+      );
+
+      // 45. `SceneLoader3D` + 6 glTF Extensions + `onNodeExtras`.
+      final extScene = rig.loadedExtendedScene;
+      final extSceneOk =
+          extScene != null &&
+          extScene.lights.length == 2 &&
+          extScene.instancedGroups.length == 1 &&
+          extScene.instancedGroups.first.length == 8 &&
+          extScene.staticMeshes.isNotEmpty &&
+          rig.sceneExtrasCallbackHits >= 1;
+      record(
+        'gltf_extensions_and_scene_loader_3d',
+        'SceneLoader3D (KHR_lights/unlit/emissive/quant + EXT_instancing)',
+        ok: extSceneOk,
+        detail:
+            'lights=${extScene?.lights.length ?? 0}, '
+            'instanced=${extScene?.instancedGroups.firstOrNull?.length ?? 0}, '
+            'extras=${rig.sceneExtrasCallbackHits}',
+      );
+
+      // --- LAB 16: SSAO, 3D DoF, Soft Particles, 2-Cascade CSM & Portal ---
+      game.applyPreset(ShowcasePreset.ssaoDofCsmPortalAndDebug3D);
+      await pumpFrame();
+      await pumpFrame();
+
+      // 46. Half-res `DepthNormalPrepass` (`SSAO` + `3D DoF` + Soft Particles
+      //     + Shoreline Water Foam).
+      final hasDepthNorm =
+          game.dynamicLayer.context.activeDepthNormalTexture != null;
+      final depthNormOk =
+          game.dynamicLayer.world.depthPrepassEnabled &&
+          hasDepthNorm &&
+          (game.dynamicLayer.postProcess?.ssaoIntensity ?? 0) > 0.5 &&
+          (game.dynamicLayer.postProcess?.dofBlurStrength ?? 0) > 0.3 &&
+          (rig.softMistMaterial?.softDepthFade ?? 0) > 0.05 &&
+          (rig.shoreFoamWaterMaterial?.shoreFoamDepth ?? 0) > 0.05;
+      record(
+        'depth_normal_ssao_dof_soft_particles_foam',
+        'DepthNormalPrepass (SSAO + 3D DoF + Soft Particles + Shore Foam)',
+        ok: depthNormOk,
+        detail:
+            'prepass=$hasDepthNorm, '
+            'ssao=${game.dynamicLayer.postProcess?.ssaoIntensity}',
+      );
+
+      // 47. 2-Cascade Directional Shadow Atlas + Shadowing `SpotLight` +
+      //     `EnvironmentProbe3D` `SH9` IBL + `cameraMask`/`lightMask`.
+      final dynCsmPasses = game.dynamicLayer.renderStats.shadowPasses;
+      final statCsmPasses = game.staticLayer.renderStats.shadowPasses;
+      // Mask out directional sun for 1 frame (`lightMask = 0`) so `_ShadowPass`
+      // renders the perspective `SpotLight` shadow map.
+      final dynSun = game.dynamicLayer.world.children
+          .whereType<LightComponent>()
+          .firstWhere((l) => l.source is DirectionalLight);
+      dynSun.lightMask = 0;
+      await pumpFrame();
+      final spotShPasses = game.dynamicLayer.renderStats.shadowPasses;
+      final spotShadowActive = game.dynamicLayer.context.hasActiveShadows;
+      dynSun.lightMask = 0xFFFFFFFF;
+      await pumpFrame();
+
+      final probe = rig.v3.skyDomeProbe;
+      final skyIrr = probe.evaluateIrradiance(Vector3(0, 0, 1));
+      final gndIrr = probe.evaluateIrradiance(Vector3(0, 0, -1));
+      final csmSpotIblOk =
+          statCsmPasses == 2 &&
+          dynCsmPasses == 2 &&
+          spotShPasses == 1 &&
+          spotShadowActive &&
+          skyIrr.z > gndIrr.z;
+      record(
+        'csm_2_cascades_spot_shadows_and_sh9_ibl',
+        '2-Cascade CSM Atlas + SpotLight Shadows + SH9 IBL + Layer Masks',
+        ok: csmSpotIblOk,
+        detail:
+            'csmPasses=$statCsmPasses/$dynCsmPasses, '
+            'spotShPasses=$spotShPasses, sh9=${skyIrr.z > gndIrr.z}',
+      );
+
+      // 48. Live GPU `RenderTexture3D` Portal + `DebugRenderer3D` +
+      //     `GraphicsDevice.warmupMaterial`/VRAM + `Canvas3DFallbackComponent`.
+      final portal = rig.portalRenderTexture;
+      final dbgSegs = rig.labDebugRenderer?.lastSegmentCount ?? 0;
+      final warmedPipe = game.dynamicLayer.device.warmupMaterial(
+        UnlitMaterial(),
+      );
+      final vramBytes = game.dynamicLayer.device.estimatedTargetVramBytes;
+
+      final fbWorld = World3D()
+        ..add(
+          MeshComponent(
+            mesh: CuboidMesh(
+              size: Vector3.all(1),
+              material: UnlitMaterial(albedoColor: const ui.Color(0xFF38BDF8)),
+            ),
+          ),
+        );
+      final fbComp = Canvas3DFallbackComponent(
+        world: fbWorld,
+        size: Vector2(120, 90),
+      );
+      final fbRec = ui.PictureRecorder();
+      fbComp.render(ui.Canvas(fbRec));
+      fbRec.endRecording().dispose();
+      final fallbackTris = fbComp.lastTrianglesSubmitted;
+
+      final portalDbgOk =
+          portal != null &&
+          portal.renderCount >= 1 &&
+          dbgSegs >= 20 &&
+          warmedPipe.id >= 0 &&
+          vramBytes > 0 &&
+          fallbackTris == 12;
+      record(
+        'render_texture_portal_debug3d_and_fallback',
+        'RenderTexture3D Portal + DebugRenderer3D + Warmup + Canvas3D Fallback',
+        ok: portalDbgOk,
+        detail:
+            'portalFrames=${portal?.renderCount ?? 0}, dbgSegs=$dbgSegs, '
+            'vramKB=${vramBytes ~/ 1024}, fbTris=$fallbackTris',
+      );
     } finally {
       game.applyPreset(savedPreset);
       ctrl
@@ -1009,6 +1424,10 @@ class ShowcaseDiagnostics() {
         ..toneMap = savedToneMap
         ..fxaa = savedFxaa
         ..vignette = savedVignette
+        ..ssao = savedSsao
+        ..dof = savedDof
+        ..csm2Cascades = savedCsm2
+        ..debug3D = savedDebug3D
         ..shadowEncoding = savedEncoding
         ..shadowFit = savedFit
         ..shadowSoftness = savedSoftness

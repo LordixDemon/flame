@@ -44,6 +44,7 @@ out vec2 fragNextTexCoord;
 out vec2 fragCorner;
 out vec4 fragColor;
 out vec4 fragParams;
+out vec4 fragClipPos;
 
 vec2 frameTexCoord(float frame, vec2 texCoord) {
   float columns = billboard.flipbook.x;
@@ -124,4 +125,5 @@ void main() {
     particle[3].x,
     0.0
   );
+  fragClipPos = gl_Position;
 }

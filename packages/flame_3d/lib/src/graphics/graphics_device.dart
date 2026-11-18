@@ -186,14 +186,48 @@ class GraphicsDevice({
     GpuTextureTarget sceneTarget,
     BloomSettings? settings, {
     PostProcessSettings? postProcess,
+    Texture? depthNormalTexture,
     GpuRenderTarget? outputTarget,
   }) {
     return _bloom.applyFromTarget(
       sceneTarget,
       settings,
       postProcess: postProcess,
+      depthNormalTexture: depthNormalTexture,
       outputTarget: outputTarget,
     );
+  }
+
+  /// Number of compiled [DevicePipeline] instances cached on this device.
+  int get cachedPipelineCount => _pipelines.length;
+
+  /// Estimated GPU render-target memory (color + depth attachments, in bytes)
+  /// currently pooled by this device.
+  int get estimatedTargetVramBytes {
+    var total = 0;
+    for (final entry in _pool.entries) {
+      final (w, h, samples) = entry.key;
+      // Triple-buffered color + depth-stencil estimate.
+      final perTarget = w * h * 4 * (3 + samples);
+      total += perTarget * entry.value.length;
+    }
+    for (final key in _textureTargets.keys) {
+      final (w, h, _, _) = key;
+      total += w * h * 8;
+    }
+    return total;
+  }
+
+  /// Pre-compiles and caches the GPU [DevicePipeline] for [material] and
+  /// [layout] (`VertexLayout.standard` by default) so its first draw in
+  /// gameplay incurs zero shader-compilation stutter.
+  DevicePipeline warmupMaterial(
+    Material material, {
+    VertexLayout? layout,
+  }) {
+    final resolvedLayout = layout ?? VertexLayout.standard;
+    final vert = material.vertexShaderFor(resolvedLayout);
+    return pipelineFor(vert, material.fragmentShader, resolvedLayout);
   }
 
   void _startPass(GpuRenderPass renderPass, WindingOrder frontFace) {

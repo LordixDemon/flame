@@ -31,6 +31,7 @@ abstract class Object3D({
   /// draws, not to its children; the surfaces of materials that cast no
   /// shadows (see [Material.castsShadows]) cast none either way.
   var bool castsShadows = true,
+  super.cameraMask,
 }) extends Component3D {
   /// Whether an ancestor's AABB was fully inside the frustum, meaning
   /// children can skip their own frustum tests.
@@ -44,6 +45,9 @@ abstract class Object3D({
       'Object3D is rendered outside of the rendering of its World3D',
     );
     final context = world.context;
+    if ((cameraMask & context.cameraMask) == 0) {
+      return;
+    }
     // The frustum of the pass, computed once by the context.
     final frustum = context.frustum;
     RenderProfile.lap(RenderPhase.traversal);

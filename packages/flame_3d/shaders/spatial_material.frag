@@ -36,6 +36,8 @@ uniform Material {
   vec4 flags;
   // x: doubleSided, y: ditherFade, z: premultiplyAlpha, w: hasEmissiveTex
   vec4 flags2;
+  // L0..L2 Spherical Harmonics diffuse irradiance (shCoeffs[0].w > 0 enables)
+  vec4 shCoeffs[9];
 } material;
 
 #include <flame_3d/lights.glsl>
@@ -202,6 +204,23 @@ void main() {
   vec3 sky = mix(hemisphereLight.groundColor.rgb, hemisphereLight.skyColor.rgb, hemi);
   ambient += kD * baseColor * sky * hemisphereLight.intensity;
 
+  if (material.shCoeffs[0].w > 0.0) {
+    float nx = normal.x;
+    float ny = normal.y;
+    float nz = normal.z;
+    vec3 shIrr =
+      material.shCoeffs[0].rgb * 0.886227 +
+      material.shCoeffs[1].rgb * (1.023327 * ny) +
+      material.shCoeffs[2].rgb * (1.023327 * nz) +
+      material.shCoeffs[3].rgb * (1.023327 * nx) +
+      material.shCoeffs[4].rgb * (0.858086 * nx * ny) +
+      material.shCoeffs[5].rgb * (0.858086 * ny * nz) +
+      material.shCoeffs[6].rgb * (0.247708 * (3.0 * nz * nz - 1.0)) +
+      material.shCoeffs[7].rgb * (0.858086 * nx * nz) +
+      material.shCoeffs[8].rgb * (0.429043 * (nx * nx - ny * ny));
+    ambient += kD * baseColor * max(shIrr, vec3(0.0)) * material.shCoeffs[0].w;
+  }
+
   if (material.flags.w > 0.0) {
     vec3 refl = reflect(-viewDir, normal);
     vec3 envSample = texture(environmentTexture, equirectUv(refl)).rgb;
@@ -280,9 +299,12 @@ void main() {
         attenuation = 1.0 / (dist * dist);
       }
       vec4 spotColor = spotLights.colors[i];
+      vec3 spotSh = spotCastsShadows(i)
+          ? shadowFactor(shadowVisibility(fragPosition, geomNormal))
+          : vec3(1.0);
       lo += processLight(
         l,
-        spotColor.rgb * (spotColor.a * attenuation * angular),
+        spotColor.rgb * (spotColor.a * attenuation * angular) * spotSh,
         spotDir.w,
         baseColor,
         normal,

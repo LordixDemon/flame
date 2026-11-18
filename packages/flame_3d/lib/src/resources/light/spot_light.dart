@@ -39,4 +39,7 @@ class SpotLight({
 
   /// Specular highlight multiplier (`0` = diffuse only, `1` = full specular).
   var double specular = 1.0,
+
+  /// Optional perspective shadow-map settings for this spotlight cone.
+  var ShadowSettings? shadows,
 }) extends LightSource;

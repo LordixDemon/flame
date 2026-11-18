@@ -34,6 +34,7 @@ class Scene3DComponent({
   Scene3DCacheMode cacheMode = Scene3DCacheMode.none,
   BloomSettings? bloom,
   PostProcessSettings? postProcess,
+  super.cameraMask,
   super.position,
   super.size,
   super.scale,
@@ -486,9 +487,13 @@ class Scene3DComponent({
     }
 
     _statsBefore.setFrom(device.stats);
-    context.setCamera(_viewMatrix, _projectionMatrix);
+    context
+      ..cameraMask = cameraMask
+      ..setCamera(_viewMatrix, _projectionMatrix);
     RenderProfile.lap(RenderPhase.setup);
-    world.renderShadows(canvas);
+    world
+      ..renderShadows(canvas)
+      ..renderDepthNormals(canvas, targetWidth, targetHeight);
 
     final bloomSettings = world.bloom;
     final postSettings = world.postProcess;
@@ -528,6 +533,7 @@ class Scene3DComponent({
           texTarget,
           bloomSettings,
           postProcess: postSettings,
+          depthNormalTexture: context.activeDepthNormalTexture,
           outputTarget: _retainedBloomTarget,
         );
       } else {
@@ -535,6 +541,7 @@ class Scene3DComponent({
           texTarget,
           bloomSettings,
           postProcess: postSettings,
+          depthNormalTexture: context.activeDepthNormalTexture,
         );
       }
     } else {
