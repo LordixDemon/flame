@@ -33,8 +33,7 @@ class _ShadowPass(final RenderContext3D _context) {
   // The shadow map, as the texture bound to the receivers.
   GpuTextureTarget? _target;
   Texture? _texture;
-  Object? _cachedStaticKey;
-  final Float32List _cachedLightVp = Float32List(16);
+  final Expando<_StaticShadowMap> _staticMaps = Expando();
 
   // The camera of the main pass, set back when the shadow pass ends.
   final Matrix4 _mainView = Matrix4.identity();
@@ -147,63 +146,104 @@ class _ShadowPass(final RenderContext3D _context) {
       ShadowMapEncoding.rgba8 => false,
     };
 
-    // Static shadow map reuse: when `cacheWhenStatic` is enabled and the caster
-    // key, encoding, resolution, and fitted light view-projection match the
-    // already-rendered shadow map, keep binding `_texture` with 0 shadow draws.
+    final format = float ? GpuPixelFormat.r32Float : GpuPixelFormat.rgba8888;
+    final size = resolution.toDouble();
     final vpStorage = projection.viewProjection.storage;
-    if (settings.cacheWhenStatic &&
-        castersKey != null &&
-        _texture != null &&
-        _target != null &&
-        _target!.width == resolution &&
-        _packDepth == !float &&
-        _cachedStaticKey == castersKey &&
-        _sameMatrix(vpStorage, _cachedLightVp)) {
-      device.touchTextureTarget(_target!);
-      _toLight.setValues(
-        -direction.x,
-        -direction.y,
-        -direction.z,
-        index.toDouble(),
-      );
-      final color = settings.color;
-      _color.setValues(
-        color.r,
-        color.g,
-        color.b,
-        settings.strength.clamp(0, 1).toDouble(),
-      );
-      _bias.setValues(
-        math.max(projection.texelWidth, projection.texelHeight),
-        settings.depthBias,
-        settings.normalBias,
-        settings.softness.toDouble(),
-      );
-      active = true;
-      RenderProfile.switchPass(RenderPhase.shadowSetup, shadow: false);
-      return false;
+
+    // Static shadow map reuse: each `DirectionalShadowProjection` with
+    // `cacheWhenStatic` owns a dedicated shadow map texture so dynamic shadow
+    // passes of other layers in the same frame never overwrite it.
+    if (settings.cacheWhenStatic && castersKey != null) {
+      final cached = _staticMaps[projection];
+      if (cached != null &&
+          cached.resolution == resolution &&
+          cached.packDepth == !float &&
+          cached.castersKey == castersKey &&
+          _sameMatrix(vpStorage, cached.lightVp)) {
+        if (!identical(_texture, cached.texture)) {
+          version++;
+          _target = cached.target;
+          _texture = cached.texture;
+        }
+        _packDepth = !float;
+        if (float) {
+          _decode.setValues(1, 0, 0, 0);
+        } else {
+          _decode.setFrom(_packedDecode);
+        }
+        _lightViewProjection.setFrom(projection.viewProjection);
+        _toLight.setValues(
+          -direction.x,
+          -direction.y,
+          -direction.z,
+          index.toDouble(),
+        );
+        final color = settings.color;
+        _color.setValues(
+          color.r,
+          color.g,
+          color.b,
+          settings.strength.clamp(0, 1).toDouble(),
+        );
+        _map.setValues(size, size, 1 / size, 1 / size);
+        _bias.setValues(
+          math.max(projection.texelWidth, projection.texelHeight),
+          settings.depthBias,
+          settings.normalBias,
+          settings.softness.toDouble(),
+        );
+        active = true;
+        RenderProfile.switchPass(RenderPhase.shadowSetup, shadow: false);
+        return false;
+      }
     }
 
-    // From here on, the values of the last map are replaced.
+    // From here on, a fresh shadow map will be rendered.
     version++;
-    _cachedStaticKey = settings.cacheWhenStatic ? castersKey : null;
-    for (var i = 0; i < 16; i++) {
-      _cachedLightVp[i] = vpStorage[i];
-    }
-
-    final target = device.textureTarget(
-      resolution,
-      resolution,
-      float ? GpuPixelFormat.r32Float : GpuPixelFormat.rgba8888,
-    );
-    if (!identical(target, _target)) {
+    final GpuTextureTarget target;
+    if (settings.cacheWhenStatic && castersKey != null) {
+      var entry = _staticMaps[projection];
+      if (entry == null ||
+          entry.resolution != resolution ||
+          entry.packDepth != !float) {
+        final ownedTarget = device.backend.createTextureTarget(
+          width: resolution,
+          height: resolution,
+          format: format,
+          clearValue: const Color(0xFFFFFFFF),
+        );
+        entry = _StaticShadowMap(
+          resolution: resolution,
+          packDepth: !float,
+          target: ownedTarget,
+          texture: Texture(
+            null,
+            width: resolution,
+            height: resolution,
+            gpuTexture: ownedTarget.texture,
+          ),
+        );
+        _staticMaps[projection] = entry;
+      }
+      entry.castersKey = castersKey;
+      for (var i = 0; i < 16; i++) {
+        entry.lightVp[i] = vpStorage[i];
+      }
+      target = entry.target;
       _target = target;
-      _texture = Texture(
-        null,
-        width: resolution,
-        height: resolution,
-        gpuTexture: target.texture,
-      );
+      _texture = entry.texture;
+    } else {
+      _staticMaps[projection] = null;
+      target = device.textureTarget(resolution, resolution, format);
+      if (!identical(target, _target)) {
+        _target = target;
+        _texture = Texture(
+          null,
+          width: resolution,
+          height: resolution,
+          gpuTexture: target.texture,
+        );
+      }
     }
     _packDepth = !float;
     if (float) {
@@ -225,7 +265,6 @@ class _ShadowPass(final RenderContext3D _context) {
       color.b,
       settings.strength.clamp(0, 1).toDouble(),
     );
-    final size = resolution.toDouble();
     _map.setValues(size, size, 1 / size, 1 / size);
     _bias.setValues(
       math.max(projection.texelWidth, projection.texelHeight),
@@ -466,6 +505,16 @@ class _ShadowPass(final RenderContext3D _context) {
     }
     return true;
   }
+}
+
+class _StaticShadowMap({
+  required final int resolution,
+  required final bool packDepth,
+  required final GpuTextureTarget target,
+  required final Texture texture,
+}) {
+  Object? castersKey;
+  final Float32List lightVp = Float32List(16);
 }
 
 /// The pipeline that renders the depth of surfaces of one vertex layout into

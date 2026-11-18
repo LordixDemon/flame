@@ -5,7 +5,6 @@ import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/model.dart';
 import 'package:flame_3d/resources.dart';
-import 'package:flame_3d/src/parser/gltf/animation_interpolation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 ModelAnimation _translateClip(String name, double endX, {double duration = 1}) {

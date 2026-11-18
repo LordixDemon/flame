@@ -6,6 +6,7 @@ import 'package:flame_3d_example/scenarios/houses_scenario.dart';
 import 'package:flame_3d_example/scenarios/models_scenario.dart';
 import 'package:flame_3d_example/scenarios/particles_scenario.dart';
 import 'package:flame_3d_example/scenarios/shadows_scenario.dart';
+import 'package:flame_3d_example/scenarios/showcase_scenario.dart';
 
 abstract class GameScenario() {
   Future<void> onLoad();
@@ -22,6 +23,7 @@ abstract class GameScenario() {
     'models': ModelsScenario(),
     'particles': ParticlesScenario(),
     'shadows': ShadowsScenario(),
+    'showcase': ShowcaseScenario(),
   };
 
   static void defaultSetup(ExampleGame3D game) {

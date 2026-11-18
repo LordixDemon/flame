@@ -60,6 +60,9 @@ class ExampleGame3D()
         } else if (event.logicalKey == LogicalKeyboardKey.keyH) {
           GameScenario.scenarios['houses']?.setup(this);
           return KeyEventResult.handled;
+        } else if (event.logicalKey == LogicalKeyboardKey.keyT) {
+          GameScenario.scenarios['showcase']?.setup(this);
+          return KeyEventResult.handled;
         }
       }
     }

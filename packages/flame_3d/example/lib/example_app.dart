@@ -1,6 +1,8 @@
 import 'package:flame/game.dart';
 import 'package:flame_3d_example/commands/commands.dart';
 import 'package:flame_3d_example/example_game_3d.dart';
+import 'package:flame_3d_example/showcase/showcase_game.dart';
+import 'package:flame_3d_example/showcase/showcase_view.dart';
 import 'package:flame_console/flame_console.dart';
 import 'package:flutter/widgets.dart';
 
@@ -89,11 +91,22 @@ class _StandaloneGameState() extends State<_StandaloneGame> {
   late final Game _game = widget.createGame();
 
   @override
+  void dispose() {
+    if (_game case final ShowcaseGame showcase) {
+      showcase.controller.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Stack(
       fit: StackFit.expand,
       children: [
-        GameWidget(game: _game),
+        if (_game case final ShowcaseGame showcase)
+          ShowcaseView(game: showcase)
+        else
+          GameWidget(game: _game),
         Positioned(
           top: 12,
           right: 12,
