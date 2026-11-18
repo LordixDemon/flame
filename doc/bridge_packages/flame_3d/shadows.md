@@ -173,6 +173,38 @@ drawn in front of it hide it as they hide the ground. The `shadows` scenario of 
 3D buildings casting tinted shadows onto a 2D board under a sun that circles around it.
 
 
+## One shadow map for several layers
+
+Each `Scene3DComponent` is a scene of its own, rendered in its own pass at its own priority among
+the 2D components: buildings below some 2D labels and characters above them, for instance. Its
+objects only shadow each other. To let the objects of several layers shadow one another, as if they
+were one scene, put their worlds in one `ShadowGroup`:
+
+```dart
+final shadows = ShadowGroup();
+buildings.world.shadowGroup = shadows;
+characters.world.shadowGroup = shadows;
+```
+
+The group has one shadow map, rendered once per frame by the first of its worlds that renders, with
+the objects of every world of the group: a character's shadow falls on a building of the other
+layer, and a building's on the character. The worlds that render after it in the frame reuse the
+map (`RenderContext3D.reuseShadowMap`), so the group costs one shadow pass, not one per layer; a
+world renders the group's map again only when another shadow map was rendered in between.
+
+The light, the `ShadowSettings` and, with `ShadowFit.view`, the camera the map is fitted to are
+those of the world that renders first:
+
+- give the worlds of a group the same lights, in the same order: a shader tells the light that
+  casts the shadows by its index among the directional lights;
+- render first the layer that covers the most of the screen (the one whose shadow catchers cover
+  the ground), or fit the map to `ShadowSettings.bounds` that cover what every layer shows, with
+  `ShadowFit.scene`: receivers outside the map are lit.
+
+A ground of `ShadowCatcherMaterial` belongs in the lowest layer of the group, below the objects of
+every layer.
+
+
 ## Costs
 
 A scene with shadows costs one more render pass per frame, and one more traversal of its
@@ -185,7 +217,8 @@ components (recording their draws a second time, `ModelComponent`s posing their 
   the GPU has it.
 
 `RenderStats.shadowPasses` and `RenderStats.shadowDrawCalls` count the shadow passes and their draw
-calls, which are also counted in `renderPasses` and `drawCalls`. In a headless test, a hundred cubes
+calls, which are also counted in `renderPasses` and `drawCalls`. The layers of a `ShadowGroup` that
+reuse its map count no shadow pass. In a headless test, a hundred cubes
 sharing a mesh on a ground in a `Scene3DComponent` render with 2 draw calls in 1 pass without
 shadows, and 4 draw calls in 2 passes with them (2 of them in the shadow pass).
 

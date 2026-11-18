@@ -17,6 +17,10 @@ class _ShadowPass(final RenderContext3D _context) {
   /// Whether the pass whose camera is set receives shadows.
   bool active = false;
 
+  /// Incremented every time a shadow pass renders a map, see
+  /// [RenderContext3D.shadowMapVersion].
+  int version = 0;
+
   // The values of the Shadows block of the main pass.
   final Matrix4 _lightViewProjection = Matrix4.identity();
   final Vector4 _toLight = Vector4(0, 0, 0, -1);
@@ -128,6 +132,8 @@ class _ShadowPass(final RenderContext3D _context) {
     )) {
       return false;
     }
+    // From here on, the values of the last map are replaced.
+    version++;
 
     final float = switch (settings.encoding) {
       ShadowMapEncoding.auto => device.backend.supportsFloatTextureTargets,
@@ -184,6 +190,19 @@ class _ShadowPass(final RenderContext3D _context) {
     _drawCallsBefore = device.stats.drawCalls;
     device.beginTexturePass(target, frontFace: context.frontFace);
     device.stats.shadowPasses++;
+    return true;
+  }
+
+  /// Makes the pass whose camera is set receive the map of the last shadow
+  /// pass, when it is still the map of [mapVersion].
+  bool reuse(int mapVersion) {
+    if (recording) {
+      throw StateError('A shadow pass is being recorded');
+    }
+    if (mapVersion != version || _texture == null) {
+      return false;
+    }
+    active = true;
     return true;
   }
 

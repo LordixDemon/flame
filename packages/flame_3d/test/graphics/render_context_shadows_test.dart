@@ -326,6 +326,111 @@ void main() {
     });
   });
 
+  group('reuseShadowMap', () {
+    /// A main pass whose camera is set without a shadow pass, reusing the
+    /// map of [version] when given; returns what reuseShadowMap returned.
+    bool mainPass(Surface surface, {int? version}) {
+      device.begin();
+      context.setCamera(Matrix4.identity(), Matrix4.identity());
+      final reused = version != null && context.reuseShadowMap(version);
+      device.beginPass(const Size(16, 16));
+      context
+        ..drawSurface(surface, transform: Matrix4.translationValues(0, 0, -0.5))
+        ..flush();
+      device
+        ..endPass()
+        ..end();
+      return reused;
+    }
+
+    test('fails before any shadow map was rendered', () {
+      final material = _Receiver();
+      expect(
+        mainPass(triangle(material), version: context.shadowMapVersion),
+        isFalse,
+      );
+      expect(shadowsMember(material, 'toLight', 4)[3], -1);
+    });
+
+    test('binds the last shadow map to a later pass without rendering', () {
+      final material = _Receiver();
+      final surface = triangle(material);
+      final before = context.shadowMapVersion;
+      frame([sun(shadows: ShadowSettings(resolution: 128))], () {
+        context.drawSurface(
+          surface,
+          transform: Matrix4.translationValues(0, 0, -10),
+        );
+      });
+      final version = context.shadowMapVersion;
+      expect(version, isNot(before));
+      final lightViewProjection = shadowsMember(
+        material,
+        'lightViewProjection',
+        16,
+      ).toList();
+      final commandsBefore = backend.commands.length;
+
+      expect(mainPass(surface, version: version), isTrue);
+      // No shadow pass: one main pass, no commit.
+      final commands = backend.commands.sublist(commandsBefore);
+      expect(commands.where((c) => c.startsWith('beginRenderPass')), [
+        'beginRenderPass 16x16',
+      ]);
+      expect(commands, isNot(contains('commit')));
+      expect(device.lastFrameStats.shadowPasses, 0);
+      // The same map and the same light as the pass that rendered it.
+      expect(shadowsMember(material, 'toLight', 4)[3], 0);
+      expect(
+        shadowsMember(material, 'lightViewProjection', 16),
+        orderedEquals(lightViewProjection),
+      );
+      final map = backend.textureBindings[RenderContext3D.shadowMapSampler]!;
+      expect(identical(map.$1, backend.textures.last), isTrue);
+      expect(context.shadowMapVersion, version);
+    });
+
+    test('fails once another shadow map was rendered', () {
+      final material = _Receiver();
+      final surface = triangle(material);
+      void shadowFrame() {
+        frame([sun(shadows: ShadowSettings(resolution: 128))], () {
+          context.drawSurface(
+            surface,
+            transform: Matrix4.translationValues(0, 0, -10),
+          );
+        });
+      }
+
+      shadowFrame();
+      final version = context.shadowMapVersion;
+      shadowFrame();
+      expect(context.shadowMapVersion, isNot(version));
+      expect(mainPass(surface, version: version), isFalse);
+      expect(shadowsMember(material, 'toLight', 4)[3], -1);
+    });
+
+    test('is refused while a shadow pass is recorded', () {
+      device.begin();
+      context
+        ..lights = [sun(shadows: ShadowSettings())]
+        ..setCamera(
+          Matrix4.identity(),
+          Matrix4.identity()..setAsPerspective(60, 1, 0.1, 100),
+        );
+      expect(
+        context.beginShadowPass(projection: projection, sceneBounds: bounds),
+        isTrue,
+      );
+      expect(
+        () => context.reuseShadowMap(context.shadowMapVersion),
+        throwsStateError,
+      );
+      context.endShadowPass();
+      device.end();
+    });
+  });
+
   group('Material.castsShadows', () {
     test('defaults to whether the material is opaque', () {
       final material = _Receiver();

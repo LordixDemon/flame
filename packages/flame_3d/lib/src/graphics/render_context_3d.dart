@@ -492,6 +492,27 @@ class RenderContext3D(super.device) extends RenderContext {
   /// draws then receive the shadows.
   void endShadowPass() => _shadows.end();
 
+  /// A number that changes every time a shadow pass renders a shadow map
+  /// (between [beginShadowPass] and [endShadowPass]): while it stays the
+  /// same, the map of the last shadow pass is still the one this context
+  /// binds, see [reuseShadowMap].
+  int get shadowMapVersion => _shadows.version;
+
+  /// Makes the current pass receive the shadow map of the last shadow pass
+  /// again, without rendering it, when no shadow pass rendered another map
+  /// since: when [version] is still [shadowMapVersion]. Returns whether it
+  /// did; the pass has no shadows otherwise.
+  ///
+  /// Call it instead of [beginShadowPass], once the camera of the main pass is
+  /// set with [setCamera] and before the main pass begins. Scenes that share
+  /// a shadow map (see `ShadowGroup`) render it once, in the first of their
+  /// passes, and the others reuse it. The map's shadows are those of the
+  /// light that cast them, among the [lights] of the scene that rendered it:
+  /// the shaders tell that light from the others by its index among the
+  /// directional lights, so the scenes that reuse a map give the same index to
+  /// a light in the same direction.
+  bool reuseShadowMap(int version) => _shadows.reuse(version);
+
   /// Writes the shadow map of the current pass into [block], see
   /// [shadowsBlock].
   static void writeShadowsUniforms(

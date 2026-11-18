@@ -8,6 +8,8 @@ import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:meta/meta.dart';
 
+part 'shadow_group.dart';
+
 /// {@template world_3d}
 /// The root component for all 3D world elements.
 ///
@@ -25,7 +27,8 @@ import 'package:meta/meta.dart';
 ///
 /// When one of its directional lights casts shadows (see [ShadowSettings]),
 /// the world is rendered a first time from the light into its shadow map,
-/// before each main pass, see [renderShadows].
+/// before each main pass, see [renderShadows]. Worlds of one [shadowGroup]
+/// share one shadow map, into which all of them cast.
 /// {@endtemplate}
 class World3D({
   super.children,
@@ -107,6 +110,23 @@ class World3D({
     _host = null;
   }
 
+  /// The render context of this world's host, or `null` while it has none.
+  RenderContext3D? get _contextOrNull {
+    if (!isMounted) {
+      return null;
+    }
+    var host = _host;
+    if (host == null) {
+      for (final ancestor in ancestors()) {
+        if (ancestor case final Scene3DHost found) {
+          host = _host = found;
+          break;
+        }
+      }
+    }
+    return host?.context;
+  }
+
   Scene3DHost _findHost() {
     for (final ancestor in ancestors()) {
       if (ancestor case final Scene3DHost host) {
@@ -125,6 +145,20 @@ class World3D({
   final DirectionalShadowProjection _shadowProjection =
       DirectionalShadowProjection();
 
+  /// The group of worlds this world shares its shadow map with, or `null`
+  /// when it renders a shadow map of its own; see [ShadowGroup].
+  ShadowGroup? get shadowGroup => _shadowGroup;
+  set shadowGroup(ShadowGroup? group) {
+    if (identical(group, _shadowGroup)) {
+      return;
+    }
+    _shadowGroup?._worlds.remove(this);
+    _shadowGroup = group;
+    group?._worlds.add(this);
+  }
+
+  ShadowGroup? _shadowGroup;
+
   /// Renders the shadow map of this world, when one of its directional lights
   /// casts shadows (see [ShadowSettings]), and returns whether it did.
   ///
@@ -134,14 +168,33 @@ class World3D({
   /// [renderScene]). The draws of the main pass then receive the shadows.
   /// The components are traversed as for the main pass, with the light's view
   /// as the camera; [canvas] is passed on to them.
+  ///
+  /// In a [shadowGroup], the map of the group is rendered by the first world
+  /// of the group that renders in a frame, with the components of every
+  /// world of the group, and reused by the others: see [ShadowGroup]. It then
+  /// returns whether the main pass receives that map.
   bool renderShadows(Canvas canvas) {
     final context = this.context..lights = _lights;
+    final group = _shadowGroup;
+    if (group != null) {
+      return group._renderFor(this, context, canvas);
+    }
     if (!context.beginShadowPass(
       projection: _shadowProjection,
       sceneBounds: sceneBounds,
     )) {
       return false;
     }
+    try {
+      _recordCasters(canvas);
+    } finally {
+      context.endShadowPass();
+    }
+    return true;
+  }
+
+  /// Traverses the components into the shadow pass being recorded.
+  void _recordCasters(Canvas canvas) {
     _rendering = true;
     try {
       for (final child in children) {
@@ -149,9 +202,7 @@ class World3D({
       }
     } finally {
       _rendering = false;
-      context.endShadowPass();
     }
-    return true;
   }
 
   /// Records the draws of every component of this world into [context], with
