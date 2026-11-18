@@ -5,8 +5,8 @@ import 'package:flame/components.dart';
 import 'frame_scene.dart';
 
 /// Times the phases of a frame of [FrameSceneGame]: the update, the render
-/// into a picture, a coalesced hover and a tap hit-test, in microseconds per
-/// frame (the median of several runs).
+/// into a picture, the emissive auxiliary pass, a coalesced hover and a tap
+/// hit-test, in microseconds per frame (the median of several runs).
 ///
 /// ```console
 /// flutter test benchmark/frame_scene_benchmark.dart
@@ -25,6 +25,7 @@ Future<void> main() async {
 class FrameSceneTimings({
   required final double update,
   required final double render,
+  required final double emissive,
   required final double hover,
   required final double hitTest,
   required final int frames,
@@ -43,16 +44,19 @@ class FrameSceneTimings({
       game.hover(points[i % frames].x, points[i % frames].y);
       game.step();
       game.renderFrame();
+      game.renderEmissivePass();
       game.hitTest(points[(i * 7) % frames]);
     }
     final update = <double>[];
     final render = <double>[];
+    final emissive = <double>[];
     final hover = <double>[];
     final hit = <double>[];
     final watch = Stopwatch();
     for (var run = 0; run < runs; run++) {
       var tUpdate = 0;
       var tRender = 0;
+      var tEmissive = 0;
       var tHover = 0;
       var tHit = 0;
       for (var i = 0; i < frames; i++) {
@@ -75,17 +79,24 @@ class FrameSceneTimings({
         watch
           ..reset()
           ..start();
+        game.renderEmissivePass();
+        tEmissive += watch.elapsedMicroseconds;
+        watch
+          ..reset()
+          ..start();
         game.hitTest(points[(i * 7) % frames]);
         tHit += watch.elapsedMicroseconds;
       }
       update.add(tUpdate / frames);
       render.add(tRender / frames);
+      emissive.add(tEmissive / frames);
       hover.add(tHover / frames);
       hit.add(tHit / frames);
     }
     return FrameSceneTimings(
       update: _median(update),
       render: _median(render),
+      emissive: _median(emissive),
       hover: _median(hover),
       hitTest: _median(hit),
       frames: frames,
@@ -120,9 +131,10 @@ class FrameSceneTimings({
       title,
       '  update   ${f(update)}',
       '  render   ${f(render)}',
+      '  emissive ${f(emissive)}',
       '  hover    ${f(hover)}',
       '  hit test ${f(hitTest)}',
-      '  total    ${f(update + render + hover + hitTest)}',
+      '  total    ${f(update + render + emissive + hover + hitTest)}',
     ].join('\n');
   }
 }

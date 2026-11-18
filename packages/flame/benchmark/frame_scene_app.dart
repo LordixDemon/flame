@@ -29,7 +29,15 @@ int _frame = 0;
 ///
 /// Every phase runs the whole frame, so that the scene keeps moving the same
 /// way whatever is measured; only the named phase is timed.
-const _phases = ['frame', 'update', 'render', 'hover', 'hitTest', 'none'];
+const _phases = [
+  'frame',
+  'update',
+  'render',
+  'emissive',
+  'hover',
+  'hitTest',
+  'none',
+];
 
 /// Runs frames of the scene, with the arguments (all strings):
 ///
@@ -82,6 +90,14 @@ Future<developer.ServiceExtensionResponse> _handle(
       }
       game.renderFrame();
       if (phase == 'render') {
+        micros += watch.elapsedMicroseconds;
+      }
+      if (phase == 'emissive') {
+        watch.reset();
+        watch.start();
+      }
+      game.renderEmissivePass();
+      if (phase == 'emissive') {
         micros += watch.elapsedMicroseconds;
       }
       if (phase == 'hitTest') {

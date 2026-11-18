@@ -35,8 +35,9 @@ import 'common.dart';
 /// - a camera that pans and zooms every frame, idle rendering on demand with
 ///   dirty version sources, and frame telemetry.
 ///
-/// [step], [renderFrame], [hover] and [hitTest] are the phases of a frame, so
-/// that each can be timed (and its allocations counted) on its own.
+/// [step], [renderFrame], [renderEmissivePass], [hover] and [hitTest] are the
+/// phases of a frame, so that each can be timed (and its allocations counted)
+/// on its own.
 class FrameSceneGame()
     extends FlameGame<FrameSceneWorld>
     with HasFrameTelemetry<FrameSceneWorld> {
@@ -121,6 +122,23 @@ class FrameSceneGame()
     final canvas = ui.Canvas(recorder, _cullRect);
     onFrameRendered();
     render(canvas);
+    recorder.endRecording().dispose();
+  }
+
+  /// Draws the auxiliary pass that a post process such as
+  /// `DualPassShaderPostProcess` draws for its glow mask: the scene again,
+  /// in the exclusive [RenderPass.emissiveMask], where only
+  /// [MultiPassComponent]s paint.
+  @pragma('vm:never-inline')
+  void renderEmissivePass() {
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(recorder, _cullRect);
+    CameraComponent.pushRenderPass(RenderPass.emissiveMask);
+    try {
+      camera.renderTree(canvas);
+    } finally {
+      CameraComponent.popRenderPass();
+    }
     recorder.endRecording().dispose();
   }
 

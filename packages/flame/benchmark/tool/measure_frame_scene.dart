@@ -17,7 +17,8 @@ import 'package:vm_service/vm_service_io.dart';
 /// The objects are counted by tracing the allocations of every class of the
 /// app, which the VM records one by one, so the counts are exact. Each object
 /// is attributed to the phase whose function is on its stack
-/// (`FrameSceneGame.step`, `renderFrame`, `hover` or `hitTest`), so what the
+/// (`FrameSceneGame.step`, `renderFrame`, `renderEmissivePass`, `hover` or
+/// `hitTest`), so what the
 /// VM service allocates itself is not counted. The time is measured by the
 /// app, without tracing.
 ///
@@ -137,12 +138,13 @@ Future<void> main(List<String> arguments) async {
   }
 }
 
-const _phases = ['update', 'render', 'hover', 'hitTest', 'frame'];
+const _phases = ['update', 'render', 'emissive', 'hover', 'hitTest', 'frame'];
 
 /// The function on the stack of an allocation that tells its phase.
 const _phaseRoots = {
   'FrameSceneGame.step': 'update',
   'FrameSceneGame.renderFrame': 'render',
+  'FrameSceneGame.renderEmissivePass': 'emissive',
   'FrameSceneGame.hover': 'hover',
   'FrameSceneGame.hitTest': 'hitTest',
 };
