@@ -78,6 +78,11 @@ for (int i = 0; i < int(directionalLights.numLights); i++) {
 
 Without shadows, `shadowVisibility` returns `1`.
 
+A shader that holds the values of the `Shadows` block in a block of its own, to bind fewer blocks
+per draw (see [Rendering](rendering.md#shaders)), defines `FLAME_SHADOWS(member)` to the expression
+that reads the member of `Shadows` named `member` before including the chunk, which then declares
+no `Shadows` block; `StylizedMaterial` does so.
+
 
 ## The shadow map
 

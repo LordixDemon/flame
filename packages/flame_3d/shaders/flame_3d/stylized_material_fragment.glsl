@@ -80,14 +80,41 @@ uniform Material {
   float saturation;
 } material;
 
-#include <flame_3d/lights.glsl>
-#include <flame_3d/shadows.glsl>
+// The camera, the lights and the shadows of the render pass, filled by
+// flame_3d once per pass: the members of the Camera, AmbientLight, Lights,
+// DirectionalLights, HemisphereLight and Shadows blocks (see
+// flame_3d/lights.glsl and flame_3d/shadows.glsl), each named after its block
+// and member (`Lights_numLights` is `numLights` of Lights). Flutter GPU binds
+// every block again for each draw: one block costs less than six.
+uniform StylizedPass {
+  mat4 Camera_view;
+  mat4 Camera_projection;
+  mat4 Shadows_lightViewProjection;
+  vec4 Shadows_toLight;
+  vec4 Shadows_color;
+  vec4 Shadows_map;
+  vec4 Shadows_bias;
+  vec4 Shadows_decode;
+  vec4 AmbientLight_color;
+  vec4 HemisphereLight_skyColor;
+  vec4 HemisphereLight_groundColor;
+  vec3 HemisphereLight_up;
+  float HemisphereLight_intensity;
+  vec3 Camera_position;
+  float AmbientLight_intensity;
+  // The sizes of the arrays of flame_3d/lights.glsl.
+  vec4 DirectionalLights_directions[4];
+  vec4 DirectionalLights_colors[4];
+  vec3 Lights_positions[8];
+  vec4 Lights_colors[8];
+  vec4 Lights_intensities[8];
+  vec4 Lights_ranges[8];
+  float Lights_numLights;
+  float DirectionalLights_numLights;
+} scene;
 
-uniform Camera {
-  mat4 view;
-  mat4 projection;
-  vec3 position;
-} camera;
+#define FLAME_SHADOWS(member) scene.Shadows_##member
+#include <flame_3d/shadows.glsl>
 
 // -1 when the projection mirrors the picture compared to a standard camera,
 // 1 otherwise, as RenderContext3D.mirrors decides: the sign of the
@@ -95,7 +122,7 @@ uniform Camera {
 // for a parallel projection), negative for a standard camera. The view is
 // rigid and does not change it.
 float pictureMirror() {
-  mat4 p = camera.projection;
+  mat4 p = scene.Camera_projection;
   vec3 rowX = vec3(p[0][0], p[1][0], p[2][0]);
   vec3 rowY = vec3(p[0][1], p[1][1], p[2][1]);
   vec3 rowW = vec3(p[0][3], p[1][3], p[2][3]);
@@ -108,10 +135,11 @@ void main() {
   vec3 n = normalize(fragNormal);
   // Towards the viewer. Orthographic cameras look along one direction.
   vec3 v;
-  if (camera.projection[3][3] > 0.5) {
-    v = normalize(vec3(camera.view[0][2], camera.view[1][2], camera.view[2][2]));
+  if (scene.Camera_projection[3][3] > 0.5) {
+    mat4 view = scene.Camera_view;
+    v = normalize(vec3(view[0][2], view[1][2], view[2][2]));
   } else {
-    v = normalize(camera.position - fragPosition);
+    v = normalize(scene.Camera_position - fragPosition);
   }
 
   float tintMask = fragMasks.x;
@@ -127,14 +155,15 @@ void main() {
   base *= mix(vec3(1.0), fragInstanceColor.rgb, tintMask);
   base *= mix(vec3(1.0), material.accentColor.rgb, accentMask);
 
-  float nUp = clamp(dot(n, hemisphereLight.up), -1.0, 1.0);
+  float nUp = clamp(dot(n, scene.HemisphereLight_up), -1.0, 1.0);
   float hemi = 0.5 + 0.5 * nUp;
   float bounce = max(-nUp, 0.0);
-  vec3 ambient = ambientLight.color.rgb * ambientLight.intensity +
-    hemisphereLight.intensity * (
+  vec3 ambient =
+    scene.AmbientLight_color.rgb * scene.AmbientLight_intensity +
+    scene.HemisphereLight_intensity * (
       material.ambientBase.rgb +
-      material.skyFill.rgb * hemi * hemisphereLight.skyColor.rgb +
-      material.groundBounce * bounce * hemisphereLight.groundColor.rgb
+      material.skyFill.rgb * hemi * scene.HemisphereLight_skyColor.rgb +
+      material.groundBounce * bounce * scene.HemisphereLight_groundColor.rgb
     );
   vec3 lit = fragOcclusion * ambient;
 
@@ -144,14 +173,15 @@ void main() {
   // that casts it: where the surface faces away from that sun and has no
   // highlights, it changes nothing and the map is not sampled.
   vec3 sunShadow = vec3(1.0);
-  int shadowed = int(shadows.toLight.w);
-  if (shadowed >= 0 && shadowed < int(directionalLights.numLights) &&
-      (glossy || dot(n, directionalLights.directions[shadowed].xyz) > 0.0)) {
+  int shadowed = int(scene.Shadows_toLight.w);
+  if (shadowed >= 0 && shadowed < int(scene.DirectionalLights_numLights) &&
+      (glossy ||
+       dot(n, scene.DirectionalLights_directions[shadowed].xyz) > 0.0)) {
     sunShadow = shadowFactor(shadowVisibility(fragPosition, n));
   }
-  for (int i = 0; i < int(directionalLights.numLights); i++) {
-    vec4 direction = directionalLights.directions[i];
-    vec4 lightColor = directionalLights.colors[i];
+  for (int i = 0; i < int(scene.DirectionalLights_numLights); i++) {
+    vec4 direction = scene.DirectionalLights_directions[i];
+    vec4 lightColor = scene.DirectionalLights_colors[i];
     vec3 shadow = castsShadows(i) ? sunShadow : vec3(1.0);
     lit += max(dot(n, direction.xyz), 0.0) * lightColor.a * lightColor.rgb *
       shadow;
@@ -163,11 +193,11 @@ void main() {
   }
   specular *= gloss * material.specularStrength;
 
-  for (int i = 0; i < int(lights.numLights); i++) {
-    vec3 toLight = lights.positions[i] - fragPosition;
+  for (int i = 0; i < int(scene.Lights_numLights); i++) {
+    vec3 toLight = scene.Lights_positions[i] - fragPosition;
     float dist = length(toLight);
     vec3 l = toLight / max(dist, 0.0001);
-    float range = lights.ranges[i].x;
+    float range = scene.Lights_ranges[i].x;
     float falloff;
     if (range > 0.0) {
       float rangeFade = max(1.0 - dist / range, 0.0);
@@ -176,13 +206,14 @@ void main() {
       falloff = 1.0 / max(dist * dist, 0.00000001);
     }
     float wrapped = max(material.pointLightWrap, dot(n, l));
-    lit += lights.intensities[i].x * falloff * wrapped * lights.colors[i].rgb;
+    lit += scene.Lights_intensities[i].x * falloff * wrapped *
+      scene.Lights_colors[i].rgb;
   }
 
   float ndotv = clamp(dot(n, v), 0.0, 1.0);
   float fresnel = pow(1.0 - ndotv, material.rimPower);
   vec3 rim = fresnel * material.rimStrength *
-    (hemisphereLight.skyColor.rgb + material.rimColor.rgb);
+    (scene.HemisphereLight_skyColor.rgb + material.rimColor.rgb);
 
   // Both MatCap textures are sampled in a branch that depends on the
   // material alone, so that their texture coordinates' derivatives are
@@ -193,7 +224,7 @@ void main() {
   vec3 coat = vec3(0.0);
   vec3 gem = vec3(0.0);
   if (material.matCapStrength != 0.0 || material.gemMatCapStrength != 0.0) {
-    vec3 viewNormal = normalize(mat3(camera.view) * n);
+    vec3 viewNormal = normalize(mat3(scene.Camera_view) * n);
     viewNormal.x *= pictureMirror();
     vec2 matCapUv = vec2(0.5 + 0.5 * viewNormal.x, 0.5 - 0.5 * viewNormal.y);
     coat = texture(matCapTexture, matCapUv).rgb * material.matCapStrength *

@@ -180,6 +180,13 @@ sampler are filled once per pass too. Register your own per-pass blocks with
 `RenderContext3D.registerPassUniform`, and per-pass textures with
 `RenderContext3D.registerPassTexture`.
 
+Flutter GPU binds every uniform block and texture of a pipeline again for each draw call, so each
+resource a shader declares costs CPU time on every draw. `StylizedMaterial`'s fragment shader
+therefore reads the camera, the lights and the shadows of the pass from one internal block, which
+the writers registered for the six blocks above fill, rather than from those six blocks: a draw of
+it binds seven resources (the camera matrices, its wind, its material values, that block, its two
+MatCap textures and the shadow map) instead of twelve.
+
 
 ## Frame output and statistics
 

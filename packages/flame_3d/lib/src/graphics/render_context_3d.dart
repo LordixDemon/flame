@@ -7,6 +7,8 @@ import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/graphics/material_pipeline_cache.dart';
+import 'package:flame_3d/src/graphics/prefixed_uniform_block.dart';
+import 'package:meta/meta.dart';
 
 part 'render_context_3d_shadows.dart';
 
@@ -120,6 +122,27 @@ class RenderContext3D(super.device) extends RenderContext {
   /// The name of the block of the shaders that render shadow maps, telling
   /// them how to store depths.
   static const String shadowCasterBlock = 'ShadowCaster';
+
+  /// The name of the block in which `StylizedMaterial`'s fragment shader
+  /// reads the camera, the lights and the shadows of the pass: the members
+  /// of [cameraBlock], [ambientLightBlock], [lightsBlock],
+  /// [directionalLightsBlock], [hemisphereLightBlock] and [shadowsBlock],
+  /// each named after its block and member (`Lights_numLights` is
+  /// `numLights` of [lightsBlock]), written once per pass by the writers
+  /// registered for those blocks. Flutter GPU binds every block again for
+  /// each draw, so one block costs less than six.
+  @internal
+  static const String stylizedPassBlock = 'StylizedPass';
+
+  /// The blocks whose members [stylizedPassBlock] holds.
+  static const List<String> _stylizedPassParts = [
+    cameraBlock,
+    ambientLightBlock,
+    lightsBlock,
+    directionalLightsBlock,
+    hemisphereLightBlock,
+    shadowsBlock,
+  ];
 
   /// The maximum number of point lights written to the [lightsBlock].
   static const int maxPointLights = 8;
@@ -779,7 +802,9 @@ class RenderContext3D(super.device) extends RenderContext {
     final writers = <PassUniformWriter?>[];
     for (final name in shader.slots) {
       final slot = shader.slot(name);
-      final writer = _passUniforms[name];
+      final writer =
+          _passUniforms[name] ??
+          (name == stylizedPassBlock ? _writeStylizedPass : null);
       names.add(name);
       slots.add(slot);
       writers.add(writer);
@@ -817,6 +842,21 @@ class RenderContext3D(super.device) extends RenderContext {
       RenderProfile.lap(RenderPhase.uniformWrite);
     }
     return block;
+  }
+
+  // The views of each stylizedPassBlock on the blocks of its parts.
+  final Map<UniformBlock, List<UniformBlock>> _stylizedPassViews = {};
+
+  /// Writes the blocks [stylizedPassBlock] holds into [block], each with the
+  /// writer registered for it.
+  static void _writeStylizedPass(RenderContext3D context, UniformBlock block) {
+    final views = context._stylizedPassViews[block] ??= [
+      for (final part in _stylizedPassParts)
+        PrefixedUniformBlock(block, '${part}_'),
+    ];
+    for (var i = 0; i < views.length; i++) {
+      context._passUniforms[_stylizedPassParts[i]]?.call(context, views[i]);
+    }
   }
 
   UniformBlock _jointsBlockFor(GpuUniformSlot slot) {

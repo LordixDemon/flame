@@ -19,6 +19,12 @@ uniform sampler2D shadowMap;
 // of a texel in world units, `bias.y` the depth bias and `bias.z` the normal
 // bias (in texels), `bias.w` the radius of the filter in texels. `decode`
 // turns a texel of the map into a depth: `dot(texel, decode)`.
+//
+// A shader that reads these values from a block of its own (as
+// StylizedMaterial does, to bind fewer blocks) defines
+// `FLAME_SHADOWS(member)` to the expression of the member named `member`
+// before including this file, which then declares no Shadows block.
+#ifndef FLAME_SHADOWS
 uniform Shadows {
   mat4 lightViewProjection;
   vec4 toLight;
@@ -27,6 +33,8 @@ uniform Shadows {
   vec4 bias;
   vec4 decode;
 } shadows;
+#define FLAME_SHADOWS(member) shadows.member
+#endif
 
 // The fraction of the light that casts shadows reaching a surface at
 // `worldPosition` whose unit normal is `normal`: from 0 (in shadow) to 1
@@ -40,19 +48,19 @@ uniform Shadows {
 // flat surface tilted from the light behind its own depth. Outside the map,
 // nothing is in shadow.
 float shadowVisibility(vec3 worldPosition, vec3 normal) {
-  if (shadows.toLight.w < 0.0) {
+  if (FLAME_SHADOWS(toLight).w < 0.0) {
     return 1.0;
   }
-  int radius = int(shadows.bias.w);
-  vec3 l = shadows.toLight.xyz;
+  int radius = int(FLAME_SHADOWS(bias).w);
+  vec3 l = FLAME_SHADOWS(toLight).xyz;
   float cosine = clamp(dot(normal, l), 0.0, 1.0);
   float sine = sqrt(1.0 - cosine * cosine);
-  float texel = shadows.bias.x;
-  float reach = shadows.bias.z + 1.4142 * float(radius + 1);
+  float texel = FLAME_SHADOWS(bias).x;
+  float reach = FLAME_SHADOWS(bias).z + 1.4142 * float(radius + 1);
   vec3 position = worldPosition +
     normal * (texel * reach * sine) +
-    l * (texel * shadows.bias.y);
-  vec4 clip = shadows.lightViewProjection * vec4(position, 1.0);
+    l * (texel * FLAME_SHADOWS(bias).y);
+  vec4 clip = FLAME_SHADOWS(lightViewProjection) * vec4(position, 1.0);
   vec3 ndc = clip.xyz / clip.w;
   vec2 uv = vec2(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y);
   float depth = ndc.z;
@@ -65,7 +73,7 @@ float shadowVisibility(vec3 worldPosition, vec3 normal) {
     return 1.0;
   }
 
-  vec2 texelPosition = uv * shadows.map.xy - 0.5;
+  vec2 texelPosition = uv * FLAME_SHADOWS(map).xy - 0.5;
   vec2 base = floor(texelPosition);
   vec2 f = texelPosition - base;
   float lit = 0.0;
@@ -73,8 +81,10 @@ float shadowVisibility(vec3 worldPosition, vec3 normal) {
     float wy = y == -radius ? 1.0 - f.y : (y == radius + 1 ? f.y : 1.0);
     for (int x = -radius; x <= radius + 1; x++) {
       float wx = x == -radius ? 1.0 - f.x : (x == radius + 1 ? f.x : 1.0);
-      vec2 sampleUv = (base + vec2(float(x), float(y)) + 0.5) * shadows.map.zw;
-      float stored = dot(texture(shadowMap, sampleUv), shadows.decode);
+      vec2 sampleUv =
+        (base + vec2(float(x), float(y)) + 0.5) * FLAME_SHADOWS(map).zw;
+      float stored =
+        dot(texture(shadowMap, sampleUv), FLAME_SHADOWS(decode));
       lit += wx * wy * step(depth, stored);
     }
   }
@@ -86,12 +96,16 @@ float shadowVisibility(vec3 worldPosition, vec3 normal) {
 // it reaches a surface: 1 where it is lit, `mix(1, color, strength)` where it
 // is in shadow.
 vec3 shadowFactor(float visibility) {
-  return mix(vec3(1.0), shadows.color.rgb, shadows.color.a * (1.0 - visibility));
+  return mix(
+    vec3(1.0),
+    FLAME_SHADOWS(color).rgb,
+    FLAME_SHADOWS(color).a * (1.0 - visibility)
+  );
 }
 
 // Whether the directional light at `index` is the one that casts shadows.
 bool castsShadows(int index) {
-  return float(index) == shadows.toLight.w;
+  return float(index) == FLAME_SHADOWS(toLight).w;
 }
 
 #endif

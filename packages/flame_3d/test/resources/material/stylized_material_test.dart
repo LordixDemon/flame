@@ -21,6 +21,7 @@ void main() {
           'JointMatrices': 1024,
           'Material': 32 * 1024,
           'Wind': 16 * 1024,
+          RenderContext3D.stylizedPassBlock: 32 * 1024,
         },
       );
       device = GraphicsDevice(backend: backend);
@@ -453,6 +454,146 @@ void main() {
         expect(member('upAxis', 3), [0, 1, 0]);
         expect(member('flutterAmplitude', 1), closeToAll([0.02]));
         expect(member('gustAmplitude', 1), closeToAll([0.3]));
+      });
+    });
+
+    group('pass block', () {
+      test('binds 7 resources for a draw: the pass in one block', () {
+        final material = StylizedMaterial();
+
+        draw([stylizedTriangle(material)]);
+
+        final commands = backend.commands;
+        final bound = [
+          for (final command in commands.take(
+            commands.indexWhere((c) => c.startsWith('drawIndexed')),
+          ))
+            if (command.startsWith('bindUniform ') ||
+                command.startsWith('bindTexture '))
+              command.split(' ').last,
+        ];
+        expect(bound.toSet(), {
+          RenderContext3D.cameraMatricesBlock,
+          'Wind',
+          'Material',
+          RenderContext3D.stylizedPassBlock,
+          'matCapTexture',
+          'gemMatCapTexture',
+          RenderContext3D.shadowMapSampler,
+        });
+        expect(bound, hasLength(7));
+        for (final block in [
+          RenderContext3D.cameraBlock,
+          RenderContext3D.ambientLightBlock,
+          RenderContext3D.lightsBlock,
+          RenderContext3D.directionalLightsBlock,
+          RenderContext3D.hemisphereLightBlock,
+          RenderContext3D.shadowsBlock,
+        ]) {
+          expect(bound, isNot(contains(block)));
+        }
+      });
+
+      List<double> passMember(StylizedMaterial material, String name, int n) {
+        final offset =
+            material.fragmentShader
+                .slot(RenderContext3D.stylizedPassBlock)
+                .getMemberOffsetInBytes(name)! ~/
+            4;
+        return backend.uniforms[RenderContext3D.stylizedPassBlock]!.sublist(
+          offset,
+          offset + n,
+        );
+      }
+
+      test('holds the camera, the lights and the shadows of the pass', () {
+        final material = StylizedMaterial();
+        context.lights = [
+          Light(
+            position: Vector3.zero(),
+            source: AmbientLight(intensity: 0.3),
+          ),
+          Light(
+            position: Vector3.zero(),
+            source: HemisphereLight(
+              skyColor: const Color(0xFF0000FF),
+              intensity: 0.4,
+              up: Vector3(0, 0, 2),
+            ),
+          ),
+          Light(
+            position: Vector3.zero(),
+            source: DirectionalLight(
+              direction: Vector3(0, -1, 0),
+              intensity: 0.7,
+            ),
+          ),
+          Light(
+            position: Vector3(1, 2, 3),
+            source: PointLight(
+              color: const Color(0xFFFFFFFF),
+              intensity: 2,
+              range: 5,
+            ),
+          ),
+        ];
+
+        device.begin();
+        context.setCamera(
+          Matrix4.translationValues(0, 0, -4),
+          Matrix4.identity(),
+        );
+        device.beginPass(const Size(8, 8));
+        context.drawSurface(stylizedTriangle(material));
+        context.flush();
+        device
+          ..endPass()
+          ..end();
+
+        expect(passMember(material, 'AmbientLight_intensity', 1), [
+          closeTo(0.3, 1e-6),
+        ]);
+        expect(passMember(material, 'HemisphereLight_up', 3), [0, 0, 1]);
+        expect(passMember(material, 'HemisphereLight_skyColor', 4), [
+          0,
+          0,
+          1,
+          1,
+        ]);
+        expect(passMember(material, 'DirectionalLights_numLights', 1), [1]);
+        // From a surface towards the light, and the specular factor.
+        expect(passMember(material, 'DirectionalLights_directions', 4), [
+          0,
+          1,
+          0,
+          1,
+        ]);
+        expect(passMember(material, 'Lights_numLights', 1), [1]);
+        expect(passMember(material, 'Lights_positions', 3), [1, 2, 3]);
+        expect(passMember(material, 'Lights_ranges', 1), [5]);
+        expect(passMember(material, 'Camera_position', 3), [0, 0, 4]);
+        expect(
+          passMember(material, 'Camera_view', 16),
+          context.view.storage,
+        );
+        // No shadows in this pass.
+        expect(passMember(material, 'Shadows_toLight', 4)[3], -1);
+      });
+
+      test('is written by the writers registered for its parts', () {
+        final material = StylizedMaterial();
+        context.registerPassUniform(
+          RenderContext3D.lightsBlock,
+          (context, block) => block.setFloat('numLights', 3),
+        );
+
+        draw([stylizedTriangle(material)]);
+
+        expect(passMember(material, 'Lights_numLights', 1), [3]);
+        expect(
+          context.passUniforms.keys,
+          isNot(contains(RenderContext3D.stylizedPassBlock)),
+        );
       });
     });
 
