@@ -78,7 +78,7 @@ minimum screen-height coverage (`minScreenFraction`), and optionally casts shado
 `shadowMesh`.
 
 
-## BVH raycasting
+## BVH raycasting and `SceneSpatialIndex3D`
 
 Every `Surface` builds a flat, zero-allocation median-split Bounding Volume Hierarchy on first
 query (`surface.bvh`), supporting `O(log T)` narrowphase ray-triangle intersection
@@ -90,21 +90,33 @@ mirror scales).
 `RayHit3D` records (`component`, `position`, `normal`, `distance`, `barycentric`, `surfaceIndex`,
 `triangleIndex`, `instanceIndex`).
 
+For large scenes with hundreds of `Object3D`s, setting `world.spatialIndex3DEnabled = true`
+maintains a version-tracked flat world-space AABB BVH (`world.spatialIndex3D`) that accelerates
+broadphase frustum queries (`queryFrustum`), box overlap queries (`queryAabb`) and `O(log N)`
+raycasting (`lastRaycastCandidatesTested`).
 
-## Models, animation crossfades, and bone sockets
 
-`ModelComponent` evaluates glTF animations through a zero-allocation `AnimationState` +
-`ModelPoseWorkspace` pipeline with `O(log K)` binary keyframe lookup:
+## Models, 64-bone skinning, morph targets, animation layers, and procedural IK
 
-- `playAnimationByName(name, mode: AnimationPlayMode.loop | once | pingPong, speed: 1.0)` and
-  `crossFadeToByName(name, duration: 0.2)` smoothly blend translations, rest-preserving scales and
-  shortest-hemisphere quaternion rotations across clips without per-frame heap allocations.
+`ModelComponent` evaluates glTF 2.0 models and animations through a zero-allocation `AnimationState`
++ `ModelPoseWorkspace` pipeline with `O(log K)` binary keyframe lookup:
+
+- **64-bone skinning & auto-splitting:** skinned shaders support up to 64 joints per primitive
+  (`JointMatrices`), and `ModelParser` automatically partitions glTF primitives referencing more
+  than 64 joints into sub-surfaces with remapped joint palettes.
+- **CubicSpline & Morph targets (`MorphTargetData`, `MorphWeightsChannel`):** `GltfParser` parses
+  `CUBICSPLINE` Hermite tangents, sampler filter/wrap modes, PBR normal/ORM/AO/emissive maps,
+  `alphaMode` (`OPAQUE`, `MASK`, `BLEND`), `doubleSided`, `COLOR_0`, and blend-shape morph targets
+  (`Surface.applyMorphWeights`, `Surface.updateVertices`, `ModelComponent.setMorphWeights`).
+- **Crossfades & `AnimationLayer3D`:** `playAnimationByName` and `crossFadeToByName` smoothly blend
+  clips; `addOverlayLayer` stacks masked upper-body or additive `AnimationLayer3D`s (`nodeMask`,
+  `weight`, `additive`) over the base locomotion clip, including layered morph weights.
+- **Procedural rigging (`BoneModifier3D`):** `ModelComponent.boneModifiers` runs post-animation
+  constraints in pose space before skinning: `TwoBoneIkConstraint3D` (analytical foot/hand IK),
+  `LookAtConstraint3D` (clamped head/turret tracking) and `SpringBone3D` (inertial hair/cape/tail
+  secondary motion), plus `BoneSocket3D` joint attachments.
 - `ModelParser` precomputes `Model.animatedAabb`, conservative local-space bounds across all
-  animation keyframes, so animated `ModelComponent`s are never frustum-culled prematurely when an
-  animation reaches outside the rest pose.
-- `BoneSocket3D(model: character, nodeName: 'Hand_R', localOffset: ...)` attaches any child
-  `Component3D` (weapons, lanterns, particle emitters, `RibbonTrail3D`) to a named glTF joint or
-  node every frame.
+  animation keyframes, so animated `ModelComponent`s are never frustum-culled prematurely.
 
 
 ## Render state
@@ -130,24 +142,13 @@ final floor = SpatialMaterial()
 ```
 
 A translucent object drawn with a single translucent material shows its own hidden parts through
-its near ones: an arm in front of a body lets the body show through it. To fade the object as one
-piece, draw it first with a depth prepass, `RenderState.depthOnly` (`BlendState.depthOnly` writes no
-color, only depth, and draws among the translucent draws), then with a translucent material whose
-depth test passes on equal depths: only its nearest surfaces blend, over whatever is behind it.
-
-```dart
-final prepass = StylizedMaterial()..renderState = RenderState.depthOnly;
-final ghost = StylizedMaterial(translucent: true)
-  ..renderState = StylizedMaterial.translucentRenderState.copyWith(
-    depthCompare: CompareFunction.lessEqual,
-  );
-
-// Recorded in this order, the prepass is drawn right before the ghost:
-// both have the same depth in the back to front order.
-context
-  ..drawSurface(surface, transform: model, material: prepass)
-  ..drawSurface(surface, transform: model, material: ghost);
-```
+its near ones: an arm in front of a body lets the body show through it. Setting
+`singlePieceTranslucent: true` on `StylizedMaterial` or `SpatialMaterial` (which uses
+`RenderState.singlePiecePremultipliedAlphaBlend` with `depthPrepass: true`) automatically emits a
+depth-only prepass immediately before the color draw — and `ModelComponent` wraps multi-node
+translucent models in `RenderContext3D.beginDepthPrepassGroup()` / `endDepthPrepassGroup()` so every
+limb writes depth before any limb blends color. For opaque zero-sorting fades without translucency,
+enable `ditherFade: true` (`flame_3d/dither.glsl` Bayer 4x4 screen-door discard).
 
 Front faces are counter-clockwise on screen. The winding flips automatically when the camera mirrors
 the scene, and for objects whose transform mirrors them (an odd number of negative scales), so

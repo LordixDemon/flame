@@ -18,10 +18,10 @@ void main() {
       // The fake backend lays members out 1024 bytes apart.
       backend = FakeGpuBackend(
         blockSizes: {
-          'JointMatrices': 1024,
-          'Material': 32 * 1024,
+          'JointMatrices': 4096,
+          'Material': 36 * 1024,
           'Wind': 16 * 1024,
-          RenderContext3D.stylizedPassBlock: 32 * 1024,
+          RenderContext3D.stylizedPassBlock: 40 * 1024,
         },
       );
       device = GraphicsDevice(backend: backend);
@@ -757,7 +757,7 @@ void main() {
         expect(() => build(joints: [0, 0, 0, 0]), throwsArgumentError);
         expect(() => build(weights: [1, 0, 0, 0]), throwsArgumentError);
         expect(
-          () => build(joints: [16, 0, 0, 0], weights: [1, 0, 0, 0]),
+          () => build(joints: [64, 0, 0, 0], weights: [1, 0, 0, 0]),
           throwsArgumentError,
         );
         expect(

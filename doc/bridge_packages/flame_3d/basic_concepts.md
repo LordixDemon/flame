@@ -13,9 +13,12 @@ Using vertices arranged in triangles, you can create a **surface**. A surface is
 of triangles that share the same material.
 
 Then, you can group multiple surfaces into a **mesh** - a "solid" shape in 3D world. A mesh can be
-as simple as a cube or a sphere, and many pre-defined options are provided by Flame, such as `Cube`,
-`Sphere`, `Plane`, and `Cylinder`. You can also create custom meshes by providing your own vertices
-and triangle indices.
+as simple as a cube or a sphere, and many procedural generators are provided out of the box:
+`CuboidMesh`, `SphereMesh`, `PlaneMesh`, `CylinderMesh`, `ConeMesh`, `CapsuleMesh`, `TorusMesh`,
+`TubeSplineMesh` (along a `CatmullRomSpline3D`), and `TerrainMesh3D` (heightfield or procedural fBm
+island with `sampleHeight` / `sampleNormal` and automatic 32-bit indices above 65,535 vertices). You
+can also create custom meshes by providing your own vertices and triangle indices, or mutate vertex
+buffers dynamically via `Surface.updateVertices` and `Surface.applyMorphWeights`.
 
 Finally, a **model** is a collection of meshes, usually loaded from an external file. Models can
 also contain animations, which can be played on the model class.

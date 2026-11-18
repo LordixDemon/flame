@@ -180,16 +180,18 @@ class GraphicsDevice({
 
   late final BloomPass _bloom = BloomPass(this);
 
-  /// Applies GPU [BloomSettings] to [sceneTarget] inside the active frame and
-  /// returns the composited [Image].
+  /// Applies GPU [BloomSettings] (and optional [PostProcessSettings]) to
+  /// [sceneTarget] inside the active frame and returns the composited [Image].
   Image applyBloomFromTarget(
     GpuTextureTarget sceneTarget,
-    BloomSettings settings, {
+    BloomSettings? settings, {
+    PostProcessSettings? postProcess,
     GpuRenderTarget? outputTarget,
   }) {
     return _bloom.applyFromTarget(
       sceneTarget,
       settings,
+      postProcess: postProcess,
       outputTarget: outputTarget,
     );
   }

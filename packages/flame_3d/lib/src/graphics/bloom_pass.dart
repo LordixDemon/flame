@@ -7,9 +7,9 @@ import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:meta/meta.dart';
 
-/// Runs soft-knee bright-pass extraction, multi-pass Kawase blur, and
-/// alpha-preserving additive composition for [BloomSettings] inside an open
-/// [GraphicsDevice] frame.
+/// Runs soft-knee bright-pass extraction, multi-pass Kawase blur, and unified
+/// single-pass composition for [BloomSettings] and [PostProcessSettings] inside
+/// an open [GraphicsDevice] frame.
 @internal
 class BloomPass(final GraphicsDevice _device) {
   static const String _prefilterBundle =
@@ -59,13 +59,17 @@ class BloomPass(final GraphicsDevice _device) {
   final Vector4 _texel = Vector4.zero();
   final Vector4 _offset = Vector4.zero();
   final Vector4 _params = Vector4.zero();
+  final Vector4 _grading = Vector4.zero();
+  final Vector4 _tint = Vector4.zero();
 
-  /// Applies [settings] to [sceneTarget] (into which the 3D scene pass has just
-  /// ended via `endTexturePass`), writing the composited [Image] into
-  /// [outputTarget] (when given) or a pooled render target of the same size.
+  /// Applies optional [bloom] and optional [postProcess] to [sceneTarget]
+  /// (into which the 3D scene pass has just ended via `endTexturePass`),
+  /// writing the composited [Image] into [outputTarget] (when given) or a
+  /// pooled render target of the same size.
   Image applyFromTarget(
     GpuTextureTarget sceneTarget,
-    BloomSettings settings, {
+    BloomSettings? bloom, {
+    PostProcessSettings? postProcess,
     GpuRenderTarget? outputTarget,
   }) {
     final fullWidth = sceneTarget.width;
@@ -77,81 +81,100 @@ class BloomPass(final GraphicsDevice _device) {
       sampler: TextureSampler.linear,
       gpuTexture: sceneTarget.texture,
     );
-    final halfWidth = math.max(1, fullWidth >> 1);
-    final halfHeight = math.max(1, fullHeight >> 1);
 
-    // Distinct clear colors ensure two separate ping-pong targets even when
-    // `halfWidth == fullWidth` on 1x1 edge cases.
-    final ping = _device.textureTarget(
-      halfWidth,
-      halfHeight,
-      GpuPixelFormat.rgba8888,
-      clearValue: const Color(0x00000002),
-    );
-    final pong = _device.textureTarget(
-      halfWidth,
-      halfHeight,
-      GpuPixelFormat.rgba8888,
-      clearValue: const Color(0x00000003),
-    );
+    Texture bloomReadTex = Texture.empty;
+    final runBloom = bloom != null && bloom.intensity > 0 && bloom.radius > 0;
 
-    final pingTex = Texture(
-      null,
-      width: halfWidth,
-      height: halfHeight,
-      sampler: TextureSampler.linear,
-      gpuTexture: ping.texture,
-    );
-    final pongTex = Texture(
-      null,
-      width: halfWidth,
-      height: halfHeight,
-      sampler: TextureSampler.linear,
-      gpuTexture: pong.texture,
-    );
+    if (runBloom) {
+      final halfWidth = math.max(1, fullWidth >> 1);
+      final halfHeight = math.max(1, fullHeight >> 1);
 
-    // 1. Bright-pass prefilter + 2x downsample into `ping`.
-    final threshold = math.max(0.0, settings.threshold);
-    final knee = threshold * settings.softKnee.clamp(0.0, 1.0) + 1e-4;
-    _curve.setValues(threshold, threshold - knee, 2.0 * knee, 0.25 / knee);
-    _texel.setValues(1.0 / fullWidth, 1.0 / fullHeight, 0, 0);
-    _prefilterFrag
-      ..setTexture('sourceTexture', sceneTexture)
-      ..setVector4('BloomPrefilter.curve', _curve)
-      ..setVector4('BloomPrefilter.texel', _texel);
+      final ping = _device.textureTarget(
+        halfWidth,
+        halfHeight,
+        GpuPixelFormat.rgba8888,
+        clearValue: const Color(0x00000002),
+      );
+      final pong = _device.textureTarget(
+        halfWidth,
+        halfHeight,
+        GpuPixelFormat.rgba8888,
+        clearValue: const Color(0x00000003),
+      );
 
-    _device.beginTexturePass(ping);
-    _drawQuad(_prefilterVert, _prefilterFrag);
-    _device.endTexturePass();
+      final pingTex = Texture(
+        null,
+        width: halfWidth,
+        height: halfHeight,
+        sampler: TextureSampler.linear,
+        gpuTexture: ping.texture,
+      );
+      final pongTex = Texture(
+        null,
+        width: halfWidth,
+        height: halfHeight,
+        sampler: TextureSampler.linear,
+        gpuTexture: pong.texture,
+      );
 
-    // 2. Ping-pong Kawase blur passes at half resolution.
-    var readTex = pingTex;
-    var writeTarget = pong;
-    for (var i = 0; i < settings.passes; i++) {
-      final spread = (i + 0.5) * settings.radius;
-      _offset.setValues(spread / halfWidth, spread / halfHeight, 0, 0);
-      _blurFrag
-        ..setTexture('sourceTexture', readTex)
-        ..setVector4('BloomBlur.offset', _offset);
-      _device.beginTexturePass(writeTarget);
-      _drawQuad(_blurVert, _blurFrag);
+      final threshold = math.max(0.0, bloom.threshold);
+      final knee = threshold * bloom.softKnee.clamp(0.0, 1.0) + 1e-4;
+      _curve.setValues(threshold, threshold - knee, 2.0 * knee, 0.25 / knee);
+      _texel.setValues(1.0 / fullWidth, 1.0 / fullHeight, 0, 0);
+      _prefilterFrag
+        ..setTexture('sourceTexture', sceneTexture)
+        ..setVector4('BloomPrefilter.curve', _curve)
+        ..setVector4('BloomPrefilter.texel', _texel);
+
+      _device.beginTexturePass(ping);
+      _drawQuad(_prefilterVert, _prefilterFrag);
       _device.endTexturePass();
 
-      if (identical(writeTarget, pong)) {
-        readTex = pongTex;
-        writeTarget = ping;
-      } else {
-        readTex = pingTex;
-        writeTarget = pong;
+      var readTex = pingTex;
+      var writeTarget = pong;
+      for (var i = 0; i < bloom.passes; i++) {
+        final spread = (i + 0.5) * bloom.radius;
+        _offset.setValues(spread / halfWidth, spread / halfHeight, 0, 0);
+        _blurFrag
+          ..setTexture('sourceTexture', readTex)
+          ..setVector4('BloomBlur.offset', _offset);
+        _device.beginTexturePass(writeTarget);
+        _drawQuad(_blurVert, _blurFrag);
+        _device.endTexturePass();
+
+        if (identical(writeTarget, pong)) {
+          readTex = pongTex;
+          writeTarget = ping;
+        } else {
+          readTex = pingTex;
+          writeTarget = pong;
+        }
       }
+      bloomReadTex = readTex;
     }
 
-    // 3. Composite `sceneTexture + bloom * intensity` preserving `scene.a`.
-    _params.setValues(settings.intensity, 0, 0, 0);
+    final bloomIntensity = runBloom ? bloom.intensity : 0.0;
+    final exposure = postProcess?.exposure ?? 1.0;
+    final contrast = postProcess?.contrast ?? 1.0;
+    final saturation = postProcess?.saturation ?? 1.0;
+    final toneMap = (postProcess?.toneMap ?? ToneMapMode.none).index.toDouble();
+    final vigIntensity = postProcess?.vignetteIntensity ?? 0.0;
+    final vigSmooth = postProcess?.vignetteSmoothness ?? 0.5;
+    final fxaa = (postProcess?.fxaa ?? false) ? 1.0 : 0.0;
+    final c = postProcess?.tint ?? const Color(0xFFFFFFFF);
+
+    _params.setValues(bloomIntensity, exposure, contrast, saturation);
+    _grading.setValues(toneMap, vigIntensity, vigSmooth, fxaa);
+    _tint.setValues(c.r, c.g, c.b, 1.0);
+    _texel.setValues(1.0 / fullWidth, 1.0 / fullHeight, 0, 0);
+
     _compositeFrag
       ..setTexture('sceneTexture', sceneTexture)
-      ..setTexture('bloomTexture', readTex)
-      ..setVector4('BloomComposite.params', _params);
+      ..setTexture('bloomTexture', bloomReadTex)
+      ..setVector4('BloomComposite.params', _params)
+      ..setVector4('BloomComposite.grading', _grading)
+      ..setVector4('BloomComposite.tint', _tint)
+      ..setVector4('BloomComposite.texel', _texel);
 
     if (outputTarget != null) {
       _device.beginOwnedPass(outputTarget);

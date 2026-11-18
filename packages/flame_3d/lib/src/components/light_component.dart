@@ -84,6 +84,32 @@ class LightComponent({
          ),
        );
 
+  /// A cone-shaped [SpotLight] at [position] shining along [direction] (or
+  /// along the `-Z` axis of [rotation] when [direction] is `null`).
+  LightComponent.spot({
+    Vector3? position,
+    Quaternion? rotation,
+    Vector3? direction,
+    Color color = const Color(0xFFFFFFFF),
+    double intensity = 1.0,
+    double innerConeAngle = 0.39269908169872414,
+    double outerConeAngle = 0.7853981633974483,
+    double? range,
+    double specular = 1.0,
+  }) : this(
+         source: SpotLight(
+           color: color,
+           intensity: intensity,
+           direction: direction,
+           innerConeAngle: innerConeAngle,
+           outerConeAngle: outerConeAngle,
+           range: range,
+           specular: specular,
+         ),
+         position: position,
+         rotation: rotation,
+       );
+
   late final Light _light = Light(
     position: Vector3.fromBuffer(
       worldTransformMatrix.storage.buffer,

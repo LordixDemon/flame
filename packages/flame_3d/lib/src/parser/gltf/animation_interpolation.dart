@@ -6,18 +6,14 @@ import 'package:flame_3d/src/parser/gltf/gltf_node.dart';
 /// Interpolation algorithm.
 enum AnimationInterpolation(final String value) {
   /// The animated values are linearly interpolated between keyframes.
-  /// When targeting a rotation, spherical linear interpolation (slerp)
-  /// **SHOULD** be used to interpolate quaternions.
-  /// The number of output elements **MUST** equal the number of input elements.
   linear('LINEAR'),
 
-  /// The animated values remain constant to the output of the first keyframe,
-  /// until the next keyframe.
-  /// The number of output elements **MUST** equal the number of input elements.
+  /// The animated values remain constant until the next keyframe.
   step('STEP'),
 
-  /// The animation's interpolation is computed using a cubic spline with
-  /// specified tangents.
+  /// Cubic Hermite spline interpolation (supports both glTF `3 * K`
+  /// `(inTangent, value, outTangent)` triplets and zero-tangent smoothstep
+  /// curves when `values.length == times.length`).
   cubicSpline('CUBICSPLINE'); // cSpell:ignore CUBICSPLINE
 
   static AnimationInterpolation valueOf(String value) {
@@ -47,7 +43,12 @@ enum AnimationInterpolation(final String value) {
       case step:
         out.setFrom(a);
       case cubicSpline:
-        throw UnimplementedError();
+        final u = t * t * (3.0 - 2.0 * t);
+        out.setValues(
+          a.x + (b.x - a.x) * u,
+          a.y + (b.y - a.y) * u,
+          a.z + (b.z - a.z) * u,
+        );
     }
   }
 
@@ -57,8 +58,8 @@ enum AnimationInterpolation(final String value) {
     return out;
   }
 
-  /// Writes the shortest-arc spherical linear interpolation between [a] and [b]
-  /// at [t] into [out] without allocating.
+  /// Writes the shortest-arc spherical interpolation between [a] and [b] at
+  /// [t] into [out] without allocating.
   void slerpInto(Quaternion a, Quaternion b, double t, Quaternion out) {
     switch (this) {
       case linear:
@@ -66,8 +67,66 @@ enum AnimationInterpolation(final String value) {
       case step:
         out.setFrom(a);
       case cubicSpline:
-        throw UnimplementedError();
+        final u = t * t * (3.0 - 2.0 * t);
+        slerpQuaternionsInto(a, b, u, out);
     }
+  }
+
+  /// Evaluates a glTF 2.0 `CUBICSPLINE` `Vector3` segment `[v0..v1]` with
+  /// outgoing tangent [b0], incoming tangent [a1], segment duration [dt], and
+  /// normalized parameter [t] into [out].
+  static void cubicHermiteVector3Into(
+    Vector3 v0,
+    Vector3 b0,
+    Vector3 v1,
+    Vector3 a1,
+    double dt,
+    double t,
+    Vector3 out,
+  ) {
+    final t2 = t * t;
+    final t3 = t2 * t;
+    final h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    final h10 = (t3 - 2.0 * t2 + t) * dt;
+    final h01 = -2.0 * t3 + 3.0 * t2;
+    final h11 = (t3 - t2) * dt;
+    out.setValues(
+      h00 * v0.x + h10 * b0.x + h01 * v1.x + h11 * a1.x,
+      h00 * v0.y + h10 * b0.y + h01 * v1.y + h11 * a1.y,
+      h00 * v0.z + h10 * b0.z + h01 * v1.z + h11 * a1.z,
+    );
+  }
+
+  /// Evaluates a glTF 2.0 `CUBICSPLINE` `Quaternion` segment and normalizes the
+  /// result into [out].
+  static void cubicHermiteQuaternionInto(
+    Quaternion v0,
+    Quaternion b0,
+    Quaternion v1,
+    Quaternion a1,
+    double dt,
+    double t,
+    Quaternion out,
+  ) {
+    final t2 = t * t;
+    final t3 = t2 * t;
+    final h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    final h10 = (t3 - 2.0 * t2 + t) * dt;
+    final h01 = -2.0 * t3 + 3.0 * t2;
+    final h11 = (t3 - t2) * dt;
+    var rx = h00 * v0.x + h10 * b0.x + h01 * v1.x + h11 * a1.x;
+    var ry = h00 * v0.y + h10 * b0.y + h01 * v1.y + h11 * a1.y;
+    var rz = h00 * v0.z + h10 * b0.z + h01 * v1.z + h11 * a1.z;
+    var rw = h00 * v0.w + h10 * b0.w + h01 * v1.w + h11 * a1.w;
+    final len = math.sqrt(rx * rx + ry * ry + rz * rz + rw * rw);
+    if (len > 1e-12) {
+      final inv = 1.0 / len;
+      rx *= inv;
+      ry *= inv;
+      rz *= inv;
+      rw *= inv;
+    }
+    out.setValues(rx, ry, rz, rw);
   }
 
   /// Allocation-free shortest-arc quaternion SLERP into [out].

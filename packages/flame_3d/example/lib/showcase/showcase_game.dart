@@ -32,7 +32,12 @@ class ShowcaseController() extends ChangeNotifier {
   bool msaa4x = true;
   bool autoOrbitCamera = false;
   bool stressInstances = false;
+  bool spatialIndex3D = true;
+  bool prioritizeNearestLights = true;
+  bool fxaa = false;
+  bool vignette = false;
 
+  ToneMapMode toneMap = ToneMapMode.none;
   ShadowMapEncoding shadowEncoding = ShadowMapEncoding.auto;
   ShadowFit shadowFit = ShadowFit.scene;
   int shadowSoftness = 1;
@@ -65,15 +70,16 @@ class ShowcaseController() extends ChangeNotifier {
 ///   [ShadowSettings.cacheWhenStatic], [ShadowCatcherMaterial] on 2D ground,
 ///   [InstancedGroup3D] with 16-color [StylizedMaterial.accentPalette],
 ///   [LodMeshComponent] towers, `WindSpace.worldScaled` foliage, two-tier
-///   metallic/gem MatCaps, and PBR [SpatialMaterial] spheres;
-/// - `dynamicLayer`: [BloomSettings] Kawase glow, [FogSettings] distance/height
-///   mist, zero-alloc skinned [ModelComponent] with [AnimationPlayMode] &
-///   `crossFadeToByName`, [BoneSocket3D] joint attachment, static & skinned
-///   [OutlineMaterial], [DecalBatch3D] procedural & atlas decals,
-///   [StrokeBatch3D] & [RibbonTrail3D] 3D ribbons, and [ParticleSystem3D]
-///   billboard + mesh particles;
-/// - Interactive `Surface.bvh` raycasting on tap and offscreen
-///   `World3D.renderToImage` thumbnail snapshots.
+///   metallic/gem MatCaps, PBR [SpatialMaterial] v2 maps, [TerrainMesh3D], and
+///   [TubeSplineMesh];
+/// - `dynamicLayer`: [BloomSettings] + fused [PostProcessSettings] (ACES/AgX,
+///   vignette, FXAA), [FogSettings], 64-bone skinning, morph targets, animation
+///   layers, procedural IK/LookAt/SpringBone, [WaterMaterial],
+///   [BillboardBatch3D], [Text3DComponent], [SpotLight]s + 32-lamp culling,
+///   [SceneSpatialIndex3D], [OutlineMaterial], [DecalBatch3D], [StrokeBatch3D],
+///   [RibbonTrail3D], and [ParticleSystem3D];
+/// - Interactive `Surface.bvh` + `SceneSpatialIndex3D` raycasting on tap and
+///   offscreen `World3D.renderToImage` thumbnail snapshots.
 class ShowcaseGame({ShowcaseController? controller})
     extends FlameGame
     with TapCallbacks, DragCallbacks, ScrollCallbacks, ScaleCallbacks {
@@ -140,6 +146,7 @@ class ShowcaseGame({ShowcaseController? controller})
   late final ShadowSettings _dynamicShadows;
   late final FogSettings _fogSettings;
   late final BloomSettings _bloomSettings;
+  late final PostProcessSettings _postProcessSettings;
 
   double _time = 0;
   double _burstTimer = 0;
@@ -193,6 +200,7 @@ class ShowcaseGame({ShowcaseController? controller})
       intensity: 0.85,
       radius: 1.5,
     );
+    _postProcessSettings = PostProcessSettings();
 
     staticLayer = Scene3DComponent(
       projection: projection,
@@ -318,13 +326,11 @@ class ShowcaseGame({ShowcaseController? controller})
       ),
     ]);
 
-    // 1. InstancedGroup3D with 16-color accentPalette.
     final tileMesh = showcaseAssets.buildAccentTileMesh(tileMaterial);
     tileInstances = InstancedGroup3D(mesh: tileMesh, initialCapacity: 2048);
     _rebuildTileInstances(mode: _desiredTileMode());
     staticLayer.world.add(tileInstances);
 
-    // 2. 8 LodMeshComponent crystal towers around the arena.
     final highCrystal = showcaseAssets.buildCrystalTowerLodMesh(
       crystalMaterial,
       segments: 20,
@@ -370,7 +376,6 @@ class ShowcaseGame({ShowcaseController? controller})
       staticLayer.world.add(tower);
     }
 
-    // 3. Wind-swaying StylizedMaterial trees (`WindSpace.worldScaled`).
     final treeMesh = showcaseAssets.buildWindTreeMesh(windTreeMaterial);
     final rng = math.Random(42);
     for (var i = 0; i < 16; i++) {
@@ -398,7 +403,6 @@ class ShowcaseGame({ShowcaseController? controller})
       staticLayer.world.add(tree);
     }
 
-    // 4. Metallic MatCap + SpatialMaterial PBR showcase spheres.
     final goldSphere = SphereMesh(
       radius: 0.42,
       segments: 20,
@@ -433,7 +437,8 @@ class ShowcaseGame({ShowcaseController? controller})
     if (controller.stressInstances) {
       return 1024;
     }
-    if (controller.preset == ShowcasePreset.allInOne) {
+    if (controller.preset == ShowcasePreset.allInOne ||
+        controller.preset == ShowcasePreset.spotLightsCullingAndPost) {
       return 144;
     }
     return 44;
@@ -444,7 +449,6 @@ class ShowcaseGame({ShowcaseController? controller})
     final m = Matrix4.identity();
     const paletteLen = 16;
     if (mode == 2048) {
-      // 64x32 extreme stress lattice (2,048 instances in 1 draw call!).
       for (var ix = 0; ix < 64; ix++) {
         for (var iy = 0; iy < 32; iy++) {
           final cx = 0.35 + ix * (boardCells - 0.7) / 63;
@@ -468,7 +472,6 @@ class ShowcaseGame({ShowcaseController? controller})
         }
       }
     } else if (mode == 1024) {
-      // 32x32 dense stress lattice (1,024 instances in 1 draw call!).
       for (var ix = 0; ix < 32; ix++) {
         for (var iy = 0; iy < 32; iy++) {
           final cx = 0.4 + ix * (boardCells - 0.8) / 31;
@@ -492,7 +495,6 @@ class ShowcaseGame({ShowcaseController? controller})
         }
       }
     } else {
-      // 12x12 courtyard grid (144 full or 44 perimeter ring for sub-labs).
       final perimeterOnly = mode == 44;
       for (var ix = 0; ix < 12; ix++) {
         for (var iy = 0; iy < 12; iy++) {
@@ -545,7 +547,6 @@ class ShowcaseGame({ShowcaseController? controller})
       ),
     ]);
 
-    // 1. Procedural skinned ModelComponent + skinned Outline + BoneSocket3D.
     final models = showcaseAssets.buildArticulatedModels(
       bodyMaterial: automatonMaterial,
       outlineMaterial: skinnedOutlineMaterial,
@@ -589,7 +590,6 @@ class ShowcaseGame({ShowcaseController? controller})
       color: const ui.Color(0xFF38BDF8),
     );
 
-    // 2. Orbiting sentinel with screen-space OutlineMaterial + RibbonTrail3D.
     final sentinelPos = Vector3(boardCells / 2 + 2.6, boardCells / 2, 1.35);
     orbitingSentinel = MeshComponent(
       mesh: SphereMesh(
@@ -616,7 +616,6 @@ class ShowcaseGame({ShowcaseController? controller})
       color: const ui.Color(0xFFFF5D8F),
     );
 
-    // 3. DecalBatch3D (procedural rings + 2x2 UV atlas decals).
     ringDecals = DecalBatch3D(
       material: DecalMaterial(
         innerRadius: 0.68,
@@ -633,13 +632,11 @@ class ShowcaseGame({ShowcaseController? controller})
     );
     _populateBaseDecals();
 
-    // 4. StrokeBatch3D (3D energy arcs between towers + hit normal ray).
     energyStrokes = StrokeBatch3D(
       material: RibbonMaterial3D(depthBias: 0.0005),
     );
     _rebuildEnergyStrokes(0);
 
-    // 5. ParticleSystem3D (sparks with ground bounce, curl smoke, mesh coins).
     sparkParticles = ParticleSystem3D(
       capacity: 384,
       material: ParticleMaterial(
@@ -836,7 +833,6 @@ class ShowcaseGame({ShowcaseController? controller})
     controller.preset = next;
     variationRig.clearMounted();
 
-    // Configure per-lab defaults while preserving manual toggle state.
     switch (next) {
       case ShowcasePreset.allInOne:
         controller
@@ -844,6 +840,9 @@ class ShowcaseGame({ShowcaseController? controller})
           ..staticShadowCache = true
           ..sharedShadowGroup = false
           ..stressInstances = false
+          ..toneMap = ToneMapMode.none
+          ..fxaa = false
+          ..vignette = false
           ..renderScale = 1.0;
       case ShowcasePreset.materialsAndGrading:
         controller
@@ -894,6 +893,35 @@ class ShowcaseGame({ShowcaseController? controller})
           ..particles = true
           ..ribbonsAndDecals = true;
         variationRig.buildExtremeStressLab(rigMat: automatonMaterial);
+      case ShowcasePreset.pbrV2AndSinglePiece:
+        controller
+          ..retainedStaticLayer = false
+          ..staticShadowCache = true
+          ..stressInstances = false;
+        variationRig.buildPbrV2AndSinglePieceLab();
+      case ShowcasePreset.skinning64MorphIkLayers:
+        controller
+          ..retainedStaticLayer = true
+          ..staticShadowCache = true
+          ..stressInstances = false;
+        variationRig.buildSkinning64MorphIkLayersLab();
+      case ShowcasePreset.waterTerrainAndHd2d:
+        controller
+          ..retainedStaticLayer = false
+          ..staticShadowCache = true
+          ..stressInstances = false;
+        variationRig.buildWaterTerrainAndHd2dLab();
+      case ShowcasePreset.spotLightsCullingAndPost:
+        controller
+          ..retainedStaticLayer = false
+          ..staticShadowCache = true
+          ..prioritizeNearestLights = true
+          ..spatialIndex3D = true
+          ..toneMap = ToneMapMode.acesFilmic
+          ..fxaa = true
+          ..vignette = true
+          ..stressInstances = false;
+        variationRig.buildSpotLightsCullingAndPostLab();
     }
 
     if (variationRig.staticExtras.isNotEmpty) {
@@ -911,6 +939,19 @@ class ShowcaseGame({ShowcaseController? controller})
     syncControllerState();
   }
 
+  /// Cycles `ToneMapMode` (`none` -> `acesFilmic` -> `agx` -> `reinhard`).
+  void cycleToneMap() {
+    const order = [
+      ToneMapMode.none,
+      ToneMapMode.acesFilmic,
+      ToneMapMode.agx,
+      ToneMapMode.reinhard,
+    ];
+    final idx = order.indexOf(controller.toneMap);
+    controller.toneMap = order[(idx + 1) % order.length];
+    syncControllerState();
+  }
+
   /// Cycles `ShadowMapEncoding` (`auto` -> `float32` -> `rgba8`).
   void cycleShadowEncoding() {
     const vals = ShadowMapEncoding.values;
@@ -919,7 +960,7 @@ class ShowcaseGame({ShowcaseController? controller})
     syncControllerState();
   }
 
-  /// Toggles `ShadowFit` between `scene` and `view` (`maxDistance: 32`).
+  /// Toggles `ShadowFit` between `scene` and `view`.
   void toggleShadowFit() {
     controller.shadowFit = controller.shadowFit == ShadowFit.scene
         ? ShadowFit.view
@@ -996,16 +1037,32 @@ class ShowcaseGame({ShowcaseController? controller})
       return;
     }
     final msaa = controller.msaa4x ? Msaa.sample4 : Msaa.off;
+    _postProcessSettings
+      ..toneMap = controller.toneMap
+      ..exposure = controller.toneMap == ToneMapMode.none ? 1.0 : 1.08
+      ..vignetteIntensity = controller.vignette ? 0.35 : 0.0
+      ..fxaa = controller.fxaa;
+
     staticLayer
       ..msaa = msaa
       ..renderScale = controller.renderScale
       ..cacheMode = controller.retainedStaticLayer
           ? Scene3DCacheMode.retained
           : Scene3DCacheMode.none;
+    staticLayer.world
+      ..spatialIndex3DEnabled = controller.spatialIndex3D
+      ..prioritizeNearestLights = controller.prioritizeNearestLights;
+
     dynamicLayer
       ..msaa = msaa
       ..renderScale = controller.renderScale
-      ..bloom = controller.bloom ? _bloomSettings : null;
+      ..bloom = controller.bloom ? _bloomSettings : null
+      ..postProcess = _postProcessSettings.isActive
+          ? _postProcessSettings
+          : null;
+    dynamicLayer.world
+      ..spatialIndex3DEnabled = controller.spatialIndex3D
+      ..prioritizeNearestLights = controller.prioritizeNearestLights;
 
     _staticShadows
       ..cacheWhenStatic = controller.staticShadowCache
@@ -1031,6 +1088,7 @@ class ShowcaseGame({ShowcaseController? controller})
     automaton.animationState.speed = controller.animSpeed;
     automatonOutline.animationState.speed = controller.animSpeed;
     variationRig.stylized26Rig?.animationState.speed = controller.animSpeed;
+    variationRig.serpent32BoneRig?.animationState.speed = controller.animSpeed;
 
     final outlineScale = controller.outlines ? 1.0 : 0.0;
     automatonOutline.scale.setValues(outlineScale, outlineScale, outlineScale);
@@ -1063,6 +1121,7 @@ class ShowcaseGame({ShowcaseController? controller})
     }
 
     staticLayer.markDirty();
+    dynamicLayer.world.markSceneDirty(shadows: false);
     controller.notifyChanged();
   }
 

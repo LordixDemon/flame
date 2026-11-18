@@ -33,6 +33,7 @@ class Scene3DComponent({
   int maxTextureSize = 4096,
   Scene3DCacheMode cacheMode = Scene3DCacheMode.none,
   BloomSettings? bloom,
+  PostProcessSettings? postProcess,
   super.position,
   super.size,
   super.scale,
@@ -49,6 +50,9 @@ class Scene3DComponent({
     }
     if (bloom != null) {
       this.world.bloom = bloom;
+    }
+    if (postProcess != null) {
+      this.world.postProcess = postProcess;
     }
     this.maxTextureSize = maxTextureSize;
     add(this.world);
@@ -80,6 +84,11 @@ class Scene3DComponent({
   /// `world.bloom`).
   BloomSettings? get bloom => world.bloom;
   set bloom(BloomSettings? value) => world.bloom = value;
+
+  /// Optional GPU tone-mapping, color-grading, vignette, and FXAA applied to
+  /// this layer (forwards to `world.postProcess`).
+  PostProcessSettings? get postProcess => world.postProcess;
+  set postProcess(PostProcessSettings? value) => world.postProcess = value;
 
   /// Number of frames satisfied directly from the [Scene3DCacheMode.retained]
   /// image cache without opening a GPU pass.
@@ -407,7 +416,8 @@ class Scene3DComponent({
     Object? nextKey;
     if (isRetained) {
       final bloomSettings = world.bloom;
-      nextKey = Object.hash(
+      final postSettings = world.postProcess;
+      nextKey = Object.hashAll([
         world.sceneVersion,
         _manualVersion,
         world.shadowGroup?.castersVersion ?? world.castersVersion,
@@ -424,7 +434,15 @@ class Scene3DComponent({
         bloomSettings?.intensity,
         bloomSettings?.radius,
         bloomSettings?.passes,
-      );
+        postSettings?.toneMap,
+        postSettings?.exposure,
+        postSettings?.contrast,
+        postSettings?.saturation,
+        postSettings?.vignetteIntensity,
+        postSettings?.vignetteSmoothness,
+        postSettings?.tint,
+        postSettings?.fxaa,
+      ]);
       if (_retainedImage != null &&
           _retainedKey == nextKey &&
           _sameFloats(_viewMatrix.storage, _retainedView) &&
@@ -473,14 +491,16 @@ class Scene3DComponent({
     world.renderShadows(canvas);
 
     final bloomSettings = world.bloom;
-    final useBloom =
-        bloomSettings != null &&
-        bloomSettings.intensity > 0 &&
-        bloomSettings.radius > 0 &&
-        device.backend.supportsTextureTargets;
+    final postSettings = world.postProcess;
+    final usePost =
+        device.backend.supportsTextureTargets &&
+        ((bloomSettings != null &&
+                bloomSettings.intensity > 0 &&
+                bloomSettings.radius > 0) ||
+            (postSettings != null && postSettings.isActive));
 
     final Image image;
-    if (useBloom) {
+    if (usePost) {
       final texTarget = device.textureTarget(
         targetWidth,
         targetHeight,
@@ -507,10 +527,15 @@ class Scene3DComponent({
         image = device.applyBloomFromTarget(
           texTarget,
           bloomSettings,
+          postProcess: postSettings,
           outputTarget: _retainedBloomTarget,
         );
       } else {
-        image = device.applyBloomFromTarget(texTarget, bloomSettings);
+        image = device.applyBloomFromTarget(
+          texTarget,
+          bloomSettings,
+          postProcess: postSettings,
+        );
       }
     } else {
       if (isRetained) {

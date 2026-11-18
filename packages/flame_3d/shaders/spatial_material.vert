@@ -14,6 +14,7 @@ out vec4 fragColor;
 out vec3 fragPosition;
 out vec3 fragNormal;
 out vec4 fragInstanceColor;
+out vec4 fragInstanceData;
 
 void main() {
   mat4 skinMatrix = computeSkinMatrix();
@@ -22,16 +23,14 @@ void main() {
 
   mat4 model = instanceModelMatrix();
 
-  // Calculate the world-space position and normal
   vec4 worldPosition = model * vec4(position, 1.0);
   fragPosition = worldPosition.xyz;
   fragNormal = mat3(transpose(inverse(model))) * normal;
 
-  // Transform the vertex position
   gl_Position = camera.viewProjection * worldPosition;
 
-  // Pass the interpolated values to the fragment shader
   fragTexCoord = vertexTexCoord;
   fragColor = vertexColor;
   fragInstanceColor = instanceColor;
+  fragInstanceData = instanceData;
 }

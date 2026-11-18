@@ -7,21 +7,36 @@ lights they respond to, and textures.
 
 ## Built-in materials
 
-- `SpatialMaterial` is physically based (metallic and roughness), lit by every kind of light, tone
-  mapped and gamma corrected. Its base color is `albedoColor`, times `albedoTexture`, times the
-  vertex color, times the per-instance color. It is opaque by default.
+- `SpatialMaterial` is physically based (metallic-roughness PBR v2), lit by every kind of light
+  (including `SpotLight`s and directional PCF shadows on native), atmospheric fog, tangent-free
+  cotangent `normalTexture` (`normalScale`), `metallicRoughnessTexture` (glTF `G` = roughness,
+  `B` = metallic), `occlusionTexture` (`occlusionStrength`), `emissiveTexture` + `emissiveColor` /
+  `emissiveStrength`, equirectangular `environmentTexture` (`environmentIntensity`), `uvScale` /
+  `uvOffset`, `alphaCutoff` cutout, `doubleSided`, `ditherFade` (Bayer 4x4 screen-door opacity),
+  `singlePieceTranslucent` (`RenderState.depthPrepass`), and `instanceData` (`x` = emissive boost,
+  `y` = highlight, `w` = fade).
 - `UnlitMaterial` outputs `albedoTexture` times `albedoColor`, times the vertex color, times the
   per-instance color, without lighting. It blends with premultiplied alpha and draws as translucent
   by default; set its `renderState` to `RenderState.opaque` for opaque content.
 - `StylizedMaterial` is made for stylized, vertex-colored art without textures, see
-  [below](#stylizedmaterial). It receives shadows and atmospheric fog, and supports up to 16
-  per-instance palette accent colors in a single instanced draw.
+  [below](#stylizedmaterial). It receives shadows, `SpotLight`s and atmospheric fog, supports Bayer
+  4x4 `ditherFade` and `singlePieceTranslucent`, and packs up to 16 per-instance palette accent
+  colors in a single instanced draw.
+- `WaterMaterial` renders animated 4-wave Gerstner water surfaces with Schlick Fresnel sky/deep
+  absorption, sun specular glints, crest foam, shore fade and atmospheric fog.
+- `SkyboxMaterial3D` (paired with `SkyboxComponent3D`) renders procedural atmospheric sky domes
+  (zenith/horizon/ground gradient + sun disc) or `2:1` equirectangular sky panoramas at clip depth
+  `1.0` behind all opaque and translucent geometry.
+- `BillboardMaterial3D` (paired with `BillboardBatch3D` and `Text3DComponent`) renders instanced
+  spherical, cylindrical (`upAxis`) or tilted HD-2D standees with atlas sub-rects, alpha cutout,
+  depth writes and wrap lighting from directional, point and spot lights.
 - `ShadowCatcherMaterial` makes a surface invisible except for the shadows falling on it, so that
   3D objects cast shadows onto 2D art, see [Shadows](shadows.md#shadows-on-2d-art).
-- `OutlineMaterial` draws an instanced inverted-hull silhouette contour around static or skinned
-  meshes (in world units or constant screen-space fraction).
-- `DecalMaterial` (paired with `DecalBatch3D` or `PlaneMesh`) draws procedural soft discs/rings or
-  atlas-textured surface decals with clip-space depth bias so coplanar decals never Z-fight.
+- `OutlineMaterial` draws an instanced inverted-hull silhouette contour around static or 64-joint
+  skinned meshes (in world units or constant screen-space fraction).
+- `DecalMaterial` (paired with `DecalBatch3D` or `PlaneMesh`, including `DecalBatch3D.addBlobShadow`)
+  draws procedural soft discs/rings, contact blob shadows or atlas-textured surface decals with
+  clip-space depth bias so coplanar decals never Z-fight.
 - `RibbonMaterial3D` draws camera-facing 3D polylines and motion trails for `StrokeBatch3D` and
   `RibbonTrail3D`, see [Particles](particles.md#3d-ribbons-and-strokes).
 
@@ -34,12 +49,13 @@ colors, so the vertex color only changes the look of meshes that set it.
 The lights of a world come from its `LightComponent`s, and are read once per render pass, so their
 values can be animated:
 
-| Light              | Component                    | Lights a surface with                   |
-| ------------------ | ---------------------------- | --------------------------------------- |
-| `AmbientLight`     | `LightComponent.ambient`     | `color * intensity`, everywhere         |
-| `HemisphereLight`  | `LightComponent.hemisphere`  | the sky color above, the ground below   |
-| `DirectionalLight` | `LightComponent.directional` | parallel rays along a direction (a sun) |
-| `PointLight`       | `LightComponent.point`       | light from a position, fading out       |
+| Light              | Component                    | Lights a surface with                             |
+| ------------------ | ---------------------------- | ------------------------------------------------- |
+| `AmbientLight`     | `LightComponent.ambient`     | `color * intensity`, everywhere                   |
+| `HemisphereLight`  | `LightComponent.hemisphere`  | the sky color above, the ground below             |
+| `DirectionalLight` | `LightComponent.directional` | parallel rays along a direction (a sun)           |
+| `PointLight`       | `LightComponent.point`       | light from a position, fading out                 |
+| `SpotLight`        | `LightComponent.spot`        | cone of light (`innerConeAngle`..`outerConeAngle`)|
 
 - The first `AmbientLight` and the first `HemisphereLight` of a scene are used. A scene with
   neither gets a white ambient light of intensity `0.2`; a hemisphere light replaces that default.
@@ -51,10 +67,14 @@ values can be animated:
   (4) are used. With `shadows`, a `ShadowSettings`, it casts shadows, see [Shadows](shadows.md).
 - Without a `range`, a point light falls off with the inverse square of the distance `d`:
   `intensity / d²`. With one, it fades out smoothly and reaches no further:
-  `intensity * (1 - d / range)²`. Up to `RenderContext3D.maxPointLights` (8) are used. A point
-  light of zero intensity adds nothing and costs nothing: it is not written to the shaders, which
-  only go through the lights that shine (it still counts among the first eight), so a scene can
-  keep a fixed set of point lights and dim the unused ones to zero.
+  `intensity * (1 - d / range)²`. Up to `RenderContext3D.maxPointLights` (8) are used.
+- A `SpotLight` (`LightComponent.spot`) shines from its component's world position along `direction`
+  (or `-Z` of its world rotation when `direction` is `null`), attenuating smoothly between
+  `innerConeAngle` and `outerConeAngle` and over `range`. Up to `RenderContext3D.maxSpotLights` (4)
+  are used per pass.
+- Setting `world.prioritizeNearestLights = true` activates zero-allocation camera/focus-priority
+  light culling: scenes with dozens of active `PointLight`s or `SpotLight`s automatically select the
+  brightest/nearest `8` point lights and `4` spot lights within range of the camera focus each pass.
 
 ```dart
 world.addAll([
@@ -154,7 +174,7 @@ example two joints that differ only in a translation, weighted `1 - w` and `w`, 
 `w` times the difference).
 
 `buildSurface` lays the surface out this way when given `joints` and `weights`, both together; the
-indices must be whole numbers below `StylizedMaterial.maxJoints` (16). Every draw of a skinned
+indices must be whole numbers below `StylizedMaterial.maxJoints` (64). Every draw of a skinned
 surface gives its joint matrices, which can be updated in place every frame:
 
 ```dart

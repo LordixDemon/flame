@@ -16,17 +16,41 @@ abstract class AnimationSpline<T> {
   final AnimationInterpolation interpolation;
   final List<AnimationKeyframe<T>> values;
 
+  /// Optional glTF `CUBICSPLINE` incoming/outgoing tangents (`values.length`
+  /// entries each when present).
+  final List<T>? inTangents;
+  final List<T>? outTangents;
+
   AnimationSpline({
     required this.interpolation,
     required this.values,
+    this.inTangents,
+    this.outTangents,
   });
 
   AnimationSpline.from({
     required this.interpolation,
     required List<double> times,
     required List<T> values,
-  }) : values = List.generate(times.length, (index) {
-         return (time: times[index], value: values[index]);
+  }) : inTangents =
+           interpolation == AnimationInterpolation.cubicSpline &&
+               values.length == times.length * 3 &&
+               times.isNotEmpty
+           ? List.generate(times.length, (i) => values[i * 3])
+           : null,
+       outTangents =
+           interpolation == AnimationInterpolation.cubicSpline &&
+               values.length == times.length * 3 &&
+               times.isNotEmpty
+           ? List.generate(times.length, (i) => values[i * 3 + 2])
+           : null,
+       values = List.generate(times.length, (index) {
+         final val =
+             interpolation == AnimationInterpolation.cubicSpline &&
+                 values.length == times.length * 3
+             ? values[index * 3 + 1]
+             : values[index];
+         return (time: times[index], value: val);
        });
 
   T lerp(T a, T b, double t);
@@ -43,6 +67,25 @@ abstract class AnimationSpline<T> {
     Quaternion rotation,
     Vector3 scale,
   );
+
+  /// Applies cubic Hermite segment `i -> i + 1` when explicit tangents exist.
+  void applyCubicSegmentTrs(
+    int i,
+    double dt,
+    double t,
+    Vector3 translation,
+    Quaternion rotation,
+    Vector3 scale,
+  ) {
+    applyTrs(
+      values[i].value,
+      values[i + 1].value,
+      t,
+      translation,
+      rotation,
+      scale,
+    );
+  }
 }
 
 /// An animation spline over the position of a transformation (translation).
@@ -73,6 +116,32 @@ class TranslationAnimationSpline.from({
     Vector3 scale,
   ) {
     interpolation.lerpInto(a, b, t, translation);
+  }
+
+  @override
+  void applyCubicSegmentTrs(
+    int i,
+    double dt,
+    double t,
+    Vector3 translation,
+    Quaternion rotation,
+    Vector3 scale,
+  ) {
+    final inT = inTangents;
+    final outT = outTangents;
+    if (inT != null && outT != null) {
+      AnimationInterpolation.cubicHermiteVector3Into(
+        values[i].value,
+        outT[i],
+        values[i + 1].value,
+        inT[i + 1],
+        dt,
+        t,
+        translation,
+      );
+    } else {
+      super.applyCubicSegmentTrs(i, dt, t, translation, rotation, scale);
+    }
   }
 }
 
@@ -105,6 +174,32 @@ class RotationAnimationSpline.from({
   ) {
     interpolation.slerpInto(a, b, t, rotation);
   }
+
+  @override
+  void applyCubicSegmentTrs(
+    int i,
+    double dt,
+    double t,
+    Vector3 translation,
+    Quaternion rotation,
+    Vector3 scale,
+  ) {
+    final inT = inTangents;
+    final outT = outTangents;
+    if (inT != null && outT != null) {
+      AnimationInterpolation.cubicHermiteQuaternionInto(
+        values[i].value,
+        outT[i],
+        values[i + 1].value,
+        inT[i + 1],
+        dt,
+        t,
+        rotation,
+      );
+    } else {
+      super.applyCubicSegmentTrs(i, dt, t, translation, rotation, scale);
+    }
+  }
 }
 
 /// An animation spline over the scale of a transformation (scaling).
@@ -135,6 +230,32 @@ class ScaleAnimationSpline.from({
     Vector3 scale,
   ) {
     interpolation.lerpInto(a, b, t, scale);
+  }
+
+  @override
+  void applyCubicSegmentTrs(
+    int i,
+    double dt,
+    double t,
+    Vector3 translation,
+    Quaternion rotation,
+    Vector3 scale,
+  ) {
+    final inT = inTangents;
+    final outT = outTangents;
+    if (inT != null && outT != null) {
+      AnimationInterpolation.cubicHermiteVector3Into(
+        values[i].value,
+        outT[i],
+        values[i + 1].value,
+        inT[i + 1],
+        dt,
+        t,
+        scale,
+      );
+    } else {
+      super.applyCubicSegmentTrs(i, dt, t, translation, rotation, scale);
+    }
   }
 }
 
@@ -194,6 +315,18 @@ class AnimationController<T>({
     final t1 = values[i + 1].time;
     final span = t1 - t0;
     final t = span > 1e-12 ? (time - t0) / span : 0.0;
+    if (animation.interpolation == AnimationInterpolation.cubicSpline &&
+        animation.inTangents != null) {
+      animation.applyCubicSegmentTrs(
+        i,
+        span,
+        t,
+        translation,
+        rotation,
+        scale,
+      );
+      return;
+    }
     animation.applyTrs(
       values[i].value,
       values[i + 1].value,
@@ -221,14 +354,119 @@ class AnimationController<T>({
   }
 }
 
+/// Keyframed morph-target weight track (`AnimationPath.weights`).
+class MorphWeightsChannel({
+  required final AnimationInterpolation interpolation,
+  required final List<double> times,
+  required final List<double> weights,
+  required final int targetCount,
+}) {
+  double get lastTime => times.isEmpty ? 0.0 : times.last;
+
+  /// Samples the [targetCount] morph weights at [time] into [out].
+  void sampleInto(double time, List<double> out) {
+    if (times.isEmpty || targetCount <= 0 || out.length < targetCount) {
+      return;
+    }
+    final cubicTriplets =
+        interpolation == AnimationInterpolation.cubicSpline &&
+        weights.length == times.length * targetCount * 3;
+    int baseOf(int keyIdx) =>
+        cubicTriplets ? (keyIdx * 3 + 1) * targetCount : keyIdx * targetCount;
+
+    if (times.length == 1 || time <= times.first) {
+      final b = baseOf(0);
+      for (var k = 0; k < targetCount; k++) {
+        out[k] = weights[b + k];
+      }
+      return;
+    }
+    if (time >= times.last) {
+      final b = baseOf(times.length - 1);
+      for (var k = 0; k < targetCount; k++) {
+        out[k] = weights[b + k];
+      }
+      return;
+    }
+
+    var lo = 0;
+    var hi = times.length - 2;
+    while (lo <= hi) {
+      final mid = (lo + hi) >> 1;
+      if (time < times[mid]) {
+        hi = mid - 1;
+      } else if (time >= times[mid + 1]) {
+        lo = mid + 1;
+      } else {
+        lo = mid;
+        break;
+      }
+    }
+    final i = lo.clamp(0, times.length - 2);
+    final dt = times[i + 1] - times[i];
+    final t = dt > 1e-12 ? (time - times[i]) / dt : 0.0;
+
+    if (interpolation == AnimationInterpolation.step) {
+      final b = baseOf(i);
+      for (var k = 0; k < targetCount; k++) {
+        out[k] = weights[b + k];
+      }
+      return;
+    }
+
+    if (cubicTriplets) {
+      final t2 = t * t;
+      final t3 = t2 * t;
+      final h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+      final h10 = (t3 - 2.0 * t2 + t) * dt;
+      final h01 = -2.0 * t3 + 3.0 * t2;
+      final h11 = (t3 - t2) * dt;
+      final v0Base = (i * 3 + 1) * targetCount;
+      final b0Base = (i * 3 + 2) * targetCount;
+      final a1Base = ((i + 1) * 3) * targetCount;
+      final v1Base = ((i + 1) * 3 + 1) * targetCount;
+      for (var k = 0; k < targetCount; k++) {
+        out[k] =
+            h00 * weights[v0Base + k] +
+            h10 * weights[b0Base + k] +
+            h01 * weights[v1Base + k] +
+            h11 * weights[a1Base + k];
+      }
+      return;
+    }
+
+    final u = interpolation == AnimationInterpolation.cubicSpline
+        ? t * t * (3.0 - 2.0 * t)
+        : t;
+    final b0 = baseOf(i);
+    final b1 = baseOf(i + 1);
+    for (var k = 0; k < targetCount; k++) {
+      final v0 = weights[b0 + k];
+      out[k] = v0 + (weights[b1 + k] - v0) * u;
+    }
+  }
+}
+
 /// Groups the animations of a single node in a `Model`, which can be
 /// controlled by multiple animation channels.
 class NodeAnimation({
   required final List<AnimationController> channels,
+  final MorphWeightsChannel? morphWeights,
 }) {
-  final double lastTime = channels.isEmpty
-      ? 0.0
-      : channels.map((e) => e.lastTime).reduce(max);
+  final double lastTime = _computeLastTime(channels, morphWeights);
+
+  static double _computeLastTime(
+    List<AnimationController> channels,
+    MorphWeightsChannel? morph,
+  ) {
+    var best = morph?.lastTime ?? 0.0;
+    for (final c in channels) {
+      if (c.lastTime > best) {
+        best = c.lastTime;
+      }
+    }
+    return best;
+  }
 
   void sampleInto(double time, Matrix4 matrix) {
     for (final channel in channels) {

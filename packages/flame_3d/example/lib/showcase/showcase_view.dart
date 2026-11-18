@@ -8,8 +8,8 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
 /// Interactive Flutter host widget for [ShowcaseGame]: renders the 3D scene
-/// with an 8-preset lab switcher, collapsible telemetry HUD, live subsystem
-/// toggles, offscreen `renderToImage` preview card, and 1-tap 24-check engine
+/// with a 12-preset lab switcher, collapsible telemetry HUD, live subsystem
+/// toggles, offscreen `renderToImage` preview card, and 1-tap 36-check engine
 /// self-test.
 class const ShowcaseView({
   final ShowcaseGame? game,
@@ -97,7 +97,6 @@ class _ShowcaseViewState() extends State<ShowcaseView> {
           children: [
             GameWidget(game: _game),
 
-            // Top-left telemetry card.
             Positioned(
               left: widget.topPadding.left,
               top: widget.topPadding.top,
@@ -204,7 +203,6 @@ class _ShowcaseViewState() extends State<ShowcaseView> {
               ),
             ),
 
-            // Offscreen `renderToImage` preview inset (top-right / below back button).
             if (ctrl.snapshotImage != null)
               Positioned(
                 right: 12,
@@ -242,15 +240,14 @@ class _ShowcaseViewState() extends State<ShowcaseView> {
                 ),
               ),
 
-            // Diagnostic report modal card when Self-Test has been run.
             if (_report != null)
               Positioned(
                 right: 12,
-                bottom: 94,
+                bottom: 104,
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(
-                    maxWidth: 380,
-                    maxHeight: 320,
+                    maxWidth: 390,
+                    maxHeight: 330,
                   ),
                   child: DecoratedBox(
                     decoration: BoxDecoration(
@@ -329,7 +326,6 @@ class _ShowcaseViewState() extends State<ShowcaseView> {
                 ),
               ),
 
-            // Bottom preset bar + subsystem control bar.
             Positioned(
               left: 10,
               right: 10,
@@ -407,6 +403,32 @@ class _ShowcaseViewState() extends State<ShowcaseView> {
                             onTap: () => _toggle((c) => c.fog = !c.fog),
                           ),
                           _Chip(
+                            label: 'FXAA',
+                            active: ctrl.fxaa,
+                            onTap: () => _toggle((c) => c.fxaa = !c.fxaa),
+                          ),
+                          _Chip(
+                            label: 'Vignette',
+                            active: ctrl.vignette,
+                            onTap: () =>
+                                _toggle((c) => c.vignette = !c.vignette),
+                          ),
+                          _Chip(
+                            label: 'BVH3D',
+                            active: ctrl.spatialIndex3D,
+                            onTap: () => _toggle(
+                              (c) => c.spatialIndex3D = !c.spatialIndex3D,
+                            ),
+                          ),
+                          _Chip(
+                            label: 'LightCull',
+                            active: ctrl.prioritizeNearestLights,
+                            onTap: () => _toggle(
+                              (c) => c.prioritizeNearestLights =
+                                  !c.prioritizeNearestLights,
+                            ),
+                          ),
+                          _Chip(
                             label: 'Outlines',
                             active: ctrl.outlines,
                             onTap: () =>
@@ -448,6 +470,15 @@ class _ShowcaseViewState() extends State<ShowcaseView> {
                             onTap: () => _toggle(
                               (c) => c.stressInstances = !c.stressInstances,
                             ),
+                          ),
+                          _ActionChip(
+                            label: 'Tone:${ctrl.toneMap.name}',
+                            color: const Color(0xFF34D399),
+                            onTap: () {
+                              if (_game.isLoaded) {
+                                _game.cycleToneMap();
+                              }
+                            },
                           ),
                           _ActionChip(
                             label: 'Shad:${ctrl.shadowEncoding.name}',
@@ -535,7 +566,7 @@ class _ShowcaseViewState() extends State<ShowcaseView> {
                           _ActionChip(
                             label: _runningSelfTest
                                 ? 'Testing...'
-                                : 'Self-Test (24)',
+                                : 'Self-Test (36)',
                             color: const Color(0xFF34D399),
                             onTap: _runSelfTest,
                           ),

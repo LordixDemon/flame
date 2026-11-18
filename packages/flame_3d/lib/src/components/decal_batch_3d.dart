@@ -141,6 +141,44 @@ class DecalBatch3D({
     worldOrNull?.markSceneDirty(shadows: false);
   }
 
+  /// Places a height-attenuated circular mobile drop-shadow decal at
+  /// [groundPoint] for an object floating [elevation] world units above it:
+  /// expands slightly and fades out smoothly up to [maxElevation].
+  int? addBlobShadow({
+    required Vector3 groundPoint,
+    required double radius,
+    double elevation = 0.0,
+    double maxElevation = 4.0,
+    double baseOpacity = 0.55,
+    Color shadowColor = const Color(0xFF0A0F1E),
+    Vector3? normal,
+  }) {
+    final h = math.max(0.0, elevation);
+    if (maxElevation > 0 && h >= maxElevation) {
+      return null;
+    }
+    final t = maxElevation > 0 ? (h / maxElevation).clamp(0.0, 1.0) : 0.0;
+    final fade = (1.0 - t) * (1.0 - t);
+    final alpha = (baseOpacity * fade).clamp(0.0, 1.0);
+    if (alpha <= 0.005) {
+      return null;
+    }
+    final diameter = radius * 2.0 * (1.0 + 0.45 * t);
+    final c = Color.fromARGB(
+      (alpha * 255).round(),
+      (shadowColor.r * 255).round(),
+      (shadowColor.g * 255).round(),
+      (shadowColor.b * 255).round(),
+    );
+    return addFlatDecal(
+      center: groundPoint,
+      width: diameter,
+      height: diameter,
+      normal: normal,
+      color: c,
+    );
+  }
+
   /// Removes the decal at [index] in `O(1)` by swapping with the last entry.
   void removeAtSwapLast(int index) {
     RangeError.checkValidIndex(index, this, 'index', _length);

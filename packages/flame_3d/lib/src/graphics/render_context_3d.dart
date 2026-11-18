@@ -71,6 +71,7 @@ class RenderContext3D(super.device) extends RenderContext {
     registerPassUniform(ambientLightBlock, writeAmbientLightUniforms);
     registerPassUniform(lightsBlock, writeLightsUniforms);
     registerPassUniform(directionalLightsBlock, writeDirectionalLightsUniforms);
+    registerPassUniform(spotLightsBlock, writeSpotLightsUniforms);
     registerPassUniform(hemisphereLightBlock, writeHemisphereLightUniforms);
     registerPassUniform(shadowsBlock, writeShadowsUniforms);
     registerPassUniform(fogBlock, writeFogUniforms);
@@ -99,6 +100,12 @@ class RenderContext3D(super.device) extends RenderContext {
   /// light, in `w` its specular factor) and the `colors` array (in `rgb` the
   /// color, in `a` the intensity).
   static const String directionalLightsBlock = 'DirectionalLights';
+
+  /// The name of the block holding cone spot lights: `numLights`, `positions`,
+  /// `directions` (`xyz` unit vector from surface towards light, `w` specular),
+  /// `colors` (`rgb` color, `a` intensity) and `cones` (`x` `cos(outer)`, `y`
+  /// `1 / (cos(inner) - cos(outer))`, `z` `range`).
+  static const String spotLightsBlock = 'SpotLights';
 
   /// The name of the block holding the hemisphere light: `skyColor`,
   /// `groundColor`, the unit `up` vector and `intensity` (`0` when the scene
@@ -139,6 +146,7 @@ class RenderContext3D(super.device) extends RenderContext {
     ambientLightBlock,
     lightsBlock,
     directionalLightsBlock,
+    spotLightsBlock,
     hemisphereLightBlock,
     shadowsBlock,
     fogBlock,
@@ -150,6 +158,9 @@ class RenderContext3D(super.device) extends RenderContext {
   /// The maximum number of directional lights written to the
   /// [directionalLightsBlock].
   static const int maxDirectionalLights = 4;
+
+  /// The maximum number of spot lights written to the [spotLightsBlock].
+  static const int maxSpotLights = 4;
 
   /// The model matrix of the draw being submitted.
   ///
@@ -300,6 +311,32 @@ class RenderContext3D(super.device) extends RenderContext {
     return det > 0;
   }
 
+  int _activePrepassGroup = 0;
+  int _nextPrepassGroupId = 1;
+  int _prepassGroupNesting = 0;
+  double _prepassGroupDepth = double.nan;
+  bool _depthPrepassOverride = false;
+
+  /// Groups all translucent draws with [RenderState.depthPrepass] recorded
+  /// before the matching [endDepthPrepassGroup] into a single cohesive depth
+  /// prepass followed by a single `lessEqual` shaded pass, so multi-surface
+  /// meshes and multi-node `ModelComponent`s fade as one seamless piece.
+  void beginDepthPrepassGroup() {
+    if (_prepassGroupNesting++ == 0) {
+      _activePrepassGroup = _nextPrepassGroupId++;
+      _prepassGroupDepth = double.nan;
+    }
+  }
+
+  /// Ends a group started by [beginDepthPrepassGroup].
+  void endDepthPrepassGroup() {
+    if (--_prepassGroupNesting <= 0) {
+      _prepassGroupNesting = 0;
+      _activePrepassGroup = 0;
+      _prepassGroupDepth = double.nan;
+    }
+  }
+
   /// Records a draw of every surface of [mesh] with the model matrix
   /// [transform] (defaults to [model]), the per-instance [color] and the
   /// per-instance [instanceData] (zero when `null`).
@@ -313,13 +350,23 @@ class RenderContext3D(super.device) extends RenderContext {
     Vector4? instanceData,
     Map<int, List<Matrix4>>? jointTransforms,
   }) {
-    mesh.draw(
-      this,
-      transform: transform,
-      color: color,
-      instanceData: instanceData,
-      jointTransforms: jointTransforms,
-    );
+    final multiSurface = mesh.surfaces.length > 1;
+    if (multiSurface) {
+      beginDepthPrepassGroup();
+    }
+    try {
+      mesh.draw(
+        this,
+        transform: transform,
+        color: color,
+        instanceData: instanceData,
+        jointTransforms: jointTransforms,
+      );
+    } finally {
+      if (multiSurface) {
+        endDepthPrepassGroup();
+      }
+    }
   }
 
   /// Records a draw of [surface] with its material (or [material]), the model
@@ -403,7 +450,24 @@ class RenderContext3D(super.device) extends RenderContext {
     final wy = m[1] * cx + m[5] * cy + m[9] * cz + m[13];
     final wz = m[2] * cx + m[6] * cy + m[10] * cz + m[14];
     final d = _depthRow;
-    _depths[i] = d[0] * wx + d[1] * wy + d[2] * wz + d[3];
+    var depth = d[0] * wx + d[1] * wy + d[2] * wz + d[3];
+    if (!shadowPass &&
+        drawMaterial.renderState.translucent &&
+        drawMaterial.renderState.depthPrepass) {
+      if (_activePrepassGroup != 0) {
+        if (_prepassGroupDepth.isNaN) {
+          _prepassGroupDepth = depth;
+        } else {
+          depth = _prepassGroupDepth;
+        }
+        _prepassGroups[i] = _activePrepassGroup;
+      } else {
+        _prepassGroups[i] = _nextPrepassGroupId++;
+      }
+    } else {
+      _prepassGroups[i] = 0;
+    }
+    _depths[i] = depth;
     _external[i] = null;
     RenderProfile.lap(RenderPhase.recording);
   }
@@ -469,6 +533,14 @@ class RenderContext3D(super.device) extends RenderContext {
     _depths[i] = center == null
         ? d[3]
         : d[0] * center.x + d[1] * center.y + d[2] * center.z + d[3];
+    _prepassGroups[i] =
+        (!_shadows.recording &&
+            drawMaterial.renderState.translucent &&
+            drawMaterial.renderState.depthPrepass)
+        ? (_activePrepassGroup != 0
+              ? _activePrepassGroup
+              : _nextPrepassGroupId++)
+        : 0;
     RenderProfile.lap(RenderPhase.recording);
   }
 
@@ -608,17 +680,21 @@ class RenderContext3D(super.device) extends RenderContext {
 
     _boundMaterial = null;
     _bindingEpoch = -1;
+    _depthPrepassOverride = false;
 
     _submitBatches(_opaque, opaqueCount);
     // Back to front: only draws that are consecutive in that order batch, and
     // the instances of a batch are drawn in that order.
-    _submitBatches(_translucent, translucentCount);
+    _submitTranslucentBatches(_translucent, translucentCount);
 
     _releaseDraws(count);
     _boundMaterial = null;
     _jointTransforms = null;
     _lastDrawCount = count;
     _count = 0;
+    _nextPrepassGroupId = 1;
+    _activePrepassGroup = 0;
+    _prepassGroupNesting = 0;
     RenderProfile.lap(RenderPhase.release);
   }
 
@@ -633,20 +709,51 @@ class RenderContext3D(super.device) extends RenderContext {
 
   /// Submits the first [count] draws of [order], merging consecutive draws
   /// that batch into instanced draws.
-  void _submitBatches(Int32List order, int count) {
-    var start = 0;
-    while (start < count) {
+  void _submitBatches(Int32List order, int count, {int offset = 0}) {
+    var start = offset;
+    final limit = offset + count;
+    while (start < limit) {
       final first = order[start];
       var end = start + 1;
       if (_pipelines[first]!.instanced &&
           _joints[first] == null &&
           _external[first] == null) {
-        while (end < count && _batchesWith(first, order[end])) {
+        while (end < limit && _batchesWith(first, order[end])) {
           end++;
         }
       }
       _submit(order, start, end - start);
       start = end;
+    }
+  }
+
+  /// Submits translucent draws in back-to-front order, executing a seamless
+  /// two-pass depth prepass + `lessEqual` color pass for each
+  /// [RenderState.depthPrepass] group.
+  void _submitTranslucentBatches(Int32List order, int count) {
+    var cursor = 0;
+    while (cursor < count) {
+      final gid = _prepassGroups[order[cursor]];
+      if (gid == 0) {
+        var nextGroup = cursor + 1;
+        while (nextGroup < count && _prepassGroups[order[nextGroup]] == 0) {
+          nextGroup++;
+        }
+        _submitBatches(order, nextGroup - cursor, offset: cursor);
+        cursor = nextGroup;
+        continue;
+      }
+
+      var groupEnd = cursor + 1;
+      while (groupEnd < count && _prepassGroups[order[groupEnd]] == gid) {
+        groupEnd++;
+      }
+      final span = groupEnd - cursor;
+      _depthPrepassOverride = true;
+      _submitBatches(order, span, offset: cursor);
+      _depthPrepassOverride = false;
+      _submitBatches(order, span, offset: cursor);
+      cursor = groupEnd;
     }
   }
 
@@ -675,8 +782,21 @@ class RenderContext3D(super.device) extends RenderContext {
       _boundMaterial = null;
       _bindPassSlots(material, vertexShader);
     }
+    final baseState = material.renderState;
+    final effectiveState = _depthPrepassOverride
+        ? RenderState(
+            blend: BlendState.depthOnly,
+            depthTest: baseState.depthTest,
+            cullMode: baseState.cullMode,
+          )
+        : (baseState.depthPrepass
+              ? baseState.copyWith(
+                  depthCompare: CompareFunction.lessEqual,
+                  depthWrite: false,
+                )
+              : baseState);
     device
-      ..setRenderState(material.renderState)
+      ..setRenderState(effectiveState)
       ..setFrontFace(
         (_mirrored[first] == 1) == _isMirrored
             ? WindingOrder.counterClockwise
@@ -929,40 +1049,226 @@ class RenderContext3D(super.device) extends RenderContext {
       ..setFloat('intensity', ambient.intensity);
   }
 
-  /// Writes the point lights of [RenderContext3D.lights] (the first
+  /// Whether [writeLightsUniforms] and [writeSpotLightsUniforms] automatically
+  /// select the highest-priority active lights nearest to the camera / viewport
+  /// center when more than [maxPointLights] or [maxSpotLights] exist.
+  bool prioritizeNearestLights = false;
+
+  static final Int32List _topLightIndices = Int32List(maxPointLights);
+  static final Float64List _topLightScores = Float64List(maxPointLights);
+
+  static double _lightPriorityScore(
+    RenderContext3D context,
+    Vector3 pos,
+    double intensity,
+  ) {
+    final proj = context.projection.storage;
+    if (proj[15].abs() < 0.5) {
+      final cam = context.cameraPosition;
+      final dx = pos.x - cam.x;
+      final dy = pos.y - cam.y;
+      final dz = pos.z - cam.z;
+      return intensity / (1.0 + dx * dx + dy * dy + dz * dz);
+    }
+    final vp = context.viewProjection.storage;
+    final cx = vp[0] * pos.x + vp[4] * pos.y + vp[8] * pos.z + vp[12];
+    final cy = vp[1] * pos.x + vp[5] * pos.y + vp[9] * pos.z + vp[13];
+    final cw = vp[3] * pos.x + vp[7] * pos.y + vp[11] * pos.z + vp[15];
+    final invW = cw.abs() > 1e-6 ? 1.0 / cw : 1.0;
+    final nx = cx * invW;
+    final ny = cy * invW;
+    return intensity / (1.0 + nx * nx + ny * ny);
+  }
+
+  /// Writes the point lights of [RenderContext3D.lights] (up to
   /// [maxPointLights]) into [block].
   ///
-  /// Lights of zero intensity add no light: they are left out, so that
-  /// shaders do not spend time on them, but still count among the first
-  /// [maxPointLights].
+  /// When the scene holds at most [maxPointLights] point lights, they are
+  /// considered in list order (lights of zero intensity are skipped while still
+  /// counting among those slots). When the scene holds more than
+  /// [maxPointLights] point lights, the [maxPointLights] highest-priority
+  /// active lights nearest to the current camera / viewport center are selected
+  /// automatically with zero heap allocations.
   static void writeLightsUniforms(RenderContext3D context, UniformBlock block) {
     final lights = context.lights;
+    var totalPointLights = 0;
+    for (var i = 0; i < lights.length; i++) {
+      if (lights[i].source is PointLight) {
+        totalPointLights++;
+      }
+    }
+
     var count = 0;
-    var slots = 0;
-    for (var i = 0; i < lights.length && slots < maxPointLights; i++) {
-      final light = lights[i];
-      final source = light.source;
-      if (source is! PointLight) {
-        continue;
+    if (!context.prioritizeNearestLights ||
+        totalPointLights <= maxPointLights) {
+      var slots = 0;
+      for (var i = 0; i < lights.length && slots < maxPointLights; i++) {
+        final light = lights[i];
+        final source = light.source;
+        if (source is! PointLight) {
+          continue;
+        }
+        slots++;
+        if (source.intensity == 0) {
+          continue;
+        }
+        final range = source.range;
+        block
+          ..setVector3('positions', light.position, index: count)
+          ..setColor('colors', source.color, index: count)
+          ..setFloat('intensities', source.intensity, index: count)
+          ..setFloat(
+            'ranges',
+            range != null && range > 0 ? range : 0,
+            index: count,
+          );
+        count++;
       }
-      slots++;
-      if (source.intensity == 0) {
-        continue;
-      }
-      final range = source.range;
-      block
-        ..setVector3('positions', light.position, index: count)
-        ..setColor('colors', source.color, index: count)
-        ..setFloat('intensities', source.intensity, index: count)
-        ..setFloat(
-          'ranges',
-          range != null && range > 0 ? range : 0,
-          index: count,
+    } else {
+      for (var i = 0; i < lights.length; i++) {
+        final light = lights[i];
+        final source = light.source;
+        if (source is! PointLight || source.intensity <= 0) {
+          continue;
+        }
+        final score = _lightPriorityScore(
+          context,
+          light.position,
+          source.intensity,
         );
-      count++;
+        if (count < maxPointLights) {
+          var pos = count++;
+          while (pos > 0 && _topLightScores[pos - 1] < score) {
+            _topLightScores[pos] = _topLightScores[pos - 1];
+            _topLightIndices[pos] = _topLightIndices[pos - 1];
+            pos--;
+          }
+          _topLightScores[pos] = score;
+          _topLightIndices[pos] = i;
+        } else if (score > _topLightScores[maxPointLights - 1]) {
+          var pos = maxPointLights - 1;
+          while (pos > 0 && _topLightScores[pos - 1] < score) {
+            _topLightScores[pos] = _topLightScores[pos - 1];
+            _topLightIndices[pos] = _topLightIndices[pos - 1];
+            pos--;
+          }
+          _topLightScores[pos] = score;
+          _topLightIndices[pos] = i;
+        }
+      }
+      for (var k = 0; k < count; k++) {
+        final light = lights[_topLightIndices[k]];
+        final source = light.source as PointLight;
+        final range = source.range;
+        block
+          ..setVector3('positions', light.position, index: k)
+          ..setColor('colors', source.color, index: k)
+          ..setFloat('intensities', source.intensity, index: k)
+          ..setFloat(
+            'ranges',
+            range != null && range > 0 ? range : 0,
+            index: k,
+          );
+      }
     }
     // NOTE: using floats because Android GLES does not support integer uniforms
     // Refer to https://github.com/flutter/engine/pull/55329
+    block.setFloat('numLights', count.toDouble());
+  }
+
+  /// Writes up to [maxSpotLights] cone [SpotLight]s of [RenderContext3D.lights]
+  /// into [block], selecting the highest-priority ones nearest to the camera
+  /// when more than [maxSpotLights] exist.
+  static void writeSpotLightsUniforms(
+    RenderContext3D context,
+    UniformBlock block,
+  ) {
+    final lights = context.lights;
+    var totalSpot = 0;
+    for (var i = 0; i < lights.length; i++) {
+      if (lights[i].source is SpotLight) {
+        totalSpot++;
+      }
+    }
+
+    var count = 0;
+    if (totalSpot <= maxSpotLights) {
+      for (var i = 0; i < lights.length && count < maxSpotLights; i++) {
+        if (lights[i].source is SpotLight) {
+          final s = lights[i].source as SpotLight;
+          if (s.intensity > 0) {
+            _topLightIndices[count++] = i;
+          }
+        }
+      }
+    } else {
+      for (var i = 0; i < lights.length; i++) {
+        final s = lights[i].source;
+        if (s is! SpotLight || s.intensity <= 0) {
+          continue;
+        }
+        final score = _lightPriorityScore(
+          context,
+          lights[i].position,
+          s.intensity,
+        );
+        if (count < maxSpotLights) {
+          var pos = count++;
+          while (pos > 0 && _topLightScores[pos - 1] < score) {
+            _topLightScores[pos] = _topLightScores[pos - 1];
+            _topLightIndices[pos] = _topLightIndices[pos - 1];
+            pos--;
+          }
+          _topLightScores[pos] = score;
+          _topLightIndices[pos] = i;
+        } else if (score > _topLightScores[maxSpotLights - 1]) {
+          var pos = maxSpotLights - 1;
+          while (pos > 0 && _topLightScores[pos - 1] < score) {
+            _topLightScores[pos] = _topLightScores[pos - 1];
+            _topLightIndices[pos] = _topLightIndices[pos - 1];
+            pos--;
+          }
+          _topLightScores[pos] = score;
+          _topLightIndices[pos] = i;
+        }
+      }
+    }
+
+    final dir = _scratchDirection;
+    final val = _scratchVector4;
+    for (var k = 0; k < count; k++) {
+      final light = lights[_topLightIndices[k]];
+      final source = light.source as SpotLight;
+      light.direction(dir);
+      final outer = source.outerConeAngle.clamp(0.001, math.pi * 0.999);
+      final inner = source.innerConeAngle.clamp(0.0, outer - 1e-4);
+      final cosOuter = math.cos(outer);
+      final invSpan = 1.0 / math.max(math.cos(inner) - cosOuter, 1e-4);
+      final range = source.range;
+      final c = source.color;
+      block
+        ..setVector3('positions', light.position, index: k)
+        ..setVector4(
+          'directions',
+          val..setValues(-dir.x, -dir.y, -dir.z, source.specular),
+          index: k,
+        )
+        ..setVector4(
+          'colors',
+          val..setValues(c.r, c.g, c.b, source.intensity),
+          index: k,
+        )
+        ..setVector4(
+          'cones',
+          val..setValues(
+            cosOuter,
+            invSpan,
+            range != null && range > 0 ? range : 0,
+            0,
+          ),
+          index: k,
+        );
+    }
     block.setFloat('numLights', count.toDouble());
   }
 
@@ -1102,6 +1408,7 @@ class RenderContext3D(super.device) extends RenderContext {
   Float64List _groupKeys = Float64List(0);
   Uint8List _mirrored = Uint8List(0);
   Int32List _surfaceKeys = Int32List(0);
+  Int32List _prepassGroups = Int32List(0);
   Int32List _opaque = Int32List(0);
   Int32List _translucent = Int32List(0);
   Int32List _sortScratch = Int32List(0);
@@ -1128,6 +1435,8 @@ class RenderContext3D(super.device) extends RenderContext {
     _mirrored = Uint8List(capacity)..setRange(0, _mirrored.length, _mirrored);
     _groupKeys = Float64List(capacity);
     _surfaceKeys = Int32List(capacity);
+    _prepassGroups = Int32List(capacity)
+      ..setRange(0, _prepassGroups.length, _prepassGroups);
     _sortDepths = Float64List(capacity);
     _opaque = Int32List(capacity);
     _translucent = Int32List(capacity);

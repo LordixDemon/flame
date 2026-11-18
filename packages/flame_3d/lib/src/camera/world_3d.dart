@@ -25,11 +25,18 @@ class World3D({
   double renderScale = 1.0,
   FogSettings? fog,
   BloomSettings? bloom,
+  PostProcessSettings? postProcess,
+  var bool spatialIndex3DEnabled = false,
+  var bool prioritizeNearestLights = false,
 }) extends flame.World {
   /// {@macro world_3d}
   this;
 
   final List<Light> _lights = [];
+
+  /// Lazy flat AABB BVH accelerating AABB, frustum, and raycast queries when
+  /// [spatialIndex3DEnabled] is `true` (or when queried directly).
+  final SceneSpatialIndex3D spatialIndex3D = SceneSpatialIndex3D();
 
   int _sceneVersion = 0;
   int _castersVersion = 0;
@@ -79,6 +86,18 @@ class World3D({
       return;
     }
     _bloom = value;
+    markSceneDirty(shadows: false);
+  }
+
+  /// Optional GPU tone-mapping, color-grading, vignette, and FXAA settings
+  /// fused into the final composite pass (`null` disables post-processing).
+  PostProcessSettings? get postProcess => _postProcess;
+  PostProcessSettings? _postProcess = postProcess;
+  set postProcess(PostProcessSettings? value) {
+    if (identical(value, _postProcess)) {
+      return;
+    }
+    _postProcess = value;
     markSceneDirty(shadows: false);
   }
 
@@ -275,7 +294,8 @@ class World3D({
     final ctx = overrideContext ?? context;
     ctx
       ..lights = _lights
-      ..fog = _fog;
+      ..fog = _fog
+      ..prioritizeNearestLights = prioritizeNearestLights;
     _rendering = true;
     try {
       for (final child in children) {
@@ -349,14 +369,18 @@ class World3D({
       renderShadows(dummyCanvas, overrideContext: resolvedContext);
 
       final bloomSettings = _bloom;
-      final useBloom =
+      final postSettings = _postProcess;
+      final hasBloom =
           bloomSettings != null &&
           bloomSettings.intensity > 0 &&
-          bloomSettings.radius > 0 &&
+          bloomSettings.radius > 0;
+      final hasPost = postSettings != null && postSettings.isActive;
+      final usePostPass =
+          (hasBloom || hasPost) &&
           resolvedDevice.backend.supportsTextureTargets;
 
       final Image image;
-      if (useBloom) {
+      if (usePostPass) {
         final texTarget = resolvedDevice.textureTarget(
           width,
           height,
@@ -379,6 +403,7 @@ class World3D({
         image = resolvedDevice.applyBloomFromTarget(
           texTarget,
           bloomSettings,
+          postProcess: postSettings,
           outputTarget: bloomTarget,
         );
       } else {
@@ -433,6 +458,16 @@ class World3D({
       ..setFrom(ray.direction)
       ..scale(1.0 / dirLen);
 
+    if (spatialIndex3DEnabled) {
+      return spatialIndex3D.raycast(
+        this,
+        _unitRay,
+        maxDistance: maxDistance,
+        cullMode: cullMode,
+        filter: filter,
+      );
+    }
+
     RayHit3D? best;
     var limit = maxDistance;
 
@@ -484,6 +519,16 @@ class World3D({
     _unitRay.direction
       ..setFrom(ray.direction)
       ..scale(1.0 / dirLen);
+
+    if (spatialIndex3DEnabled) {
+      return spatialIndex3D.raycastAll(
+        this,
+        _unitRay,
+        maxDistance: maxDistance,
+        cullMode: cullMode,
+        filter: filter,
+      );
+    }
 
     void visit(flame.Component component) {
       if (component is Component3D) {
@@ -571,14 +616,16 @@ class World3D({
 
     final device = host.device;
     final bloomSettings = _bloom;
-    final useBloom =
-        bloomSettings != null &&
-        bloomSettings.intensity > 0 &&
-        bloomSettings.radius > 0 &&
-        device.backend.supportsTextureTargets;
+    final postSettings = _postProcess;
+    final usePost =
+        device.backend.supportsTextureTargets &&
+        ((bloomSettings != null &&
+                bloomSettings.intensity > 0 &&
+                bloomSettings.radius > 0) ||
+            (postSettings != null && postSettings.isActive));
 
     final Image image;
-    if (useBloom) {
+    if (usePost) {
       final texTarget = device.textureTarget(
         math.max(1, renderSize.width.round()),
         math.max(1, renderSize.height.round()),
@@ -594,7 +641,11 @@ class World3D({
       }
       context.flush();
       device.endTexturePass();
-      image = device.applyBloomFromTarget(texTarget, bloomSettings);
+      image = device.applyBloomFromTarget(
+        texTarget,
+        bloomSettings,
+        postProcess: postSettings,
+      );
     } else {
       device.beginPass(
         renderSize,

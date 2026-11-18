@@ -47,6 +47,7 @@ uniform Material {
   float matCapMetallic;
   float saturation;
   float accentPaletteCount;
+  float ditherFade;
 } material;
 
 // The camera, the lights, the shadows and the fog of the render pass, filled
@@ -76,8 +77,13 @@ uniform StylizedPass {
   vec4 Lights_colors[8];
   vec4 Lights_intensities[8];
   vec4 Lights_ranges[8];
+  vec3 SpotLights_positions[4];
+  vec4 SpotLights_directions[4];
+  vec4 SpotLights_colors[4];
+  vec4 SpotLights_cones[4];
   float Lights_numLights;
   float DirectionalLights_numLights;
+  float SpotLights_numLights;
 } scene;
 
 #define FLAME_SHADOWS(member) scene.Shadows_##member
@@ -85,6 +91,7 @@ uniform StylizedPass {
 
 #define FLAME_FOG(member) scene.Fog_##member
 #include <flame_3d/fog.glsl>
+#include <flame_3d/dither.glsl>
 
 float pictureMirror() {
   mat4 p = scene.Camera_projection;
@@ -188,6 +195,37 @@ void main() {
       scene.Lights_colors[i].rgb;
   }
 
+  float spotSpecular = 0.0;
+  for (int i = 0; i < int(scene.SpotLights_numLights); i++) {
+    vec3 toLight = scene.SpotLights_positions[i] - fragPosition;
+    float dist = length(toLight);
+    vec3 l = toLight / max(dist, 0.0001);
+    vec4 spotDir = scene.SpotLights_directions[i];
+    vec4 spotCone = scene.SpotLights_cones[i];
+    float cosTheta = dot(l, spotDir.xyz);
+    float angular = clamp((cosTheta - spotCone.x) * spotCone.y, 0.0, 1.0);
+    angular *= angular;
+    if (angular > 0.0) {
+      float range = spotCone.z;
+      float falloff;
+      if (range > 0.0) {
+        float rf = max(1.0 - dist / range, 0.0);
+        falloff = rf * rf;
+      } else {
+        falloff = 1.0 / max(dist * dist, 0.00000001);
+      }
+      vec4 spotColor = scene.SpotLights_colors[i];
+      float atten = spotColor.a * falloff * angular;
+      float wrapped = max(material.pointLightWrap * 0.5, dot(n, l));
+      lit += atten * max(wrapped, 0.0) * spotColor.rgb;
+      if (glossy && dot(n, l) > 0.0) {
+        float ndoth = max(dot(n, normalize(l + v)), 0.0);
+        spotSpecular += pow(ndoth, material.specularPower) * spotDir.w * atten;
+      }
+    }
+  }
+  specular += spotSpecular * gloss * material.specularStrength;
+
   float ndotv = clamp(dot(n, v), 0.0, 1.0);
   float fresnel = pow(1.0 - ndotv, material.rimPower);
   vec3 rim = fresnel * material.rimStrength *
@@ -252,8 +290,16 @@ void main() {
     scene.Camera_position
   );
 
-  float alpha = material.albedoColor.a * fragColor.a * (1.0 - fade);
-  outColor = vec4(color * alpha, alpha);
+  float alpha = material.albedoColor.a * fragColor.a * fragInstanceColor.a *
+    (1.0 - fade);
+  if (material.ditherFade > 0.5) {
+    if (alpha < bayerDither4x4(gl_FragCoord.xy)) {
+      discard;
+    }
+    outColor = vec4(color, 1.0);
+  } else {
+    outColor = vec4(color * alpha, alpha);
+  }
 }
 
 #endif

@@ -15,8 +15,8 @@ void main() {
     late RenderContext3D context;
 
     setUp(() {
-      // Joint matrix blocks hold 16 matrices, like the built-in shaders.
-      backend = FakeGpuBackend(blockSizes: {'JointMatrices': 1024});
+      // Joint matrix blocks hold 64 matrices, like the built-in shaders.
+      backend = FakeGpuBackend(blockSizes: {'JointMatrices': 4096});
       device = GraphicsDevice(backend: backend);
       context = RenderContext3D(device);
     });
@@ -79,7 +79,7 @@ void main() {
       });
 
       test('$name rejects more joints than the shader holds', () {
-        final joints = [for (var i = 0; i < 17; i++) Matrix4.identity()];
+        final joints = [for (var i = 0; i < 65; i++) Matrix4.identity()];
         expect(
           () => draw(create(), joints: joints),
           throwsA(isA<StateError>()),

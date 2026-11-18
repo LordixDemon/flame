@@ -23,9 +23,9 @@ enum PureCameraMode(final String label) {
 /// Pure 3D [FlameGame3D] testbed exercising [CameraComponent3D] modes
 /// ([CameraProjection.perspective], [CameraProjection.orthographic],
 /// [ThirdPersonCamera], [FirstPersonCamera], and mirrored
-/// `customViewMatrix`/`customProjectionMatrix`), `viewportPointToRay` picking,
-/// `worldToViewportPoint` 2D HUD projection, [Line3D], [FogSettings], and
-/// [BloomSettings].
+/// `customViewMatrix`/`customProjectionMatrix`), [SkyboxComponent3D],
+/// [PostProcessSettings], `viewportPointToRay` picking, `worldToViewportPoint`
+/// 2D HUD projection, [Line3D], [FogSettings], and [BloomSettings].
 class PureCameraLabGame() extends FlameGame3D with TapCallbacks {
   this
     : super(
@@ -47,9 +47,12 @@ class PureCameraLabGame() extends FlameGame3D with TapCallbacks {
   PureCameraMode _mode = PureCameraMode.perspectiveOrbit;
   PureCameraMode get mode => _mode;
 
+  bool skyboxEnabled = true;
   bool bloomEnabled = true;
   bool fogEnabled = true;
+  bool acesPostEnabled = true;
 
+  late final SkyboxComponent3D skybox;
   late final MeshComponent rover;
   late final MeshComponent beaconA;
   late final MeshComponent beaconB;
@@ -70,18 +73,16 @@ class PureCameraLabGame() extends FlameGame3D with TapCallbacks {
   Future<void> onLoad() async {
     await super.onLoad();
 
-    world
-      ..fog = FogSettings(
-        color: const ui.Color(0xFF1B2A4A),
-        start: 8,
-        end: 34,
-        heightFalloff: 0.35,
-      )
-      ..bloom = BloomSettings(
-        threshold: 0.65,
-        intensity: 0.75,
-        radius: 1.4,
-      );
+    skybox = SkyboxComponent3D(
+      material: SkyboxMaterial3D(
+        zenithColor: const ui.Color(0xFF0A2463),
+        horizonColor: const ui.Color(0xFF3E92CC),
+        sunDirection: Vector3(-0.5, -0.9, -0.4),
+        sunIntensity: 1.35,
+      ),
+    );
+
+    syncEffects();
 
     final floorMat = StylizedMaterial(
       matCapTexture: labAssets.coatMatCap,
@@ -136,6 +137,7 @@ class PureCameraLabGame() extends FlameGame3D with TapCallbacks {
       ..renderState = RenderState.opaque;
 
     world.addAll([
+      skybox,
       LightComponent.hemisphere(
         skyColor: const ui.Color(0xFFA5C8FF),
         groundColor: const ui.Color(0xFF475569),
@@ -269,7 +271,22 @@ class PureCameraLabGame() extends FlameGame3D with TapCallbacks {
           : null
       ..bloom = bloomEnabled
           ? BloomSettings(threshold: 0.65, intensity: 0.75, radius: 1.4)
+          : null
+      ..postProcess = acesPostEnabled
+          ? PostProcessSettings(
+              toneMap: ToneMapMode.acesFilmic,
+              exposure: 1.05,
+              vignetteIntensity: 0.22,
+              fxaa: true,
+            )
           : null;
+    if (isLoaded) {
+      if (skyboxEnabled && !skybox.isMounted) {
+        world.add(skybox);
+      } else if (!skyboxEnabled && skybox.isMounted) {
+        skybox.removeFromParent();
+      }
+    }
     hudTick.value++;
   }
 
@@ -281,7 +298,6 @@ class PureCameraLabGame() extends FlameGame3D with TapCallbacks {
     }
     _time += dt;
 
-    // Move rover along a smooth circular track (`-Z` forward at angle 0).
     final ang = _time * 0.9;
     const trackR = 2.8;
     final rx = math.cos(ang) * trackR;
@@ -487,6 +503,17 @@ class _PureCameraLabViewState() extends State<PureCameraLabView> {
                       GestureDetector(
                         onTap: () {
                           _game
+                            ..skyboxEnabled = !_game.skyboxEnabled
+                            ..syncEffects();
+                        },
+                        child: _ToggleBadge(
+                          label: 'Skybox',
+                          on: _game.skyboxEnabled,
+                        ),
+                      ),
+                      GestureDetector(
+                        onTap: () {
+                          _game
                             ..bloomEnabled = !_game.bloomEnabled
                             ..syncEffects();
                         },
@@ -502,6 +529,17 @@ class _PureCameraLabViewState() extends State<PureCameraLabView> {
                             ..syncEffects();
                         },
                         child: _ToggleBadge(label: 'Fog', on: _game.fogEnabled),
+                      ),
+                      GestureDetector(
+                        onTap: () {
+                          _game
+                            ..acesPostEnabled = !_game.acesPostEnabled
+                            ..syncEffects();
+                        },
+                        child: _ToggleBadge(
+                          label: 'ACES+FXAA',
+                          on: _game.acesPostEnabled,
+                        ),
                       ),
                     ],
                   ),

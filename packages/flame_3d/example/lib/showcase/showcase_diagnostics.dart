@@ -45,11 +45,11 @@ class ShowcaseDiagnosticReport({
   };
 }
 
-/// Automated 24-point functional & rendering health suite for
+/// Automated 36-point functional & rendering health suite for
 /// `package:flame_3d`.
 ///
-/// Exercises all 8 [ShowcasePreset] feature labs plus [PureCameraLabGame], both
-/// interactively on desktop/mobile and headlessly under
+/// Exercises all 12 [ShowcasePreset] feature labs plus [PureCameraLabGame],
+/// both interactively on desktop/mobile and headlessly under
 /// `flutter test --enable-impeller --enable-flutter-gpu`.
 class ShowcaseDiagnostics() {
   static Future<ShowcaseDiagnosticReport> runAllChecks(
@@ -76,6 +76,11 @@ class ShowcaseDiagnostics() {
     final savedParticles = ctrl.particles;
     final savedRibbons = ctrl.ribbonsAndDecals;
     final savedStress = ctrl.stressInstances;
+    final savedSpatialIdx = ctrl.spatialIndex3D;
+    final savedLightCull = ctrl.prioritizeNearestLights;
+    final savedToneMap = ctrl.toneMap;
+    final savedFxaa = ctrl.fxaa;
+    final savedVignette = ctrl.vignette;
     final savedEncoding = ctrl.shadowEncoding;
     final savedFit = ctrl.shadowFit;
     final savedSoftness = ctrl.shadowSoftness;
@@ -225,8 +230,7 @@ class ShowcaseDiagnostics() {
         detail: 'nearZoomLod=$nearLod -> farZoomLod=$farLod',
       );
 
-      // 6. Skeletal `AnimationPlayMode` (`once`/`pingPong`/`loop`), Crossfade &
-      //    `BoneSocket3D`.
+      // 6. Skeletal `AnimationPlayMode`, Crossfade & `BoneSocket3D`.
       final tipBefore = Vector3(
         game.armTipSocket.worldTransformMatrix.storage[12],
         game.armTipSocket.worldTransformMatrix.storage[13],
@@ -283,7 +287,7 @@ class ShowcaseDiagnostics() {
           dynStatsAllInOne.drawCalls >= 4;
       record(
         'outlines_static_and_skinned',
-        'OutlineMaterial (Static + 4-Joint Skinned)',
+        'OutlineMaterial (Static + Skinned)',
         ok: outlinesOk,
         detail:
             'dynamicDraws=${dynStatsAllInOne.drawCalls}, '
@@ -338,8 +342,7 @@ class ShowcaseDiagnostics() {
             'dynamicDraws=${game.dynamicLayer.renderStats.drawCalls}',
       );
 
-      // 10. StylizedMaterial color grading (saturation 0 / 1.65 / overlay /
-      //     metallic MatCap).
+      // 10. StylizedMaterial color grading.
       final matStats = game.staticLayer.renderStats;
       final gradingOk = matStats.drawCalls >= 12 && matStats.triangles >= 1000;
       record(
@@ -559,8 +562,9 @@ class ShowcaseDiagnostics() {
       renderPureLab(lab);
       final perspDraws = lab.renderStats.drawCalls;
       final perspNotMirrored = !lab.context.isMirrored;
+      final skyboxInPureLabOk =
+          lab.skybox.isMounted && lab.world.postProcess != null;
 
-      // Test `worldToViewportPoint` -> `viewportPointToRay` -> `world.raycast`.
       final beaconScreen = lab.camera.worldToViewportPoint(
         lab.beaconA.position,
       );
@@ -667,12 +671,283 @@ class ShowcaseDiagnostics() {
             '(${waveSurf?.indexType.name}), obj=$objOk, glb=$glbOk',
       );
 
+      // --- LAB 9: PBR v2 Maps, Single-Piece Skinned Prepass & Dither Fade ---
+      game.applyPreset(ShowcasePreset.pbrV2AndSinglePiece);
+      await pumpFrame();
+      await pumpFrame();
+
+      // 24. `SpatialMaterial` v2 (normal, ORM, AO, emissive, env, cutout).
+      final cobble = rig.pbrCobbleMaterial;
+      final envMat = rig.pbrEnvMaterial;
+      final cutMat = rig.pbrCutoutMaterial;
+      final pbrV2Ok =
+          cobble != null &&
+          cobble.normalTexture != null &&
+          cobble.metallicRoughnessTexture != null &&
+          cobble.occlusionTexture != null &&
+          cobble.emissiveTexture != null &&
+          envMat?.environmentTexture != null &&
+          (cutMat?.alphaCutoff ?? 0) > 0.4 &&
+          (cutMat?.doubleSided ?? false) &&
+          game.staticLayer.renderStats.drawCalls >= 6;
+      record(
+        'pbr_v2_maps_and_env',
+        'SpatialMaterial v2 (Normal/ORM/AO/Emissive/Env/Cutout)',
+        ok: pbrV2Ok,
+        detail:
+            'staticDraws=${game.staticLayer.renderStats.drawCalls}, '
+            'env=${envMat?.environmentTexture != null}, '
+            'cutout=${cutMat?.alphaCutoff}',
+      );
+
+      // 25. Built-in `singlePieceTranslucent` (`RenderState.depthPrepass`) on
+      //     multi-node skinned rig + Bayer 4x4 `ditherFade`.
+      final spGhost = rig.singlePieceSkinnedGhost;
+      final spMat = spGhost?.model.nodes[3]?.mesh?.surfaces.first.material;
+      final prepassAndDitherOk =
+          spGhost != null &&
+          spGhost.isMounted &&
+          (spMat?.renderState.depthPrepass ?? false) &&
+          rig.ditherPillars.length == 2 &&
+          game.dynamicLayer.renderStats.drawCalls >= 6;
+      record(
+        'builtin_single_piece_prepass_and_dither',
+        'Built-in RenderState.depthPrepass (Skinned) & Bayer ditherFade',
+        ok: prepassAndDitherOk,
+        detail:
+            'depthPrepass=${spMat?.renderState.depthPrepass}, '
+            'ditherPillars=${rig.ditherPillars.length}',
+      );
+
+      // --- LAB 10: 64-Bone Skinning, Morph Targets, Layers & IK/Spring ---
+      game.applyPreset(ShowcasePreset.skinning64MorphIkLayers);
+      for (var i = 0; i < 4; i++) {
+        await pumpFrame();
+      }
+
+      // 26. 32-Joint (`> 16`, `maxJoints = 64`) skinned serpent + CubicSpline.
+      final serpent = rig.serpent32BoneRig;
+      final serpentJoints =
+          serpent
+              ?.evaluatePose()
+              .nodesByIndex[32]
+              ?.jointTransforms[0]
+              ?.length ??
+          0;
+      final skin64Ok =
+          StylizedMaterial.maxJoints == 64 &&
+          serpentJoints == 32 &&
+          game.dynamicLayer.renderStats.drawCalls >= 4;
+      record(
+        'skinning_32_to_64_joints_and_cubicspline',
+        '64-Bone Skinning Capacity (32-Joint CubicSpline Serpent)',
+        ok: skin64Ok,
+        detail:
+            'activeJoints=$serpentJoints/64, '
+            'dynDraws=${game.dynamicLayer.renderStats.drawCalls}',
+      );
+
+      // 27. `MorphTargetData` + `MorphWeightsChannel` + `setMorphWeights`.
+      final morphRig = rig.morphCrystalRig;
+      final morphSurf = morphRig?.model.nodes[0]?.mesh?.surfaces.first;
+      var morphOk = false;
+      var maxMorphDelta = 0.0;
+      if (morphRig != null && morphSurf != null) {
+        morphRig.setMorphWeights(const [0.0, 0.0]);
+        final restSnapshot = List<double>.of(morphSurf.vertexData);
+        morphRig.setMorphWeights(const [1.0, 1.0]);
+        final morphed = morphSurf.vertexData;
+        for (var i = 0; i < morphed.length; i++) {
+          final d = (morphed[i] - restSnapshot[i]).abs();
+          if (d > maxMorphDelta) {
+            maxMorphDelta = d;
+          }
+        }
+        morphOk =
+            morphSurf.morphTargets.length == 2 &&
+            maxMorphDelta > 0.1 &&
+            morphSurf.hasResource;
+      }
+      record(
+        'morph_targets_and_dynamic_vertices',
+        'MorphTargetData + MorphWeightsChannel + Dynamic Vertex Upload',
+        ok: morphOk,
+        detail:
+            'targets=${morphSurf?.morphTargets.length ?? 0}, '
+            'maxDelta=${maxMorphDelta.toStringAsFixed(3)}',
+      );
+
+      // 28. `AnimationLayer3D` upper-body mask + `TwoBoneIkConstraint3D` +
+      //     `LookAtConstraint3D` + `SpringBone3D`.
+      final ikRig = rig.layeredIkRig;
+      var ikDist = 99.0;
+      var hasOverlay = false;
+      var springMoved = false;
+      if (ikRig != null && rig.twoBoneIk != null && rig.springAntenna != null) {
+        hasOverlay = ikRig.animationState.layers.length == 1;
+        final pose = ikRig.evaluatePose();
+        final handModel = pose.nodesByIndex[6]!.combinedTransform
+            .getTranslation();
+        final handWorld = ikRig.worldTransformMatrix.transformed3(handModel);
+        ikDist = handWorld.distanceTo(rig.twoBoneIk!.targetWorld);
+        springMoved = rig.springAntenna!.currentTipWorld.length2 > 0.1;
+      }
+      record(
+        'animation_layers_and_procedural_ik',
+        'AnimationLayer3D Mask + TwoBoneIK + LookAt + SpringBone3D',
+        ok: hasOverlay && ikDist < 0.08 && springMoved,
+        detail:
+            'layers=${ikRig?.animationState.layers.length ?? 0}, '
+            'ikErr=${ikDist.toStringAsFixed(4)}, spring=$springMoved',
+      );
+
+      // --- LAB 11: Water, Terrain, Spline, Standees, Text3D & Blob Shadows ---
+      game.applyPreset(ShowcasePreset.waterTerrainAndHd2d);
+      for (var i = 0; i < 4; i++) {
+        await pumpFrame();
+      }
+
+      // 29. `TerrainMesh3D` (`sampleHeight` / `sampleNormal`) + `CapsuleMesh`,
+      //     `TorusMesh`, & `TubeSplineMesh` (`CatmullRomSpline3D`).
+      final terrain = rig.islandTerrain;
+      final terrainH = terrain?.sampleHeight(0, 0) ?? 0.0;
+      final terrainN = terrain?.sampleNormal(0, 0);
+      final splineVerts =
+          rig.splineAqueduct?.mesh.surfaces.first.vertexCount ?? 0;
+      final terrainAndPrimitivesOk =
+          terrain != null &&
+          terrainH > 0.1 &&
+          terrainN != null &&
+          terrainN.z > 0.3 &&
+          splineVerts > 100;
+      record(
+        'terrain_mesh_and_procedural_primitives',
+        'TerrainMesh3D (Height/Normal) + Capsule/Torus + TubeSplineMesh',
+        ok: terrainAndPrimitivesOk,
+        detail:
+            'centerH=${terrainH.toStringAsFixed(2)}, splineVerts=$splineVerts',
+      );
+
+      // 30. Animated Gerstner `WaterMaterial` + `DecalBatch3D.addBlobShadow`.
+      final water = rig.lagoonWaterMaterial;
+      final blobs = rig.blobShadowDecals;
+      final waterAndBlobsOk =
+          water != null &&
+          water.time > 0 &&
+          blobs != null &&
+          blobs.length == 2 &&
+          game.dynamicLayer.renderStats.drawCalls >= 4;
+      record(
+        'water_material_and_blob_shadows',
+        'Animated 4-Wave Gerstner WaterMaterial & Blob Drop Shadows',
+        ok: waterAndBlobsOk,
+        detail:
+            'waterTime=${water?.time.toStringAsFixed(2)}, '
+            'blobCount=${blobs?.length ?? 0}',
+      );
+
+      // 31. `BillboardBatch3D` HD-2D cylindrical standees + `Text3DComponent`.
+      final standees = rig.standeeBatch;
+      final badges = rig.text3DBadges;
+      final hd2dOk =
+          standees != null &&
+          standees.length == 4 &&
+          badges.length == 4 &&
+          badges.first.worldWidth > 0.2;
+      record(
+        'hd2d_billboard_batch_and_text3d',
+        'BillboardBatch3D HD-2D Standees & Depth-Occluded Text3DComponent',
+        ok: hd2dOk,
+        detail:
+            'standees=${standees?.length ?? 0}, textBadges=${badges.length}',
+      );
+
+      // 32. `SkyboxComponent3D` + `PostProcessSettings` in `PureCameraLabGame`.
+      record(
+        'skybox_3d_in_pure_camera_lab',
+        'SkyboxComponent3D (Clip Depth 1.0) & Pure 3D ACES PostProcess',
+        ok: skyboxInPureLabOk,
+        detail: 'skyboxMountedAndPostActive=$skyboxInPureLabOk',
+      );
+
+      // --- LAB 12: 4 SpotLights, 32 Culled Lamps, BVH3D & ACES/AgX/FXAA ---
+      game.applyPreset(ShowcasePreset.spotLightsCullingAndPost);
+      await pumpFrame();
+      await pumpFrame();
+
+      // 33. 4 sweeping `SpotLight`s + 32 `PointLight`s culled to nearest 8!
+      final spotCount = rig.sweepingSpotLights.length;
+      final lampCount = rig.culledStreetLamps.length;
+      final cullingOk =
+          spotCount == 4 &&
+          lampCount >= 32 &&
+          game.dynamicLayer.world.prioritizeNearestLights &&
+          game.dynamicLayer.renderStats.renderPasses >= 4;
+      record(
+        'spot_lights_and_32_point_light_culling',
+        '4 Sweeping SpotLights + 32-Lamp Priority Light Culling',
+        ok: cullingOk,
+        detail: 'spotLights=$spotCount, streetLamps=$lampCount (top-8 active)',
+      );
+
+      // 34. `SceneSpatialIndex3D` broadphase AABB BVH (queryAabb & raycast).
+      final sWorld = game.staticLayer.world;
+      final bvh3d = sWorld.spatialIndex3D..ensureBuilt(sWorld);
+      final boxHits = bvh3d.queryAabb(
+        sWorld,
+        Aabb3.minMax(Vector3(1, 1, -1), Vector3(4, 4, 3)),
+      );
+      final bvhHit = sWorld.raycast(
+        Ray.originDirection(Vector3(2.5, 2.5, 6.0), Vector3(0, 0, -1)),
+      );
+      final bvhCandidates = bvh3d.lastRaycastCandidatesTested;
+      final sceneBvhOk =
+          sWorld.spatialIndex3DEnabled &&
+          bvh3d.indexedObjectCount >= 30 &&
+          boxHits.isNotEmpty &&
+          bvhHit != null &&
+          bvhCandidates < bvh3d.indexedObjectCount;
+      record(
+        'scene_spatial_index_3d_bvh',
+        'SceneSpatialIndex3D Broadphase AABB BVH (Query & O(log N) Raycast)',
+        ok: sceneBvhOk,
+        detail:
+            'indexed=${bvh3d.indexedObjectCount}, '
+            'candidatesTested=$bvhCandidates',
+      );
+
+      // 35. Fused `PostProcessSettings` (`acesFilmic`, `agx`, `vignette`,
+      //     `fxaa`) + standalone post-process without bloom.
+      final fusedPasses = game.dynamicLayer.renderStats.renderPasses;
+      ctrl
+        ..bloom = false
+        ..toneMap = ToneMapMode.agx
+        ..fxaa = true
+        ..vignette = true;
+      game.syncControllerState();
+      await pumpFrame();
+      final standalonePostPasses = game.dynamicLayer.renderStats.renderPasses;
+      final postOk =
+          standalonePostPasses >= 2 &&
+          standalonePostPasses <= 3 &&
+          fusedPasses == standalonePostPasses + 3 &&
+          game.dynamicLayer.postProcess?.toneMap == ToneMapMode.agx;
+      record(
+        'fused_post_process_aces_agx_fxaa',
+        'PostProcessSettings (ACES/AgX ToneMap + Vignette + FXAA)',
+        ok: postOk,
+        detail:
+            'fusedWithBloomPasses=$fusedPasses, '
+            'standalonePostPasses=$standalonePostPasses',
+      );
+      ctrl.bloom = true;
+
       // --- Restore All-in-One & Verify Fog + Bloom + Offscreen Snapshot ---
       game.applyPreset(ShowcasePreset.allInOne);
       await pumpFrame();
       await pumpFrame();
 
-      // 24. `FogSettings` + `BloomSettings` + `World3D.renderToImage`.
+      // 36. `FogSettings` + `BloomSettings` + `World3D.renderToImage`.
       final dynPasses = game.dynamicLayer.renderStats.renderPasses;
       final fogAndBloomOk =
           game.dynamicLayer.world.fog != null &&
@@ -729,6 +1004,11 @@ class ShowcaseDiagnostics() {
         ..particles = savedParticles
         ..ribbonsAndDecals = savedRibbons
         ..stressInstances = savedStress
+        ..spatialIndex3D = savedSpatialIdx
+        ..prioritizeNearestLights = savedLightCull
+        ..toneMap = savedToneMap
+        ..fxaa = savedFxaa
+        ..vignette = savedVignette
         ..shadowEncoding = savedEncoding
         ..shadowFit = savedFit
         ..shadowSoftness = savedSoftness

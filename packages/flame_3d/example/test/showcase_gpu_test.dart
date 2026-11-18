@@ -21,7 +21,7 @@ void main() {
   });
 
   testWidgets(
-    'ShowcaseGame boots, exercises 8 labs, and passes 24/24 self-tests',
+    'ShowcaseGame boots, exercises 12 labs, and passes 36/36 self-tests',
     (tester) async {
       tester.view
         ..physicalSize = const ui.Size(800, 520)
@@ -46,6 +46,7 @@ void main() {
         await tester.pump(const Duration(milliseconds: 16));
       }
       expect(game.isLoaded, isTrue);
+      expect(ShowcasePreset.values, hasLength(12));
 
       final report = await ShowcaseDiagnostics.runAllChecks(
         game,
@@ -64,7 +65,7 @@ void main() {
         isTrue,
         reason: 'Failed showcase checks:\n$failedDetails',
       );
-      expect(report.totalCount, 24);
+      expect(report.totalCount, 36);
 
       // Verify 2,048-instance + 6-rig extreme stress lab renders and paints
       // visible pixels into the frame!

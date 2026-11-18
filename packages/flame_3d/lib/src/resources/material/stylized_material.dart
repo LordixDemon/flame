@@ -368,6 +368,17 @@ class StylizedMaterial({
   /// Whether the material is drawn translucent: blended with premultiplied
   /// alpha, without depth writes, sorted back to front (see [renderState]).
   bool translucent = false,
+
+  /// When `translucent` is `true`, whether to automatically record an internal
+  /// depth prepass ([RenderState.singlePiecePremultipliedAlphaBlend]) so
+  /// overlapping multi-part meshes and skinned models fade as one seamless
+  /// piece.
+  bool singlePieceTranslucent = false,
+
+  /// Whether opaque draws dissolve via a `4x4` screen-space Bayer dither
+  /// pattern driven by `albedoColor.a * instanceColor.a * (1 - fade)`, writing
+  /// full depth on kept fragments with zero translucent overdraw.
+  var bool ditherFade = false,
 }) extends Material {
   /// {@macro stylized_material}
   this
@@ -395,7 +406,9 @@ class StylizedMaterial({
       );
     }
     if (translucent) {
-      renderState = translucentRenderState;
+      renderState = singlePieceTranslucent
+          ? RenderState.singlePiecePremultipliedAlphaBlend
+          : translucentRenderState;
     }
   }
 
@@ -480,7 +493,7 @@ class StylizedMaterial({
   ]);
 
   /// The number of joint matrices a skinned draw may have.
-  static const int maxJoints = 16;
+  static const int maxJoints = 64;
 
   // The variant for skinned surfaces in the stylized layout.
   final Shader _skinnedVertexShader = VertexShader.fromAsset(
@@ -602,6 +615,10 @@ class StylizedMaterial({
       ..setFloat('Material.matCapMetallic', matCapMetallic)
       ..setFloat('Material.saturation', saturation)
       ..setColor('Material.overlayColor', overlayColor);
+    if (fragmentShader.slot('Material').getMemberOffsetInBytes('ditherFade') !=
+        null) {
+      fragmentShader.setFloat('Material.ditherFade', ditherFade ? 1.0 : 0.0);
+    }
   }
 
   void _applyWind(Shader shader, WindSpace space) {

@@ -16,11 +16,25 @@ enum AnimationPlayMode() {
   pingPong,
 }
 
+/// Masked animation layer blended on top of a base [AnimationState] for a
+/// subset of bone indices (e.g. upper-body attack/wave over lower-body walk).
+class AnimationLayer3D({
+  required final Set<int> nodeIndices,
+  var double weight = 1.0,
+}) {
+  final AnimationState state = AnimationState();
+}
+
 /// Couples one or two [ModelAnimation] clips with playback clocks, playback
-/// modes, and allocation-free TRS crossfading.
+/// modes, and allocation-free TRS crossfading (plus optional masked
+/// [layers]).
 class AnimationState() {
   ModelAnimation? animationRef;
   double clock = 0.0;
+
+  /// Optional masked overlay layers evaluated in order on top of this base
+  /// state.
+  final List<AnimationLayer3D> layers = [];
 
   /// Playback rate multiplier (`1.0` = real time, `0.0` = paused).
   double speed = 1.0;
@@ -162,6 +176,13 @@ class AnimationState() {
       }
     }
 
+    for (var i = 0; i < layers.length; i++) {
+      final layer = layers[i];
+      if (layer.weight > 0.0 && layer.state.update(dt)) {
+        changed = true;
+      }
+    }
+
     return changed;
   }
 
@@ -245,7 +266,17 @@ class AnimationState() {
   ) {
     final currentNode = animationRef?.nodes[nodeIndex];
     final prevNode = isCrossFading ? _previousRef?.nodes[nodeIndex] : null;
-    if (currentNode == null && prevNode == null) {
+    var hasActiveLayer = false;
+    for (var i = 0; i < layers.length; i++) {
+      final l = layers[i];
+      if (l.weight > 0.0 &&
+          l.nodeIndices.contains(nodeIndex) &&
+          (l.state.animationRef != null || l.state.isCrossFading)) {
+        hasActiveLayer = true;
+        break;
+      }
+    }
+    if (currentNode == null && prevNode == null && !hasActiveLayer) {
       out.setFrom(restMatrix);
       return;
     }
@@ -275,6 +306,53 @@ class AnimationState() {
       );
     }
 
+    for (var i = 0; i < layers.length; i++) {
+      final layer = layers[i];
+      final lw = layer.weight.clamp(0.0, 1.0);
+      if (lw <= 0.0 || !layer.nodeIndices.contains(nodeIndex)) {
+        continue;
+      }
+      final ls = layer.state;
+      final lCur = ls.animationRef?.nodes[nodeIndex];
+      final lPrev = ls.isCrossFading ? ls._previousRef?.nodes[nodeIndex] : null;
+      if (lCur == null && lPrev == null) {
+        continue;
+      }
+      _lt.setFrom(restTranslation);
+      _lr.setFrom(restRotation);
+      _ls.setFrom(restScale);
+      lCur?.sampleTrsInto(ls.clock, _lt, _lr, _ls);
+      if (ls.isCrossFading) {
+        _t0.setFrom(restTranslation);
+        _r0.setFrom(restRotation);
+        _s0.setFrom(restScale);
+        lPrev?.sampleTrsInto(ls._previousClock, _t0, _r0, _s0);
+        final cw = ls.crossFadeProgress;
+        _lt.setValues(
+          _t0.x + (_lt.x - _t0.x) * cw,
+          _t0.y + (_lt.y - _t0.y) * cw,
+          _t0.z + (_lt.z - _t0.z) * cw,
+        );
+        AnimationInterpolation.slerpQuaternionsInto(_r0, _lr, cw, _lr);
+        _ls.setValues(
+          _s0.x + (_ls.x - _s0.x) * cw,
+          _s0.y + (_ls.y - _s0.y) * cw,
+          _s0.z + (_ls.z - _s0.z) * cw,
+        );
+      }
+      _t1.setValues(
+        _t1.x + (_lt.x - _t1.x) * lw,
+        _t1.y + (_lt.y - _t1.y) * lw,
+        _t1.z + (_lt.z - _t1.z) * lw,
+      );
+      AnimationInterpolation.slerpQuaternionsInto(_r1, _lr, lw, _r1);
+      _s1.setValues(
+        _s1.x + (_ls.x - _s1.x) * lw,
+        _s1.y + (_ls.y - _s1.y) * lw,
+        _s1.z + (_ls.z - _s1.z) * lw,
+      );
+    }
+
     out.setFromTranslationRotationScale(_t1, _r1, _s1);
   }
 
@@ -290,4 +368,7 @@ class AnimationState() {
   static final Vector3 _t1 = Vector3.zero();
   static final Quaternion _r1 = Quaternion.identity();
   static final Vector3 _s1 = Vector3.all(1.0);
+  static final Vector3 _lt = Vector3.zero();
+  static final Quaternion _lr = Quaternion.identity();
+  static final Vector3 _ls = Vector3.all(1.0);
 }

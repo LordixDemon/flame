@@ -175,8 +175,16 @@ class Model {
     return null;
   }
 
-  /// Evaluates [animation] into [workspace] with zero heap allocations.
-  void evaluateInto(AnimationState animation, ModelPoseWorkspace workspace) {
+  /// Evaluates [animation] (and optional procedural [modifiers]) into
+  /// [workspace] with zero heap allocations.
+  void evaluateInto(
+    AnimationState animation,
+    ModelPoseWorkspace workspace, {
+    List<BoneModifier3D>? modifiers,
+    Matrix4? worldMatrix,
+    Matrix4? invWorldMatrix,
+    double dt = 0.0,
+  }) {
     final byIndex = workspace.nodesByIndex;
     final scratch = workspace._scratchLocal;
     for (final processed in workspace.orderedNodes) {
@@ -186,6 +194,14 @@ class Model {
         processed.combinedTransform,
         scratch,
       );
+    }
+    if (modifiers != null &&
+        modifiers.isNotEmpty &&
+        worldMatrix != null &&
+        invWorldMatrix != null) {
+      for (var i = 0; i < modifiers.length; i++) {
+        modifiers[i].apply(this, workspace, worldMatrix, invWorldMatrix, dt);
+      }
     }
     for (final processed in workspace.orderedNodes) {
       if (processed.jointTransforms.isNotEmpty) {

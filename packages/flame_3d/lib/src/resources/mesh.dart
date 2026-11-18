@@ -1,3 +1,4 @@
+export 'mesh/capsule_mesh.dart';
 export 'mesh/cone_mesh.dart';
 export 'mesh/cuboid_mesh.dart';
 export 'mesh/cylinder_mesh.dart';
@@ -6,4 +7,7 @@ export 'mesh/plane_mesh.dart';
 export 'mesh/sphere_mesh.dart';
 export 'mesh/surface.dart';
 export 'mesh/surface_bvh.dart';
+export 'mesh/terrain_mesh_3d.dart';
+export 'mesh/torus_mesh.dart';
+export 'mesh/tube_spline_mesh.dart';
 export 'mesh/vertex.dart';

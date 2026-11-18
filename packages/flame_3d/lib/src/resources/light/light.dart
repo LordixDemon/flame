@@ -35,7 +35,11 @@ class Light({
   Vector3 direction([Vector3? out]) {
     final result = out ?? Vector3.zero();
     final source = this.source;
-    final explicit = source is DirectionalLight ? source.direction : null;
+    final explicit = switch (source) {
+      DirectionalLight() => source.direction,
+      SpotLight() => source.direction,
+      _ => null,
+    };
     final transform = this.transform;
     if (explicit != null) {
       result.setFrom(explicit);

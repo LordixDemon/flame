@@ -177,7 +177,7 @@ layer.world.addAll([
 ```
 
 
-## Retained layer caching, bloom, and offscreen snapshots
+## Retained layer caching, bloom, post-processing, and offscreen snapshots
 
 A layer whose 3D objects sit still on most frames (buildings, terrain, idle props) can skip its GPU
 passes altogether while nothing in its scene or camera changes:
@@ -187,6 +187,12 @@ final buildings = Scene3DComponent(
   projection: boardProjection,
   cacheMode: Scene3DCacheMode.retained,
   bloom: const BloomSettings(threshold: 0.75, intensity: 0.6),
+  postProcess: const PostProcessSettings(
+    toneMap: ToneMapMode.acesFilmic,
+    exposure: 1.05,
+    vignetteIntensity: 0.18,
+    fxaa: true,
+  ),
 );
 ```
 
@@ -199,12 +205,19 @@ place).
 Setting `bloom` on the layer (or `world.bloom`) runs a half-resolution bright-pass and Kawase blur
 over pixels above `BloomSettings.threshold` and adds the glow back while preserving the scene's
 alpha channel, so glowing 3D embankments and crystals cast soft halos onto the 2D art underneath the
-layer without darkening it.
+layer without darkening it. Setting `postProcess` (`world.postProcess`) fuses exposure, color
+grading (`contrast`, `saturation`), `ToneMapMode` (`none`, `reinhard`, `acesFilmic`, `agx`),
+alpha-weighted vignette and single-pass luma `fxaa` directly into the composite pass (or runs a
+single standalone composite pass when `bloom` is `null`).
+
+For HD-2D scenes and diegetic world labels that must be depth-occluded by 3D walls and characters,
+use `BillboardBatch3D` (`BillboardMaterial3D` cylindrical/spherical/tilted standees) and
+`Text3DComponent` directly inside `layer.world`.
 
 To capture a standalone `dart:ui` `Image` of the layer (or of an unmounted `World3D`, for inventory
 thumbnails and UI cards), call `layer.renderToImage(logicalSize)` or
 `world.renderToImage(pixelSize, view: ..., projection: ...)`. Dispose the returned `Image` when no
-longer needed.
+longer needed (`Resource.dispose()` also deterministically releases GPU buffers and textures).
 
 
 ## Hosts

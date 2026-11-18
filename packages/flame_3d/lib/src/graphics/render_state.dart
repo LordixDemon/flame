@@ -36,6 +36,12 @@ class const RenderState({
   /// Whether draws are translucent, defaults to `true` for every [blend]
   /// other than [BlendState.opaque].
   bool? translucent,
+
+  /// Whether translucent draws automatically record an internal
+  /// [BlendState.depthOnly] prepass right before shading with
+  /// [CompareFunction.lessEqual], so overlapping multi-part meshes and skinned
+  /// models fade out as a single seamless piece without internal bleed.
+  final bool depthPrepass = false,
 }) {
   /// {@macro render_state}
   // Initialized here rather than in the declaration: the analyzer fails to
@@ -63,6 +69,26 @@ class const RenderState({
   static const RenderState premultipliedAlphaBlend = RenderState(
     blend: BlendState.premultipliedAlpha,
     depthWrite: false,
+  );
+
+  /// Seamless single-piece straight-alpha translucency: automatically writes
+  /// depth in an internal prepass before shading with
+  /// [CompareFunction.lessEqual].
+  static const RenderState singlePieceAlphaBlend = RenderState(
+    blend: BlendState.alpha,
+    depthCompare: CompareFunction.lessEqual,
+    depthWrite: false,
+    depthPrepass: true,
+  );
+
+  /// Seamless single-piece premultiplied-alpha translucency: automatically
+  /// writes depth in an internal prepass before shading with
+  /// [CompareFunction.lessEqual].
+  static const RenderState singlePiecePremultipliedAlphaBlend = RenderState(
+    blend: BlendState.premultipliedAlpha,
+    depthCompare: CompareFunction.lessEqual,
+    depthWrite: false,
+    depthPrepass: true,
   );
 
   /// Additive effects (glows, particles): added to the target, depth tested,
@@ -95,6 +121,7 @@ class const RenderState({
     bool? depthWrite,
     CullMode? cullMode,
     bool? translucent,
+    bool? depthPrepass,
   }) {
     return RenderState(
       blend: blend ?? this.blend,
@@ -103,6 +130,7 @@ class const RenderState({
       depthWrite: depthWrite ?? this.depthWrite,
       cullMode: cullMode ?? this.cullMode,
       translucent: translucent ?? this.translucent,
+      depthPrepass: depthPrepass ?? this.depthPrepass,
     );
   }
 
@@ -114,7 +142,8 @@ class const RenderState({
         other.depthCompare == depthCompare &&
         other.depthWrite == depthWrite &&
         other.cullMode == cullMode &&
-        other.translucent == translucent;
+        other.translucent == translucent &&
+        other.depthPrepass == depthPrepass;
   }
 
   @override
@@ -125,12 +154,14 @@ class const RenderState({
     depthWrite,
     cullMode,
     translucent,
+    depthPrepass,
   );
 
   @override
   String toString() {
     return 'RenderState(blend: ${blend.name}, depthTest: $depthTest, '
         'depthCompare: ${depthCompare.name}, depthWrite: $depthWrite, '
-        'cullMode: ${cullMode.name}, translucent: $translucent)';
+        'cullMode: ${cullMode.name}, translucent: $translucent, '
+        'depthPrepass: $depthPrepass)';
   }
 }

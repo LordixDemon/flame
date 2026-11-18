@@ -50,15 +50,15 @@ shadow pass, whatever their materials.
 
 ## Receiving shadows
 
-`StylizedMaterial` receives shadows: where a surface is in shadow, the direct light of the light
-that casts them is multiplied by `mix(white, color, strength)`, and its highlights by the mean of
-that. Ambient and hemisphere light, point lights and other directional lights stay, so with the
-default black `color` a shadowed surface is lit by the ambient light alone, and with a colored one
-the shadows are tinted with it: a cartoon look tints shadows rather than blackening them.
+`StylizedMaterial` and `SpatialMaterial` (on native backends) both receive shadows: where a surface
+is in shadow, the direct light of the light that casts them is multiplied by
+`mix(white, color, strength)`, and its highlights by the mean of that. Ambient and hemisphere light,
+point lights, spot lights and other directional lights stay, so with the default black `color` a
+shadowed surface is lit by the ambient light alone, and with a colored one the shadows are tinted
+with it: a cartoon look tints shadows rather than blackening them.
 
 `ShadowCatcherMaterial` is for invisible surfaces that show only the shadows falling on them, see
-[Shadows on 2D art](#shadows-on-2d-art). `SpatialMaterial` and `UnlitMaterial` do not receive
-shadows.
+[Shadows on 2D art](#shadows-on-2d-art). `UnlitMaterial` does not receive shadows.
 
 Custom shaders receive shadows by including `flame_3d/shadows.glsl` and listing its `Shadows`
 block and `shadowMap` sampler (`RenderContext3D.shadowsBlock` and
@@ -241,6 +241,6 @@ shadows, and 4 draw calls in 2 passes with them (2 of them in the shadow pass).
 
 - One directional light casts shadows per scene, with one shadow map (no cascades): very large
   scenes seen in perspective get softer shadows far away; use `maxDistance`.
-- Point lights cast no shadows.
-- `SpatialMaterial` and `UnlitMaterial` receive no shadows, and shadows are not available on the
-  web yet: `ShadowCatcherMaterial` and `StylizedMaterial` are native only.
+- Point lights and spot lights cast no shadow maps (use `DecalBatch3D.addBlobShadow` for cheap
+  grounded unit contact shadows).
+- `UnlitMaterial` receives no shadows, and shadows are not available on the web yet.
