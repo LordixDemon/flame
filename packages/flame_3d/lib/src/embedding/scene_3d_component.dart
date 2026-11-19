@@ -125,6 +125,24 @@ class Scene3DComponent({
     Game.notifyVisualMutation();
   }
 
+  /// A rectangle in this component's local coordinates outside which the
+  /// layer renders nothing, or `null` (the default) for no such bound.
+  ///
+  /// It bounds the render pass the way clipping the canvas to it would: the
+  /// pass covers only the part of the screen inside it (and inside the
+  /// canvas clip, the component's [size] when it has one, and the picture of
+  /// the scene's bounds), and nothing is drawn outside it.
+  Rect? visibleRect;
+
+  /// A box in scene coordinates that bounds the render pass, or `null` (the
+  /// default) for no such bound.
+  ///
+  /// The pass covers at most the part of the screen that the box's picture
+  /// covers, as it covers at most the picture of `world.sceneBounds`: what the
+  /// scene draws outside that rectangle is cut off, what it draws inside it
+  /// is kept, also where it lies outside the box itself.
+  Aabb3? visibleSceneBounds;
+
   /// The largest width and height in pixels of the render target, at least 64.
   int get maxTextureSize => _maxTextureSize;
   set maxTextureSize(int value) {
@@ -478,9 +496,26 @@ class Scene3DComponent({
     final width = size.x;
     final height = size.y;
     final bounded = width != 0 || height != 0;
-    if (bounded) {
+    var localClip = bounded ? Rect.fromLTWH(0, 0, width, height) : null;
+    final rect = visibleRect;
+    if (rect != null) {
+      localClip = localClip?.intersect(rect) ?? rect;
+      if (localClip.isEmpty) {
+        return;
+      }
+    }
+    if (localClip != null) {
       visible = visible.intersect(
-        _deviceBounds(a, b, c, d, tx, ty, width, height),
+        _deviceBounds(
+          a,
+          b,
+          c,
+          d,
+          tx + a * localClip.left + c * localClip.top,
+          ty + b * localClip.left + d * localClip.top,
+          localClip.width,
+          localClip.height,
+        ),
       );
     }
     if (visible.isEmpty) {
@@ -582,9 +617,7 @@ class Scene3DComponent({
           tx,
           ty,
           determinant,
-          bounded,
-          width,
-          height,
+          localClip,
           pixelScale,
           fullScale,
         );
@@ -685,9 +718,7 @@ class Scene3DComponent({
       tx,
       ty,
       determinant,
-      bounded,
-      width,
-      height,
+      localClip,
       pixelScale,
       fullScale,
     );
@@ -717,9 +748,7 @@ class Scene3DComponent({
     double tx,
     double ty,
     double determinant,
-    bool bounded,
-    double width,
-    double height,
+    Rect? localClip,
     double pixelScale,
     double fullScale,
   ) {
@@ -731,8 +760,10 @@ class Scene3DComponent({
       ..[12] = (c * ty - d * tx) / determinant
       ..[13] = (b * tx - a * ty) / determinant;
     canvas.save();
-    if (bounded && (b != 0 || c != 0)) {
-      canvas.clipRect(Rect.fromLTWH(0, 0, width, height));
+    // The destination is axis-aligned on the device; a rotated or sheared
+    // local rectangle needs a clip of its own.
+    if (localClip != null && (b != 0 || c != 0)) {
+      canvas.clipRect(localClip);
     }
     canvas.transform(inverse);
     _paint.filterQuality = pixelScale == fullScale && world.renderScale == 1.0
@@ -766,7 +797,30 @@ class Scene3DComponent({
     double tx,
     double ty,
   ) {
-    final box = world.sceneBounds;
+    var box = world.sceneBounds;
+    final bound = visibleSceneBounds;
+    if (bound != null) {
+      if (box == null) {
+        box = bound;
+      } else {
+        box = _sceneBox
+          ..min.setValues(
+            math.max(box.min.x, bound.min.x),
+            math.max(box.min.y, bound.min.y),
+            math.max(box.min.z, bound.min.z),
+          )
+          ..max.setValues(
+            math.min(box.max.x, bound.max.x),
+            math.min(box.max.y, bound.max.y),
+            math.min(box.max.z, bound.max.z),
+          );
+        if (box.min.x > box.max.x ||
+            box.min.y > box.max.y ||
+            box.min.z > box.max.z) {
+          return Rect.zero;
+        }
+      }
+    }
     if (box == null) {
       return null;
     }
@@ -796,6 +850,8 @@ class Scene3DComponent({
     }
     return Rect.fromLTRB(left, top, right, bottom);
   }
+
+  final Aabb3 _sceneBox = Aabb3();
 
   int _targetWidth = 0;
   int _targetHeight = 0;

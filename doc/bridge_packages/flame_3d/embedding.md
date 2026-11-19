@@ -131,6 +131,18 @@ scene's components (lights do not count) and, when the component has a non-zero 
 rectangle from `(0, 0)` to `size`. Objects outside that part are culled. Nothing is rendered when
 the part is empty, for example when the scene is off screen.
 
+Two optional bounds narrow the part further, without clipping the canvas: `visibleRect`, a
+rectangle in the layer's local coordinates (followed exactly through a rotated or sheared canvas),
+and `visibleSceneBounds`, a box in scene coordinates intersected with the scene's bounding box.
+Like the scene's bounding box, the box only bounds the rectangle that its picture covers: what the
+scene draws inside that rectangle is kept, also where it lies outside the box. Changing either
+renders a retained layer again.
+
+```dart
+// Only the board area of the screen, whatever the scene holds beyond it.
+layer.visibleRect = const Rect.fromLTWH(0, 0, 640, 480);
+```
+
 The bounding box of the scene is `World3D.sceneBounds`, which the world keeps up to date as its
 components move: reading it only visits the components whose bounds changed since the last frame
 (`log2(n)` unions each), and costs next to nothing for a scene that does not move. It is always the
