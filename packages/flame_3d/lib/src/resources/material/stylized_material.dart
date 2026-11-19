@@ -395,6 +395,14 @@ class StylizedMaterial({
   /// pattern driven by `albedoColor.a * instanceColor.a * (1 - fade)`, writing
   /// full depth on kept fragments with zero translucent overdraw.
   var bool ditherFade = false,
+
+  /// A clip-space depth bias: every vertex's depth (in the `0..1` depth
+  /// range of the picture) is lowered by it, so the objects of this material
+  /// are drawn in front of surfaces up to that much depth nearer the camera,
+  /// without moving on screen. Negative values push them behind. The shadow
+  /// pass and the depth-normal prepass ignore it: the object casts its shadow
+  /// from where it is. See "Depth bias".
+  var double depthBias = 0,
 }) extends Material {
   /// {@macro stylized_material}
   this
@@ -511,6 +519,10 @@ class StylizedMaterial({
   static const _bundle =
       'packages/flame_3d/assets/shaders/stylized_material.shaderbundle';
 
+  // The block of the standard layout's vertex stage holding [depthBias]
+  // (the stylized layout keeps it in its Wind block).
+  static const _depthBlock = 'StylizedDepth';
+
   /// The layout of the vertices [StylizedMaterial] reads, 18 floats per
   /// vertex: see [StylizedMaterial].
   static final VertexLayout vertexLayout = VertexLayout(const [
@@ -567,8 +579,12 @@ class StylizedMaterial({
     slots: [
       RenderContext3D.cameraMatricesBlock,
       RenderContext3D.jointMatricesBlock,
+      _depthBlock,
     ],
   );
+
+  // Whether the standard variant drew: only then is its value written.
+  bool _standardInUse = false;
 
   VertexLayout? _lastLayout;
   Shader? _lastShader;
@@ -579,6 +595,7 @@ class StylizedMaterial({
       _lastLayout = layout;
       if (layout.offsetOf(masksAttribute) == null) {
         _lastShader = _standardVertexShader;
+        _standardInUse = true;
       } else if (layout.offsetOf(jointsAttribute) != null &&
           layout.offsetOf(weightsAttribute) != null) {
         _lastShader = _skinnedVertexShader;
@@ -602,6 +619,9 @@ class StylizedMaterial({
     _applyWind(vertexShader, space);
     if (_skinnedInUse) {
       _applyWind(_skinnedVertexShader, space);
+    }
+    if (_standardInUse) {
+      _standardVertexShader.setFloat('$_depthBlock.bias', depthBias);
     }
     final matCap = matCapTexture;
     final gemMatCap = gemMatCapTexture;
@@ -702,7 +722,8 @@ class StylizedMaterial({
       ..setFloat('Wind.flutterFrequency', windFlutterFrequency)
       ..setVector3('Wind.gustWave', _gustWave)
       ..setFloat('Wind.gustAmplitude', windGustAmplitude)
-      ..setFloat('Wind.gustFrequency', windGustFrequency);
+      ..setFloat('Wind.gustFrequency', windGustFrequency)
+      ..setFloat('Wind.depthBias', depthBias);
   }
 
   /// Sets [target] to [direction] normalized, times [scale], or to zero when

@@ -55,6 +55,11 @@ uniform Wind {
   float flutterFrequency;
   float gustAmplitude;
   float gustFrequency;
+  // Not wind: StylizedMaterial.depthBias, kept in this block to save a
+  // binding per draw. It is subtracted from the clip-space depth (times w)
+  // of every vertex, so the object is drawn in front of what is up to that
+  // much depth nearer, without moving on screen.
+  float depthBias;
 } wind;
 
 out vec3 fragPosition;
@@ -106,6 +111,7 @@ void emitStylizedVertex(vec3 position, vec3 normal) {
     model * vec4(position + wind.modelDirection * offset, 1.0);
   worldPosition.xyz += wind.direction * (offset * worldScale);
   gl_Position = camera.viewProjection * worldPosition;
+  gl_Position.z -= wind.depthBias * gl_Position.w;
 
   fragPosition = worldPosition.xyz;
   fragNormal = transformNormal(model, normal);

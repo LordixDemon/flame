@@ -769,6 +769,32 @@ surfaces in the standard layout (glTF models), skinned or not, and it fades with
 palettes' ranges, and an index beyond the length of a palette selects nothing (the `accentColor`,
 no rim). The shadow pass does not read the instance data, so rims do not change shadows.
 
+
+### Depth bias
+
+`StylizedMaterial.depthBias` (`0` by default) draws its objects slightly in front of their
+neighbours without moving them: every vertex's depth, in the `0..1` depth range of the picture, is
+lowered by the bias (a clip-space bias: `z - depthBias * w`), so an object wins the depth test
+against surfaces up to that much depth nearer the camera, and still covers the same pixels.
+Negative values push objects behind. Use it to keep a marker, a highlighted piece or a decal-like
+mesh from fighting with a coplanar or slightly nearer surface:
+
+```dart
+final selected = StylizedMaterial(depthBias: 0.002);
+```
+
+- The depth range is not linear in distance with a perspective camera: the same bias covers more
+  distance far from the camera than near it. With an orthographic camera it is a fixed distance,
+  the bias times the depth span of the projection (`far - near`).
+- The shadow pass and the depth-normal prepass draw with their own shaders and ignore the bias:
+  the object casts its shadow from where it is, and SSAO, soft particles and shore foam see its
+  real depth. A translucent object's single-piece depth prepass uses the material's shader and is
+  biased with it.
+- It is per material: the four floats of the instance data are all taken (emissive boost,
+  highlight, wind, fade and palettes), so objects that need a bias share a second material with
+  it. It works for the stylized layout, skinned or not, and for the standard layout.
+- An object biased in front of the camera's near plane is clipped there.
+
 ```{note}
 `StylizedMaterial` is not available on the web yet: creating one there throws an
 `UnsupportedError`.

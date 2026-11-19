@@ -13,6 +13,12 @@ in vec3 vertexNormal;
 #include <flame_3d/instancing.glsl>
 #include <flame_3d/camera.glsl>
 
+// StylizedMaterial.depthBias (the stylized layout keeps it in its Wind block),
+// see flame_3d/stylized_material_vertex.glsl.
+uniform StylizedDepth {
+  float bias;
+} stylizedDepth;
+
 out vec3 fragPosition;
 out vec3 fragNormal;
 out vec4 fragColor;
@@ -39,6 +45,7 @@ void main() {
   mat4 model = instanceModelMatrix();
   vec4 worldPosition = model * vec4(position, 1.0);
   gl_Position = camera.viewProjection * worldPosition;
+  gl_Position.z -= stylizedDepth.bias * gl_Position.w;
 
   fragPosition = worldPosition.xyz;
   fragNormal = transformNormal(model, normal);
