@@ -748,6 +748,9 @@ class VolumeDecalBatch3D({
     }
 
     final tm = terrainWorld.storage;
+    // Normals go through the inverse transpose of the terrain's matrix, which
+    // keeps them perpendicular to the surface under non-uniform scale.
+    final im = _invTarget.storage;
     final cols = terrain.gridColumns;
     final rows = terrain.gridRows;
     final halfW = terrain.worldWidth * 0.5;
@@ -770,9 +773,9 @@ class VolumeDecalBatch3D({
       final wx = tm[0] * lx + tm[4] * ly + tm[8] * lz + tm[12];
       final wy = tm[1] * lx + tm[5] * ly + tm[9] * lz + tm[13];
       final wz = tm[2] * lx + tm[6] * ly + tm[10] * lz + tm[14];
-      var wnx = tm[0] * nScratch.x + tm[4] * nScratch.y + tm[8] * nScratch.z;
-      var wny = tm[1] * nScratch.x + tm[5] * nScratch.y + tm[9] * nScratch.z;
-      var wnz = tm[2] * nScratch.x + tm[6] * nScratch.y + tm[10] * nScratch.z;
+      var wnx = im[0] * nScratch.x + im[1] * nScratch.y + im[2] * nScratch.z;
+      var wny = im[4] * nScratch.x + im[5] * nScratch.y + im[6] * nScratch.z;
+      var wnz = im[8] * nScratch.x + im[9] * nScratch.y + im[10] * nScratch.z;
       final len = math.sqrt(wnx * wnx + wny * wny + wnz * wnz);
       if (len > 1e-12) {
         wnx /= len;
