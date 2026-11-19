@@ -128,15 +128,13 @@ void main() {
     final curved = {
       'TorusMesh': () => TorusMesh(majorSegments: 12, minorSegments: 8),
       'TubeSplineMesh': () => TubeSplineMesh(
-        // Gentle bends: a tube bent tighter than its radius folds over
-        // itself on the inner side, whatever the winding.
         spline: CatmullRomSpline3D([
           Vector3.zero(),
-          Vector3(3, 0.5, 0),
-          Vector3(6, 0, 1.5),
-          Vector3(9, 1, 1.5),
+          Vector3(1, 0.5, 0),
+          Vector3(2, 0, 1),
+          Vector3(3, 1, 1),
         ]),
-        tubularSegments: 24,
+        tubularSegments: 12,
         radialSegments: 6,
       ),
       'CapsuleMesh': () => CapsuleMesh(radius: 0.5, height: 2, segments: 8),
@@ -183,6 +181,36 @@ void main() {
         }
       });
     }
+
+    test('TubeSplineMesh keeps its cross-sections across the curve', () {
+      final spline = CatmullRomSpline3D([
+        Vector3.zero(),
+        Vector3(1, 0.5, 0),
+        Vector3(2, 0, 1),
+        Vector3(3, 1, 1),
+      ]);
+      const tubular = 24;
+      const radial = 6;
+      final surface = TubeSplineMesh(
+        spline: spline,
+        tubularSegments: tubular,
+        radialSegments: radial,
+      ).surfaces.single;
+      final stride = surface.layout.strideInFloats;
+      final data = surface.vertexData;
+      for (var i = 0; i <= tubular; i++) {
+        final tangent = spline.sampleTangent(i / tubular)..normalize();
+        for (var j = 0; j <= radial; j++) {
+          final o = (i * (radial + 1) + j) * stride;
+          final normal = Vector3(data[o + 9], data[o + 10], data[o + 11]);
+          expect(
+            normal.dot(tangent).abs(),
+            lessThan(1e-3),
+            reason: 'ring $i leans along the curve',
+          );
+        }
+      }
+    });
 
     test('CylinderMesh caps and side span the whole cylinder', () {
       final mesh = CylinderMesh(radius: 2, height: 4, segments: 8);
