@@ -662,14 +662,30 @@ class RenderContext3D(super.device) extends RenderContext {
   /// of the [shadowAtlas], each tile a view of its own. When it returns
   /// `false`, the main pass still receives shadows if [hasActiveShadows]
   /// (a map kept by [ShadowSettings.cacheWhenStatic]).
+  ///
+  /// With [ShadowFit.view], the map of a directional light (and its
+  /// cascades) is fitted to what the camera of the pass sees, or, given
+  /// [fitViewProjections] and the [fitViews] that go with them, to what any
+  /// of these cameras sees: the map of several passes that share it.
   bool beginShadowPass({
     required DirectionalShadowProjection projection,
     required Aabb3? sceneBounds,
     Object? castersKey,
+    List<Matrix4>? fitViewProjections,
+    List<Matrix4>? fitViews,
   }) {
     _shadowViewerPosition.setFrom(_cameraPosition);
     _shadowViewerViewProjection.setFrom(_viewProjectionMatrix);
-    return _shadows.begin(projection, sceneBounds, castersKey: castersKey);
+    _shadows
+      .._fitViewProjections = fitViewProjections
+      .._fitViews = fitViews;
+    try {
+      return _shadows.begin(projection, sceneBounds, castersKey: castersKey);
+    } finally {
+      _shadows
+        .._fitViewProjections = null
+        .._fitViews = null;
+    }
   }
 
   /// Flushes casters recorded for the current `ShadowAtlas3D` tile and

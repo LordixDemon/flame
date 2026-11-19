@@ -37,10 +37,27 @@ class _ShadowPass(final RenderContext3D _context) {
 
   // Unified multi-tile ShadowAtlas3D state.
   final ShadowAtlas3D atlas = ShadowAtlas3D();
-  final List<DirectionalShadowProjection> _csmProjections = List.generate(
-    4,
-    (_) => DirectionalShadowProjection(),
-  );
+
+  // The projections of the cascades of each projection given to [begin] (of
+  // each world, or each shadow group), so that each keeps the sizes of its
+  // own last fit.
+  final Expando<List<DirectionalShadowProjection>> _cascadeProjections =
+      Expando();
+
+  List<DirectionalShadowProjection> _cascadesOf(
+    DirectionalShadowProjection owner,
+  ) {
+    return _cascadeProjections[owner] ??= List.generate(
+      ShadowSettings.maxCascades,
+      (_) => DirectionalShadowProjection(),
+    );
+  }
+
+  // The cameras a directional map is fitted to with ShadowFit.view, during
+  // [begin]: those given to RenderContext3D.beginShadowPass, or `null` for
+  // the camera of the pass.
+  List<Matrix4>? _fitViewProjections;
+  List<Matrix4>? _fitViews;
   int _currentTileIndex = 0;
   int _atlasDirLightIndex = -1;
   int _atlasCascadeCount = 0;
@@ -308,14 +325,18 @@ class _ShadowPass(final RenderContext3D _context) {
           (2.0 * math.tan(spot.outerConeAngle.clamp(0.05, 1.4)) * zFar * 0.35) /
           resolution;
     } else {
+      final fitView = settings.fit == ShadowFit.view;
+      final views = _fitViewProjections;
       if (!projection.update(
         direction: direction,
         casters: sceneBounds,
         receivers: settings.bounds,
-        cameraViewProjection: settings.fit == ShadowFit.view
+        cameraViewProjection: fitView && views == null
             ? context._viewProjectionMatrix
             : null,
         cameraView: context._viewMatrix,
+        cameraViewProjections: fitView ? views : null,
+        cameraViews: _fitViews,
         maxDistance: settings.maxDistance,
         resolution: resolution,
         stabilize: settings.stabilize,
@@ -510,8 +531,10 @@ class _ShadowPass(final RenderContext3D _context) {
     final primarySettings = dirSettings ?? firstSpotSettings ?? pointSettings!;
 
     _cascadeMask = 0;
+    final cascades = _cascadesOf(projection);
     if (dirLight != null && dirSettings != null && csmCount > 0) {
       _fitCascades(
+        cascades,
         dirLight.direction(_direction),
         sceneBounds,
         dirSettings,
@@ -538,7 +561,7 @@ class _ShadowPass(final RenderContext3D _context) {
         if (_cascadeMask & (1 << c) == 0) {
           continue;
         }
-        final proj = _csmProjections[c];
+        final proj = cascades[c];
         final tile = atlas.allocateTile(
           kind: ShadowAtlasTileKind3D.directionalCascade,
           lightIndex: dirIndex,
@@ -829,8 +852,8 @@ class _ShadowPass(final RenderContext3D _context) {
   int _cascadeMask = 0;
 
   /// Fits the [count] cascades of a directional light travelling along
-  /// [direction] into [_csmProjections], setting a bit of [_cascadeMask] for
-  /// each cascade kept.
+  /// [direction] into [cascades], setting a bit of [_cascadeMask] for each
+  /// cascade kept.
   ///
   /// The last cascade covers what one map would (see [ShadowSettings.fit]
   /// and [ShadowSettings.maxDistance]). With a perspective camera and
@@ -841,6 +864,7 @@ class _ShadowPass(final RenderContext3D _context) {
   /// cascade that is not sharper than the next one is dropped: it would only
   /// lower the resolution where it is used.
   void _fitCascades(
+    List<DirectionalShadowProjection> cascades,
     Vector3 direction,
     Aabb3 sceneBounds,
     ShadowSettings settings,
@@ -851,20 +875,25 @@ class _ShadowPass(final RenderContext3D _context) {
     _cascadeSplits(settings, count);
     final perspective = context._projectionMatrix.storage[15].abs() < 0.5;
     final fitView = settings.fit == ShadowFit.view;
+    final views = _fitViewProjections;
     final region = settings.bounds ?? sceneBounds;
     final far = settings.maxDistance ?? _viewDepthExtent(region);
     _cascadeMask = 0;
     var outerTexel = double.infinity;
     for (var c = count - 1; c >= 0; c--) {
-      final proj = _csmProjections[c];
+      final proj = cascades[c];
       final bool fitted;
       if (c == count - 1) {
         fitted = proj.update(
           direction: direction,
           casters: sceneBounds,
           receivers: settings.bounds,
-          cameraViewProjection: fitView ? context._viewProjectionMatrix : null,
+          cameraViewProjection: fitView && views == null
+              ? context._viewProjectionMatrix
+              : null,
           cameraView: context._viewMatrix,
+          cameraViewProjections: fitView ? views : null,
+          cameraViews: _fitViews,
           maxDistance: settings.maxDistance,
           resolution: tileSize,
           stabilize: settings.stabilize,
@@ -879,6 +908,8 @@ class _ShadowPass(final RenderContext3D _context) {
           receivers: settings.bounds,
           cameraViewProjection: context._viewProjectionMatrix,
           cameraView: context._viewMatrix,
+          cameraViewProjections: views,
+          cameraViews: _fitViews,
           maxDistance: far * _splits[c],
           resolution: tileSize,
           stabilize: settings.stabilize,
@@ -915,9 +946,22 @@ class _ShadowPass(final RenderContext3D _context) {
   }
 
   /// The farthest distance from the camera, along the direction it looks
-  /// in, of a corner of [box].
+  /// in, of a corner of [box]: from the farthest of the cameras the map is
+  /// fitted to, when it is fitted to several.
   double _viewDepthExtent(Aabb3 box) {
-    final m = _context._viewMatrix.storage;
+    final views = _fitViews;
+    if (views == null) {
+      return _viewDepthExtentFrom(_context._viewMatrix, box);
+    }
+    var far = 1e-3;
+    for (var i = 0; i < views.length; i++) {
+      far = math.max(far, _viewDepthExtentFrom(views[i], box));
+    }
+    return far;
+  }
+
+  static double _viewDepthExtentFrom(Matrix4 view, Aabb3 box) {
+    final m = view.storage;
     final min = box.min;
     final max = box.max;
     var far = 1e-3;

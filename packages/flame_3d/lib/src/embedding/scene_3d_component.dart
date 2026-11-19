@@ -20,7 +20,8 @@ enum Scene3DCacheMode() {
 
   /// Retains the rendered GPU [Image] in a dedicated target and reuses it with
   /// `0` GPU passes on subsequent frames whenever the scene, shadow casters,
-  /// camera projection, canvas transform, and visible clip have not changed.
+  /// camera projection, canvas transform, and visible clip (and, in a
+  /// [ShadowGroup], the [ShadowGroup.viewsVersion]) have not changed.
   retained,
 }
 
@@ -349,7 +350,7 @@ class Scene3DComponent({
     _bloomTargetHeight = 0;
   }
 
-  static const int _keyNumberCount = 38;
+  static const int _keyNumberCount = 39;
   static const int _keyObjectCount = 4;
 
   /// Writes the values a retained image depends on, besides the camera
@@ -408,7 +409,8 @@ class Scene3DComponent({
       ..[34] = vignette ? visibleFrame.left : 0
       ..[35] = vignette ? visibleFrame.top : 0
       ..[36] = vignette ? visibleFrame.right : 0
-      ..[37] = vignette ? visibleFrame.bottom : 0;
+      ..[37] = vignette ? visibleFrame.bottom : 0
+      ..[38] = (group?.viewsVersion ?? 0).toDouble();
     _nextObjects
       ..[0] = world.oitMode
       ..[1] = world.renderDebugMode3D
@@ -615,6 +617,16 @@ class Scene3DComponent({
       frame.bottom * pixelScale - top,
     );
 
+    // The map of a shadow group is fitted to what all its layers show: a
+    // layer reports a camera that sees the part of the screen it may draw on
+    // (whatever part of it its scene covers, so that the camera only changes
+    // when the layer moves on the screen) on every frame, also when it draws
+    // its retained image again.
+    final group = world.shadowGroup;
+    if (group != null) {
+      _writeGroupCamera(group, frame, a, b, c, d, tx, ty);
+    }
+
     final isRetained = _cacheMode == Scene3DCacheMode.retained;
     if (isRetained) {
       _writeKey(
@@ -771,6 +783,48 @@ class Scene3DComponent({
     }
   }
 
+  /// Reports to [group] the camera of the part [frame] of the canvas (whose
+  /// transform is ([a], [b], [c], [d], [tx], [ty])) that the layer may draw
+  /// on: the canvas's clip, its size and [visibleRect], and the picture of
+  /// [visibleSceneBounds].
+  void _writeGroupCamera(
+    ShadowGroup group,
+    Rect frame,
+    double a,
+    double b,
+    double c,
+    double d,
+    double tx,
+    double ty,
+  ) {
+    var part = frame;
+    final bound = visibleSceneBounds;
+    if (bound != null) {
+      final picture = _boxPicture(bound, a, b, c, d, tx, ty);
+      if (picture != null) {
+        part = part.intersect(picture);
+      }
+    }
+    if (!(part.width > 0 && part.height > 0)) {
+      part = frame;
+    }
+    _writeProjection(
+      _groupProjectionMatrix,
+      a,
+      b,
+      c,
+      d,
+      tx,
+      ty,
+      1,
+      part.left,
+      part.top,
+      part.width,
+      part.height,
+    );
+    group.noteView(world, _viewMatrix, _groupProjectionMatrix);
+  }
+
   void _compositeImage(
     Canvas canvas,
     Image image,
@@ -861,6 +915,21 @@ class Scene3DComponent({
     if (box == null) {
       return null;
     }
+    return _boxPicture(box, a, b, c, d, tx, ty);
+  }
+
+  /// The device rectangle that the picture of [box] covers on the canvas
+  /// whose transform is ([a], [b], [c], [d], [tx], [ty]), or `null` when a
+  /// corner of it lies behind the viewer.
+  Rect? _boxPicture(
+    Aabb3 box,
+    double a,
+    double b,
+    double c,
+    double d,
+    double tx,
+    double ty,
+  ) {
     final m = projection.sceneToLocalValues;
     final min = box.min;
     final max = box.max;
@@ -906,17 +975,52 @@ class Scene3DComponent({
     int targetWidth,
     int targetHeight,
   ) {
-    final sx = 2 * pixelScale / targetWidth;
-    final sy = 2 * pixelScale / targetHeight;
+    _writeProjection(
+      _projectionMatrix,
+      a,
+      b,
+      c,
+      d,
+      tx,
+      ty,
+      pixelScale,
+      left.toDouble(),
+      top.toDouble(),
+      targetWidth.toDouble(),
+      targetHeight.toDouble(),
+    );
+    _viewMatrix.storage.setAll(0, projection.viewValues);
+  }
+
+  /// Writes into [output] the projection of the camera whose picture covers
+  /// the rectangle from ([left], [top]), [width] by [height] pixels, of the
+  /// canvas whose transform is ([a], [b], [c], [d], [tx], [ty]), at
+  /// [pixelScale] pixels per unit of the canvas.
+  void _writeProjection(
+    Matrix4 output,
+    double a,
+    double b,
+    double c,
+    double d,
+    double tx,
+    double ty,
+    double pixelScale,
+    double left,
+    double top,
+    double width,
+    double height,
+  ) {
+    final sx = 2 * pixelScale / width;
+    final sy = 2 * pixelScale / height;
     final c00 = sx * a;
     final c01 = sx * c;
-    final c03 = 2 * (pixelScale * tx - left) / targetWidth - 1;
+    final c03 = 2 * (pixelScale * tx - left) / width - 1;
     final c10 = -sy * b;
     final c11 = -sy * d;
-    final c13 = 1 - 2 * (pixelScale * ty - top) / targetHeight;
+    final c13 = 1 - 2 * (pixelScale * ty - top) / height;
 
     final viewToLocal = projection.viewToLocalValues;
-    final p = _projectionMatrix.storage;
+    final p = output.storage;
     for (var column = 0; column < 4; column++) {
       final i = column * 4;
       final x = viewToLocal[i];
@@ -927,11 +1031,13 @@ class Scene3DComponent({
       p[i + 2] = viewToLocal[i + 2];
       p[i + 3] = w;
     }
-    _viewMatrix.storage.setAll(0, projection.viewValues);
   }
 
   final Matrix4 _viewMatrix = Matrix4.identity();
   final Matrix4 _projectionMatrix = Matrix4.identity();
+  // The projection of a camera that sees the part of the screen the layer
+  // may draw on, which it reports to its shadow group.
+  final Matrix4 _groupProjectionMatrix = Matrix4.identity();
   final Float64List _inverseTransform = Float64List(16)
     ..[10] = 1
     ..[15] = 1;

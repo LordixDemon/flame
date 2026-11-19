@@ -263,17 +263,28 @@ layer, and a building's on the character. The worlds that render after it in the
 map (`RenderContext3D.reuseShadowMap`), so the group costs one shadow pass, not one per layer; a
 world renders the group's map again only when another shadow map was rendered in between.
 
-The light, the `ShadowSettings` and, with `ShadowFit.view`, the camera the map is fitted to are
-those of the world that renders first:
+With `ShadowFit.view`, the map is fitted to what all the layers of the group show, whichever of
+them renders it. Each `Scene3DComponent` of the group reports, on every frame it is drawn (also
+when a retained layer draws its kept image again), the part of the screen it may draw on: the
+canvas's clip, its `size` and `visibleRect`, and the picture of its `visibleSceneBounds`, whatever
+part of it its scene covers. The map covers the part of the bounds of the group's worlds that lies
+in any of these parts, back towards the light over every caster. The parts are gathered when the
+first layer of the group is drawn in a frame: that layer's part of this frame, and the parts the
+other layers were drawn on in the previous frame (a layer not drawn then is left out);
+`ShadowGroup.viewsVersion` counts their changes. So the map, and the sizes it keeps from frame to
+frame (see [The shadow map](#the-shadow-map)), do not depend on the order of the layers nor on
+which of them render in a frame: a layer that renders while another reuses its retained image gets
+the same shadows as without caching. A layer drawn after the first one that moves on the screen
+alone is covered from the next frame on, which is then painted also in a game that only paints
+changed frames. A world rendered by another host (a `FlameGame3D` camera) counts with the camera of
+its pass.
 
-- let the worlds of a group render with the same lights, in the same order, since a shader tells
-  the light that casts the shadows by its index among the directional lights: keep the lights in
-  one world and let the others borrow them with `World3D.lightsFrom` (see
-  [Lights shared by several worlds](lighting.md#lights-shared-by-several-worlds)), or give each
-  world a copy of every light, in the same order;
-- render first the layer that covers the most of the screen (the one whose shadow catchers cover
-  the ground), or fit the map to `ShadowSettings.bounds` that cover what every layer shows, with
-  `ShadowFit.scene`: receivers outside the map are lit.
+The light and the `ShadowSettings` are those of the world that renders first, so let the worlds of
+a group render with the same lights, in the same order, since a shader tells the light that casts
+the shadows by its index among the directional lights: keep the lights in one world and let the
+others borrow them with `World3D.lightsFrom` (see
+[Lights shared by several worlds](lighting.md#lights-shared-by-several-worlds)), or give each world
+a copy of every light, in the same order.
 
 A ground of `ShadowCatcherMaterial` belongs in the lowest layer of the group, below the objects of
 every layer.
@@ -367,7 +378,9 @@ next time the world renders without the cache, or switches between the single ma
 
 With `ShadowFit.view`, every move of the camera refits the map and renders it again: the cache only
 helps a still camera. With `ShadowFit.scene`, the map depends on the bounds of the scene alone, and
-the cache holds while the camera pans.
+the cache holds while the camera pans. The map of a `ShadowGroup` is fitted to what all its layers
+show, so its cache holds while no layer moves on the screen and no caster of the group changes,
+whichever layers render.
 
 
 ## Cascades
@@ -395,6 +408,11 @@ LightComponent.directional(
 - A cascade that sees nothing, or is not sharper than the next one, is dropped (no tile, no
   traversal): a near cascade of a perspective camera that looks down on a scene from far away, for
   instance, or one of an orthographic camera that sees a small part of a large region.
+- In a `ShadowGroup`, the cascades are fitted to what all the layers of the group show, as a single
+  map is (see [One shadow map for several layers](#one-shadow-map-for-several-layers)).
+
+Each world, and each group, keeps the projections of its own cascades, so the sizes a cascade
+keeps from frame to frame are not changed by the cascades of another world rendered in between.
 
 The splits are `cascadeSplits` (one increasing value in `(0, 1]` per cascade, or per cascade but the
 last, which always covers it all; another length, or values that do not increase, throw an
@@ -540,6 +558,12 @@ reach the tile covers), and `viewerPosition` stays the main camera's. Leaving ou
 leaves the other tiles of the atlas empty (lit). `needsShadowCascade1`, `beginShadowCascade1` and
 `endShadowCascade1` are deprecated and do nothing: two cascades are atlas tiles.
 
+With `ShadowFit.view`, the map is fitted to what the camera set on the context sees. A renderer
+whose map serves several passes, as a `ShadowGroup` does, passes the cameras of all of them as
+`fitViewProjections` and `fitViews` (one view-projection and one view matrix per camera): the map
+then covers what any of them sees. `DirectionalShadowProjection.update` takes the same lists as
+`cameraViewProjections` and `cameraViews`.
+
 
 ## Costs
 
@@ -616,6 +640,12 @@ These are the parts of shadows that are not finished at this point:
   the first layer's pass gave them: when the pass picks its lights by distance (more than four spot
   lights, or `prioritizeNearestLights` with more than eight point lights), another camera can pick
   them in another order.
+- In a `ShadowGroup`, the map is fitted to the bounds of all the worlds of the group. When the
+  bounds of one world change without a caster changing (particles that cast no shadows rising above
+  the rest, for instance), the map is refitted, but a retained layer of another world keeps its
+  image: its shadows stay where they are, and their edges can differ from those of a fresh render
+  by the snapping of the refitted map's texels. Call `markDirty()` on the layer when it must match
+  a fresh render pixel for pixel.
 - Spot-light shadows ignore `fit`, `bounds`, `maxDistance` and `stabilize`, and on the atlas their
   `normalBias`.
 - In a shadow pass, `RenderContext3D.cameraPosition` is the position of the light's view: the

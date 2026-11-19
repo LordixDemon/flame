@@ -569,13 +569,22 @@ class World3D({
     if (identical(group, _shadowGroup)) {
       return;
     }
-    _shadowGroup?._worlds.remove(this);
+    _shadowGroup?._leave(this);
     _shadowGroup = group;
+    _groupRound = -1;
     group?._worlds.add(this);
     markSceneDirty();
   }
 
   ShadowGroup? _shadowGroup;
+
+  // The camera this world was last shown with in its shadow group, and the
+  // round of the group it was shown in, see [ShadowGroup.noteView].
+  final Matrix4 _groupView = Matrix4.zero();
+  final Matrix4 _groupProjection = Matrix4.zero();
+  final Matrix4 _groupViewProjection = Matrix4.zero();
+  int _groupRound = -1;
+  bool _groupNotedByHost = false;
 
   /// Renders (or reuses) the shadow map / unified `ShadowAtlas3D` of this
   /// world, returning whether the upcoming main pass receives shadows.

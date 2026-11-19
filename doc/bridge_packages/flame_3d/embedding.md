@@ -259,7 +259,9 @@ The layer compares, on every frame:
   the frame), running effects, batch changes, world settings assigned a new value, and
   the changes of the lights it borrows with `World3D.lightsFrom` (see
   [Basic Concepts](basic_concepts.md#scene-versions-and-dirty-marking) for the full list);
-- the `castersVersion` of the world, or of its `ShadowGroup` (all the worlds of the group);
+- the `castersVersion` of the world, or of its `ShadowGroup` (all the worlds of the group), and
+  the group's `viewsVersion`, which changes when a layer of the group moves on the screen (see
+  [Shadow groups and on-demand rendering](#shadow-groups-and-on-demand-rendering));
 - `layer.markDirty()` calls;
 - the part of the screen the layer covers and where it lands in device pixels: panning, zooming or
   rotating the 2D camera, moving, scaling or rotating the layer or one of its ancestors, resizing
@@ -299,7 +301,8 @@ a `ShadowGroup`.
 ### What it costs
 
 A frame served from the image costs one image draw and the comparison: about forty values compared
-one by one with those of the kept image, and the two camera matrices, without allocating. A frame
+one by one with those of the kept image, and the two camera matrices, without allocating; a layer
+of a `ShadowGroup` also reports its camera to the group (a few matrix products). A frame
 that renders costs what it costs without caching. The layer's render targets are not taken from the
 device's pool: one for the plain path and one for the post-processing path (`bloom`, `postProcess`,
 `hdrEnabled`), each created on its first render and again whenever its size changes. Each keeps up
@@ -313,12 +316,33 @@ While the 2D camera moves, the layer renders on every frame, like a layer withou
 
 ### Shadow groups and on-demand rendering
 
-The layer compares the `castersVersion` of its world's `ShadowGroup`, so a caster that moves in
-another layer of the group renders the retained layer again, with the shadow it now receives; the
-other changes of the other layers do not. While the retained layer reuses its image it renders no
-shadow map, and the next layer of the group that renders draws the group's map instead (see
-[Shadows](shadows.md)): the group still costs one shadow pass per frame while any of its layers
-renders.
+Retained layers can share a `ShadowGroup` with each other and with layers that render every frame.
+What a game can rely on:
+
+- The group's map does not depend on which of its layers render in a frame. With `ShadowFit.view`
+  it is fitted to what all the layers of the group show: every layer reports the part of the screen
+  it may draw on whenever it is drawn, also when it reuses its image (see
+  [One shadow map for several layers](shadows.md#one-shadow-map-for-several-layers)). A layer that
+  renders while a retained one reuses its image receives exactly the shadows it would receive with
+  caching off, from the casters of every layer, and a retained layer that renders again after a run
+  of reused frames receives the shadows of a map fitted to what it shows.
+- A retained layer renders again, with the shadows it now receives, when a caster of any world of
+  the group changes (the group's `castersVersion`) and when a layer of the group moves on the screen
+  (the group's `viewsVersion`). The other changes of the other layers that leave the bounds of
+  their worlds alone (colors, materials, objects that cast no shadows moving inside those bounds)
+  leave its image alone, and it stays identical to a fresh render.
+- While the retained layer reuses its image it renders no shadow map, and the next layer of the
+  group that renders draws the group's map instead: the group still costs one shadow pass per frame
+  while any of its layers renders, and none while all of them reuse their images (or with
+  `cacheWhenStatic`, while nothing changes).
+
+What is still up to the game: give the worlds of the group the same lights in the same order
+(borrow them with `World3D.lightsFrom`), report the changes the engine cannot see with `markDirty()`
+(listed above), and call `markDirty()` on a retained layer that must match a fresh render pixel for
+pixel after the bounds of another world of the group changed without a caster changing (particles
+that cast no shadows, for instance): the map is then refitted without rendering the retained layer
+again, and the edges of its shadows can differ by the snapping of the map's texels (see
+[Shadows](shadows.md#limitations)).
 
 `markDirty()` and every scene version change call `Game.notifyVisualMutation()`, so a game whose
 `idleRenderMode` only paints changed frames wakes up for them. The two mechanisms add up: on-demand

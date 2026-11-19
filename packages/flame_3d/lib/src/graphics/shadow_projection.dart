@@ -89,7 +89,13 @@ class DirectionalShadowProjection() {
   /// when that is given, which needs the [cameraView] as well. [resolution]
   /// is the width and height of the map in texels.
   ///
-  /// When nothing receives shadows (the camera sees none of the receivers),
+  /// With [cameraViewProjections] (and the [cameraViews] that go with them,
+  /// one per camera), the part of the receivers that any of these cameras
+  /// sees is covered instead, as for several views of one scene, each up to
+  /// [maxDistance] from its camera; [cameraViewProjection] and [cameraView]
+  /// are then ignored.
+  ///
+  /// When nothing receives shadows (the cameras see none of the receivers),
   /// it returns `false` and leaves the projection unchanged.
   bool update({
     required Vector3 direction,
@@ -98,9 +104,17 @@ class DirectionalShadowProjection() {
     Aabb3? receivers,
     Matrix4? cameraViewProjection,
     Matrix4? cameraView,
+    List<Matrix4>? cameraViewProjections,
+    List<Matrix4>? cameraViews,
     double? maxDistance,
     bool stabilize = true,
   }) {
+    assert(
+      cameraViews == null ||
+          cameraViewProjections == null ||
+          cameraViews.length == cameraViewProjections.length,
+      'cameraViews must hold one view per camera of cameraViewProjections',
+    );
     writeLookAt(
       _view,
       0,
@@ -116,7 +130,22 @@ class DirectionalShadowProjection() {
 
     _resetBounds();
     final region = receivers ?? casters;
-    if (cameraViewProjection == null) {
+    if (cameraViewProjections != null) {
+      var any = false;
+      for (var i = 0; i < cameraViewProjections.length; i++) {
+        any =
+            _addVisiblePart(
+              region,
+              cameraViewProjections[i],
+              cameraViews?[i],
+              maxDistance,
+            ) ||
+            any;
+      }
+      if (!any) {
+        return false;
+      }
+    } else if (cameraViewProjection == null) {
       _addBoxCorners(region);
     } else if (!_addVisiblePart(
       region,

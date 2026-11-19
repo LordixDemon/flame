@@ -230,35 +230,37 @@ void main() {
       expect(layers.upperLayer.renderStats.renderPasses, 1);
     });
 
-    testGpu('the lower layer casts onto the upper one with its map', (
-      tester,
-    ) async {
-      // The lower layer only shows the cube: a map fitted to the whole scene
-      // covers the ground the upper layer shows.
-      final layers = _TwoLayers(
-        lower: [
-          _sun(fit: ShadowFit.scene),
-          _cube(),
-        ],
-        upper: [
-          _sun(fit: ShadowFit.scene),
-          _catcher(),
-        ],
-      )..share(ShadowGroup());
-      final pixels = await layers.render(tester);
-      for (final point in inShadow) {
-        expect(
-          layers.redAt(pixels, point),
-          closeTo(darkened, 2),
-          reason: 'at $point',
-        );
-      }
-      for (final point in lit) {
-        expect(layers.redAt(pixels, point), 0x80, reason: 'at $point');
-      }
-      expect(layers.lowerLayer.renderStats.shadowPasses, 1);
-      expect(layers.upperLayer.renderStats.shadowPasses, 0);
-    });
+    for (final fit in ShadowFit.values) {
+      testGpu('the lower layer casts onto the upper one with its map, '
+          'fitted to the ${fit.name}', (tester) async {
+        // The lower layer, rendered first, only shows the cube: the map,
+        // fitted to the whole scene or to what both layers show, covers the
+        // ground the upper layer shows.
+        final layers = _TwoLayers(
+          lower: [
+            _sun(fit: fit),
+            _cube(),
+          ],
+          upper: [
+            _sun(fit: fit),
+            _catcher(),
+          ],
+        )..share(ShadowGroup());
+        final pixels = await layers.render(tester);
+        for (final point in inShadow) {
+          expect(
+            layers.redAt(pixels, point),
+            closeTo(darkened, 2),
+            reason: 'at $point',
+          );
+        }
+        for (final point in lit) {
+          expect(layers.redAt(pixels, point), 0x80, reason: 'at $point');
+        }
+        expect(layers.lowerLayer.renderStats.shadowPasses, 1);
+        expect(layers.upperLayer.renderStats.shadowPasses, 0);
+      });
+    }
 
     testGpu('a world that leaves the group no longer casts into its map', (
       tester,
