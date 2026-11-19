@@ -105,8 +105,9 @@ final router = PointerRouter3D.forScene(
 An invisible catcher mesh that still draws (for example one with a `ShadowCatcherMaterial`) is
 visible as far as the ray cast goes; exclude it with the `filter`.
 
-When the object hit is an `InstancedGroup3D`, `event.instanceIndex` is the index of the instance
-hit. `event.hit` is the `RayHit3D` with the world point, normal, triangle and surface.
+When the object hit draws instances, `event.instanceIndex` is the index of the instance hit (an
+instance of an `InstancedGroup3D`, an agent of a `SkinnedCrowdBatch3D`), as `RayHit3D.instanceIndex`
+gives it. `event.hit` is the `RayHit3D` with the world point, normal, triangle and surface.
 
 
 ### Order against 2D components

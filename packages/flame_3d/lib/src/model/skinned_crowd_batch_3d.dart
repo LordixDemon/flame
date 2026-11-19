@@ -653,6 +653,7 @@ class SkinnedCrowdBatch3D({
     }
     final batchWorld = worldTransformMatrix;
     RayHit3D? best;
+    var bestAgent = 0;
     var limit = maxDistance;
 
     for (var i = 0; i < _length; i++) {
@@ -678,10 +679,11 @@ class SkinnedCrowdBatch3D({
         if (hit != null && hit.distance < limit) {
           limit = hit.distance;
           best = hit;
+          bestAgent = i;
         }
       }
     }
-    return best;
+    return best?.onInstance(bestAgent);
   }
 
   void _loadAgentWorldMatrix(Matrix4 batchWorld, int index, Matrix4 out) {

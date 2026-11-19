@@ -418,9 +418,7 @@ class PointerRouter3D._({
       return false;
     }
 
-    final capturedInstance = hit.object is InstancedGroup3D
-        ? hit.surfaceIndex
-        : null;
+    final capturedInstance = hit.instanceIndex;
     final entries = <_DragListenerEntry>[];
 
     for (final node in _selfAndAncestors(hit.object)) {

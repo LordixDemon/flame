@@ -143,8 +143,9 @@ trees.removeAtSwapLast(5); // the last instance takes index 5
 - The instance transforms are relative to the group, which can itself be moved, rotated and scaled
   like any `Object3D`. When the group's world transform is not the identity, the instances are
   transformed on the CPU into a second buffer whenever the group or an instance changes.
-- `World3D.raycast` hits the instances one by one; for a hit on a group, `RayHit3D.surfaceIndex`
-  holds the index of the instance, not of the surface (see [Geometry](geometry.md)).
+- `World3D.raycast` hits the instances one by one; for a hit on a group, `RayHit3D.instanceIndex`
+  is the index of the instance, which `surfaceIndex` also holds for compatibility (see
+  [Geometry](geometry.md)).
 
 Cost: one draw call per surface per pass, and the whole instance buffer (96 bytes per instance) is
 uploaded for each surface in every pass that draws it, the shadow passes and the depth-normal

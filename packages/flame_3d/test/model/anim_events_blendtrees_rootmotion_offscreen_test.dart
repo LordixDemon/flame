@@ -598,6 +598,12 @@ void main() {
         Ray.originDirection(Vector3(0, 1.6, -5), Vector3(0, 0, 1)),
       );
       expect(rayHit, isNotNull);
+      // The nearest agent along the ray, the first of its column.
+      expect(rayHit!.instanceIndex, 0);
+      final thirdColumn = crowd.raycast(
+        Ray.originDirection(Vector3(4, 1.6, -5), Vector3(0, 0, 1)),
+      );
+      expect(thirdColumn!.instanceIndex, 2);
 
       device.end();
     });

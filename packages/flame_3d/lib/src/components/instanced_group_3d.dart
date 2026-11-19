@@ -361,17 +361,8 @@ class InstancedGroup3D({
       );
       if (hit != null && hit.distance < limit) {
         limit = hit.distance;
-        best = RayHit3D(
-          object: this,
-          surface: hit.surface,
-          surfaceIndex: i,
-          distance: hit.distance,
-          worldPoint: hit.worldPoint,
-          worldNormal: hit.worldNormal,
-          localPoint: hit.localPoint,
-          localNormal: hit.localNormal,
-          triangleIndex: hit.triangleIndex,
-        );
+        // surfaceIndex holds the instance too, as it always has.
+        best = hit.onInstance(i, surfaceIndex: i);
       }
     }
     return best;

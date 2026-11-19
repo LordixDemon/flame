@@ -14,18 +14,10 @@ abstract class PointerEvent3D({
 }) {
   final int? _capturedInstanceIndex = instanceIndex;
 
-  /// Picked instance index when [target] (or [hit]'s object) is an
-  /// [InstancedGroup3D], or `null` for non-instanced objects.
-  int? get instanceIndex {
-    if (_capturedInstanceIndex != null) {
-      return _capturedInstanceIndex;
-    }
-    final rayHit = hit;
-    if (rayHit != null && rayHit.object is InstancedGroup3D) {
-      return rayHit.surfaceIndex;
-    }
-    return null;
-  }
+  /// The index of the instance picked when [target] (or [hit]'s object)
+  /// draws instances (an [InstancedGroup3D], a `SkinnedCrowdBatch3D`), see
+  /// [RayHit3D.instanceIndex], or `null` for other objects.
+  int? get instanceIndex => _capturedInstanceIndex ?? hit?.instanceIndex;
 
   /// Set to `true` by a callback to stop propagation to ancestor components.
   bool handled = false;

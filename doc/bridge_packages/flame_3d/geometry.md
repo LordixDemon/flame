@@ -430,8 +430,10 @@ The ray direction does not need to be unit length; the world normalizes it, so `
 `surfaceIndex` in the mesh, the `distance`, `worldPoint` and `worldNormal`, the same point and the
 triangle's normal in the surface's space (`localPoint`, `localNormal`) and the `triangleIndex`. For
 barycentric coordinates, cast against `hit.surface.bvh` with the ray in local space. A hit on an
-`InstancedGroup3D` carries the index of the instance in `surfaceIndex` instead of the surface's
-index (`hit.surface` still tells which surface was hit).
+object that draws instances has the index of the instance hit in `instanceIndex`: the instance of
+an `InstancedGroup3D`, the agent of a `SkinnedCrowdBatch3D` (`null` for other objects). For
+compatibility, a hit on an `InstancedGroup3D` also carries the index of the instance in
+`surfaceIndex` instead of the surface's index; `hit.surface` tells which surface was hit.
 
 When `cullMode` is `null` (the default), each surface is tested with the cull mode of its material's
 render state: a back-face culled material cannot be hit from behind, a double-sided one can. Pass a
@@ -445,11 +447,11 @@ whose bounds the ray misses within the current nearest distance, then tests each
 |-----------------------|--------------------------------------------------------------------|
 | `MeshComponent`       | its mesh, with its world transform                                 |
 | `LodMeshComponent`    | the level it drew last                                             |
-| `InstancedGroup3D`    | every instance; `surfaceIndex` holds the instance index            |
+| `InstancedGroup3D`    | every instance; `instanceIndex` (and `surfaceIndex`) is the index  |
 | `ModelComponent`      | the meshes of its nodes in the current node transforms, rest pose  |
 |                       | for skinned surfaces                                               |
 | `SkinnedCrowdBatch3D` | every agent, in its baked node transforms, rest pose for skinned   |
-|                       | surfaces                                                           |
+|                       | surfaces; `instanceIndex` is the index of the agent                |
 
 Other components document their own ray casts (`ChunkedTerrain3D` and `StaticMeshBatcher3D` in
 [Large Worlds](world_scale.md), `WidgetSurface3D` in [3D UI and Text](ui_3d.md)). Only what a

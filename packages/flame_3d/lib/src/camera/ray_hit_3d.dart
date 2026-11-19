@@ -19,8 +19,32 @@ class RayHit3D({
   required final Vector3 localPoint,
   required final Vector3 localNormal,
   required final int triangleIndex,
+
+  /// The index of [surface] in its mesh, except on a hit on an
+  /// `InstancedGroup3D`, where it holds the index of the instance hit, as
+  /// [instanceIndex] does (kept for compatibility: read [instanceIndex] for
+  /// the instance and [surface] for the surface).
   final int surfaceIndex = 0,
+
+  /// The index of the instance hit in an object that draws instances: an
+  /// instance of an `InstancedGroup3D`, an agent of a `SkinnedCrowdBatch3D`.
+  /// `null` for the other objects.
+  final int? instanceIndex,
 }) {
+  /// This hit, as a hit on the instance [index] of its [object].
+  RayHit3D onInstance(int index, {int? surfaceIndex}) => RayHit3D(
+    object: object,
+    surface: surface,
+    surfaceIndex: surfaceIndex ?? this.surfaceIndex,
+    instanceIndex: index,
+    distance: distance,
+    worldPoint: worldPoint,
+    worldNormal: worldNormal,
+    localPoint: localPoint,
+    localNormal: localNormal,
+    triangleIndex: triangleIndex,
+  );
+
   /// Intersects [worldRay] against [mesh] transformed by [modelMatrix],
   /// returning the closest [RayHit3D] on [owner] within [maxDistance], or
   /// `null` when missed.

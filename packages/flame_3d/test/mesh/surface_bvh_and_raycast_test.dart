@@ -130,7 +130,26 @@ void main() {
       final hit = layer.raycastLocal(target2D, cullMode: CullMode.none);
       expect(hit, isNotNull);
       expect(hit!.object, same(group));
+      expect(hit.instanceIndex, 1);
+      // surfaceIndex holds the instance too, for compatibility.
       expect(hit.surfaceIndex, 1);
+      expect(hit.surface, same(group.mesh.surfaces.single));
+
+      final first = layer.raycastLocal(
+        layer.scenePointToLocal(Vector3.zero()),
+        cullMode: CullMode.none,
+      );
+      expect(first!.instanceIndex, 0);
+    });
+
+    test('a hit on an object without instances has no instanceIndex', () {
+      final mesh = MeshComponent(mesh: CuboidMesh(size: Vector3.all(1)));
+      final hit = mesh.raycast(
+        Ray.originDirection(Vector3(0, 0, 5), Vector3(0, 0, -1)),
+      );
+      expect(hit, isNotNull);
+      expect(hit!.instanceIndex, isNull);
+      expect(hit.surfaceIndex, 0);
     });
   });
 }
