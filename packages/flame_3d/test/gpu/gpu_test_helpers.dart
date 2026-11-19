@@ -32,9 +32,16 @@ void setUpGpu() {
 }
 
 /// A GPU test, skipped when Flutter GPU is unavailable.
+///
+/// Give a test that renders many frames a [timeout] that survives a loaded
+/// machine instead of the default of 30 seconds.
 @isTest
-void testGpu(String description, WidgetTesterCallback callback) {
-  testWidgets(description, callback, skip: !gpuAvailable);
+void testGpu(
+  String description,
+  WidgetTesterCallback callback, {
+  Timeout? timeout,
+}) {
+  testWidgets(description, callback, skip: !gpuAvailable, timeout: timeout);
 }
 
 /// The RGBA pixels of a rendered frame.
@@ -149,11 +156,19 @@ int differingPixels(Pixels a, Pixels b, {int tolerance = 2}) {
 
 /// A GPU test that does not need widgets, skipped when Flutter GPU is
 /// unavailable.
+///
+/// Give a test that renders many frames a [timeout] that survives a loaded
+/// machine instead of the default of 30 seconds.
 @isTest
-void testGpuEngine(String description, Future<void> Function() body) {
+void testGpuEngine(
+  String description,
+  Future<void> Function() body, {
+  Timeout? timeout,
+}) {
   test(
     description,
     body,
+    timeout: timeout,
     skip: gpuAvailable
         ? false
         : 'Flutter GPU is unavailable, run with '
@@ -255,16 +270,26 @@ Surface quad(Material material, {double halfSize = 0.5}) {
 /// Compiles the GLSL shaders named [names] in `test/gpu/shaders` into shader
 /// bundles and registers them with the backend as
 /// `test/<name>.shaderbundle`.
+///
+/// Each shader is compiled once per test file: names registered before are
+/// skipped. Call it from `setUpAll`.
 Future<void> registerTestShaders(List<String> names) async {
+  final missing = [
+    for (final name in names)
+      if (!_registeredTestShaders.contains(name)) name,
+  ];
+  if (missing.isEmpty) {
+    return;
+  }
   final temp = Directory.systemTemp.createTempSync('flame_3d_test_shaders');
   try {
     await shaderbundle.build(
-      names,
+      missing,
       Directory('test/gpu/shaders'),
       temp,
       [Directory('shaders')],
     );
-    for (final name in names) {
+    for (final name in missing) {
       final file = File('${temp.path}/$name.shaderbundle');
       if (!file.existsSync()) {
         throw StateError('Shader "$name" did not compile');
@@ -273,8 +298,12 @@ Future<void> registerTestShaders(List<String> names) async {
         'test/$name.shaderbundle',
         ByteData.sublistView(file.readAsBytesSync()),
       );
+      _registeredTestShaders.add(name);
     }
   } finally {
     temp.deleteSync(recursive: true);
   }
 }
+
+/// The test shaders [registerTestShaders] registered in this test file.
+final Set<String> _registeredTestShaders = {};

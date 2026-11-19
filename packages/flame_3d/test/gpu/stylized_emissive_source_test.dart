@@ -222,10 +222,24 @@ Surface _sphere(_Layout layout, Material material, {int n = 24}) {
   );
 }
 
-/// Renders the twelve spheres of [surface], sphere `i` drawn with
+/// The time a test that renders many frames may take, enough for a loaded
+/// machine.
+const _heavy = Timeout(Duration(minutes: 3));
+
+/// The device and the render context a test renders all its frames with, so
+/// that its pipelines, buffers and targets are made once.
+typedef _Gpu = ({GraphicsDevice device, RenderContext3D context});
+
+_Gpu _newGpu() {
+  final device = GraphicsDevice();
+  return (device: device, context: RenderContext3D(device));
+}
+
+/// Renders the twelve spheres of [surface] with [gpu], sphere `i` drawn with
 /// `material(i)`, its instance color and the instance data
 /// `(boost, 0, 0, w(i))`.
 Future<Pixels> _render(
+  _Gpu gpu,
   Surface surface, {
   required int msaa,
   required Material Function(int i) material,
@@ -238,6 +252,8 @@ Future<Pixels> _render(
     projection: _projection,
     lights: _lights,
     msaaSampleCount: msaa,
+    device: gpu.device,
+    context: gpu.context,
     draw: (context) {
       for (var i = 0; i < _spheres.length; i++) {
         final (_, _, color, boost, _) = _spheres[i];
@@ -324,51 +340,95 @@ const _instanceSources = [
   EmissiveColorSource.rim,
 ];
 
-/// Checks, for [layout] and [state], every instance source, MSAA sample count
-/// and strength: the spheres drawn with one material glowing in their own
-/// colors match, channel for channel, the spheres drawn with one material
-/// each, glowing in its emissive color.
+/// Checks, for [layout] and [state], every MSAA sample count and strength:
+///
+/// - with the default source, the spheres (with palettes, boosts, fades and
+///   a boost color) match, channel for channel, the same spheres drawn with
+///   the fragment stage of before;
+/// - with every instance source, the spheres drawn with one material glowing
+///   in their own colors match, channel for channel, the spheres drawn with
+///   one material each, glowing in its emissive color.
 Future<void> _expectSourcesExact(_Layout layout, _State state) async {
+  final gpu = _newGpu();
+  // Every draw gives its material.
+  final surface = _sphere(layout, _material(state));
   for (final (strength, boostColor) in _strengths) {
-    final plain = _material(
+    StylizedMaterial unsourcedMaterial() => _material(
       state,
       emissiveStrength: strength,
       emissiveBoostColor: boostColor,
       accentPalette: _accents,
       rimPalette: _rims,
     );
-    final surface = _sphere(layout, plain);
-    for (final source in _instanceSources) {
-      final shared = _material(
-        state,
-        source: source,
-        emissiveStrength: strength,
-        emissiveBoostColor: boostColor,
-        accentPalette: _accents,
-        rimPalette: _rims,
-      );
-      final separate = [
-        for (var i = 0; i < _spheres.length; i++)
-          _material(
+    final plain = unsourcedMaterial();
+    final before = _withFragmentOfBefore(unsourcedMaterial());
+    final materials = {
+      for (final source in _instanceSources)
+        source: (
+          shared: _material(
             state,
-            emissiveColor: _glowOf(i, source),
+            source: source,
             emissiveStrength: strength,
             emissiveBoostColor: boostColor,
-            accentColor: _accentOf(i),
-            rimPalette: [if (_hasRim(i)) _rims[_spheres[i].$2!]],
+            accentPalette: _accents,
+            rimPalette: _rims,
           ),
-      ];
-      for (final msaa in _msaaSampleCounts) {
+          separate: [
+            for (var i = 0; i < _spheres.length; i++)
+              _material(
+                state,
+                emissiveColor: _glowOf(i, source),
+                emissiveStrength: strength,
+                emissiveBoostColor: boostColor,
+                accentColor: _accentOf(i),
+                rimPalette: [if (_hasRim(i)) _rims[_spheres[i].$2!]],
+              ),
+          ],
+        ),
+    };
+    for (final msaa in _msaaSampleCounts) {
+      final unsourced = await _render(
+        gpu,
+        surface,
+        msaa: msaa,
+        material: (_) => plain,
+        w: _packed,
+      );
+      final ofBefore = await _render(
+        gpu,
+        surface,
+        msaa: msaa,
+        material: (_) => before,
+        w: _packed,
+      );
+      final defaultWhere =
+          '$layout, $state, default source, MSAA $msaa, strength $strength, '
+          'boost color $boostColor';
+      expect(
+        ofBefore.count((r, g, b, a) => a > 0),
+        greaterThan(12 * 1000),
+        reason: defaultWhere,
+      );
+      expect(
+        _compare(unsourced, ofBefore),
+        (0, 0),
+        reason: '$defaultWhere: against the fragment stage of before',
+      );
+
+      for (final MapEntry(key: source, value: (:shared, :separate))
+          in materials.entries) {
         final where =
             '$layout, $state, $source, MSAA $msaa, strength '
             '$strength, boost color $boostColor';
         final glowing = await _render(
+          gpu,
           surface,
           msaa: msaa,
           material: (_) => shared,
           w: _packed,
         );
         final reference = await _render(
+          gpu,
           surface,
           msaa: msaa,
           material: (i) => separate[i],
@@ -386,12 +446,6 @@ Future<void> _expectSourcesExact(_Layout layout, _State state) async {
 
         // The source changes the picture where the spheres glow; in the
         // standard layout, which has no emissive mask, it changes nothing.
-        final unsourced = await _render(
-          surface,
-          msaa: msaa,
-          material: (_) => plain,
-          w: _packed,
-        );
         final (_, changed) = _compare(glowing, unsourced);
         if (layout == _Layout.standard) {
           expect(changed, 0, reason: '$where: no emissive mask, no glow');
@@ -403,65 +457,30 @@ Future<void> _expectSourcesExact(_Layout layout, _State state) async {
   }
 }
 
-/// Checks, for [layout] and [state], that the material with the default
-/// source draws exactly as its fragment shader of before did, with palettes,
-/// boosts, fades, strengths and a boost color.
-Future<void> _expectDefaultAsBefore(_Layout layout, _State state) async {
-  for (final (strength, boostColor) in _strengths) {
-    StylizedMaterial material({required bool before}) {
-      final material = _material(
-        state,
-        emissiveStrength: strength,
-        emissiveBoostColor: boostColor,
-        accentPalette: _accents,
-        rimPalette: _rims,
-      );
-      if (before) {
-        material.fragmentShader = FragmentShader.fromAsset(
-          'test/stylized_emissive_reference.shaderbundle',
-          slots: [
-            'matCapTexture',
-            'gemMatCapTexture',
-            'Material',
-            RenderContext3D.stylizedPassBlock,
-            RenderContext3D.shadowMapSampler,
-          ],
-        );
-      }
-      return material;
-    }
-
-    final now = material(before: false);
-    final before = material(before: true);
-    final surface = _sphere(layout, now);
-    for (final msaa in _msaaSampleCounts) {
-      final where =
-          '$layout, $state, MSAA $msaa, strength $strength, '
-          'boost color $boostColor';
-      final pixels = await _render(
-        surface,
-        msaa: msaa,
-        material: (_) => now,
-        w: _packed,
-      );
-      final reference = await _render(
-        surface,
-        msaa: msaa,
-        material: (_) => before,
-        w: _packed,
-      );
-      expect(
-        reference.count((r, g, b, a) => a > 0),
-        greaterThan(12 * 1000),
-        reason: where,
-      );
-      expect(_compare(pixels, reference), (0, 0), reason: where);
-    }
-  }
+/// [material] drawn with StylizedMaterial's fragment stage of before its
+/// emissive color sources (test/gpu/shaders/stylized_emissive_reference.frag).
+StylizedMaterial _withFragmentOfBefore(StylizedMaterial material) {
+  return material
+    ..fragmentShader = FragmentShader.fromAsset(
+      'test/stylized_emissive_reference.shaderbundle',
+      slots: [
+        'matCapTexture',
+        'gemMatCapTexture',
+        'Material',
+        RenderContext3D.stylizedPassBlock,
+        RenderContext3D.shadowMapSampler,
+      ],
+    );
 }
 
 void main() {
   setUpGpu();
+
+  setUpAll(() async {
+    if (gpuAvailable) {
+      await registerTestShaders(['stylized_emissive_reference']);
+    }
+  });
 
   group('StylizedMaterial emissive color sources', () {
     test('defaults to the emissive color', () {
@@ -481,18 +500,11 @@ void main() {
     for (final layout in _Layout.values) {
       for (final state in _State.values) {
         testGpuEngine(
-          'match one material per glow color: $layout, $state',
+          'match one material per glow color, and the default draws as '
+          'before: $layout, $state',
           () => _expectSourcesExact(layout, state),
+          timeout: _heavy,
         );
-      }
-    }
-
-    for (final layout in _Layout.values) {
-      for (final state in _State.values) {
-        testGpuEngine('the default draws as before: $layout, $state', () async {
-          await registerTestShaders(['stylized_emissive_reference']);
-          await _expectDefaultAsBefore(layout, state);
-        });
       }
     }
 
@@ -640,13 +652,16 @@ void main() {
         );
       }
 
+      // One device for every snapshot: its pipelines and targets are made
+      // once.
+      GraphicsDevice? sharedDevice;
       Future<Pixels> snapshot(World3D world, Msaa msaa) async {
         final game = FlameGame3D(world: world);
         await tester.pumpWidget(GameWidget(key: ObjectKey(game), game: game));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 16));
         return (await tester.runAsync(() async {
-          final device = GraphicsDevice();
+          final device = sharedDevice ??= GraphicsDevice();
           final context = RenderContext3D(device);
           device.begin();
           final image = world.renderToImage(
@@ -682,11 +697,15 @@ void main() {
               rimPalette: [if (_hasRim(i)) _rims[_spheres[i].$2!]],
             ),
         ];
+        late final Pixels bloomed;
         for (final msaa in Msaa.values) {
           final glowing = await snapshot(
             world((_) => shared, _packed, bloom: true),
             msaa,
           );
+          if (msaa == Msaa.off) {
+            bloomed = glowing;
+          }
           final reference = await snapshot(
             world((i) => separate[i], _separate, bloom: true),
             msaa,
@@ -702,12 +721,8 @@ void main() {
           world((_) => shared, _packed, bloom: false),
           Msaa.off,
         );
-        final bloomed = await snapshot(
-          world((_) => shared, _packed, bloom: true),
-          Msaa.off,
-        );
         expect(differingPixels(unbloomed, bloomed), greaterThan(1000));
       }
-    });
+    }, timeout: _heavy);
   });
 }
