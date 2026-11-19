@@ -169,6 +169,79 @@ class _UpConsumingBox({required super.mesh})
 }
 
 void main() {
+  group('PointerRouter3D picks only what its view draws', () {
+    test('forCamera skips objects outside the camera mask and hidden ones', () {
+      final cube = CuboidMesh(size: Vector3.all(2));
+      final back = _InteractiveBox(mesh: cube, position: Vector3(0, 0, -3));
+      final front = _InteractiveBox(mesh: cube, position: Vector3(0, 0, 2))
+        ..cameraMask = 0x1;
+      final world = World3D(children: [back, front]);
+      final camera = CameraComponent3D(
+        position: Vector3(0, 0, 12),
+        target: Vector3.zero(),
+        viewport: FixedSizeViewport(800, 600),
+        cameraMask: 0x2,
+      );
+      final router = PointerRouter3D.forCamera(
+        world: world,
+        camera: camera,
+        cullMode: CullMode.none,
+      );
+      expect(router.pickCameraMask, 0x2);
+      final center = camera.worldToViewportPoint(Vector3.zero());
+
+      router
+        ..dispatchTapDown(center)
+        ..dispatchTapUp(center);
+      expect(front.log, isEmpty, reason: 'the camera does not draw it');
+      expect(back.log, ['tapDown', 'tapUp']);
+
+      // Drawn by the camera again, the front box takes the tap ...
+      back.log.clear();
+      front.cameraMask = 0x3;
+      router
+        ..dispatchTapDown(center)
+        ..dispatchTapUp(center);
+      expect(front.log, ['tapDown', 'tapUp']);
+      expect(back.log, isEmpty);
+
+      // ... until it is hidden.
+      front
+        ..log.clear()
+        ..visible = false;
+      router.dispatchHover(center);
+      expect(front.log, isEmpty);
+      expect(back.log, ['hoverEnter']);
+    });
+
+    test('forScene uses the layer cameraMask', () {
+      final cube = CuboidMesh(size: Vector3.all(1));
+      final back = _InteractiveBox(mesh: cube, position: Vector3(0, 0, -2));
+      final front = _InteractiveBox(mesh: cube, position: Vector3(0, 0, 2))
+        ..cameraMask = 0x4;
+      final scene = Scene3DComponent(
+        projection: Scene3DProjection.affine(
+          origin: Vector2.zero(),
+          xAxis: Vector2(40, 0),
+          yAxis: Vector2(0, -40),
+          zAxis: Vector2.zero(),
+          towardsViewer: Vector3(0, 0, 1),
+          near: -50,
+          far: 50,
+        ),
+        cameraMask: 0x8,
+      );
+      scene.world.addAll([back, front]);
+      final router = PointerRouter3D.forScene(scene, cullMode: CullMode.none);
+      expect(router.pickCameraMask, 0x8);
+
+      final point = scene.scenePointToLocal(Vector3.zero());
+      expect(router.dispatchTapDown(point), isTrue);
+      expect(front.log, isEmpty);
+      expect(back.log, ['tapDown']);
+    });
+  });
+
   group('PointerRouter3D event closure and per-pointer state', () {
     test('a listener left out of a handled tap up gets a cancel', () {
       final child = _UpConsumingBox(mesh: CuboidMesh(size: Vector3.all(2)));

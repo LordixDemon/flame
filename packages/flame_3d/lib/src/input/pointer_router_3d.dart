@@ -161,9 +161,19 @@ class PointerRouter3D._({
     return _camera!.viewportPointToRay(point, output: output);
   }
 
+  /// The camera mask of what this router's view draws: the `forCamera`
+  /// camera's or the `forScene` layer's. Picking hits only objects whose
+  /// `cameraMask` shares a bit with it (and that are visible).
+  int get pickCameraMask => _camera?.cameraMask ?? _scene!.cameraMask;
+
   (Ray ray, RayHit3D? hit) _pick(Vector2 point) {
     final ray = pointToWorldRay(point);
-    final hit = world.raycast(ray, cullMode: cullMode, filter: filter);
+    final hit = world.raycast(
+      ray,
+      cullMode: cullMode,
+      filter: filter,
+      cameraMask: pickCameraMask,
+    );
     return (ray, hit);
   }
 

@@ -85,6 +85,11 @@ bounds the ray crosses is tested against the triangles of its meshes, through th
 hierarchies, and the nearest hit wins. Hits are therefore ordered by depth, whatever the order of
 the components.
 
+Only what the router's view draws is picked. The ray cast gets the camera mask of the `forCamera`
+camera or of the `forScene` layer (`pickCameraMask`), so an object whose `cameraMask` (or an
+ancestor's) shares no bit with it is skipped with its subtree, and so is an object hidden with
+`visible = false`; neither receives events.
+
 The nearest hit wins even when the object hit does not listen to events: a wall, a decoration or
 an effect mesh in front of a piece takes the tap, and the piece behind it gets nothing. Exclude
 such objects with the router's `filter`. `cullMode` (default: each material's own) can make
@@ -93,16 +98,12 @@ back faces hittable, and `filter` and `cullMode` can be changed at any time:
 ```dart
 final router = PointerRouter3D.forScene(
   layer,
-  filter: (object) => object is Piece && object.isEffectivelyVisible,
+  filter: (object) => object is Piece,
 );
 ```
 
-```{note}
-Raycasts do not look at `visible` or `cameraMask`: an object hidden with
-`visible = false` is still hit and still receives events. Add
-`object.isEffectivelyVisible` to the filter, as above, when hidden objects must
-not be picked.
-```
+An invisible catcher mesh that still draws (for example one with a `ShadowCatcherMaterial`) is
+visible as far as the ray cast goes; exclude it with the `filter`.
 
 When the object hit is an `InstancedGroup3D`, `event.instanceIndex` is the index of the instance
 hit. `event.hit` is the `RayHit3D` with the world point, normal, triangle and surface.
@@ -419,14 +420,11 @@ component: an effect that moves the object would be undone by the next blend.
 
 ## Limitations
 
-- Raycast picking ignores `visible` and `cameraMask`; hidden objects are picked unless the `filter`
-  excludes them.
 - The nearest hit wins, listener or not; there is no pass-through to objects behind a
   non-interactive one other than the `filter`.
 - A `forScene` router must be under the same 2D camera as its layer.
 - `PointerRouter3D` works with one camera or layer; for split screens with a `CameraStack3D`, pick
-  with `CameraStack3D.raycastAt` (see `cameras.md`), which also honors `cameraMask` and
-  visibility.
+  with `CameraStack3D.raycastAt` (see `cameras.md`), which uses the mask of the slot's camera.
 - `SplinePathEffect3D` does not move at constant speed (a speed-based controller sets its average
   speed); `SquashStretchEffect3D` is exact only for the principal axes and has no measure for a
   speed-based controller.

@@ -126,9 +126,10 @@ final behindWall = SpatialAudioEmitter3D(
 );
 ```
 
-The test is all or nothing, and it uses the triangles of every mesh in the world, also small props
-and invisible meshes (raycasts ignore `visible`), unless the filter excludes them. It costs one
-raycast per evaluation.
+The test is all or nothing, and it uses the triangles of every mesh in the world that some camera
+draws, also small props, unless the filter excludes them; hidden meshes (`visible = false`) and
+meshes with a `cameraMask` of `0` do not occlude (see `World3D.raycast`). It costs one raycast per
+evaluation.
 
 
 ## Making sound
@@ -364,4 +365,4 @@ over per-emitter raycasts, and use `linear` rolloff so that distant sounds drop 
   back, no elevation and no head-related filtering.
 - The low-pass cutoff and the reverb are parameters only; the engine must provide the filter and
   the reverb.
-- Built-in occlusion is a single all-or-nothing ray that also hits invisible meshes.
+- Built-in occlusion is a single all-or-nothing ray.
