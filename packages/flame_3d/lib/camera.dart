@@ -5,6 +5,7 @@ export 'package:vector_math/vector_math.dart' show Frustum, Plane, Ray;
 export 'src/camera/camera_component_3d.dart';
 export 'src/camera/camera_dolly_track_3d.dart';
 export 'src/camera/camera_shake_3d.dart';
+export 'src/camera/camera_stack_3d.dart';
 export 'src/camera/first_person_camera.dart';
 export 'src/camera/orbit_camera_controller_3d.dart';
 export 'src/camera/ray_hit_3d.dart';

@@ -18,6 +18,17 @@ enum GpuPixelFormat() {
   /// 8 bits per channel, BGRA order.
   bgra8888,
 
+  /// 8 bits per channel in sRGB color space, RGBA order (decoded to linear on
+  /// sample).
+  rgba8888Srgb,
+
+  /// 8 bits per channel in sRGB color space, BGRA order (decoded to linear on
+  /// sample).
+  bgra8888Srgb,
+
+  /// 16-bit half-float per channel, RGBA order (64 bits per pixel, linear HDR).
+  rgbaFloat16,
+
   /// 32-bit float per channel, RGBA order.
   rgbaFloat32,
 
@@ -27,6 +38,61 @@ enum GpuPixelFormat() {
 
   /// The backend's default depth/stencil format.
   depthStencil,
+
+  /// BC1 / DXT1 compressed RGBA, 4x4 texel blocks, 8 bytes per block.
+  bc1Rgba,
+
+  /// BC3 / DXT5 compressed RGBA, 4x4 texel blocks, 16 bytes per block.
+  bc3Rgba,
+
+  /// BC7 compressed high-quality RGBA, 4x4 texel blocks, 16 bytes per block.
+  bc7Rgba,
+
+  /// ETC2 compressed RGB8, 4x4 texel blocks, 8 bytes per block.
+  etc2Rgb8,
+
+  /// ETC2 compressed RGBA8, 4x4 texel blocks, 16 bytes per block.
+  etc2Rgba8,
+
+  /// ASTC LDR compressed RGBA, 4x4 texel blocks, 16 bytes per block.
+  astc4x4,
+
+  /// ASTC LDR compressed RGBA, 8x8 texel blocks, 16 bytes per block.
+  astc8x8;
+
+  /// Whether this format stores block-compressed texels.
+  bool get isCompressed => blockWidth > 1 || blockHeight > 1;
+
+  /// Width of one compression block in texels (`1` for uncompressed formats).
+  int get blockWidth => switch (this) {
+    astc8x8 => 8,
+    bc1Rgba || bc3Rgba || bc7Rgba || etc2Rgb8 || etc2Rgba8 || astc4x4 => 4,
+    _ => 1,
+  };
+
+  /// Height of one compression block in texels (`1` for uncompressed formats).
+  int get blockHeight => blockWidth;
+
+  /// Byte size of one texel (uncompressed) or one compressed block.
+  int get bytesPerBlock => switch (this) {
+    rgba8888 ||
+    bgra8888 ||
+    rgba8888Srgb ||
+    bgra8888Srgb ||
+    r32Float ||
+    depthStencil => 4,
+    rgbaFloat16 || bc1Rgba || etc2Rgb8 => 8,
+    rgbaFloat32 || bc3Rgba || bc7Rgba || etc2Rgba8 || astc4x4 || astc8x8 => 16,
+  };
+}
+
+/// Color-space interpretation of an 8-bit texture's stored texels.
+enum TextureColorSpace() {
+  /// Stored values are already linear (data maps: normals, ORM, LUTs).
+  linear,
+
+  /// Stored values are sRGB-encoded and converted to linear when sampled.
+  srgb,
 }
 
 /// Width of the integers stored in an index buffer.
@@ -74,10 +140,18 @@ enum BlendState() {
   /// it leaves only the object's nearest surfaces to blend, so that the
   /// object fades as one piece instead of showing its own hidden parts.
   depthOnly,
+
+  /// Weighted Blended OIT accumulation (`color = src + dst`,
+  /// `alpha = srcAlpha + dstAlpha`).
+  wboitAccum,
+
+  /// Weighted Blended OIT revealage product (`color = dst * (1 - src)`,
+  /// `alpha = dstAlpha * (1 - srcAlpha)`).
+  wboitReveal,
 }
 
 /// A comparison between an incoming value and a stored one, used for the
-/// depth test.
+/// depth and stencil tests.
 ///
 /// A fragment passes when `incoming <op> stored` holds.
 enum CompareFunction() {
@@ -107,6 +181,60 @@ enum CompareFunction() {
   always,
 }
 
+/// Operation applied to a stencil buffer byte after stencil/depth testing.
+enum StencilOp() {
+  /// Keeps the current stencil value unchanged.
+  keep,
+
+  /// Sets the stencil value to `0`.
+  zero,
+
+  /// Sets the stencil value to `StencilState.referenceValue`.
+  replace,
+
+  /// Increments the stencil value, clamping at `255`.
+  incrementClamp,
+
+  /// Decrements the stencil value, clamping at `0`.
+  decrementClamp,
+
+  /// Bitwise-inverts the stencil value.
+  invert,
+
+  /// Increments the stencil value, wrapping from `255` to `0`.
+  incrementWrap,
+
+  /// Decrements the stencil value, wrapping from `0` to `255`.
+  decrementWrap,
+}
+
+/// Polygon rasterization fill mode.
+enum PolygonFillMode() {
+  /// Fills polygon interiors normally.
+  fill,
+
+  /// Rasterizes triangle edges only (hardware wireframe).
+  wireframe,
+}
+
+/// Primitive assembly topology for vertex/index buffers.
+enum PrimitiveTopology() {
+  /// Separate triangles (`3` indices per triangle).
+  triangles,
+
+  /// Connected strip of triangles.
+  triangleStrip,
+
+  /// Separate line segments (`2` indices per segment).
+  lines,
+
+  /// Connected polyline strip.
+  lineStrip,
+
+  /// Individual point primitives (`1` index per point).
+  points,
+}
+
 /// Face culling mode. Controls which triangle faces are discarded before
 /// rasterization.
 enum CullMode() {
@@ -128,4 +256,44 @@ enum WindingOrder() {
   /// Triangles whose vertices appear counter-clockwise on screen are
   /// front-facing.
   counterClockwise,
+}
+
+/// Order-independent transparency mode for a `World3D`.
+enum OitMode3D() {
+  /// Standard back-to-front per-draw alpha sorting.
+  none,
+
+  /// McGuire & Bavoil Weighted Blended Order-Independent Transparency,
+  /// eliminating Z-sort popping on intersecting translucent surfaces.
+  weightedBlended,
+}
+
+/// Diagnostic buffer visualization mode for a `World3D` or `Scene3DComponent`.
+enum RenderDebugMode3D() {
+  /// Normal lit and post-processed rendering.
+  none,
+
+  /// World/view surface normals mapped from `[-1, 1]` to `[0, 1]` RGB.
+  normals,
+
+  /// Normalized clip depth visualization.
+  depth,
+
+  /// Screen-space ambient occlusion factor in grayscale.
+  ssao,
+
+  /// Directional CSM cascade split index tint overlay.
+  cascadeSplits,
+
+  /// Hardware polygon wireframe rasterization.
+  wireframe,
+
+  /// Additive fragment overdraw heat visualization.
+  overdraw,
+
+  /// Material roughness (`G`) and metallic (`B`) channels.
+  roughnessMetallic,
+
+  /// Unlit base albedo color.
+  albedo,
 }

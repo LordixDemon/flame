@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:flame/events.dart';
 import 'package:flame/game.dart';
 import 'package:flame_3d/camera.dart';
+import 'package:flame_3d/cinematics.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/debug.dart';
 import 'package:flame_3d/game.dart';
@@ -22,6 +23,8 @@ enum PureCameraMode(final String label) {
   springArm3D('SpringArmCamera3D'),
   dollyTrack3D('CameraDollyTrack3D'),
   customMirrored('Custom Mirrored Matrix'),
+  splitScreenStack('9. Split-Screen + Overlay Stack'),
+  cinematicDirector('10. VirtualCam + Timeline3D'),
 }
 
 /// Pure 3D [FlameGame3D] testbed exercising [CameraComponent3D] modes
@@ -69,6 +72,17 @@ class PureCameraLabGame() extends FlameGame3D with TapCallbacks {
   late final SpringArmCamera3D springArm;
   late final CameraDollyTrack3D dollyTrack;
   late final CameraShake3D cameraShake;
+  late final CameraComponent3D _splitLeftCamera;
+  late final CameraComponent3D _splitRightCamera;
+  late final CameraComponent3D _overlayDepthCamera;
+  late final World3D _overlayWorld;
+  late final MeshComponent _overlayEmblem;
+  late final CameraStack3D _splitOverlayStack;
+  late final VirtualCamera3D _vcamWide;
+  late final VirtualCamera3D _vcamCloseUp;
+  late final VirtualCameraBrain3D _vcamBrain;
+  late final Group3D _directorDroneRig;
+  late final Timeline3D _directorTimeline;
 
   Vector2 beaconAScreen = Vector2.zero();
   Vector2 beaconBScreen = Vector2.zero();
@@ -250,11 +264,134 @@ class PureCameraLabGame() extends FlameGame3D with TapCallbacks {
       maxPositionOffset: 0.42,
       maxAngleRad: 0.065,
     );
+
+    // Mode 9: Split-Screen (`CameraStack3D.splitHorizontal`) + foreground
+    // `CameraClearMode3D.depthOnly` 3D emblem overlay slot!
+    _splitLeftCamera = CameraComponent3D(
+      position: Vector3(-6.8, 4.8, 6.8),
+      target: Vector3(0, 0.7, 0),
+      up: Vector3(0, 1, 0),
+      fovY: 54,
+    );
+    _splitRightCamera = CameraComponent3D(
+      position: Vector3(5.2, 3.2, 5.2),
+      target: Vector3(2.5, 0.4, 0),
+      up: Vector3(0, 1, 0),
+      fovY: 52,
+    );
+    _overlayEmblem = MeshComponent(
+      mesh: TorusMesh(
+        majorRadius: 0.55,
+        minorRadius: 0.16,
+        material: goldMat,
+      ),
+      color: const ui.Color(0xFF38BDF8),
+    );
+    _overlayWorld = World3D()
+      ..addAll([
+        LightComponent.directional(
+          direction: Vector3(-0.4, -0.8, -0.6),
+          intensity: 2.2,
+        ),
+        LightComponent.hemisphere(
+          skyColor: const ui.Color(0xFFBAE6FD),
+          groundColor: const ui.Color(0xFF1E293B),
+          intensity: 0.7,
+        ),
+        _overlayEmblem,
+      ]);
+    _overlayDepthCamera = CameraComponent3D(
+      position: Vector3(0, 0.35, 2.5),
+      target: Vector3.zero(),
+      up: Vector3(0, 1, 0),
+      fovY: 46,
+    );
+    _splitOverlayStack =
+        CameraStack3D.splitHorizontal(
+          _splitLeftCamera,
+          _splitRightCamera,
+          borderColor: const ui.Color(0xFF38BDF8),
+        )..addSlot(
+          CameraViewportSlot3D(
+            camera: _overlayDepthCamera,
+            world: _overlayWorld,
+            normalizedViewport: const ui.Rect.fromLTWH(0.38, 0.68, 0.24, 0.26),
+            clearMode: CameraClearMode3D.depthOnly,
+            priority: 10,
+            borderColor: const ui.Color(0xFFFACC15),
+            label: 'overlay',
+          ),
+        );
+
+    // Mode 10: `VirtualCameraBrain3D` + 2 prioritized `VirtualCamera3D`s driven
+    // by a looping `Timeline3D` (`CameraShotTrack3D` + `TransformTrack3D`)!
+    _directorDroneRig = Group3D(position: Vector3(-5.5, 4.2, 6.2));
+    _vcamWide = VirtualCamera3D(
+      fovY: 56,
+      lookAtTarget: beaconA,
+      lookAtOffset: Vector3(1.2, 0.0, 0.8),
+      damping: 6.0,
+    );
+    _directorDroneRig.add(_vcamWide);
+    _vcamCloseUp = VirtualCamera3D(
+      position: Vector3(4.6, 2.4, 4.8),
+      fovY: 42,
+      lookAtTarget: rover,
+      lookAtOffset: Vector3(0, 0.25, 0),
+      damping: 8.0,
+    );
+    world.addAll([_directorDroneRig, _vcamCloseUp]);
+    _vcamBrain = VirtualCameraBrain3D(
+      camera: camera,
+      cameras: [_vcamWide, _vcamCloseUp],
+      blendDuration: 0.65,
+      world: world,
+    );
+    _directorTimeline = Timeline3D(
+      loop: true,
+      autoPlay: true,
+      tracks: [
+        CameraShotTrack3D(
+          shots: [
+            CameraShot3D(
+              camera: _vcamWide,
+              startTime: 0.0,
+              endTime: 2.5,
+              activePriority: 20,
+            ),
+            CameraShot3D(
+              camera: _vcamCloseUp,
+              startTime: 2.5,
+              endTime: 5.0,
+              activePriority: 30,
+            ),
+          ],
+        ),
+        TransformTrack3D(
+          target: _directorDroneRig,
+          positionKeys: [
+            TransformKeyframe3D(
+              time: 0.0,
+              value: Vector3(-5.8, 4.4, 6.2),
+            ),
+            TransformKeyframe3D(
+              time: 2.5,
+              value: Vector3(0.5, 5.2, 6.8),
+            ),
+            TransformKeyframe3D(
+              time: 5.0,
+              value: Vector3(-5.8, 4.4, 6.2),
+            ),
+          ],
+        ),
+      ],
+    );
   }
 
   /// Switches the active 3D camera / projection mode.
   void setCameraMode(PureCameraMode next) {
     _mode = next;
+    cameraStack = null;
     camera
       ..customViewMatrix = null
       ..customProjectionMatrix = null;
@@ -315,6 +452,18 @@ class PureCameraLabGame() extends FlameGame3D with TapCallbacks {
         camera
           ..customViewMatrix = view
           ..customProjectionMatrix = proj;
+      case PureCameraMode.splitScreenStack:
+        cameraStack = _splitOverlayStack;
+      case PureCameraMode.cinematicDirector:
+        camera
+          ..projection = CameraProjection.perspective
+          ..near = 0.1
+          ..far = 100
+          ..up.setValues(0, 1, 0);
+        if (!_directorTimeline.isPlaying) {
+          _directorTimeline.play();
+        }
+        _vcamBrain.evaluate(0.016);
     }
     hudTick.value++;
   }
@@ -413,8 +562,28 @@ class PureCameraLabGame() extends FlameGame3D with TapCallbacks {
           ..update(dt);
       case PureCameraMode.dollyTrack3D:
         dollyTrack.update(dt);
+      case PureCameraMode.splitScreenStack:
+        final splitAng = _time * 0.4;
+        _splitLeftCamera
+          ..position.setValues(
+            math.cos(splitAng) * 7.4,
+            4.6,
+            math.sin(splitAng) * 7.4,
+          )
+          ..target.setValues(0, 0.65, 0);
+        _splitRightCamera
+          ..position.setValues(rx + 3.2, 2.6, rz + 3.2)
+          ..target.setFrom(rover.position);
+        _overlayEmblem.rotation.setAxisAngle(
+          Vector3(0.35, 1.0, 0.25)..normalize(),
+          _time * 1.8,
+        );
+      case PureCameraMode.cinematicDirector:
+        _directorTimeline.update(dt);
+        _vcamBrain.evaluate(dt);
     }
-    if (_mode != PureCameraMode.customMirrored) {
+    if (_mode != PureCameraMode.customMirrored &&
+        _mode != PureCameraMode.splitScreenStack) {
       cameraShake.update(dt);
     }
 
@@ -436,8 +605,18 @@ class PureCameraLabGame() extends FlameGame3D with TapCallbacks {
 
   @override
   void onTapUp(TapUpEvent event) {
-    final ray = camera.viewportPointToRay(event.canvasPosition);
-    final hit = world.raycast(ray);
+    RayHit3D? hit;
+    if (cameraStack case final stack?) {
+      final res = stack.raycastAt(
+        event.canvasPosition,
+        ui.Size(canvasSize.x, canvasSize.y),
+        defaultWorld: world,
+      );
+      hit = res?.$2;
+    } else {
+      final ray = camera.viewportPointToRay(event.canvasPosition);
+      hit = world.raycast(ray);
+    }
     if (hit == null) {
       lastPickText = 'Miss (background)';
     } else {
@@ -447,6 +626,8 @@ class PureCameraLabGame() extends FlameGame3D with TapCallbacks {
           ? 'PBR Cone'
           : identical(hit.object, rover)
           ? 'Rover'
+          : identical(hit.object, _overlayEmblem)
+          ? 'Overlay Emblem'
           : 'Floor';
       lastPickText =
           'Picked $tag at d=${hit.distance.toStringAsFixed(2)} '

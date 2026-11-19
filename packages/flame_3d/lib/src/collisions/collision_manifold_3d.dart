@@ -143,8 +143,71 @@ abstract final class Narrowphase3D._() {
         b,
         transformB,
       ),
+      (final CompoundShape3D a, _) => _pickDeepestMerged(
+        _testCompoundVsShapeAll(a, transformA, shapeB, transformB),
+      ),
+      (_, final CompoundShape3D b) => _pickDeepestMerged(
+        _testCompoundVsShapeAll(b, transformB, shapeA, transformA),
+      )?.flipped(),
+      (final HeightfieldShape3D a, _) => heightfieldShape(
+        shapeB,
+        transformB,
+        a,
+        transformA,
+      )?.flipped(),
+      (_, final HeightfieldShape3D b) => heightfieldShape(
+        shapeA,
+        transformA,
+        b,
+        transformB,
+      ),
       _ => convexConvex(shapeA, transformA, shapeB, transformB),
     };
+  }
+
+  /// Returns all distinct contact manifolds between [shapeA] (at [transformA])
+  /// and [shapeB] (at [transformB]), preserving multi-normal contacts for
+  /// concave [CompoundShape3D] and [HeightfieldShape3D] shapes while merging
+  /// co-directional contact points.
+  static List<CollisionManifold3D> testAll(
+    Shape3D shapeA,
+    Matrix4 transformA,
+    Shape3D shapeB,
+    Matrix4 transformB,
+  ) {
+    if (shapeA is CompoundShape3D) {
+      return _mergeCoDirectionalManifolds(
+        _testCompoundVsShapeAll(shapeA, transformA, shapeB, transformB),
+      );
+    }
+    if (shapeB is CompoundShape3D) {
+      final flippedAll = _testCompoundVsShapeAll(
+        shapeB,
+        transformB,
+        shapeA,
+        transformA,
+      );
+      if (flippedAll.isEmpty) {
+        return const [];
+      }
+      return _mergeCoDirectionalManifolds([
+        for (final m in flippedAll) m.flipped(),
+      ]);
+    }
+    if (shapeA is HeightfieldShape3D) {
+      final raw = heightfieldShapeAll(shapeB, transformB, shapeA, transformA);
+      if (raw.isEmpty) {
+        return const [];
+      }
+      return _mergeCoDirectionalManifolds([for (final m in raw) m.flipped()]);
+    }
+    if (shapeB is HeightfieldShape3D) {
+      return _mergeCoDirectionalManifolds(
+        heightfieldShapeAll(shapeA, transformA, shapeB, transformB),
+      );
+    }
+    final single = test(shapeA, transformA, shapeB, transformB);
+    return single == null ? const [] : [single];
   }
 
   /// Exact analytical Sphere-Sphere narrowphase.
@@ -564,6 +627,327 @@ abstract final class Narrowphase3D._() {
     return results;
   }
 
+  /// Intersects [shape] (under [shapeTransform]) against a
+  /// [HeightfieldShape3D] (under [heightfieldTransform]) using direct `O(1)`
+  /// grid-cell clamping, returning the merged deepest [CollisionManifold3D]
+  /// oriented from [shape] toward [heightfield], or `null` when separated.
+  static CollisionManifold3D? heightfieldShape(
+    Shape3D shape,
+    Matrix4 shapeTransform,
+    HeightfieldShape3D heightfield,
+    Matrix4 heightfieldTransform,
+  ) {
+    return _pickDeepestMerged(
+      heightfieldShapeAll(
+        shape,
+        shapeTransform,
+        heightfield,
+        heightfieldTransform,
+      ),
+    );
+  }
+
+  /// Returns all triangle contact manifolds where [shape] (under
+  /// [shapeTransform]) overlaps [heightfield] (under [heightfieldTransform]).
+  static List<CollisionManifold3D> heightfieldShapeAll(
+    Shape3D shape,
+    Matrix4 shapeTransform,
+    HeightfieldShape3D heightfield,
+    Matrix4 heightfieldTransform,
+  ) {
+    if (shape is HeightfieldShape3D) {
+      return const [];
+    }
+    if (shape is CompoundShape3D) {
+      return _testCompoundVsShapeAll(
+        shape,
+        shapeTransform,
+        heightfield,
+        heightfieldTransform,
+      );
+    }
+
+    final invHf = Matrix4.copy(heightfieldTransform);
+    if (invHf.invert().abs() < 1e-15) {
+      return const [];
+    }
+
+    final worldBox = Aabb3();
+    shape.computeWorldAabb(shapeTransform, worldBox);
+    final localBox = Aabb3()
+      ..setFrom(worldBox)
+      ..transform(invHf);
+
+    if (localBox.max.y < heightfield.minHeight - 1e-4 ||
+        localBox.min.y > heightfield.maxHeight + 1e-4) {
+      return const [];
+    }
+
+    final range = heightfield.cellRangeForLocalBounds(
+      localBox.min.x,
+      localBox.max.x,
+      localBox.min.z,
+      localBox.max.z,
+    );
+    if (range == null) {
+      return const [];
+    }
+
+    final (c0, c1, r0, r1) = range;
+    final m = heightfieldTransform.storage;
+    // Heightfield world +Y axis for one-sided ground orientation check.
+    var hfUpX = m[4];
+    var hfUpY = m[5];
+    var hfUpZ = m[6];
+    final upLen = math.sqrt(hfUpX * hfUpX + hfUpY * hfUpY + hfUpZ * hfUpZ);
+    if (upLen > 1e-12) {
+      hfUpX /= upLen;
+      hfUpY /= upLen;
+      hfUpZ /= upLen;
+    } else {
+      hfUpX = 0.0;
+      hfUpY = 1.0;
+      hfUpZ = 0.0;
+    }
+
+    final lv00 = Vector3.zero();
+    final lv01 = Vector3.zero();
+    final lv11 = Vector3.zero();
+    final lv10 = Vector3.zero();
+    final wv00 = Vector3.zero();
+    final wv01 = Vector3.zero();
+    final wv11 = Vector3.zero();
+    final wv10 = Vector3.zero();
+    final results = <CollisionManifold3D>[];
+
+    for (var r = r0; r <= r1; r++) {
+      for (var c = c0; c <= c1; c++) {
+        heightfield.writeCellVerticesLocal(c, r, lv00, lv01, lv11, lv10);
+        final cellMinY = math.min(
+          math.min(lv00.y, lv01.y),
+          math.min(lv11.y, lv10.y),
+        );
+        final cellMaxY = math.max(
+          math.max(lv00.y, lv01.y),
+          math.max(lv11.y, lv10.y),
+        );
+        if (localBox.max.y < cellMinY - 1e-4 ||
+            localBox.min.y > cellMaxY + 1e-4) {
+          continue;
+        }
+
+        _transformPoint(m, lv00.x, lv00.y, lv00.z, wv00);
+        _transformPoint(m, lv01.x, lv01.y, lv01.z, wv01);
+        _transformPoint(m, lv11.x, lv11.y, lv11.z, wv11);
+        _transformPoint(m, lv10.x, lv10.y, lv10.z, wv10);
+
+        final m0 = intersectShapeWithTriangle(
+          shape,
+          shapeTransform,
+          wv00,
+          wv01,
+          wv11,
+        );
+        if (m0 != null) {
+          results.add(
+            _orientHeightfieldManifold(
+              m0,
+              wv00,
+              wv01,
+              wv11,
+              hfUpX,
+              hfUpY,
+              hfUpZ,
+            ),
+          );
+        }
+
+        final m1 = intersectShapeWithTriangle(
+          shape,
+          shapeTransform,
+          wv00,
+          wv11,
+          wv10,
+        );
+        if (m1 != null) {
+          results.add(
+            _orientHeightfieldManifold(
+              m1,
+              wv00,
+              wv11,
+              wv10,
+              hfUpX,
+              hfUpY,
+              hfUpZ,
+            ),
+          );
+        }
+      }
+    }
+    return results;
+  }
+
+  static CollisionManifold3D _orientHeightfieldManifold(
+    CollisionManifold3D m,
+    Vector3 v0,
+    Vector3 v1,
+    Vector3 v2,
+    double hfUpX,
+    double hfUpY,
+    double hfUpZ,
+  ) {
+    // `m.normal` points from `shape` (above) toward `heightfield` (below), so
+    // `m.normal . hfUp` should be `<= 0`. If `shape`'s center slightly crossed
+    // the triangle plane, flip along `-triOutwardNormal` so solid ground always
+    // pushes shapes upward.
+    final dotUp = m.normal.x * hfUpX + m.normal.y * hfUpY + m.normal.z * hfUpZ;
+    if (dotUp <= 1e-5) {
+      return m;
+    }
+    final e1x = v1.x - v0.x;
+    final e1y = v1.y - v0.y;
+    final e1z = v1.z - v0.z;
+    final e2x = v2.x - v0.x;
+    final e2y = v2.y - v0.y;
+    final e2z = v2.z - v0.z;
+    var nx = -(e1y * e2z - e1z * e2y);
+    var ny = -(e1z * e2x - e1x * e2z);
+    var nz = -(e1x * e2y - e1y * e2x);
+    final len = math.sqrt(nx * nx + ny * ny + nz * nz);
+    if (len > 1e-12) {
+      nx /= len;
+      ny /= len;
+      nz /= len;
+    } else {
+      nx = -hfUpX;
+      ny = -hfUpY;
+      nz = -hfUpZ;
+    }
+    return CollisionManifold3D(
+      normal: Vector3(nx, ny, nz),
+      penetrationDepth: m.penetrationDepth,
+      contactPointA: m.contactPointA,
+      contactPointB: m.contactPointB,
+    );
+  }
+
+  static List<CollisionManifold3D> _testCompoundVsShapeAll(
+    CompoundShape3D compoundA,
+    Matrix4 transformA,
+    Shape3D shapeB,
+    Matrix4 transformB,
+  ) {
+    final boxB = Aabb3();
+    shapeB.computeWorldAabb(transformB, boxB);
+    final childMat = Matrix4.identity();
+    final childBox = Aabb3();
+    final results = <CollisionManifold3D>[];
+
+    for (var i = 0; i < compoundA.children.length; i++) {
+      final child = compoundA.children[i];
+      childMat
+        ..setFrom(transformA)
+        ..multiply(child.localTransform);
+      child.shape.computeWorldAabb(childMat, childBox);
+      if (!_aabbOverlaps(childBox, boxB)) {
+        continue;
+      }
+      final sub = testAll(child.shape, childMat, shapeB, transformB);
+      if (sub.isNotEmpty) {
+        results.addAll(sub);
+      }
+    }
+    return results;
+  }
+
+  static CollisionManifold3D? _pickDeepestMerged(
+    List<CollisionManifold3D> manifolds,
+  ) {
+    if (manifolds.isEmpty) {
+      return null;
+    }
+    if (manifolds.length == 1) {
+      return manifolds.first;
+    }
+    final merged = _mergeCoDirectionalManifolds(manifolds);
+    var best = merged[0];
+    for (var i = 1; i < merged.length; i++) {
+      if (merged[i].penetrationDepth > best.penetrationDepth) {
+        best = merged[i];
+      }
+    }
+    return best;
+  }
+
+  static List<CollisionManifold3D> _mergeCoDirectionalManifolds(
+    List<CollisionManifold3D> manifolds,
+  ) {
+    if (manifolds.length <= 1) {
+      return manifolds;
+    }
+    final groups = <List<CollisionManifold3D>>[];
+    for (var i = 0; i < manifolds.length; i++) {
+      final m = manifolds[i];
+      var placed = false;
+      for (var g = 0; g < groups.length; g++) {
+        if (groups[g].first.normal.dot(m.normal) >= 0.992) {
+          groups[g].add(m);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) {
+        groups.add([m]);
+      }
+    }
+
+    final out = <CollisionManifold3D>[];
+    for (final group in groups) {
+      if (group.length == 1) {
+        out.add(group.first);
+        continue;
+      }
+      var deepest = group[0];
+      final allContacts = <ContactPoint3D>[];
+      for (final m in group) {
+        if (m.penetrationDepth > deepest.penetrationDepth) {
+          deepest = m;
+        }
+        for (final cp in m.contacts) {
+          var dup = false;
+          for (final existing in allContacts) {
+            if (existing.pointA.distanceToSquared(cp.pointA) < 1e-6 &&
+                existing.pointB.distanceToSquared(cp.pointB) < 1e-6) {
+              dup = true;
+              break;
+            }
+          }
+          if (!dup) {
+            allContacts.add(cp);
+          }
+        }
+      }
+      final reduced = allContacts.length <= 4
+          ? allContacts
+          : _reduceContactsToFour(
+              allContacts,
+              deepest.normal.x,
+              deepest.normal.y,
+              deepest.normal.z,
+            );
+      out.add(
+        CollisionManifold3D(
+          normal: deepest.normal,
+          penetrationDepth: deepest.penetrationDepth,
+          contactPointA: deepest.contactPointA,
+          contactPointB: deepest.contactPointB,
+          contacts: reduced,
+        ),
+      );
+    }
+    return out;
+  }
+
   /// Intersects [shape] (under [shapeTransform]) against a single world-space
   /// triangle `(v0, v1, v2)`, returning a [CollisionManifold3D] oriented from
   /// [shape] toward the triangle, or `null` when separated.
@@ -574,6 +958,28 @@ abstract final class Narrowphase3D._() {
     Vector3 v1,
     Vector3 v2,
   ) {
+    if (shape is CompoundShape3D) {
+      final childMat = Matrix4.identity();
+      CollisionManifold3D? best;
+      for (var i = 0; i < shape.children.length; i++) {
+        final child = shape.children[i];
+        childMat
+          ..setFrom(shapeTransform)
+          ..multiply(child.localTransform);
+        final hit = intersectShapeWithTriangle(
+          child.shape,
+          childMat,
+          v0,
+          v1,
+          v2,
+        );
+        if (hit != null &&
+            (best == null || hit.penetrationDepth > best.penetrationDepth)) {
+          best = hit;
+        }
+      }
+      return best;
+    }
     if (shape is SphereShape3D) {
       final m = shapeTransform.storage;
       final cx = m[12];

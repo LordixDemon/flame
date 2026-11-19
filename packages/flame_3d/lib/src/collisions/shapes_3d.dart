@@ -3,6 +3,65 @@ import 'dart:typed_data';
 
 import 'package:flame_3d/camera.dart' show Ray;
 import 'package:flame_3d/core.dart';
+import 'package:meta/meta.dart';
+
+/// Alias for [Shape3D] used across compound and general collision APIs.
+typedef CollisionShape3D = Shape3D;
+
+/// Combining rule for friction or restitution between two [PhysicsMaterial3D]
+/// instances in contact.
+enum PhysicsCombineMode3D() {
+  /// Arithmetic average `0.5 * (a + b)` (lowest priority).
+  average,
+
+  /// Smaller coefficient `min(a, b)`.
+  minimum,
+
+  /// Product `a * b`.
+  multiply,
+
+  /// Larger coefficient `max(a, b)` (highest priority).
+  maximum;
+
+  /// Combines [a] and [b] using this mode.
+  double combine(double a, double b) {
+    return switch (this) {
+      PhysicsCombineMode3D.average => 0.5 * (a + b),
+      PhysicsCombineMode3D.minimum => math.min(a, b),
+      PhysicsCombineMode3D.multiply => a * b,
+      PhysicsCombineMode3D.maximum => math.max(a, b),
+    };
+  }
+}
+
+/// Surface material properties (friction, restitution, combine rules, and
+/// semantic [surfaceTag]) attachable to a `Collider3D` or `RigidBody3D`.
+@immutable
+class const PhysicsMaterial3D({
+  final double friction = 0.5,
+  final double restitution = 0.2,
+  final PhysicsCombineMode3D frictionCombine = PhysicsCombineMode3D.average,
+  final PhysicsCombineMode3D restitutionCombine = PhysicsCombineMode3D.maximum,
+  final String surfaceTag = 'default',
+}) {
+  /// Combines the friction coefficients of [a] and [b], honoring the higher
+  /// priority [PhysicsCombineMode3D].
+  static double combineFriction(PhysicsMaterial3D a, PhysicsMaterial3D b) {
+    final mode = a.frictionCombine.index >= b.frictionCombine.index
+        ? a.frictionCombine
+        : b.frictionCombine;
+    return math.max(0.0, mode.combine(a.friction, b.friction));
+  }
+
+  /// Combines the restitution coefficients of [a] and [b], honoring the higher
+  /// priority [PhysicsCombineMode3D].
+  static double combineRestitution(PhysicsMaterial3D a, PhysicsMaterial3D b) {
+    final mode = a.restitutionCombine.index >= b.restitutionCombine.index
+        ? a.restitutionCombine
+        : b.restitutionCombine;
+    return mode.combine(a.restitution, b.restitution).clamp(0.0, 1.0);
+  }
+}
 
 /// Principal coordinate axis in 3D space.
 enum Axis3D() {
@@ -32,12 +91,25 @@ enum Axis3D() {
   Vector3 get unitVector => writeUnitVector(Vector3.zero());
 }
 
-/// Base class for convex 3D collision shapes.
+/// Base class for 3D collision shapes (convex primitives, [CompoundShape3D],
+/// and [HeightfieldShape3D]).
 ///
 /// Shapes are lightweight geometric descriptors in local space; world-space
 /// queries take an explicit `worldTransform` [Matrix4] so one shape instance
 /// can be shared across many colliders or rigid bodies.
 sealed class Shape3D() {
+  /// Minimum inscribed sphere radius used by default for continuous collision
+  /// detection (`RigidBody3D.ccdSweptSphereRadius`).
+  double get inscribedSphereRadius;
+
+  /// Geometric volume in local space used when distributing mass across
+  /// [CompoundShape3D] children or estimating buoyancy displacement.
+  double estimateLocalVolume();
+
+  /// Local-space center of mass offset (`(0, 0, 0)` for centered primitives;
+  /// volume-weighted composite center of mass for [CompoundShape3D]).
+  Vector3 get localCenterOfMass => _zeroCenterOfMass;
+
   /// Writes the local-space axis-aligned bounding box of this shape into [out].
   Aabb3 computeLocalAabb({Aabb3? out});
 
@@ -61,6 +133,20 @@ sealed class Shape3D() {
   /// Computes the local-space diagonal moment of inertia `(Ix, Iy, Iz)` for a
   /// uniform solid body of [mass].
   Vector3 computeLocalInertiaDiagonal(double mass, {Vector3? out});
+
+  /// Computes the full `3x3` symmetric local-space inertia tensor for [mass].
+  Matrix3 computeLocalInertiaTensor(double mass, {Matrix3? out}) {
+    final m = out ?? Matrix3.zero();
+    m.setZero();
+    final d = computeLocalInertiaDiagonal(mass, out: _inertiaDiagScratch);
+    m.storage[0] = d.x;
+    m.storage[4] = d.y;
+    m.storage[8] = d.z;
+    return m;
+  }
+
+  static final Vector3 _zeroCenterOfMass = Vector3.zero();
+  static final Vector3 _inertiaDiagScratch = Vector3.zero();
 }
 
 /// A 3D sphere collision shape centered at the local origin with [radius].
@@ -175,6 +261,13 @@ class SphereShape3D({
     }
     return (t, Vector3(-_unitWorldDir.x, -_unitWorldDir.y, -_unitWorldDir.z));
   }
+
+  @override
+  double get inscribedSphereRadius => radius;
+
+  @override
+  double estimateLocalVolume() =>
+      (4.0 / 3.0) * math.pi * radius * radius * radius;
 
   @override
   Vector3 computeLocalInertiaDiagonal(double mass, {Vector3? out}) {
@@ -492,6 +585,16 @@ class CapsuleShape3D({
     return res;
   }
 
+  @override
+  double get inscribedSphereRadius => radius;
+
+  @override
+  double estimateLocalVolume() {
+    final r2 = radius * radius;
+    return math.pi * r2 * (2.0 * halfSegment) +
+        (4.0 / 3.0) * math.pi * r2 * radius;
+  }
+
   static final Vector3 _capEndA = Vector3.zero();
   static final Vector3 _capEndB = Vector3.zero();
 }
@@ -512,6 +615,14 @@ class BoxShape3D({
 
   /// Local half-extents `(hx, hy, hz)`.
   final Vector3 halfExtents = halfExtents.clone();
+
+  @override
+  double get inscribedSphereRadius =>
+      math.min(halfExtents.x, math.min(halfExtents.y, halfExtents.z));
+
+  @override
+  double estimateLocalVolume() =>
+      8.0 * halfExtents.x * halfExtents.y * halfExtents.z;
 
   @override
   Aabb3 computeLocalAabb({Aabb3? out}) {
@@ -774,6 +885,22 @@ class ConvexHullShape3D({
 
   /// Local centroid of this hull's bounding box.
   Vector3 get localCenter => _localCenter;
+
+  @override
+  double get inscribedSphereRadius {
+    final hx = 0.5 * (_localAabb.max.x - _localAabb.min.x);
+    final hy = 0.5 * (_localAabb.max.y - _localAabb.min.y);
+    final hz = 0.5 * (_localAabb.max.z - _localAabb.min.z);
+    return math.max(1e-3, math.min(hx, math.min(hy, hz)));
+  }
+
+  @override
+  double estimateLocalVolume() {
+    final wx = math.max(1e-4, _localAabb.max.x - _localAabb.min.x);
+    final wy = math.max(1e-4, _localAabb.max.y - _localAabb.min.y);
+    final wz = math.max(1e-4, _localAabb.max.z - _localAabb.min.z);
+    return 0.5 * wx * wy * wz;
+  }
 
   @override
   Aabb3 computeLocalAabb({Aabb3? out}) {
@@ -1256,6 +1383,740 @@ class ConvexHullShape3D({
     out.setValues(bestX, bestY, bestZ);
     return bestCount;
   }
+}
+
+/// Child shape entry inside a [CompoundShape3D] with its local [position],
+/// [rotation], and optional relative [massWeight].
+class CompoundChildShape3D({
+  required final CollisionShape3D shape,
+  Vector3? position,
+  Quaternion? rotation,
+  final double massWeight = 1.0,
+}) {
+  this : assert(massWeight >= 0, 'massWeight must be non-negative') {
+    if (this.rotation.length2 > 1e-12) {
+      this.rotation.normalize();
+    } else {
+      this.rotation.setValues(0.0, 0.0, 0.0, 1.0);
+    }
+    localTransform.setFromTranslationRotationScale(
+      this.position,
+      this.rotation,
+      _unitScaleVec,
+    );
+    shape.computeWorldAabb(localTransform, localAabb);
+  }
+
+  /// Local translation of [shape] inside the parent [CompoundShape3D].
+  final Vector3 position = position?.clone() ?? Vector3.zero();
+
+  /// Local rotation of [shape] inside the parent [CompoundShape3D].
+  final Quaternion rotation = rotation?.clone() ?? Quaternion.identity();
+
+  /// Precomputed `4x4` local transform combining [position] and [rotation].
+  final Matrix4 localTransform = Matrix4.identity();
+
+  /// Precomputed local-space AABB of this child inside the compound frame.
+  final Aabb3 localAabb = Aabb3();
+
+  static final Vector3 _unitScaleVec = Vector3.all(1.0);
+}
+
+/// Composite 3D collision shape formed from one or more [CompoundChildShape3D]
+/// sub-shapes, supporting concave rigid bodies with exact composite AABB,
+/// raycasting, narrowphase contact generation, and Huygens–Steiner
+/// parallel-axis center-of-mass and inertia tensor calculation.
+class CompoundShape3D(List<CompoundChildShape3D> children) extends Shape3D {
+  this : assert(children.isNotEmpty, 'CompoundShape3D requires >= 1 child') {
+    _localAabb
+      ..min.setFrom(this.children.first.localAabb.min)
+      ..max.setFrom(this.children.first.localAabb.max);
+    for (var i = 1; i < this.children.length; i++) {
+      _localAabb.hull(this.children[i].localAabb);
+    }
+
+    var totalW = 0.0;
+    var sumVolume = 0.0;
+    final rotCom = Vector3.zero();
+    for (var i = 0; i < this.children.length; i++) {
+      final c = this.children[i];
+      final vol = math.max(1e-6, c.shape.estimateLocalVolume());
+      sumVolume += vol;
+      final w = vol * c.massWeight;
+      _childWeights[i] = w;
+      totalW += w;
+
+      rotCom.setFrom(c.shape.localCenterOfMass);
+      c.rotation.rotate(rotCom);
+      final cx = c.position.x + rotCom.x;
+      final cy = c.position.y + rotCom.y;
+      final cz = c.position.z + rotCom.z;
+      _childComCoords[i * 3] = cx;
+      _childComCoords[i * 3 + 1] = cy;
+      _childComCoords[i * 3 + 2] = cz;
+    }
+
+    _totalVolume = sumVolume;
+    if (totalW > 1e-12) {
+      var comX = 0.0;
+      var comY = 0.0;
+      var comZ = 0.0;
+      for (var i = 0; i < this.children.length; i++) {
+        final frac = _childWeights[i] / totalW;
+        _childWeights[i] = frac;
+        comX += frac * _childComCoords[i * 3];
+        comY += frac * _childComCoords[i * 3 + 1];
+        comZ += frac * _childComCoords[i * 3 + 2];
+      }
+      _centerOfMass.setValues(comX, comY, comZ);
+    } else {
+      final frac = 1.0 / this.children.length;
+      for (var i = 0; i < this.children.length; i++) {
+        _childWeights[i] = frac;
+      }
+      _centerOfMass.setZero();
+    }
+  }
+
+  /// Immutable list of child shapes in local space.
+  final List<CompoundChildShape3D> children = List.unmodifiable(children);
+
+  final Aabb3 _localAabb = Aabb3();
+  final Vector3 _centerOfMass = Vector3.zero();
+  final Float64List _childWeights = Float64List(children.length);
+  final Float64List _childComCoords = Float64List(children.length * 3);
+  double _totalVolume = 0.0;
+
+  /// Volume-weighted composite center-of-mass offset in local space.
+  Vector3 get centerOfMass => _centerOfMass;
+
+  @override
+  Vector3 get localCenterOfMass => _centerOfMass;
+
+  @override
+  double get inscribedSphereRadius {
+    var best = double.infinity;
+    for (var i = 0; i < children.length; i++) {
+      final r = children[i].shape.inscribedSphereRadius;
+      if (r > 0.0 && r < best) {
+        best = r;
+      }
+    }
+    return best.isFinite ? best : 0.05;
+  }
+
+  @override
+  double estimateLocalVolume() => _totalVolume;
+
+  @override
+  Aabb3 computeLocalAabb({Aabb3? out}) {
+    final box = out ?? Aabb3();
+    box.min.setFrom(_localAabb.min);
+    box.max.setFrom(_localAabb.max);
+    return box;
+  }
+
+  @override
+  void computeWorldAabb(Matrix4 worldTransform, Aabb3 out) {
+    final childMat = Matrix4.identity();
+    final childBox = Aabb3();
+    for (var i = 0; i < children.length; i++) {
+      final c = children[i];
+      childMat
+        ..setFrom(worldTransform)
+        ..multiply(c.localTransform);
+      c.shape.computeWorldAabb(childMat, childBox);
+      if (i == 0) {
+        out.min.setFrom(childBox.min);
+        out.max.setFrom(childBox.max);
+      } else {
+        out.hull(childBox);
+      }
+    }
+  }
+
+  @override
+  void supportPoint(Vector3 worldDir, Matrix4 worldTransform, Vector3 out) {
+    final childMat = Matrix4.identity();
+    final cand = Vector3.zero();
+    var bestDot = double.negativeInfinity;
+    for (var i = 0; i < children.length; i++) {
+      final c = children[i];
+      childMat
+        ..setFrom(worldTransform)
+        ..multiply(c.localTransform);
+      c.shape.supportPoint(worldDir, childMat, cand);
+      final d = cand.dot(worldDir);
+      if (d > bestDot) {
+        bestDot = d;
+        out.setFrom(cand);
+      }
+    }
+  }
+
+  @override
+  (double distance, Vector3 normal)? raycast(
+    Ray worldRay,
+    Matrix4 worldTransform, {
+    double maxDistance = double.infinity,
+  }) {
+    if (!(maxDistance >= 0.0)) {
+      return null;
+    }
+    final childMat = Matrix4.identity();
+    var limit = maxDistance;
+    (double, Vector3)? best;
+    for (var i = 0; i < children.length; i++) {
+      final c = children[i];
+      childMat
+        ..setFrom(worldTransform)
+        ..multiply(c.localTransform);
+      final hit = c.shape.raycast(worldRay, childMat, maxDistance: limit);
+      if (hit != null && hit.$1 <= limit) {
+        limit = hit.$1;
+        best = hit;
+      }
+    }
+    return best;
+  }
+
+  /// Computes the exact `3x3` symmetric inertia tensor using the
+  /// **Huygens–Steiner parallel-axis theorem**:
+  /// `I_total = sum(R_i I_i R_i^T + m_i ((d_i . d_i) E - d_i (x) d_i))`.
+  @override
+  Matrix3 computeLocalInertiaTensor(
+    double mass, {
+    Matrix3? out,
+    bool aboutCenterOfMass = true,
+  }) {
+    final res = out ?? Matrix3.zero();
+    res.setZero();
+    if (mass <= 0.0) {
+      return res;
+    }
+
+    final refX = aboutCenterOfMass ? _centerOfMass.x : 0.0;
+    final refY = aboutCenterOfMass ? _centerOfMass.y : 0.0;
+    final refZ = aboutCenterOfMass ? _centerOfMass.z : 0.0;
+
+    final childI = Matrix3.zero();
+    final rotMat = Matrix3.zero();
+    final temp = Matrix3.zero();
+    final rotT = Matrix3.zero();
+    final s = res.storage;
+
+    for (var i = 0; i < children.length; i++) {
+      final child = children[i];
+      final mI = mass * _childWeights[i];
+      if (mI <= 0.0) {
+        continue;
+      }
+      child.shape.computeLocalInertiaTensor(mI, out: childI);
+      rotMat.setFrom(child.rotation.asRotationMatrix());
+      rotT
+        ..setFrom(rotMat)
+        ..transpose();
+      // `temp = rotMat * childI * rotMat^T`.
+      temp
+        ..setFrom(rotMat)
+        ..multiply(childI)
+        ..multiply(rotT);
+
+      final dx = _childComCoords[i * 3] - refX;
+      final dy = _childComCoords[i * 3 + 1] - refY;
+      final dz = _childComCoords[i * 3 + 2] - refZ;
+      final d2 = dx * dx + dy * dy + dz * dz;
+
+      final ts = temp.storage;
+      s[0] += ts[0] + mI * (d2 - dx * dx);
+      s[1] += ts[1] - mI * dy * dx;
+      s[2] += ts[2] - mI * dz * dx;
+      s[3] += ts[3] - mI * dx * dy;
+      s[4] += ts[4] + mI * (d2 - dy * dy);
+      s[5] += ts[5] - mI * dz * dy;
+      s[6] += ts[6] - mI * dx * dz;
+      s[7] += ts[7] - mI * dy * dz;
+      s[8] += ts[8] + mI * (d2 - dz * dz);
+    }
+    return res;
+  }
+
+  @override
+  Vector3 computeLocalInertiaDiagonal(double mass, {Vector3? out}) {
+    final res = out ?? Vector3.zero();
+    if (mass <= 0.0) {
+      res.setZero();
+      return res;
+    }
+    computeLocalInertiaTensor(mass, out: _tensorScratch);
+    final s = _tensorScratch.storage;
+    res.setValues(s[0], s[4], s[8]);
+    return res;
+  }
+
+  static final Matrix3 _tensorScratch = Matrix3.zero();
+}
+
+/// Analytical 3D `columns x rows` grid heightfield collision shape spanning
+/// `[-width * 0.5 .. +width * 0.5]` along `X` and
+/// `[-depth * 0.5 .. +depth * 0.5]` along `Z`, with `O(1)` grid-cell contact
+/// lookup, piecewise-linear [sampleHeight], and 2D grid-DDA [raycast].
+class HeightfieldShape3D({
+  required Float32List heights,
+  required final int columns,
+  required final int rows,
+  required final double width,
+  required final double depth,
+  final double heightScale = 1.0,
+}) extends Shape3D {
+  this
+    : assert(columns >= 2 && rows >= 2, 'grid must be at least 2x2'),
+      assert(width > 0 && depth > 0, 'width and depth must be positive'),
+      assert(
+        heights.length == columns * rows,
+        'heights length must equal columns * rows',
+      ) {
+    var minH = double.infinity;
+    var maxH = double.negativeInfinity;
+    for (var i = 0; i < this.heights.length; i++) {
+      final h = this.heights[i] * heightScale;
+      if (h < minH) {
+        minH = h;
+      }
+      if (h > maxH) {
+        maxH = h;
+      }
+    }
+    _minY = minH.isFinite ? minH : 0.0;
+    _maxY = maxH.isFinite ? maxH : 0.0;
+  }
+
+  /// Immutable copy of the `columns * rows` raw height grid.
+  final Float32List heights = Float32List.fromList(heights);
+
+  late final double _minY;
+  late final double _maxY;
+
+  /// Cell width along `X` (`width / (columns - 1)`).
+  double get cellWidth => width / (columns - 1);
+
+  /// Cell depth along `Z` (`depth / (rows - 1)`).
+  double get cellDepth => depth / (rows - 1);
+
+  /// Minimum scaled local `Y` elevation across the heightfield.
+  double get minHeight => _minY;
+
+  /// Maximum scaled local `Y` elevation across the heightfield.
+  double get maxHeight => _maxY;
+
+  @override
+  double get inscribedSphereRadius => 0.0;
+
+  @override
+  double estimateLocalVolume() =>
+      width * depth * math.max(0.1, _maxY - _minY + 0.1);
+
+  /// Returns the scaled elevation at grid vertex `(col, row)`.
+  double vertexHeight(int col, int row) {
+    final c = col.clamp(0, columns - 1);
+    final r = row.clamp(0, rows - 1);
+    return heights[r * columns + c] * heightScale;
+  }
+
+  /// Samples the exact piecewise-linear two-triangle surface height at local
+  /// `(x, z)` coordinates (clamped to the heightfield footprint).
+  double sampleHeight(double x, double z) {
+    final halfW = width * 0.5;
+    final halfD = depth * 0.5;
+    final fx = ((x + halfW) / width * (columns - 1)).clamp(0.0, columns - 1.0);
+    final fz = ((z + halfD) / depth * (rows - 1)).clamp(0.0, rows - 1.0);
+    final c = fx.floor().clamp(0, columns - 2);
+    final r = fz.floor().clamp(0, rows - 2);
+    final tx = (fx - c).clamp(0.0, 1.0);
+    final tz = (fz - r).clamp(0.0, 1.0);
+
+    final h00 = heights[r * columns + c] * heightScale;
+    final h10 = heights[r * columns + c + 1] * heightScale;
+    final h01 = heights[(r + 1) * columns + c] * heightScale;
+    final h11 = heights[(r + 1) * columns + c + 1] * heightScale;
+
+    // Matches `TerrainMesh3D` diagonal `(v00 -> v11)`:
+    // Triangle 0 `(v00, v01, v11)` covers `tz >= tx`;
+    // Triangle 1 `(v00, v11, v10)` covers `tx > tz`.
+    if (tz >= tx) {
+      return h00 + tz * (h01 - h00) + tx * (h11 - h01);
+    }
+    return h00 + tx * (h10 - h00) + tz * (h11 - h10);
+  }
+
+  /// Computes the unit upward surface normal of the active triangle at local
+  /// `(x, z)`.
+  Vector3 sampleNormal(double x, double z, {Vector3? out}) {
+    final res = out ?? Vector3.zero();
+    final halfW = width * 0.5;
+    final halfD = depth * 0.5;
+    final fx = ((x + halfW) / width * (columns - 1)).clamp(0.0, columns - 1.0);
+    final fz = ((z + halfD) / depth * (rows - 1)).clamp(0.0, rows - 1.0);
+    final c = fx.floor().clamp(0, columns - 2);
+    final r = fz.floor().clamp(0, rows - 2);
+    final tx = fx - c;
+    final tz = fz - r;
+
+    writeCellVerticesLocal(c, r, _v00, _v01, _v11, _v10);
+    if (tz >= tx) {
+      _triangleNormal(_v00, _v01, _v11, res);
+    } else {
+      _triangleNormal(_v00, _v11, _v10, res);
+    }
+    return res;
+  }
+
+  /// Clamps a local `[minX..maxX, minZ..maxZ]` footprint in `O(1)` to
+  /// overlapping grid cell indices `(c0, c1, r0, r1)`, or `null` when
+  /// horizontally disjoint.
+  (int c0, int c1, int r0, int r1)? cellRangeForLocalBounds(
+    double minX,
+    double maxX,
+    double minZ,
+    double maxZ,
+  ) {
+    final halfW = width * 0.5;
+    final halfD = depth * 0.5;
+    if (maxX < -halfW || minX > halfW || maxZ < -halfD || minZ > halfD) {
+      return null;
+    }
+    final invCw = (columns - 1) / width;
+    final invCd = (rows - 1) / depth;
+    final c0 = ((minX + halfW) * invCw).floor().clamp(0, columns - 2);
+    final c1 = ((maxX + halfW) * invCw).floor().clamp(0, columns - 2);
+    final r0 = ((minZ + halfD) * invCd).floor().clamp(0, rows - 2);
+    final r1 = ((maxZ + halfD) * invCd).floor().clamp(0, rows - 2);
+    return (c0, c1, r0, r1);
+  }
+
+  /// Writes the 4 local-space corner positions `(v00, v01, v11, v10)` of grid
+  /// cell `(col, row)`, where Triangle 0 is `(v00, v01, v11)` and Triangle 1 is
+  /// `(v00, v11, v10)` (CCW when viewed from `+Y`).
+  void writeCellVerticesLocal(
+    int col,
+    int row,
+    Vector3 v00,
+    Vector3 v01,
+    Vector3 v11,
+    Vector3 v10,
+  ) {
+    final cw = width / (columns - 1);
+    final cd = depth / (rows - 1);
+    final x0 = -width * 0.5 + col * cw;
+    final x1 = x0 + cw;
+    final z0 = -depth * 0.5 + row * cd;
+    final z1 = z0 + cd;
+    final r0 = row * columns;
+    final r1 = (row + 1) * columns;
+    v00.setValues(x0, heights[r0 + col] * heightScale, z0);
+    v10.setValues(x1, heights[r0 + col + 1] * heightScale, z0);
+    v01.setValues(x0, heights[r1 + col] * heightScale, z1);
+    v11.setValues(x1, heights[r1 + col + 1] * heightScale, z1);
+  }
+
+  @override
+  Aabb3 computeLocalAabb({Aabb3? out}) {
+    final box = out ?? Aabb3();
+    final halfW = width * 0.5;
+    final halfD = depth * 0.5;
+    box.min.setValues(-halfW, _minY, -halfD);
+    box.max.setValues(halfW, _maxY, halfD);
+    return box;
+  }
+
+  @override
+  void computeWorldAabb(Matrix4 worldTransform, Aabb3 out) {
+    final m = worldTransform.storage;
+    final hx = width * 0.5;
+    final hz = depth * 0.5;
+    final midY = 0.5 * (_minY + _maxY);
+    final hy = math.max(1e-4, 0.5 * (_maxY - _minY));
+
+    final cx = m[4] * midY + m[12];
+    final cy = m[5] * midY + m[13];
+    final cz = m[6] * midY + m[14];
+
+    final ex = m[0].abs() * hx + m[4].abs() * hy + m[8].abs() * hz;
+    final ey = m[1].abs() * hx + m[5].abs() * hy + m[9].abs() * hz;
+    final ez = m[2].abs() * hx + m[6].abs() * hy + m[10].abs() * hz;
+    out.min.setValues(cx - ex, cy - ey, cz - ez);
+    out.max.setValues(cx + ex, cy + ey, cz + ez);
+  }
+
+  @override
+  void supportPoint(Vector3 worldDir, Matrix4 worldTransform, Vector3 out) {
+    // Evaluate over the local bounding box corners when queried conservatively.
+    final m = worldTransform.storage;
+    final dx = worldDir.x;
+    final dy = worldDir.y;
+    final dz = worldDir.z;
+    final halfW = width * 0.5;
+    final halfD = depth * 0.5;
+    final lx = m[0] * dx + m[1] * dy + m[2] * dz >= 0.0 ? halfW : -halfW;
+    final ly = m[4] * dx + m[5] * dy + m[6] * dz >= 0.0 ? _maxY : _minY;
+    final lz = m[8] * dx + m[9] * dy + m[10] * dz >= 0.0 ? halfD : -halfD;
+    out.setValues(
+      m[0] * lx + m[4] * ly + m[8] * lz + m[12],
+      m[1] * lx + m[5] * ly + m[9] * lz + m[13],
+      m[2] * lx + m[6] * ly + m[10] * lz + m[14],
+    );
+  }
+
+  @override
+  (double distance, Vector3 normal)? raycast(
+    Ray worldRay,
+    Matrix4 worldTransform, {
+    double maxDistance = double.infinity,
+  }) {
+    if (!_prepareLocalRay(worldRay, worldTransform, maxDistance)) {
+      return null;
+    }
+    final ox = _localOrigin.x;
+    final oy = _localOrigin.y;
+    final oz = _localOrigin.z;
+    final dx = _localDir.x;
+    final dy = _localDir.y;
+    final dz = _localDir.z;
+
+    final halfW = width * 0.5;
+    final halfD = depth * 0.5;
+
+    // 1. Clip `[0, maxDistance]` against the local heightfield AABB.
+    var tEntry = 0.0;
+    var tExit = maxDistance;
+
+    bool clipSlab(double o, double d, double lo, double hi) {
+      if (d.abs() < 1e-12) {
+        return o >= lo - 1e-5 && o <= hi + 1e-5;
+      }
+      final inv = 1.0 / d;
+      var t1 = (lo - 1e-5 - o) * inv;
+      var t2 = (hi + 1e-5 - o) * inv;
+      if (t1 > t2) {
+        final s = t1;
+        t1 = t2;
+        t2 = s;
+      }
+      if (t1 > tEntry) {
+        tEntry = t1;
+      }
+      if (t2 < tExit) {
+        tExit = t2;
+      }
+      return tEntry <= tExit;
+    }
+
+    if (!clipSlab(ox, dx, -halfW, halfW) ||
+        !clipSlab(oy, dy, _minY - 1e-3, _maxY + 1e-3) ||
+        !clipSlab(oz, dz, -halfD, halfD)) {
+      return null;
+    }
+
+    // 2. 2D Amanatides & Woo Grid-DDA across `(col, row)` cells.
+    final cw = width / (columns - 1);
+    final cd = depth / (rows - 1);
+    final invCw = 1.0 / cw;
+    final invCd = 1.0 / cd;
+
+    var tCur = math.max(0.0, tEntry);
+    var tStop = tExit;
+
+    final startX = ox + dx * tCur;
+    final startZ = oz + dz * tCur;
+    var c = ((startX + halfW) * invCw).floor().clamp(0, columns - 2);
+    var r = ((startZ + halfD) * invCd).floor().clamp(0, rows - 2);
+
+    final int stepC;
+    double tMaxX;
+    final double tDeltaX;
+    if (dx > 1e-12) {
+      stepC = 1;
+      final nextX = -halfW + (c + 1) * cw;
+      tMaxX = tCur + (nextX - startX) / dx;
+      tDeltaX = cw / dx;
+    } else if (dx < -1e-12) {
+      stepC = -1;
+      final nextX = -halfW + c * cw;
+      tMaxX = tCur + (nextX - startX) / dx;
+      tDeltaX = -cw / dx;
+    } else {
+      stepC = 0;
+      tMaxX = double.infinity;
+      tDeltaX = double.infinity;
+    }
+
+    final int stepR;
+    double tMaxZ;
+    final double tDeltaZ;
+    if (dz > 1e-12) {
+      stepR = 1;
+      final nextZ = -halfD + (r + 1) * cd;
+      tMaxZ = tCur + (nextZ - startZ) / dz;
+      tDeltaZ = cd / dz;
+    } else if (dz < -1e-12) {
+      stepR = -1;
+      final nextZ = -halfD + r * cd;
+      tMaxZ = tCur + (nextZ - startZ) / dz;
+      tDeltaZ = -cd / dz;
+    } else {
+      stepR = 0;
+      tMaxZ = double.infinity;
+      tDeltaZ = double.infinity;
+    }
+
+    var bestT = double.infinity;
+    var bestNx = 0.0;
+    var bestNy = 1.0;
+    var bestNz = 0.0;
+
+    while (c >= 0 &&
+        c <= columns - 2 &&
+        r >= 0 &&
+        r <= rows - 2 &&
+        tCur <= tStop + 1e-5) {
+      final tCellEnd = math.min(tStop, math.min(tMaxX, tMaxZ));
+      final ry0 = oy + dy * tCur;
+      final ry1 = oy + dy * tCellEnd;
+      final segMinY = math.min(ry0, ry1) - 1e-4;
+      final segMaxY = math.max(ry0, ry1) + 1e-4;
+
+      writeCellVerticesLocal(c, r, _v00, _v01, _v11, _v10);
+      final cellMinY = math.min(
+        math.min(_v00.y, _v01.y),
+        math.min(_v11.y, _v10.y),
+      );
+      final cellMaxY = math.max(
+        math.max(_v00.y, _v01.y),
+        math.max(_v11.y, _v10.y),
+      );
+
+      if (segMaxY >= cellMinY && segMinY <= cellMaxY) {
+        final t0 = _rayTriangleLocal(ox, oy, oz, dx, dy, dz, _v00, _v01, _v11);
+        if (t0 != null && t0 >= 0.0 && t0 < bestT && t0 <= maxDistance) {
+          bestT = t0;
+          _triangleNormal(_v00, _v01, _v11, _nrmScratch);
+          bestNx = _nrmScratch.x;
+          bestNy = _nrmScratch.y;
+          bestNz = _nrmScratch.z;
+          if (bestT < tStop) {
+            tStop = bestT;
+          }
+        }
+        final t1 = _rayTriangleLocal(ox, oy, oz, dx, dy, dz, _v00, _v11, _v10);
+        if (t1 != null && t1 >= 0.0 && t1 < bestT && t1 <= maxDistance) {
+          bestT = t1;
+          _triangleNormal(_v00, _v11, _v10, _nrmScratch);
+          bestNx = _nrmScratch.x;
+          bestNy = _nrmScratch.y;
+          bestNz = _nrmScratch.z;
+          if (bestT < tStop) {
+            tStop = bestT;
+          }
+        }
+        if (bestT <= tCellEnd + 1e-5) {
+          break;
+        }
+      }
+
+      if (tMaxX < tMaxZ) {
+        tCur = tMaxX;
+        tMaxX += tDeltaX;
+        c += stepC;
+      } else {
+        tCur = tMaxZ;
+        tMaxZ += tDeltaZ;
+        r += stepR;
+      }
+    }
+
+    if (!bestT.isFinite) {
+      return null;
+    }
+    return (bestT, _transformLocalNormalToWorld(bestNx, bestNy, bestNz));
+  }
+
+  @override
+  Vector3 computeLocalInertiaDiagonal(double mass, {Vector3? out}) {
+    final res = out ?? Vector3.zero();
+    res.setZero();
+    return res;
+  }
+
+  static double? _rayTriangleLocal(
+    double ox,
+    double oy,
+    double oz,
+    double dx,
+    double dy,
+    double dz,
+    Vector3 a,
+    Vector3 b,
+    Vector3 c,
+  ) {
+    final e1x = b.x - a.x;
+    final e1y = b.y - a.y;
+    final e1z = b.z - a.z;
+    final e2x = c.x - a.x;
+    final e2y = c.y - a.y;
+    final e2z = c.z - a.z;
+
+    final px = dy * e2z - dz * e2y;
+    final py = dz * e2x - dx * e2z;
+    final pz = dx * e2y - dy * e2x;
+    final det = e1x * px + e1y * py + e1z * pz;
+    if (det.abs() <= 1e-12) {
+      return null;
+    }
+    final invDet = 1.0 / det;
+
+    final tx = ox - a.x;
+    final ty = oy - a.y;
+    final tz = oz - a.z;
+    final u = (tx * px + ty * py + tz * pz) * invDet;
+    if (u < -1e-6 || u > 1.0 + 1e-6) {
+      return null;
+    }
+
+    final qx = ty * e1z - tz * e1y;
+    final qy = tz * e1x - tx * e1z;
+    final qz = tx * e1y - ty * e1x;
+    final v = (dx * qx + dy * qy + dz * qz) * invDet;
+    if (v < -1e-6 || u + v > 1.0 + 1e-6) {
+      return null;
+    }
+
+    final t = (e2x * qx + e2y * qy + e2z * qz) * invDet;
+    return t >= 0.0 ? t : null;
+  }
+
+  static void _triangleNormal(Vector3 a, Vector3 b, Vector3 c, Vector3 out) {
+    final e1x = b.x - a.x;
+    final e1y = b.y - a.y;
+    final e1z = b.z - a.z;
+    final e2x = c.x - a.x;
+    final e2y = c.y - a.y;
+    final e2z = c.z - a.z;
+    final nx = e1y * e2z - e1z * e2y;
+    final ny = e1z * e2x - e1x * e2z;
+    final nz = e1x * e2y - e1y * e2x;
+    final len = math.sqrt(nx * nx + ny * ny + nz * nz);
+    if (len > 1e-12) {
+      out.setValues(nx / len, ny / len, nz / len);
+    } else {
+      out.setValues(0.0, 1.0, 0.0);
+    }
+  }
+
+  static final Vector3 _v00 = Vector3.zero();
+  static final Vector3 _v01 = Vector3.zero();
+  static final Vector3 _v11 = Vector3.zero();
+  static final Vector3 _v10 = Vector3.zero();
+  static final Vector3 _nrmScratch = Vector3.zero();
 }
 
 final Matrix4 _invTransform = Matrix4.identity();

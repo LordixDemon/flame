@@ -15,7 +15,7 @@ final class FakeGpuBackend({
   final List<GpuShaderInput>? inputs,
 
   /// The size of every uniform block not in [blockSizes].
-  final int blockSize = 8192,
+  final int blockSize = 32768,
 
   /// The size of uniform blocks, by name.
   final Map<String, int> blockSizes = const {},
@@ -24,11 +24,35 @@ final class FakeGpuBackend({
   /// Whether it creates texture targets, see [supportsTextureTargets].
   final bool textureTargets = false,
 
-  /// Whether its texture targets can be 32-bit floats.
+  /// Whether its texture targets can be 16/32-bit floats.
   final bool floatTextureTargets = true,
+
+  /// Maximum sampler anisotropy reported by [maxSamplerAnisotropy].
+  final int maxAnisotropy = 16,
+
+  /// Optional explicit set of formats supported by [supportsPixelFormat].
+  /// When `null`, uncompressed formats are supported (and float formats follow
+  /// [floatTextureTargets]).
+  final Set<GpuPixelFormat>? supportedFormats,
 }) extends GpuBackend {
   @override
   int get uniformAlignment => uniformAlignmentInBytes;
+
+  @override
+  int get maxSamplerAnisotropy => maxAnisotropy;
+
+  @override
+  bool supportsPixelFormat(GpuPixelFormat format) {
+    final explicit = supportedFormats;
+    if (explicit != null) {
+      return explicit.contains(format);
+    }
+    if (format == GpuPixelFormat.rgbaFloat16 ||
+        format == GpuPixelFormat.r32Float) {
+      return floatTextureTargets;
+    }
+    return !format.isCompressed;
+  }
 
   /// Every recorded command, in order, as text (e.g. `drawIndexed 6 x3`).
   final List<String> commands = [];
@@ -100,7 +124,7 @@ final class FakeGpuBackend({
     required GpuPixelFormat format,
     int mipLevelCount = 1,
   }) {
-    final texture = FakeTexture(width, height, mipLevelCount);
+    final texture = FakeTexture(width, height, mipLevelCount, format);
     textures.add(texture);
     return texture;
   }
@@ -173,7 +197,7 @@ final class FakeGpuBackend({
       );
     }
     textureTargetsCreated.add((width, height, format));
-    final texture = FakeTexture(width, height, 1);
+    final texture = FakeTexture(width, height, 1, format);
     textures.add(texture);
     return FakeTextureTarget(width, height, format, texture);
   }
@@ -266,8 +290,9 @@ class FakeUniformSlot(
 class FakeTexture(
   final int width,
   final int height,
-  @override final int mipLevelCount,
-) implements GpuTexture {
+  @override final int mipLevelCount, [
+  final GpuPixelFormat format = GpuPixelFormat.rgba8888,
+]) implements GpuTexture {
   /// Every write, as (mip level, bytes).
   final List<(int, Uint8List)> writes = [];
 
@@ -365,6 +390,36 @@ class FakeRenderPass(final FakeGpuBackend backend) implements GpuRenderPass {
   @override
   void setWindingOrder(WindingOrder windingOrder) =>
       _commands.add('setWindingOrder ${windingOrder.name}');
+
+  @override
+  void setViewport(
+    int x,
+    int y,
+    int width,
+    int height, {
+    double zNear = 0.0,
+    double zFar = 1.0,
+  }) => _commands.add('setViewport $x $y ${width}x$height $zNear..$zFar');
+
+  @override
+  void setScissor(int x, int y, int width, int height) =>
+      _commands.add('setScissor $x $y ${width}x$height');
+
+  @override
+  void setStencil(StencilState? stencil) => _commands.add(
+    stencil == null
+        ? 'setStencil off'
+        : 'setStencil ${stencil.compare.name} ${stencil.pass.name} '
+              'ref=${stencil.referenceValue}',
+  );
+
+  @override
+  void setPolygonMode(PolygonFillMode mode) =>
+      _commands.add('setPolygonMode ${mode.name}');
+
+  @override
+  void setPrimitiveTopology(PrimitiveTopology topology) =>
+      _commands.add('setPrimitiveTopology ${topology.name}');
 
   @override
   void bindVertexBuffer(

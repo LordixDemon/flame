@@ -1,22 +1,26 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flame/components.dart' show Component, HasWorldRef;
 import 'package:flame_3d/camera.dart' show World3D;
 import 'package:flame_3d/collisions.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/physics.dart';
+import 'package:meta/meta.dart';
 
 /// Deterministic fixed-timestep Sequential Impulse 3D rigid-body physics world.
 ///
 /// Simulates dynamic, kinematic, and static [RigidBody3D] components with:
-/// - World inverse inertia tensor updates (`R * I_local^-1 * R^T`),
+/// - Incremental [DynamicAabbTree3D] broadphase,
+/// - Continuous Collision Detection (`RigidBody3D.ccdEnabled`) via swept TOI,
+/// - World inverse inertia tensor updates (`R * I_local^-1 * R^T`) and
+///   composite [CompoundShape3D] centers of mass,
 /// - Multi-point normal + isotropic 2-tangent Coulomb friction impulses with
-///   warm-starting,
-/// - Restitution bounce,
-/// - Split-impulse / NGS Baumgarte position correction,
-/// - [Joint3D] constraints ([DistanceJoint3D], [BallSocketJoint3D],
-///   [HingeJoint3D]), and
-/// - Linear/angular velocity sleep timers.
+///   warm-starting and [PhysicsMaterial3D] combine modes,
+/// - Restitution bounce & split-impulse / NGS Baumgarte position correction,
+/// - [Joint3D] constraints, [BuoyancyVolume3D], [RaycastVehicle3D], and
+/// - Binary CRC32-verified rollback snapshots ([saveSnapshot] /
+///   [restoreSnapshot]).
 class PhysicsWorld3D({
   Vector3? gravity,
   var double fixedTimeStep = 1.0 / 60.0,
@@ -28,6 +32,7 @@ class PhysicsWorld3D({
   var double sleepTimeThreshold = 0.5,
   var double restitutionVelocityThreshold = 0.5,
   var bool autoStep = true,
+  this.collisionSystem,
   super.priority,
 }) extends Component with HasWorldRef<World3D> {
   this
@@ -37,20 +42,53 @@ class PhysicsWorld3D({
   /// Constant gravitational acceleration (`m/s^2`), `(0, -9.81, 0)` by default.
   final Vector3 gravity = gravity?.clone() ?? Vector3(0.0, -9.81, 0.0);
 
+  /// Optional [CollisionSystem3D] queried during CCD and vehicle wheel
+  /// raycasts.
+  CollisionSystem3D? collisionSystem;
+
+  /// Incremental SAH broadphase tree over active [RigidBody3D]s.
+  final DynamicAabbTree3D<RigidBody3D> broadphaseTree =
+      DynamicAabbTree3D<RigidBody3D>();
+
+  int _tick = 0;
   double _accumulator = 0.0;
 
   final List<RigidBody3D> _manualBodies = [];
   final List<Joint3D> _joints = [];
+  final List<BuoyancyVolume3D> _buoyancyVolumes = [];
+  final List<RaycastVehicle3D> _vehicles = [];
   final List<RigidBody3D> _activeBodies = [];
-  final List<_BodySweep> _sweepEntries = [];
+  final Map<RigidBody3D, int> _bodyProxies = {};
+  final Set<RigidBody3D> _seenBodiesScratch = {};
+  final List<RigidBody3D> _staleBodiesScratch = [];
+  final List<RigidBody3D> _pairCandidates = [];
   final List<_ContactConstraint3D> _constraints = [];
   Map<int, _WarmImpulse> _warmCache = {};
 
   final Vector3 _scratchVec = Vector3.zero();
   final Vector3 _scratchTorque = Vector3.zero();
+  final Vector3 _comScratch = Vector3.zero();
+  final Vector3 _rotOffsetScratch = Vector3.zero();
+  final Matrix4 _ccdStartMat = Matrix4.identity();
+  final Aabb3 _ccdSweptAabb = Aabb3();
+  final Vector3 _ccdDelta = Vector3.zero();
+
+  /// Monotonic count of completed [step] invocations (saved/restored by
+  /// [saveSnapshot] and [restoreSnapshot]).
+  int get tick => _tick;
+
+  /// Current fixed-timestep sub-step accumulator (seconds).
+  double get accumulator => _accumulator;
 
   /// Active constraints registered via [addJoint].
   List<Joint3D> get joints => List.unmodifiable(_joints);
+
+  /// Registered [BuoyancyVolume3D] solvers stepped automatically in [step].
+  List<BuoyancyVolume3D> get buoyancyVolumes =>
+      List.unmodifiable(_buoyancyVolumes);
+
+  /// Registered [RaycastVehicle3D] controllers stepped automatically in [step].
+  List<RaycastVehicle3D> get vehicles => List.unmodifiable(_vehicles);
 
   /// Explicitly registers [body] for standalone simulation outside a mounted
   /// [World3D].
@@ -63,6 +101,10 @@ class PhysicsWorld3D({
   /// Removes a manually registered [body].
   void removeBody(RigidBody3D body) {
     _manualBodies.remove(body);
+    final proxy = _bodyProxies.remove(body);
+    if (proxy != null) {
+      broadphaseTree.remove(proxy);
+    }
   }
 
   /// Registers a [Joint3D] constraint between two rigid bodies.
@@ -79,6 +121,47 @@ class PhysicsWorld3D({
     _joints.remove(joint);
     joint.bodyA.wakeUp();
     joint.bodyB.wakeUp();
+  }
+
+  /// Registers a [BuoyancyVolume3D] to apply Archimedes forces each [step].
+  void addBuoyancyVolume(BuoyancyVolume3D volume) {
+    if (!_buoyancyVolumes.contains(volume)) {
+      _buoyancyVolumes.add(volume);
+    }
+  }
+
+  /// Unregisters [volume].
+  void removeBuoyancyVolume(BuoyancyVolume3D volume) {
+    _buoyancyVolumes.remove(volume);
+  }
+
+  /// Registers a [RaycastVehicle3D] to step suspension & tire impulses each
+  /// [step].
+  void addVehicle(RaycastVehicle3D vehicle) {
+    if (!_vehicles.contains(vehicle)) {
+      _vehicles.add(vehicle);
+    }
+  }
+
+  /// Unregisters [vehicle].
+  void removeVehicle(RaycastVehicle3D vehicle) {
+    _vehicles.remove(vehicle);
+  }
+
+  /// Encodes the complete deterministic simulation state of this world into a
+  /// compact binary `Uint8List` with `'P3DS'` magic and CRC32 checksum.
+  Uint8List saveSnapshot() => PhysicsSnapshot3D.encodeWorld(this);
+
+  /// Restores the complete simulation state previously encoded by
+  /// [saveSnapshot], throwing [FormatException] on magic or CRC32 mismatch.
+  void restoreSnapshot(Uint8List bytes) =>
+      PhysicsSnapshot3D.restoreWorld(this, bytes);
+
+  /// Collects all active rigid bodies in deterministic `deterministicId` order.
+  List<RigidBody3D> collectBodies([List<RigidBody3D>? out]) {
+    final res = out ?? <RigidBody3D>[];
+    _collectBodies(res);
+    return res;
   }
 
   /// Deterministically places, orients, and throws [bodies] (such as polyhedral
@@ -168,9 +251,22 @@ class PhysicsWorld3D({
     if (dt <= 0.0) {
       return;
     }
+    _tick++;
     _collectBodies(_activeBodies);
     if (_activeBodies.isEmpty) {
       return;
+    }
+
+    // Apply registered Archimedes buoyancy volumes before force integration.
+    if (_buoyancyVolumes.isNotEmpty) {
+      final gMag = gravity.length;
+      for (var i = 0; i < _buoyancyVolumes.length; i++) {
+        _buoyancyVolumes[i].applyToBodies(
+          _activeBodies,
+          dt,
+          gravityMagnitude: gMag,
+        );
+      }
     }
 
     // Keep bodies connected by a joint awake together if either is awake.
@@ -222,7 +318,20 @@ class PhysicsWorld3D({
       b.clearAccumulators();
     }
 
-    // 2. Broadphase & narrowphase contact constraint build.
+    // Apply registered RaycastVehicle3D suspension, drive, and anti-slip.
+    if (_vehicles.isNotEmpty) {
+      final colSys = _resolveCollisionSystem();
+      for (var i = 0; i < _vehicles.length; i++) {
+        _vehicles[i].stepVehicle(
+          dt,
+          bodies: _activeBodies,
+          collisionSystem: colSys,
+        );
+      }
+    }
+
+    // 2. Sync broadphase tree & build narrowphase contact constraints.
+    _syncBroadphaseTree();
     _buildContactConstraints();
 
     // 3. Prepare joints & warm-start resting contacts.
@@ -250,7 +359,8 @@ class PhysicsWorld3D({
     }
     _warmCache = nextWarmCache;
 
-    // 5. Symplectic Euler position & orientation integration.
+    // 5. Symplectic Euler position & orientation integration (+ swept CCD).
+    final colSys = _resolveCollisionSystem();
     for (var i = 0; i < _activeBodies.length; i++) {
       final b = _activeBodies[i];
       if (b.bodyType == BodyType3D.static) {
@@ -260,37 +370,17 @@ class PhysicsWorld3D({
         continue;
       }
 
-      final pos = b.bodyPosition;
-      final lv = b.linearVelocity;
-      if (lv.x != 0.0 || lv.y != 0.0 || lv.z != 0.0) {
-        pos.setValues(pos.x + lv.x * dt, pos.y + lv.y * dt, pos.z + lv.z * dt);
+      if (b.bodyType == BodyType3D.dynamic && b.ccdEnabled) {
+        final rCcd = b.ccdSweptSphereRadius;
+        final disp = b.linearVelocity.length * dt;
+        final ccdThreshold = math.max(1e-4, rCcd * 0.5);
+        if (disp > ccdThreshold) {
+          _integrateBodyWithCcd(b, dt, rCcd, colSys);
+          continue;
+        }
       }
 
-      final av = b.angularVelocity;
-      final wLen = av.length;
-      if (wLen > 1e-9) {
-        final angle = wLen * dt;
-        final half = 0.5 * angle;
-        final s = math.sin(half) / wLen;
-        final dqx = av.x * s;
-        final dqy = av.y * s;
-        final dqz = av.z * s;
-        final dqw = math.cos(half);
-
-        final q = b.bodyRotation;
-        final qx = q.x;
-        final qy = q.y;
-        final qz = q.z;
-        final qw = q.w;
-
-        final nx = dqw * qx + dqx * qw + dqy * qz - dqz * qy;
-        final ny = dqw * qy - dqx * qz + dqy * qw + dqz * qx;
-        final nz = dqw * qz + dqx * qy - dqy * qx + dqz * qw;
-        final nw = dqw * qw - dqx * qx - dqy * qy - dqz * qz;
-        final invNorm = 1.0 / math.sqrt(nx * nx + ny * ny + nz * nz + nw * nw);
-        q.setValues(nx * invNorm, ny * invNorm, nz * invNorm, nw * invNorm);
-        b.updateWorldInertia();
-      }
+      _integrateBodyPose(b, dt);
     }
 
     // 6. Split-impulse / NGS position correction iterations.
@@ -323,9 +413,286 @@ class PhysicsWorld3D({
     }
   }
 
+  void _integrateBodyPose(RigidBody3D b, double dt) {
+    final hasCom = b.hasCenterOfMassOffset;
+    if (hasCom) {
+      _comScratch.setFrom(b.worldCenterOfMass);
+    }
+
+    final lv = b.linearVelocity;
+    if (hasCom) {
+      _comScratch.addScaled(lv, dt);
+    } else if (lv.x != 0.0 || lv.y != 0.0 || lv.z != 0.0) {
+      final pos = b.bodyPosition;
+      pos.setValues(pos.x + lv.x * dt, pos.y + lv.y * dt, pos.z + lv.z * dt);
+    }
+
+    final av = b.angularVelocity;
+    final wLen = av.length;
+    if (wLen > 1e-9) {
+      final angle = wLen * dt;
+      final half = 0.5 * angle;
+      final s = math.sin(half) / wLen;
+      final dqx = av.x * s;
+      final dqy = av.y * s;
+      final dqz = av.z * s;
+      final dqw = math.cos(half);
+
+      final q = b.bodyRotation;
+      final qx = q.x;
+      final qy = q.y;
+      final qz = q.z;
+      final qw = q.w;
+
+      final nx = dqw * qx + dqx * qw + dqy * qz - dqz * qy;
+      final ny = dqw * qy - dqx * qz + dqy * qw + dqz * qx;
+      final nz = dqw * qz + dqx * qy - dqy * qx + dqz * qw;
+      final nw = dqw * qw - dqx * qx - dqy * qy - dqz * qz;
+      final invNorm = 1.0 / math.sqrt(nx * nx + ny * ny + nz * nz + nw * nw);
+      q.setValues(nx * invNorm, ny * invNorm, nz * invNorm, nw * invNorm);
+      b.updateWorldInertia();
+    }
+
+    if (hasCom) {
+      _ContactConstraint3D._rotateByQuat(
+        b.bodyRotation,
+        b.localCenterOfMass,
+        _rotOffsetScratch,
+      );
+      b.bodyPosition.setValues(
+        _comScratch.x - _rotOffsetScratch.x,
+        _comScratch.y - _rotOffsetScratch.y,
+        _comScratch.z - _rotOffsetScratch.z,
+      );
+    }
+  }
+
+  void _integrateBodyWithCcd(
+    RigidBody3D b,
+    double totalDt,
+    double rCcd,
+    CollisionSystem3D? colSys,
+  ) {
+    final sweptSphere = SphereShape3D(radius: rCcd);
+    var remDt = totalDt;
+
+    for (var sub = 0; sub < 3 && remDt > 1e-7; sub++) {
+      _ccdDelta
+        ..setFrom(b.linearVelocity)
+        ..scale(remDt);
+      final sweepLen = _ccdDelta.length;
+      if (sweepLen <= math.max(1e-4, rCcd * 0.25)) {
+        _integrateBodyPose(b, remDt);
+        break;
+      }
+
+      final com = b.worldCenterOfMass;
+      final startX = com.x;
+      final startY = com.y;
+      final startZ = com.z;
+      _ccdStartMat
+        ..setIdentity()
+        ..setTranslationRaw(startX, startY, startZ);
+
+      final endX = startX + _ccdDelta.x;
+      final endY = startY + _ccdDelta.y;
+      final endZ = startZ + _ccdDelta.z;
+      _ccdSweptAabb
+        ..min.setValues(
+          math.min(startX, endX) - rCcd,
+          math.min(startY, endY) - rCcd,
+          math.min(startZ, endZ) - rCcd,
+        )
+        ..max.setValues(
+          math.max(startX, endX) + rCcd,
+          math.max(startY, endY) + rCcd,
+          math.max(startZ, endZ) + rCcd,
+        );
+
+      ShapeCastHit3D? bestHit;
+      RigidBody3D? hitBody;
+      var maxToi = 1.0;
+
+      // 1. Swept TOI against RigidBody3D obstacles in `broadphaseTree`.
+      broadphaseTree.queryAabbCallback(_ccdSweptAabb, (_, other) {
+        if (identical(other, b) ||
+            !b.canCollideWith(other) ||
+            _jointBlocksCollision(b, other)) {
+          return;
+        }
+        // Only sweep against static/kinematic or slower dynamic bodies; skip
+        // bodies already separated outside the tight swept AABB.
+        final otherBox = other.bodyWorldAabb;
+        if (!_boxesOverlap(_ccdSweptAabb, otherBox)) {
+          return;
+        }
+        final hit = ShapeCast3D.castShapeAgainstShape(
+          shapeA: sweptSphere,
+          startTransformA: _ccdStartMat,
+          delta: _ccdDelta,
+          shapeB: other.shape,
+          transformB: other.bodyWorldMatrix,
+          maxToi: maxToi,
+          component: other.hostComponent,
+        );
+        if (hit != null && hit.toi <= maxToi) {
+          maxToi = hit.toi;
+          bestHit = hit;
+          hitBody = other;
+        }
+      });
+
+      // 2. Swept TOI against static/solid colliders in `CollisionSystem3D`.
+      if (colSys != null) {
+        final cHit = ShapeCast3D.sphereCast(
+          origin: Vector3(startX, startY, startZ),
+          radius: rCcd,
+          delta: _ccdDelta,
+          collisionSystem: colSys,
+          collisionMask: b.collisionMask,
+          filter: (cand) => !identical(cand, b.hostComponent),
+        );
+        if (cHit != null && cHit.toi < maxToi) {
+          maxToi = cHit.toi;
+          bestHit = cHit;
+          hitBody = null;
+        }
+      }
+
+      if (bestHit == null || bestHit!.toi >= 1.0) {
+        _integrateBodyPose(b, remDt);
+        break;
+      }
+
+      final impact = bestHit!;
+      final skinDist = math.min(0.002, rCcd * 0.05);
+      final safeToi = math.max(0.0, impact.toi - skinDist / sweepLen);
+      _integrateBodyPose(b, safeToi * remDt);
+
+      // Resolve impact impulse right at the contact surface.
+      final otherBody = hitBody;
+      if (otherBody != null) {
+        otherBody.wakeUp();
+        // `impact.normal` points from `otherBody` toward `b`, so `A -> B`
+        // (`b -> otherBody`) normal is `-impact.normal`.
+        final impactManifold = CollisionManifold3D(
+          normal: -impact.normal,
+          penetrationDepth: 0.001,
+          contactPointA: impact.point,
+          contactPointB: impact.point,
+        );
+        final ccdConstraint = _ContactConstraint3D(
+          bodyA: b,
+          bodyB: otherBody,
+          manifold: impactManifold,
+          restitutionThreshold: restitutionVelocityThreshold,
+          manifoldIndex: 0,
+        )..prepareAndWarmStart(const {}, _scratchVec);
+        for (var it = 0; it < velocityIterations; it++) {
+          ccdConstraint.solveVelocity(_scratchVec);
+        }
+      } else {
+        // Static Collider3D impact resolution.
+        final n = impact.normal;
+        final vn = b.linearVelocity.dot(n);
+        if (vn < 0.0) {
+          final hitMat = impact.collider?.material;
+          final bodyMat = b.material;
+          final e = hitMat != null || bodyMat != null
+              ? PhysicsMaterial3D.combineRestitution(
+                  bodyMat ??
+                      PhysicsMaterial3D(
+                        friction: b.friction,
+                        restitution: b.restitution,
+                      ),
+                  hitMat ?? const PhysicsMaterial3D(),
+                )
+              : b.restitution;
+          final mu = hitMat != null || bodyMat != null
+              ? PhysicsMaterial3D.combineFriction(
+                  bodyMat ??
+                      PhysicsMaterial3D(
+                        friction: b.friction,
+                        restitution: b.restitution,
+                      ),
+                  hitMat ?? const PhysicsMaterial3D(),
+                )
+              : b.friction;
+          final bounceE = -vn > restitutionVelocityThreshold ? e : 0.0;
+          final jn = -(1.0 + bounceE) * vn * b.mass;
+          b.applyImpulse(n * jn, worldPoint: impact.point);
+          // Tangential Coulomb friction impulse.
+          final vt = b.linearVelocity - n * b.linearVelocity.dot(n);
+          final vtLen = vt.length;
+          if (vtLen > 1e-6 && mu > 0.0) {
+            final jtMag = math.min(mu * jn, vtLen * b.mass);
+            b.applyImpulse(
+              vt * (-jtMag / vtLen),
+              worldPoint: impact.point,
+            );
+          }
+        }
+      }
+
+      // Refresh `b`'s proxy in the broadphase tree after moving to impact.
+      final proxy = _bodyProxies[b];
+      if (proxy != null) {
+        broadphaseTree.update(proxy, b.bodyWorldAabb);
+      }
+
+      final consumed = math.max(impact.toi, 0.05).clamp(0.0, 1.0);
+      remDt *= 1.0 - consumed;
+    }
+  }
+
+  CollisionSystem3D? _resolveCollisionSystem() {
+    if (collisionSystem != null) {
+      return collisionSystem;
+    }
+    final root = parent;
+    if (root != null) {
+      for (final child in root.children) {
+        if (child is CollisionSystem3D) {
+          return child;
+        }
+      }
+    }
+    return null;
+  }
+
+  void _syncBroadphaseTree() {
+    if (_bodyProxies.length != _activeBodies.length ||
+        _bodyProxies.keys.any((b) => !_seenBodiesScratch.contains(b))) {
+      _staleBodiesScratch.clear();
+      for (final b in _bodyProxies.keys) {
+        if (!_seenBodiesScratch.contains(b)) {
+          _staleBodiesScratch.add(b);
+        }
+      }
+      for (var i = 0; i < _staleBodiesScratch.length; i++) {
+        final b = _staleBodiesScratch[i];
+        final proxy = _bodyProxies.remove(b);
+        if (proxy != null) {
+          broadphaseTree.remove(proxy);
+        }
+      }
+    }
+
+    for (var i = 0; i < _activeBodies.length; i++) {
+      final b = _activeBodies[i];
+      final box = b.bodyWorldAabb;
+      final existing = _bodyProxies[b];
+      if (existing == null) {
+        _bodyProxies[b] = broadphaseTree.insert(b, box);
+      } else {
+        broadphaseTree.update(existing, box);
+      }
+    }
+  }
+
   void _collectBodies(List<RigidBody3D> out) {
     out.clear();
-    final seen = <RigidBody3D>{};
+    final seen = _seenBodiesScratch..clear();
 
     void addUnique(RigidBody3D b) {
       if (seen.add(b)) {
@@ -369,112 +736,124 @@ class PhysicsWorld3D({
 
   void _buildContactConstraints() {
     _constraints.clear();
-    _sweepEntries.clear();
-
-    for (var i = 0; i < _activeBodies.length; i++) {
-      final b = _activeBodies[i];
-      final box = b.bodyWorldAabb;
-      _sweepEntries.add(
-        _BodySweep(
-          body: b,
-          minX: box.min.x,
-          minY: box.min.y,
-          minZ: box.min.z,
-          maxX: box.max.x,
-          maxY: box.max.y,
-          maxZ: box.max.z,
-        ),
-      );
-    }
-
-    _sweepEntries.sort((a, b) {
-      final cmp = a.minX.compareTo(b.minX);
-      return cmp != 0
-          ? cmp
-          : a.body.deterministicId.compareTo(b.body.deterministicId);
-    });
-
     final wakeVelThresh2 =
         (sleepLinearThreshold * 2.0) * (sleepLinearThreshold * 2.0);
 
-    for (var i = 0; i < _sweepEntries.length; i++) {
-      final sA = _sweepEntries[i];
-      final maxX = sA.maxX;
-      for (var j = i + 1; j < _sweepEntries.length; j++) {
-        final sB = _sweepEntries[j];
-        if (sB.minX > maxX) {
-          break;
-        }
-        if (sA.maxY < sB.minY ||
-            sA.minY > sB.maxY ||
-            sA.maxZ < sB.minZ ||
-            sA.minZ > sB.maxZ) {
-          continue;
-        }
+    for (var i = 0; i < _activeBodies.length; i++) {
+      final bodyA = _activeBodies[i];
+      final boxA = bodyA.bodyWorldAabb;
+      _pairCandidates.clear();
 
-        // Canonical deterministic order `first.deterministicId < second`.
-        final swap = sA.body.deterministicId > sB.body.deterministicId;
-        final bodyA = swap ? sB.body : sA.body;
-        final bodyB = swap ? sA.body : sB.body;
-
-        if (!bodyA.canCollideWith(bodyB)) {
-          continue;
+      broadphaseTree.queryAabbCallback(boxA, (_, cand) {
+        if (cand.deterministicId <= bodyA.deterministicId) {
+          return;
+        }
+        if (!bodyA.canCollideWith(cand)) {
+          return;
         }
         final aSleep = bodyA.bodyType != BodyType3D.dynamic || bodyA.isSleeping;
-        final bSleep = bodyB.bodyType != BodyType3D.dynamic || bodyB.isSleeping;
+        final bSleep = cand.bodyType != BodyType3D.dynamic || cand.isSleeping;
         if (aSleep && bSleep) {
-          continue;
+          return;
         }
-        if (_jointBlocksCollision(bodyA, bodyB)) {
-          continue;
+        if (!_boxesOverlap(boxA, cand.bodyWorldAabb)) {
+          return;
         }
+        if (_jointBlocksCollision(bodyA, cand)) {
+          return;
+        }
+        _pairCandidates.add(cand);
+      });
 
-        final manifold = Narrowphase3D.test(
+      if (_pairCandidates.isEmpty) {
+        continue;
+      }
+      if (_pairCandidates.length > 1) {
+        _pairCandidates.sort(
+          (a, b) => a.deterministicId.compareTo(b.deterministicId),
+        );
+      }
+
+      for (var j = 0; j < _pairCandidates.length; j++) {
+        final bodyB = _pairCandidates[j];
+        final manifolds = Narrowphase3D.testAll(
           bodyA.shape,
           bodyA.bodyWorldMatrix,
           bodyB.shape,
           bodyB.bodyWorldMatrix,
         );
-        if (manifold == null) {
+        if (manifolds.isEmpty) {
           continue;
         }
 
-        // Wake sleeping partner if moving fast enough on impact.
-        if (bodyA.bodyType == BodyType3D.dynamic &&
-            bodyB.bodyType == BodyType3D.dynamic &&
-            bodyA.isSleeping != bodyB.isSleeping) {
-          final dvx = bodyB.linearVelocity.x - bodyA.linearVelocity.x;
-          final dvy = bodyB.linearVelocity.y - bodyA.linearVelocity.y;
-          final dvz = bodyB.linearVelocity.z - bodyA.linearVelocity.z;
-          if (dvx * dvx + dvy * dvy + dvz * dvz > wakeVelThresh2 ||
-              manifold.penetrationDepth > 0.01) {
-            bodyA.wakeUp();
-            bodyB.wakeUp();
-          }
-        }
+        for (var mIdx = 0; mIdx < manifolds.length; mIdx++) {
+          final manifold = manifolds[mIdx];
 
-        _constraints.add(
-          _ContactConstraint3D(
-            bodyA: bodyA,
-            bodyB: bodyB,
-            manifold: manifold,
-            restitutionThreshold: restitutionVelocityThreshold,
-          ),
-        );
+          // Wake sleeping partner if moving fast enough on impact.
+          if (bodyA.bodyType == BodyType3D.dynamic &&
+              bodyB.bodyType == BodyType3D.dynamic &&
+              bodyA.isSleeping != bodyB.isSleeping) {
+            final dvx = bodyB.linearVelocity.x - bodyA.linearVelocity.x;
+            final dvy = bodyB.linearVelocity.y - bodyA.linearVelocity.y;
+            final dvz = bodyB.linearVelocity.z - bodyA.linearVelocity.z;
+            if (dvx * dvx + dvy * dvy + dvz * dvz > wakeVelThresh2 ||
+                manifold.penetrationDepth > 0.01) {
+              bodyA.wakeUp();
+              bodyB.wakeUp();
+            }
+          }
+
+          _constraints.add(
+            _ContactConstraint3D(
+              bodyA: bodyA,
+              bodyB: bodyB,
+              manifold: manifold,
+              restitutionThreshold: restitutionVelocityThreshold,
+              manifoldIndex: mIdx,
+            ),
+          );
+        }
       }
     }
   }
-}
 
-class _BodySweep({
-  required final RigidBody3D body,
-  required final double minX,
-  required final double minY,
-  required final double minZ,
-  required final double maxX,
-  required final double maxY,
-  required final double maxZ,
-});
+  /// Internal snapshot hook exporting sorted warm-start cache entries.
+  @internal
+  List<(int key, double jn, double jt1, double jt2)> exportWarmStartEntries() {
+    final entries = <(int, double, double, double)>[];
+    for (final e in _warmCache.entries) {
+      entries.add((e.key, e.value.jn, e.value.jt1, e.value.jt2));
+    }
+    entries.sort((a, b) => a.$1.compareTo(b.$1));
+    return entries;
+  }
+
+  /// Internal snapshot hook restoring simulation clock and warm-start entries.
+  @internal
+  void restoreInternalState({
+    required int tick,
+    required double accumulator,
+    required List<(int key, double jn, double jt1, double jt2)> warmEntries,
+  }) {
+    _tick = tick;
+    _accumulator = accumulator;
+    _warmCache = {
+      for (final (k, jn, jt1, jt2) in warmEntries)
+        k: _WarmImpulse(jn, jt1, jt2),
+    };
+    _collectBodies(_activeBodies);
+    _syncBroadphaseTree();
+  }
+
+  static bool _boxesOverlap(Aabb3 a, Aabb3 b) {
+    return a.min.x <= b.max.x &&
+        a.max.x >= b.min.x &&
+        a.min.y <= b.max.y &&
+        a.max.y >= b.min.y &&
+        a.min.z <= b.max.z &&
+        a.max.z >= b.min.z;
+  }
+}
 
 class _WarmImpulse(this.jn, this.jt1, this.jt2) {
   final double jn;
@@ -505,6 +884,7 @@ class _ContactConstraint3D({
   required final RigidBody3D bodyB,
   required final CollisionManifold3D manifold,
   required final double restitutionThreshold,
+  required final int manifoldIndex,
 }) {
   this {
     if (normal.x.abs() < 0.9) {
@@ -521,20 +901,28 @@ class _ContactConstraint3D({
 
     final posA = bodyA.bodyPosition;
     final posB = bodyB.bodyPosition;
+    final comA = bodyA.worldCenterOfMass;
+    final comB = bodyB.worldCenterOfMass;
 
-    final pairHash = Object.hash(bodyA.deterministicId, bodyB.deterministicId);
     final contacts = manifold.contacts;
     for (var idx = 0; idx < contacts.length; idx++) {
       final cp = contacts[idx];
-      final rA = cp.pointA - posA;
-      final rB = cp.pointB - posB;
+      final offA = cp.pointA - posA;
+      final offB = cp.pointB - posB;
+      final rA = cp.pointA - comA;
+      final rB = cp.pointB - comB;
       final locA = Vector3.zero();
       final locB = Vector3.zero();
-      _unrotateByQuat(bodyA.bodyRotation, rA, locA);
-      _unrotateByQuat(bodyB.bodyRotation, rB, locB);
+      _unrotateByQuat(bodyA.bodyRotation, offA, locA);
+      _unrotateByQuat(bodyB.bodyRotation, offB, locB);
       points.add(
         _ContactPointState(
-          cacheKey: Object.hash(pairHash, idx),
+          cacheKey: _deterministicContactKey(
+            bodyA.deterministicId,
+            bodyB.deterministicId,
+            manifoldIndex,
+            idx,
+          ),
           localOffsetA: locA,
           localOffsetB: locB,
           rA: rA,
@@ -548,11 +936,45 @@ class _ContactConstraint3D({
   final Vector3 normal = manifold.normal.clone();
   final Vector3 t1 = Vector3.zero();
   final Vector3 t2 = Vector3.zero();
-  final double restitution = math.max(bodyA.restitution, bodyB.restitution);
-  final double friction = math.sqrt(
-    math.max(0.0, bodyA.friction * bodyB.friction),
-  );
+  final double restitution = _resolveRestitution(bodyA, bodyB);
+  final double friction = _resolveFriction(bodyA, bodyB);
   final List<_ContactPointState> points = [];
+
+  static double _resolveRestitution(RigidBody3D a, RigidBody3D b) {
+    final mA = a.material;
+    final mB = b.material;
+    if (mA == null && mB == null) {
+      return math.max(a.restitution, b.restitution);
+    }
+    return PhysicsMaterial3D.combineRestitution(
+      mA ?? PhysicsMaterial3D(friction: a.friction, restitution: a.restitution),
+      mB ?? PhysicsMaterial3D(friction: b.friction, restitution: b.restitution),
+    );
+  }
+
+  static double _resolveFriction(RigidBody3D a, RigidBody3D b) {
+    final mA = a.material;
+    final mB = b.material;
+    if (mA == null && mB == null) {
+      return math.sqrt(math.max(0.0, a.friction * b.friction));
+    }
+    return PhysicsMaterial3D.combineFriction(
+      mA ?? PhysicsMaterial3D(friction: a.friction, restitution: a.restitution),
+      mB ?? PhysicsMaterial3D(friction: b.friction, restitution: b.restitution),
+    );
+  }
+
+  static int _deterministicContactKey(
+    int idA,
+    int idB,
+    int manifoldIdx,
+    int pointIdx,
+  ) {
+    var h = (idA & 0xFFFFFFFF) * 0x9E3779B1;
+    h = ((h ^ (idB & 0xFFFFFFFF)) * 0x85EBCA6B) & 0xFFFFFFFF;
+    h = ((h ^ ((manifoldIdx << 8) | pointIdx)) * 0xC2B2AE35) & 0xFFFFFFFF;
+    return (h ^ (h >>> 16)) & 0x7FFFFFFF;
+  }
 
   void prepareAndWarmStart(
     Map<int, _WarmImpulse> prevCache,
@@ -586,8 +1008,6 @@ class _ContactConstraint3D({
   }
 
   void solveVelocity(Vector3 scratch) {
-    // Tangent friction pass first, then non-penetration normal pass (with
-    // isotropic Coulomb cone clamping).
     for (var i = 0; i < points.length; i++) {
       final p = points[i];
 
@@ -649,20 +1069,21 @@ class _ContactConstraint3D({
   void solvePosition(Vector3 scratch) {
     const slop = 0.004;
     final baumgarte = 0.25 / math.max(1, points.length);
+    final offA = Vector3.zero();
+    final offB = Vector3.zero();
     final rA = Vector3.zero();
     final rB = Vector3.zero();
 
     for (var i = 0; i < points.length; i++) {
       final p = points[i];
-      // Re-evaluate world contact witnesses from updated poses.
-      _rotateByQuat(bodyA.bodyRotation, p.localOffsetA, rA);
-      _rotateByQuat(bodyB.bodyRotation, p.localOffsetB, rB);
-      final wAx = bodyA.bodyPosition.x + rA.x;
-      final wAy = bodyA.bodyPosition.y + rA.y;
-      final wAz = bodyA.bodyPosition.z + rA.z;
-      final wBx = bodyB.bodyPosition.x + rB.x;
-      final wBy = bodyB.bodyPosition.y + rB.y;
-      final wBz = bodyB.bodyPosition.z + rB.z;
+      _rotateByQuat(bodyA.bodyRotation, p.localOffsetA, offA);
+      _rotateByQuat(bodyB.bodyRotation, p.localOffsetB, offB);
+      final wAx = bodyA.bodyPosition.x + offA.x;
+      final wAy = bodyA.bodyPosition.y + offA.y;
+      final wAz = bodyA.bodyPosition.z + offA.z;
+      final wBx = bodyB.bodyPosition.x + offB.x;
+      final wBy = bodyB.bodyPosition.y + offB.y;
+      final wBz = bodyB.bodyPosition.z + offB.z;
 
       // Current penetration along `normal` (`(wA - wB) . normal > 0`).
       final pen =
@@ -673,6 +1094,11 @@ class _ContactConstraint3D({
       if (corr <= 1e-7) {
         continue;
       }
+
+      final comA = bodyA.worldCenterOfMass;
+      final comB = bodyB.worldCenterOfMass;
+      rA.setValues(wAx - comA.x, wAy - comA.y, wAz - comA.z);
+      rB.setValues(wBx - comB.x, wBy - comB.y, wBz - comB.z);
 
       final massN = _axisMass(rA, rB, normal, scratch);
       if (massN <= 0.0) {
@@ -798,11 +1224,24 @@ class _ContactConstraint3D({
     }
   }
 
+  static final Vector3 _deltaComRotScratch = Vector3.zero();
+
   static void _applyDeltaQuat(RigidBody3D body, Vector3 dTheta) {
     final angle = dTheta.length;
     if (angle <= 1e-8) {
       return;
     }
+    final hasCom = body.hasCenterOfMassOffset;
+    var oldComX = 0.0;
+    var oldComY = 0.0;
+    var oldComZ = 0.0;
+    if (hasCom) {
+      final com = body.worldCenterOfMass;
+      oldComX = com.x;
+      oldComY = com.y;
+      oldComZ = com.z;
+    }
+
     final half = 0.5 * angle;
     final s = math.sin(half) / angle;
     final dqx = dTheta.x * s;
@@ -822,6 +1261,14 @@ class _ContactConstraint3D({
     final nw = dqw * qw - dqx * qx - dqy * qy - dqz * qz;
     final invNorm = 1.0 / math.sqrt(nx * nx + ny * ny + nz * nz + nw * nw);
     q.setValues(nx * invNorm, ny * invNorm, nz * invNorm, nw * invNorm);
+    if (hasCom) {
+      _rotateByQuat(q, body.localCenterOfMass, _deltaComRotScratch);
+      body.bodyPosition.setValues(
+        oldComX - _deltaComRotScratch.x,
+        oldComY - _deltaComRotScratch.y,
+        oldComZ - _deltaComRotScratch.z,
+      );
+    }
     body.updateWorldInertia();
   }
 

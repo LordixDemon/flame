@@ -151,17 +151,36 @@ Beyond rendering, `package:flame_3d` ships modular 3D gameplay libraries:
   `InstanceDataEffect3D`, `FixedTransformInterpolation3D`, plus `OrbitCameraController3D`
   (`fitAabb`), raycast-occluded `SpringArmCamera3D`, `CameraDollyTrack3D` and 6-DOF trauma
   `CameraShake3D`.
-- **`package:flame_3d/collisions.dart` & `physics.dart`:** `SphereShape3D`, `CapsuleShape3D`,
-  `BoxShape3D` (OBB) and `ConvexHullShape3D` with analytical + SAT + GJK/EPA `CollisionManifold3D`,
-  `CollisionSystem3D`, `TriggerVolume3D`, posed skeletal `SkinnedHitboxRig3D` (`BoneHitbox3D`),
-  swept `ShapeCast3D` (`sphereCast`, `capsuleCast`, `convexCast`), stair-climbing
-  `KinematicCharacterController3D` (`moveAndSlide`), and deterministic Sequential Impulse
-  `PhysicsWorld3D` (`RigidBody3D`, `throwDice3D`, `DistanceJoint3D`, `BallSocketJoint3D`,
-  `HingeJoint3D`).
-- **`package:flame_3d/navigation.dart` & `audio.dart`:** `NavMesh3D.fromMesh` (A* + 3D Simple
-  Stupid Funnel `findPath`, `sampleHeightAt`), RVO `CrowdSteering3D` (`CrowdAgent3D`), and
-  `SpatialAudioListener3D` / `SpatialAudioEmitter3D` (stereo pan, rolloff, cones, raycast
-  occlusion, 3D Doppler).
+- **`package:flame_3d/collisions.dart` & `physics.dart`:** `DynamicAabbTree3D` (`overlapSphere`,
+  `overlapBox`, `overlapCapsule`, `overlapFrustum`), `SphereShape3D`, `CapsuleShape3D`,
+  `BoxShape3D` (OBB), `ConvexHullShape3D`, `CompoundShape3D` (Huygens–Steiner parallel-axis
+  inertia) and `HeightfieldShape3D`, `PhysicsMaterial3D`, `CollisionSystem3D`, `TriggerVolume3D`,
+  `SkinnedHitboxRig3D` (`BoneHitbox3D`), swept `ShapeCast3D`, `KinematicCharacterController3D`,
+  and Sequential Impulse `PhysicsWorld3D` (`RigidBody3D` with `ccdEnabled` swept TOI anti-tunneling,
+  `DistanceJoint3D`, `BallSocketJoint3D`, `HingeJoint3D`, `FixedJoint3D`, `SliderJoint3D`,
+  `ConeTwistJoint3D`, `Generic6DofJoint3D`, Archimedes `BuoyancyVolume3D`, `RaycastVehicle3D`,
+  3D `XpbdCloth3D` / `XpbdRope3D`, and CRC32 binary `PhysicsSnapshot3D` rollback).
+- **`package:flame_3d/navigation.dart` & `audio.dart`:** `NavMesh3D.fromMesh` plus Recast-style
+  voxel `NavMeshBuilder3D.fromGeometry`, dynamic `NavMeshObstacle3D` carving, `OffMeshLink3D`
+  jumps/ladders, `polygonCosts`, RVO `CrowdSteering3D`, and voice-pooled `SpatialAudioMixer3D`
+  (virtual/real voice promotion, raycast wall occlusion and `AudioZone3D` reverb crossfading).
+- **`package:flame_3d/world_scale.dart`, `scene.dart`, `cinematics.dart` & `ui3d.dart`:**
+  - `LightClusterGrid3D` (`16x8x16` Forward+ clustering for 128+ local lights), Hi-Z software
+    `OcclusionCuller3D` + `PortalOcclusionGraph3D`, spatial `StaticMeshBatcher3D`, 64-bit
+    `FloatingOriginController3D`, quadtree CDLOD `ChunkedTerrain3D`, 10,000+ blade
+    `FoliageSystem3D` (with interactive trample spheres) and `VolumeDecalBatch3D`;
+  - `Component3D.visible` subtree culling, `clone()`, `PrefabRegistry3D`, JSON & `'F3DS'` binary
+    CRC32 `SceneSerializer3D`, `CameraStack3D` split-screen / `depthOnly` overlay compositing, and
+    ref-counted `GpuResourceManager3D` (LRU VRAM budget + device-loss recovery);
+  - `AnimationStateMachine3D` (HFSM), `HumanoidProfile3D` + `AnimationRetargeter3D`, N-bone
+    `FabrikIkConstraint3D`, terrain `FootPlacementIk3D`, `RagdollController3D` (fall & recovery),
+    `Timeline3D` + `VirtualCameraBrain3D`, `MeshoptDecoder3D` (`EXT_meshopt_compression`),
+    `WorldChunkStreamer3D`, 1-draw `MsdfTextBatch3D` and interactive `WidgetSurface3D`;
+  - `World3D.hdrEnabled` (`rgbaFloat16` linear HDR + `ColorLut3D` + `RenderDebugMode3D`),
+    `OitMode3D.weightedBlended`, `grabSceneColorEnabled` refraction, `RenderGraph3D`,
+    `StencilState`, `TextureSampler.anisotropic16x`, `Ktx2TextureLoader`, `BrdfLut3D`,
+    `ReflectionProbeVolume3D`, `LightProbeGrid3D`, and interactive `TransformGizmo3D` +
+    `SceneInspector3D`.
 - **`package:flame_3d/debug.dart`, `RenderTexture3D`, `cameraMask`/`lightMask` & Depth-Normal Prepass:**
   - `Component3D.cameraMask` and `LightComponent.lightMask` filter visibility and lighting per
     pass;

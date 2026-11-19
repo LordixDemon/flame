@@ -89,7 +89,8 @@ abstract final class ShapeCast3D._() {
     );
   }
 
-  /// Sweeps an arbitrary convex [shape] from [startTransform] along [delta].
+  /// Sweeps a [shape] (convex or [CompoundShape3D]) from [startTransform]
+  /// along [delta].
   static ShapeCastHit3D? convexCast({
     required Shape3D shape,
     required Matrix4 startTransform,
@@ -101,6 +102,33 @@ abstract final class ShapeCast3D._() {
     bool includeTriggers = false,
     bool Function(Component3D candidate)? filter,
   }) {
+    if (shape is CompoundShape3D) {
+      ShapeCastHit3D? bestCompound;
+      final childStart = Matrix4.identity();
+      for (var i = 0; i < shape.children.length; i++) {
+        final child = shape.children[i];
+        childStart
+          ..setFrom(startTransform)
+          ..multiply(child.localTransform);
+        final hit = convexCast(
+          shape: child.shape,
+          startTransform: childStart,
+          delta: delta,
+          collisionSystem: collisionSystem,
+          world: world,
+          staticGeometry: staticGeometry,
+          collisionMask: collisionMask,
+          includeTriggers: includeTriggers,
+          filter: filter,
+        );
+        if (hit != null &&
+            (bestCompound == null || hit.toi < bestCompound.toi)) {
+          bestCompound = hit;
+        }
+      }
+      return bestCompound;
+    }
+
     final sweepLen2 = delta.length2;
     if (sweepLen2 <= 1e-16) {
       return null;
@@ -255,6 +283,44 @@ abstract final class ShapeCast3D._() {
     return best;
   }
 
+  /// Sweeps [shapeA] (at [startTransformA]) along [delta] against [shapeB]
+  /// (at [transformB]) up to [maxToi], returning a [ShapeCastHit3D] or `null`.
+  static ShapeCastHit3D? castShapeAgainstShape({
+    required Shape3D shapeA,
+    required Matrix4 startTransformA,
+    required Vector3 delta,
+    required Shape3D shapeB,
+    required Matrix4 transformB,
+    double maxToi = 1.0,
+    Component3D? component,
+    Collider3D? collider,
+  }) {
+    final sweepLen2 = delta.length2;
+    if (sweepLen2 <= 1e-16 || !(maxToi >= 0.0)) {
+      return null;
+    }
+    final sweepLen = math.sqrt(sweepLen2);
+    final res = _sweepArbitraryShapes(
+      shapeA,
+      startTransformA,
+      delta,
+      shapeB,
+      transformB,
+      maxToi,
+    );
+    if (res == null) {
+      return null;
+    }
+    return ShapeCastHit3D(
+      toi: res.toi,
+      distance: res.toi * sweepLen,
+      point: res.point,
+      normal: res.normal,
+      component: component,
+      collider: collider,
+    );
+  }
+
   static ShapeCastHit3D? _sweepShapeAgainstCollider(
     Shape3D shapeA,
     Matrix4 startA,
@@ -265,13 +331,12 @@ abstract final class ShapeCast3D._() {
   ) {
     final matB = colliderB.colliderWorldMatrix;
     final shapeB = colliderB.shape;
-    final res = _gjkConvexSweep(
-      (dir, out) => shapeA.supportPoint(dir, startA, out),
-      (dir, out) => shapeB.supportPoint(dir, matB, out),
-      () => Narrowphase3D.test(shapeA, startA, shapeB, matB),
-      _centerOf(startA, _cA),
-      _centerOf(matB, _cB),
+    final res = _sweepArbitraryShapes(
+      shapeA,
+      startA,
       delta,
+      shapeB,
+      matB,
       maxToi,
     );
     if (res == null) {
@@ -285,6 +350,272 @@ abstract final class ShapeCast3D._() {
       component: colliderB.hostComponent,
       collider: colliderB,
     );
+  }
+
+  static _SweepResult? _sweepArbitraryShapes(
+    Shape3D shapeA,
+    Matrix4 startA,
+    Vector3 delta,
+    Shape3D shapeB,
+    Matrix4 matB,
+    double initialMaxToi,
+  ) {
+    if (shapeA is CompoundShape3D) {
+      _SweepResult? best;
+      var limit = initialMaxToi;
+      final childStart = Matrix4.identity();
+      for (var i = 0; i < shapeA.children.length; i++) {
+        final child = shapeA.children[i];
+        childStart
+          ..setFrom(startA)
+          ..multiply(child.localTransform);
+        final hit = _sweepArbitraryShapes(
+          child.shape,
+          childStart,
+          delta,
+          shapeB,
+          matB,
+          limit,
+        );
+        if (hit != null && hit.toi <= limit) {
+          limit = hit.toi;
+          best = hit;
+        }
+      }
+      return best;
+    }
+
+    if (shapeB is CompoundShape3D) {
+      _SweepResult? best;
+      var limit = initialMaxToi;
+      final sweptBox = Aabb3();
+      final boxStart = Aabb3();
+      final boxEnd = Aabb3();
+      final endMat = Matrix4.copy(startA);
+      endMat.storage[12] += delta.x * limit;
+      endMat.storage[13] += delta.y * limit;
+      endMat.storage[14] += delta.z * limit;
+      shapeA.computeWorldAabb(startA, boxStart);
+      shapeA.computeWorldAabb(endMat, boxEnd);
+      sweptBox
+        ..min.setValues(
+          math.min(boxStart.min.x, boxEnd.min.x),
+          math.min(boxStart.min.y, boxEnd.min.y),
+          math.min(boxStart.min.z, boxEnd.min.z),
+        )
+        ..max.setValues(
+          math.max(boxStart.max.x, boxEnd.max.x),
+          math.max(boxStart.max.y, boxEnd.max.y),
+          math.max(boxStart.max.z, boxEnd.max.z),
+        );
+
+      final childMat = Matrix4.identity();
+      final childBox = Aabb3();
+      for (var i = 0; i < shapeB.children.length; i++) {
+        final child = shapeB.children[i];
+        childMat
+          ..setFrom(matB)
+          ..multiply(child.localTransform);
+        child.shape.computeWorldAabb(childMat, childBox);
+        if (!_boxesOverlap(sweptBox, childBox)) {
+          continue;
+        }
+        final hit = _sweepArbitraryShapes(
+          shapeA,
+          startA,
+          delta,
+          child.shape,
+          childMat,
+          limit,
+        );
+        if (hit != null && hit.toi <= limit) {
+          limit = hit.toi;
+          best = hit;
+        }
+      }
+      return best;
+    }
+
+    if (shapeB is HeightfieldShape3D) {
+      return _sweepConvexAgainstHeightfield(
+        shapeA,
+        startA,
+        delta,
+        shapeB,
+        matB,
+        initialMaxToi,
+      );
+    }
+
+    if (shapeA is HeightfieldShape3D) {
+      // Sweeping heightfield by `delta` equals sweeping `shapeB` by `-delta`.
+      final negDelta = Vector3(-delta.x, -delta.y, -delta.z);
+      final rev = _sweepConvexAgainstHeightfield(
+        shapeB,
+        matB,
+        negDelta,
+        shapeA,
+        startA,
+        initialMaxToi,
+      );
+      if (rev == null) {
+        return null;
+      }
+      return _SweepResult(
+        toi: rev.toi,
+        point: rev.point + delta * rev.toi,
+        normal: -rev.normal,
+      );
+    }
+
+    return _gjkConvexSweep(
+      (dir, out) => shapeA.supportPoint(dir, startA, out),
+      (dir, out) => shapeB.supportPoint(dir, matB, out),
+      () => Narrowphase3D.test(shapeA, startA, shapeB, matB),
+      _centerOf(startA, _cA),
+      _centerOf(matB, _cB),
+      delta,
+      initialMaxToi,
+    );
+  }
+
+  static _SweepResult? _sweepConvexAgainstHeightfield(
+    Shape3D shapeA,
+    Matrix4 startA,
+    Vector3 delta,
+    HeightfieldShape3D hf,
+    Matrix4 hfMat,
+    double initialMaxToi,
+  ) {
+    final invHf = Matrix4.copy(hfMat);
+    if (invHf.invert().abs() < 1e-15) {
+      return null;
+    }
+
+    final boxStart = Aabb3();
+    final boxEnd = Aabb3();
+    final endMat = Matrix4.copy(startA);
+    endMat.storage[12] += delta.x * initialMaxToi;
+    endMat.storage[13] += delta.y * initialMaxToi;
+    endMat.storage[14] += delta.z * initialMaxToi;
+    shapeA.computeWorldAabb(startA, boxStart);
+    shapeA.computeWorldAabb(endMat, boxEnd);
+
+    final localSwept = Aabb3.minMax(
+      Vector3(
+        math.min(boxStart.min.x, boxEnd.min.x),
+        math.min(boxStart.min.y, boxEnd.min.y),
+        math.min(boxStart.min.z, boxEnd.min.z),
+      ),
+      Vector3(
+        math.max(boxStart.max.x, boxEnd.max.x),
+        math.max(boxStart.max.y, boxEnd.max.y),
+        math.max(boxStart.max.z, boxEnd.max.z),
+      ),
+    )..transform(invHf);
+
+    if (localSwept.max.y < hf.minHeight - 1e-4 ||
+        localSwept.min.y > hf.maxHeight + 1e-4) {
+      return null;
+    }
+    final range = hf.cellRangeForLocalBounds(
+      localSwept.min.x,
+      localSwept.max.x,
+      localSwept.min.z,
+      localSwept.max.z,
+    );
+    if (range == null) {
+      return null;
+    }
+
+    final (c0, c1, r0, r1) = range;
+    final m = hfMat.storage;
+    final lv00 = Vector3.zero();
+    final lv01 = Vector3.zero();
+    final lv11 = Vector3.zero();
+    final lv10 = Vector3.zero();
+    final wv00 = Vector3.zero();
+    final wv01 = Vector3.zero();
+    final wv11 = Vector3.zero();
+    final wv10 = Vector3.zero();
+    final triC = Vector3.zero();
+
+    _SweepResult? best;
+    var limit = initialMaxToi;
+
+    for (var r = r0; r <= r1; r++) {
+      for (var c = c0; c <= c1; c++) {
+        hf.writeCellVerticesLocal(c, r, lv00, lv01, lv11, lv10);
+        final cellMinY = math.min(
+          math.min(lv00.y, lv01.y),
+          math.min(lv11.y, lv10.y),
+        );
+        final cellMaxY = math.max(
+          math.max(lv00.y, lv01.y),
+          math.max(lv11.y, lv10.y),
+        );
+        if (localSwept.max.y < cellMinY - 1e-4 ||
+            localSwept.min.y > cellMaxY + 1e-4) {
+          continue;
+        }
+
+        _transformVert(m, lv00.x, lv00.y, lv00.z, wv00);
+        _transformVert(m, lv01.x, lv01.y, lv01.z, wv01);
+        _transformVert(m, lv11.x, lv11.y, lv11.z, wv11);
+        _transformVert(m, lv10.x, lv10.y, lv10.z, wv10);
+
+        triC.setValues(
+          (wv00.x + wv01.x + wv11.x) * (1.0 / 3.0),
+          (wv00.y + wv01.y + wv11.y) * (1.0 / 3.0),
+          (wv00.z + wv01.z + wv11.z) * (1.0 / 3.0),
+        );
+        final hit0 = _gjkConvexSweep(
+          (dir, out) => shapeA.supportPoint(dir, startA, out),
+          (dir, out) => _triSupport(wv00, wv01, wv11, dir, out),
+          () => Narrowphase3D.intersectShapeWithTriangle(
+            shapeA,
+            startA,
+            wv00,
+            wv01,
+            wv11,
+          ),
+          _centerOf(startA, _cA),
+          triC,
+          delta,
+          limit,
+        );
+        if (hit0 != null && hit0.toi <= limit) {
+          limit = hit0.toi;
+          best = hit0;
+        }
+
+        triC.setValues(
+          (wv00.x + wv11.x + wv10.x) * (1.0 / 3.0),
+          (wv00.y + wv11.y + wv10.y) * (1.0 / 3.0),
+          (wv00.z + wv11.z + wv10.z) * (1.0 / 3.0),
+        );
+        final hit1 = _gjkConvexSweep(
+          (dir, out) => shapeA.supportPoint(dir, startA, out),
+          (dir, out) => _triSupport(wv00, wv11, wv10, dir, out),
+          () => Narrowphase3D.intersectShapeWithTriangle(
+            shapeA,
+            startA,
+            wv00,
+            wv11,
+            wv10,
+          ),
+          _centerOf(startA, _cA),
+          triC,
+          delta,
+          limit,
+        );
+        if (hit1 != null && hit1.toi <= limit) {
+          limit = hit1.toi;
+          best = hit1;
+        }
+      }
+    }
+    return best;
   }
 
   static ShapeCastHit3D? _sweepShapeAgainstMesh(

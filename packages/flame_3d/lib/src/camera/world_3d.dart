@@ -26,14 +26,24 @@ class World3D({
   FogSettings? fog,
   BloomSettings? bloom,
   PostProcessSettings? postProcess,
+  LightProbeGrid3D? lightProbeGrid,
+  bool hdrEnabled = false,
+  OitMode3D oitMode = OitMode3D.none,
+  bool grabSceneColorEnabled = false,
+  RenderDebugMode3D renderDebugMode3D = RenderDebugMode3D.none,
+  List<CustomRenderPass3D>? customPasses,
   var bool spatialIndex3DEnabled = false,
   var bool prioritizeNearestLights = false,
   var bool depthPrepassEnabled = false,
 }) extends flame.World {
-  /// {@macro world_3d}
-  this;
-
   final List<Light> _lights = [];
+  final List<ReflectionProbeVolume3D> _reflectionProbes = [];
+
+  /// User-defined GPU [CustomRenderPass3D] hooks executed before or after the
+  /// main scene pass.
+  final List<CustomRenderPass3D> customPasses = customPasses != null
+      ? List.of(customPasses)
+      : [];
 
   /// Lazy flat AABB BVH accelerating AABB, frustum, and raycast queries when
   /// [spatialIndex3DEnabled] is `true` (or when queried directly).
@@ -90,8 +100,8 @@ class World3D({
     markSceneDirty(shadows: false);
   }
 
-  /// Optional GPU tone-mapping, color-grading, vignette, and FXAA settings
-  /// fused into the final composite pass (`null` disables post-processing).
+  /// Optional GPU tone-mapping, color-grading, 3D LUT, vignette, and FXAA
+  /// settings fused into the final composite pass.
   PostProcessSettings? get postProcess => _postProcess;
   PostProcessSettings? _postProcess = postProcess;
   set postProcess(PostProcessSettings? value) {
@@ -102,17 +112,80 @@ class World3D({
     markSceneDirty(shadows: false);
   }
 
-  /// The [Scene3DHost] this world renders with: the nearest ancestor that is
-  /// one, such as a [Scene3DComponent] or a [Game3D] game.
+  /// Optional volumetric 3D `SH9` diffuse irradiance probe grid providing
+  /// spatially varying indirect illumination across this world.
+  LightProbeGrid3D? get lightProbeGrid => _lightProbeGrid;
+  LightProbeGrid3D? _lightProbeGrid = lightProbeGrid;
+  set lightProbeGrid(LightProbeGrid3D? value) {
+    if (identical(value, _lightProbeGrid)) {
+      return;
+    }
+    _lightProbeGrid = value;
+    markSceneDirty(shadows: false);
+  }
+
+  /// Whether the main scene pass renders un-tonemapped linear HDR radiance into
+  /// a 16-bit floating-point (`rgbaFloat16`) target before Bloom, ToneMap,
+  /// `ColorLut3D`, and final linear-to-sRGB encoding.
+  bool get hdrEnabled => _hdrEnabled;
+  bool _hdrEnabled = hdrEnabled;
+  set hdrEnabled(bool value) {
+    if (value == _hdrEnabled) {
+      return;
+    }
+    _hdrEnabled = value;
+    markSceneDirty(shadows: false);
+  }
+
+  /// Order-independent transparency mode (`OitMode3D.none` or
+  /// `OitMode3D.weightedBlended`).
+  OitMode3D get oitMode => _oitMode;
+  OitMode3D _oitMode = oitMode;
+  set oitMode(OitMode3D value) {
+    if (value == _oitMode) {
+      return;
+    }
+    _oitMode = value;
+    markSceneDirty(shadows: false);
+  }
+
+  /// Whether opaque geometry is captured into `sceneColorTexture` before
+  /// translucent draws so `WaterMaterial` and transmissive `SpatialMaterial`
+  /// refract the real scene behind them.
+  bool get grabSceneColorEnabled => _grabSceneColorEnabled;
+  bool _grabSceneColorEnabled = grabSceneColorEnabled;
+  set grabSceneColorEnabled(bool value) {
+    if (value == _grabSceneColorEnabled) {
+      return;
+    }
+    _grabSceneColorEnabled = value;
+    markSceneDirty(shadows: false);
+  }
+
+  /// Diagnostic buffer visualization mode (`none`, `normals`, `depth`, `ssao`,
+  /// `cascadeSplits`, `wireframe`, `overdraw`, `roughnessMetallic`, `albedo`).
+  RenderDebugMode3D get renderDebugMode3D => _renderDebugMode3D;
+  RenderDebugMode3D _renderDebugMode3D = renderDebugMode3D;
+  set renderDebugMode3D(RenderDebugMode3D value) {
+    if (value == _renderDebugMode3D) {
+      return;
+    }
+    _renderDebugMode3D = value;
+    markSceneDirty(shadows: false);
+  }
+
+  /// Mounted local box-projected `ReflectionProbeVolume3D` components.
+  List<ReflectionProbeVolume3D> get reflectionProbes =>
+      List.unmodifiable(_reflectionProbes);
+
+  /// The [Scene3DHost] this world renders with.
   Scene3DHost get host => _host ??= _findHost();
   Scene3DHost? _host;
 
-  /// The render context that records the draws of this world, the one of
-  /// its [host].
+  /// The render context that records the draws of this world.
   RenderContext3D get context => host.context;
 
-  /// Whether this world is being rendered: [Object3D]s record their draws
-  /// into [context] only while this is true.
+  /// Whether this world is being rendered.
   bool get isRendering => _rendering;
   bool _rendering = false;
 
@@ -133,16 +206,18 @@ class World3D({
   FilterQuality scaledFilterQuality = FilterQuality.low;
 
   /// The union of the world-space bounds ([Component3D.aabb]) of the
-  /// [Component3D]s of this world, lights excepted, or `null` when there are
-  /// none.
+  /// [Component3D]s of this world, lights and reflection probe volumes
+  /// excepted, or `null` when there are none.
   Aabb3? get sceneBounds => _sceneBounds.value;
   final ComponentBounds _sceneBounds = ComponentBounds();
 
   @override
   void onChildrenChanged(flame.Component child, flame.ChildrenChangeType type) {
     super.onChildrenChanged(child, type);
-    markSceneDirty(shadows: child is! LightComponent);
-    if (child is! Component3D || child is LightComponent) {
+    final isVolumeOrLight =
+        child is LightComponent || child is ReflectionProbeVolume3D;
+    markSceneDirty(shadows: !isVolumeOrLight);
+    if (child is! Component3D || isVolumeOrLight) {
       return;
     }
     switch (type) {
@@ -167,13 +242,26 @@ class World3D({
     markSceneDirty();
   }
 
+  /// Register a local [ReflectionProbeVolume3D] with this world.
+  @internal
+  void addReflectionProbe(ReflectionProbeVolume3D probe) {
+    _reflectionProbes.add(probe);
+    markSceneDirty(shadows: false);
+  }
+
+  /// Unregister a local [ReflectionProbeVolume3D] from this world.
+  @internal
+  void removeReflectionProbe(ReflectionProbeVolume3D probe) {
+    _reflectionProbes.remove(probe);
+    markSceneDirty(shadows: false);
+  }
+
   @override
   void onRemove() {
     super.onRemove();
     _host = null;
   }
 
-  /// The render context of this world's host, or `null` while it has none.
   RenderContext3D? get _contextOrNull {
     if (!isMounted) {
       return null;
@@ -202,14 +290,12 @@ class World3D({
     );
   }
 
-  /// The projection of the shadow map of this world, fitted by
-  /// [renderShadows] before each main pass when a light casts shadows.
+  /// The projection of the shadow map of this world.
   DirectionalShadowProjection get shadowProjection => _shadowProjection;
   final DirectionalShadowProjection _shadowProjection =
       DirectionalShadowProjection();
 
-  /// The group of worlds this world shares its shadow map with, or `null`
-  /// when it renders a shadow map of its own; see [ShadowGroup].
+  /// The group of worlds this world shares its shadow map with, or `null`.
   ShadowGroup? get shadowGroup => _shadowGroup;
   set shadowGroup(ShadowGroup? group) {
     if (identical(group, _shadowGroup)) {
@@ -223,8 +309,8 @@ class World3D({
 
   ShadowGroup? _shadowGroup;
 
-  /// Renders (or reuses) the shadow map of this world, returning whether the
-  /// upcoming main pass receives shadows.
+  /// Renders (or reuses) the shadow map / unified `ShadowAtlas3D` of this
+  /// world, returning whether the upcoming main pass receives shadows.
   bool renderShadows(Canvas canvas, {RenderContext3D? overrideContext}) {
     final ctx = (overrideContext ?? context)
       ..lights = _lights
@@ -242,6 +328,9 @@ class World3D({
     }
     try {
       _recordCasters(canvas);
+      while (ctx.advanceShadowAtlasTile()) {
+        _recordCasters(canvas);
+      }
     } finally {
       ctx.endShadowPass();
     }
@@ -257,7 +346,8 @@ class World3D({
   }
 
   /// Renders the half-resolution clip-depth + view-normal prepass when
-  /// [depthPrepassEnabled] or [PostProcessSettings.needsDepthNormal] is active.
+  /// [depthPrepassEnabled], [PostProcessSettings.needsDepthNormal], or
+  /// diagnostic `depth`/`ssao` debug mode is active.
   bool renderDepthNormals(
     Canvas canvas,
     int width,
@@ -265,8 +355,13 @@ class World3D({
     RenderContext3D? overrideContext,
   }) {
     final ctx = overrideContext ?? context;
+    final debugNeedsDn =
+        _renderDebugMode3D == RenderDebugMode3D.depth ||
+        _renderDebugMode3D == RenderDebugMode3D.ssao;
     final needed =
-        depthPrepassEnabled || (_postProcess?.needsDepthNormal ?? false);
+        depthPrepassEnabled ||
+        debugNeedsDn ||
+        (_postProcess?.needsDepthNormal ?? false);
     if (!needed) {
       ctx.clearDepthNormalPass();
       return false;
@@ -303,6 +398,7 @@ class World3D({
           s.fit,
           s.maxDistance,
           s.stabilize,
+          s.cascades,
         );
       }
     }
@@ -311,7 +407,6 @@ class World3D({
 
   static final Vector3 _keyDir = Vector3.zero();
 
-  /// Traverses the components into the shadow pass being recorded.
   void _recordCasters(Canvas canvas) {
     _rendering = true;
     try {
@@ -323,14 +418,25 @@ class World3D({
     }
   }
 
-  /// Records the draws of every component of this world into [context], with
-  /// the lights and [fog] of this world.
-  void renderScene(Canvas canvas, {RenderContext3D? overrideContext}) {
-    final ctx = overrideContext ?? context;
+  /// Syncs world lighting, HDR, debug mode, `LightProbeGrid3D`, and
+  /// `ReflectionProbeVolume3D` state onto [ctx].
+  @internal
+  void syncContextOptions(RenderContext3D ctx) {
     ctx
       ..lights = _lights
       ..fog = _fog
-      ..prioritizeNearestLights = prioritizeNearestLights;
+      ..hdrEnabled = _hdrEnabled
+      ..renderDebugMode = _renderDebugMode3D
+      ..lightProbeGrid = _lightProbeGrid
+      ..reflectionProbes = _reflectionProbes
+      ..prioritizeNearestLights = prioritizeNearestLights
+      ..bumpPassUniforms();
+  }
+
+  /// Records the draws of every component of this world into [context].
+  void renderScene(Canvas canvas, {RenderContext3D? overrideContext}) {
+    final ctx = overrideContext ?? context;
+    syncContextOptions(ctx);
     _rendering = true;
     try {
       for (final child in children) {
@@ -341,14 +447,264 @@ class World3D({
     }
   }
 
+  /// Whether this world requires rendering into an intermediate texture target
+  /// followed by `BloomPass` / post-process / HDR / debug composition.
+  @internal
+  bool needsPostCompositePass(GraphicsDevice device) {
+    if (!device.backend.supportsTextureTargets) {
+      return false;
+    }
+    final bloomSettings = _bloom;
+    final postSettings = _postProcess;
+    final hasBloom =
+        bloomSettings != null &&
+        bloomSettings.intensity > 0 &&
+        bloomSettings.radius > 0;
+    final hasPost = postSettings != null && postSettings.isActive;
+    final hasDebugPost =
+        _renderDebugMode3D == RenderDebugMode3D.depth ||
+        _renderDebugMode3D == RenderDebugMode3D.ssao;
+    final hasAfterCustom = customPasses.any(
+      (p) => p.enabled && p.stage == CustomRenderPassStage3D.afterScene,
+    );
+    return _hdrEnabled || hasBloom || hasPost || hasDebugPost || hasAfterCustom;
+  }
+
+  /// Executes the complete 3D scene pass pipeline (Grab-Pass refraction,
+  /// Weighted Blended OIT, CustomRenderPass3D hooks, HDR float16 target, and
+  /// Bloom/PostProcess/ColorLut3D/Debug composite) once shadows & depth-normal
+  /// prepasses have completed, returning the final [Image].
+  @internal
+  Image executeWorldRenderPipeline({
+    required GraphicsDevice device,
+    required RenderContext3D renderContext,
+    required int width,
+    required int height,
+    required int msaaSampleCount,
+    required Color clearValue,
+    required void Function() recordDraws,
+    GpuRenderTarget? ownedOutputTarget,
+  }) {
+    syncContextOptions(renderContext);
+    renderContext.clearActiveSceneColorTarget();
+
+    for (final custom in customPasses) {
+      if (custom.enabled &&
+          custom.stage == CustomRenderPassStage3D.beforeScene) {
+        custom.execute(
+          CustomRenderPassContext3D(
+            device: device,
+            renderContext: renderContext,
+            width: width,
+            height: height,
+            depthNormalTexture: renderContext.activeDepthNormalTexture,
+          ),
+        );
+      }
+    }
+
+    // Record the 3D scene's draws ONCE up front so we know whether refractive
+    // or WBOIT translucent surfaces are present without traversing components
+    // twice!
+    recordDraws();
+
+    final supportsTexTargets = device.backend.supportsTextureTargets;
+    final sceneFormat =
+        _hdrEnabled &&
+            device.backend.supportsPixelFormat(GpuPixelFormat.rgbaFloat16)
+        ? GpuPixelFormat.rgbaFloat16
+        : GpuPixelFormat.rgba8888;
+    final usePost = needsPostCompositePass(device);
+    final runGrab =
+        supportsTexTargets &&
+        (_grabSceneColorEnabled || renderContext.hasRefractiveDraws);
+    final runWboit =
+        supportsTexTargets &&
+        _oitMode == OitMode3D.weightedBlended &&
+        renderContext.hasTranslucentDraws;
+
+    // 1. Optional Scene Color Grab-Pass for screen-space water & IOR glass
+    //    refraction.
+    if (runGrab) {
+      final grabTarget = device.textureTarget(
+        width,
+        height,
+        sceneFormat,
+        clearValue: Color.from(
+          alpha: clearValue.a,
+          red: clearValue.r,
+          green: clearValue.g,
+          blue: clearValue.b,
+        ),
+      );
+      device.beginTexturePass(grabTarget, frontFace: renderContext.frontFace);
+      renderContext.flushOpaquePreview();
+      device.endTexturePass();
+      renderContext.setActiveSceneColorTarget(grabTarget);
+    }
+
+    // 2. Weighted Blended OIT path (`OitMode3D.weightedBlended`).
+    if (runWboit) {
+      final opaqueTarget = device.textureTarget(
+        width,
+        height,
+        sceneFormat,
+        clearValue: const Color(0x00000004),
+      );
+      device.beginTexturePass(opaqueTarget, frontFace: renderContext.frontFace);
+      renderContext.flushOpaquePreview();
+      device.endTexturePass();
+
+      final accumFmt =
+          device.backend.supportsPixelFormat(GpuPixelFormat.rgbaFloat16)
+          ? GpuPixelFormat.rgbaFloat16
+          : GpuPixelFormat.rgba8888;
+      final accumTarget = device.textureTarget(
+        width,
+        height,
+        accumFmt,
+        clearValue: const Color(0x00000000),
+      );
+      device.beginTexturePass(accumTarget, frontFace: renderContext.frontFace);
+      renderContext.flushWboitSubpass(revealPass: false, releaseAfter: false);
+      device.endTexturePass();
+
+      final revealTarget = device.textureTarget(
+        width,
+        height,
+        GpuPixelFormat.rgba8888,
+      );
+      device.beginTexturePass(revealTarget, frontFace: renderContext.frontFace);
+      renderContext.flushWboitSubpass(revealPass: true, releaseAfter: true);
+      device.endTexturePass();
+
+      if (usePost) {
+        final wboitSceneTarget = device.textureTarget(
+          width,
+          height,
+          sceneFormat,
+          clearValue: clearValue,
+        );
+        device.beginTexturePass(wboitSceneTarget);
+        renderContext.drawWboitComposite(
+          opaqueTarget: opaqueTarget,
+          accumTarget: accumTarget,
+          revealTarget: revealTarget,
+        );
+        device.endTexturePass();
+        _runAfterSceneCustomPasses(
+          device,
+          renderContext,
+          width,
+          height,
+          wboitSceneTarget,
+        );
+        renderContext.clearActiveSceneColorTarget();
+        return device.applyBloomFromTarget(
+          wboitSceneTarget,
+          _bloom,
+          postProcess: _postProcess,
+          depthNormalTexture: renderContext.activeDepthNormalTexture,
+          outputTarget: ownedOutputTarget,
+          hdrEnabled: _hdrEnabled,
+          renderDebugMode: _renderDebugMode3D,
+        );
+      }
+
+      if (ownedOutputTarget != null) {
+        device.beginOwnedPass(ownedOutputTarget);
+      } else {
+        device.beginPass(Size(width.toDouble(), height.toDouble()));
+      }
+      renderContext.drawWboitComposite(
+        opaqueTarget: opaqueTarget,
+        accumTarget: accumTarget,
+        revealTarget: revealTarget,
+      );
+      renderContext.clearActiveSceneColorTarget();
+      return device.endPass();
+    }
+
+    // 3. Standard opaque + sorted translucent path (with optional HDR / Bloom /
+    //    PostProcess / ColorLut3D / Debug composite).
+    if (usePost) {
+      // Ensure `texTarget` uses a distinct clearValue key from `grabTarget`
+      // when `runGrab` is active so they never alias the same GpuTextureTarget!
+      final mainClear = runGrab && clearValue.toARGB32() == 0
+          ? const Color(0x00000001)
+          : clearValue;
+      final texTarget = device.textureTarget(
+        width,
+        height,
+        sceneFormat,
+        clearValue: mainClear,
+      );
+      device.beginTexturePass(texTarget, frontFace: renderContext.frontFace);
+      renderContext.flush();
+      device.endTexturePass();
+
+      _runAfterSceneCustomPasses(
+        device,
+        renderContext,
+        width,
+        height,
+        texTarget,
+      );
+      renderContext.clearActiveSceneColorTarget();
+      return device.applyBloomFromTarget(
+        texTarget,
+        _bloom,
+        postProcess: _postProcess,
+        depthNormalTexture: renderContext.activeDepthNormalTexture,
+        outputTarget: ownedOutputTarget,
+        hdrEnabled: _hdrEnabled,
+        renderDebugMode: _renderDebugMode3D,
+      );
+    }
+
+    if (ownedOutputTarget != null) {
+      device.beginOwnedPass(
+        ownedOutputTarget,
+        frontFace: renderContext.frontFace,
+      );
+    } else {
+      device.beginPass(
+        Size(width.toDouble(), height.toDouble()),
+        msaaSampleCount: msaaSampleCount,
+        frontFace: renderContext.frontFace,
+      );
+    }
+    renderContext.flush();
+    renderContext.clearActiveSceneColorTarget();
+    return device.endPass();
+  }
+
+  void _runAfterSceneCustomPasses(
+    GraphicsDevice device,
+    RenderContext3D renderContext,
+    int width,
+    int height,
+    GpuTextureTarget sceneTarget,
+  ) {
+    for (final custom in customPasses) {
+      if (custom.enabled &&
+          custom.stage == CustomRenderPassStage3D.afterScene) {
+        custom.execute(
+          CustomRenderPassContext3D(
+            device: device,
+            renderContext: renderContext,
+            width: width,
+            height: height,
+            sceneTarget: sceneTarget,
+            depthNormalTexture: renderContext.activeDepthNormalTexture,
+          ),
+        );
+      }
+    }
+  }
+
   /// Renders this world once at [size] physical pixels from [view] and
-  /// [projection] into an independent [Image] whose backing GPU texture is
-  /// never overwritten by subsequent passes.
-  ///
-  /// Works even when this [World3D] is not mounted inside a [Game3D] or
-  /// [Scene3DComponent], making it ideal for offscreen thumbnails, inventory
-  /// icons, and snapshots. The caller owns the returned [Image] and should
-  /// `dispose()` it when no longer needed.
+  /// [projection] into an independent [Image].
   Image renderToImage(
     Size size, {
     required Matrix4 view,
@@ -368,9 +724,6 @@ class World3D({
     if (device != null && context != null) {
       resolvedDevice = device;
       resolvedContext = context;
-      if (resolvedDevice.frame == 0 || !resolvedDevice.isInPass) {
-        // Open a frame only if the caller has not already opened one.
-      }
     } else {
       final hostRef = _contextOrNull != null ? host : null;
       if (hostRef is Game3D) {
@@ -391,16 +744,14 @@ class World3D({
     final dummyRecorder = PictureRecorder();
     final dummyCanvas = Canvas(dummyRecorder);
     final prevHost = _host;
-    final tempHost = _SnapshotHost(resolvedDevice, resolvedContext, msaa);
-    if (_contextOrNull == null) {
-      _host = tempHost;
-    }
+    _host = _SnapshotHost(resolvedDevice, resolvedContext, msaa);
 
     try {
       resolvedContext
         ..lights = _lights
         ..fog = _fog
         ..setCamera(view, projection);
+      syncContextOptions(resolvedContext);
       renderShadows(dummyCanvas, overrideContext: resolvedContext);
       renderDepthNormals(
         dummyCanvas,
@@ -409,61 +760,27 @@ class World3D({
         overrideContext: resolvedContext,
       );
 
-      final bloomSettings = _bloom;
-      final postSettings = _postProcess;
-      final hasBloom =
-          bloomSettings != null &&
-          bloomSettings.intensity > 0 &&
-          bloomSettings.radius > 0;
-      final hasPost = postSettings != null && postSettings.isActive;
-      final usePostPass =
-          (hasBloom || hasPost) &&
-          resolvedDevice.backend.supportsTextureTargets;
+      final usePost = needsPostCompositePass(resolvedDevice);
+      final ownedTarget = resolvedDevice.backend.createRenderTarget(
+        width: width,
+        height: height,
+        clearValue: usePost ? const Color(0x00000000) : clearValue,
+        msaaSampleCount: usePost ? 1 : msaa.sampleCount,
+      );
 
-      final Image image;
-      if (usePostPass) {
-        final texTarget = resolvedDevice.textureTarget(
-          width,
-          height,
-          GpuPixelFormat.rgba8888,
-          clearValue: clearValue,
-        );
-        resolvedDevice.beginTexturePass(
-          texTarget,
-          frontFace: resolvedContext.frontFace,
-        );
-        renderScene(dummyCanvas, overrideContext: resolvedContext);
-        resolvedContext.flush();
-        resolvedDevice.endTexturePass();
-
-        final bloomTarget = resolvedDevice.backend.createRenderTarget(
-          width: width,
-          height: height,
-          clearValue: const Color(0x00000000),
-        );
-        image = resolvedDevice.applyBloomFromTarget(
-          texTarget,
-          bloomSettings,
-          postProcess: postSettings,
-          depthNormalTexture: resolvedContext.activeDepthNormalTexture,
-          outputTarget: bloomTarget,
-        );
-      } else {
-        final sceneTarget = resolvedDevice.backend.createRenderTarget(
-          width: width,
-          height: height,
-          clearValue: clearValue,
-          msaaSampleCount: msaa.sampleCount,
-        );
-        resolvedDevice.beginOwnedPass(
-          sceneTarget,
-          frontFace: resolvedContext.frontFace,
-        );
-        renderScene(dummyCanvas, overrideContext: resolvedContext);
-        resolvedContext.flush();
-        image = resolvedDevice.endPass();
-      }
-      return image;
+      return executeWorldRenderPipeline(
+        device: resolvedDevice,
+        renderContext: resolvedContext,
+        width: width,
+        height: height,
+        msaaSampleCount: msaa.sampleCount,
+        clearValue: clearValue,
+        ownedOutputTarget: ownedTarget,
+        recordDraws: () => renderScene(
+          dummyCanvas,
+          overrideContext: resolvedContext,
+        ),
+      );
     } finally {
       _host = prevHost;
       dummyRecorder.endRecording().dispose();
@@ -479,9 +796,6 @@ class World3D({
 
   /// Casts [ray] (in world space) against all [Object3D]s in this world within
   /// [maxDistance], returning the closest [RayHit3D] or `null` when missed.
-  ///
-  /// Whole subtrees whose world [Component3D.aabb] misses [ray] are skipped in
-  /// `O(1)` before testing any surface BVH.
   RayHit3D? raycast(
     Ray ray, {
     double maxDistance = double.infinity,
@@ -655,59 +969,29 @@ class World3D({
       ..fog = _fog
       ..cameraMask = camera.cameraMask
       ..setCamera(camera.viewMatrix, camera.projectionMatrix);
+    syncContextOptions(context);
     renderShadows(canvas);
     final wPx = math.max(1, renderSize.width.round());
     final hPx = math.max(1, renderSize.height.round());
     renderDepthNormals(canvas, wPx, hPx);
 
     final device = host.device;
-    final bloomSettings = _bloom;
-    final postSettings = _postProcess;
-    final usePost =
-        device.backend.supportsTextureTargets &&
-        ((bloomSettings != null &&
-                bloomSettings.intensity > 0 &&
-                bloomSettings.radius > 0) ||
-            (postSettings != null && postSettings.isActive));
-
-    final Image image;
-    if (usePost) {
-      final texTarget = device.textureTarget(
-        wPx,
-        hPx,
-        GpuPixelFormat.rgba8888,
-        clearValue: device.clearValue,
-      );
-      device.beginTexturePass(texTarget, frontFace: context.frontFace);
-      _rendering = true;
-      try {
-        super.renderFromCamera(canvas);
-      } finally {
-        _rendering = false;
-      }
-      context.flush();
-      device.endTexturePass();
-      image = device.applyBloomFromTarget(
-        texTarget,
-        bloomSettings,
-        postProcess: postSettings,
-        depthNormalTexture: context.activeDepthNormalTexture,
-      );
-    } else {
-      device.beginPass(
-        renderSize,
-        msaaSampleCount: host.msaaSampleCount,
-        frontFace: context.frontFace,
-      );
-      _rendering = true;
-      try {
-        super.renderFromCamera(canvas);
-      } finally {
-        _rendering = false;
-      }
-      context.flush();
-      image = device.endPass();
-    }
+    final image = executeWorldRenderPipeline(
+      device: device,
+      renderContext: context,
+      width: wPx,
+      height: hPx,
+      msaaSampleCount: host.msaaSampleCount,
+      clearValue: device.clearValue,
+      recordDraws: () {
+        _rendering = true;
+        try {
+          super.renderFromCamera(canvas);
+        } finally {
+          _rendering = false;
+        }
+      },
+    );
 
     _paint.filterQuality = _renderScale == 1.0
         ? FilterQuality.none

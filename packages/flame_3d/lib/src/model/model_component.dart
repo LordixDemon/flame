@@ -5,6 +5,7 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/src/model/animation_state.dart';
+import 'package:flame_3d/src/model/animation_state_machine_3d.dart';
 import 'package:flame_3d/src/model/blend_space_3d.dart';
 import 'package:flame_3d/src/model/model.dart';
 import 'package:flame_3d/src/model/model_animation.dart';
@@ -40,6 +41,7 @@ class ModelComponent({
   var OffscreenAnimationPolicy offscreenPolicy =
       OffscreenAnimationPolicy.always,
   var RootMotionExtractor3D? rootMotion,
+  AnimationStateMachine3D? stateMachine,
   var AnimationEventCallback3D? onAnimationEvent,
   super.position,
   super.rotation,
@@ -49,6 +51,9 @@ class ModelComponent({
 }) extends Object3D {
   this {
     _animation.addEventListener(_forwardAnimationEvent);
+    if (stateMachine != null) {
+      this.stateMachine = stateMachine;
+    }
   }
 
   /// Four floats of per-instance data forwarded to materials.
@@ -56,6 +61,7 @@ class ModelComponent({
 
   final Set<int> _hiddenNodes = {};
   final AnimationState _animation = AnimationState();
+  AnimationStateMachine3D? _stateMachine;
   late final ModelPoseWorkspace _workspace = ModelPoseWorkspace.forModel(model);
   bool _poseDirty = true;
   double _pendingModifierDt = 0.0;
@@ -63,7 +69,8 @@ class ModelComponent({
   int _poseEvaluationsCount = 0;
 
   /// Procedural post-animation bone modifiers (`SpringBone3D`,
-  /// `LookAtConstraint3D`, `TwoBoneIkConstraint3D`) applied every frame.
+  /// `LookAtConstraint3D`, `TwoBoneIkConstraint3D`, `FabrikIkConstraint3D`,
+  /// `FootPlacementIk3D`, `RagdollController3D`) applied every frame.
   final List<BoneModifier3D> boneModifiers = [];
 
   final Matrix4 _invWorld = Matrix4.identity();
@@ -72,6 +79,22 @@ class ModelComponent({
   void _forwardAnimationEvent(AnimationEvent3D event) {
     onAnimationEvent?.call(event);
   }
+
+  /// Optional declarative HFSM [AnimationStateMachine3D] driving
+  /// [animationState] on every [update] tick.
+  AnimationStateMachine3D? get stateMachine => _stateMachine;
+  set stateMachine(AnimationStateMachine3D? value) {
+    if (identical(value, _stateMachine)) {
+      return;
+    }
+    _stateMachine = value;
+    value?.bind(_animation);
+    _markPoseChanged();
+  }
+
+  /// Marks this component's skeletal pose dirty so the next [evaluatePose]
+  /// recomputes bone transforms and skinning matrices.
+  void markPoseDirty() => _markPoseChanged();
 
   /// Underlying animation state (supports speed, playback mode, crossfades,
   /// 1D/2D blend spaces, events, and masked `layers`).
@@ -309,7 +332,10 @@ class ModelComponent({
     final extractor = rootMotion;
     extractor?.ensureSeededBeforeTick(model, _animation);
 
-    final animChanged = _animation.update(dt);
+    final sm = _stateMachine;
+    final animChanged = sm != null
+        ? sm.update(dt, targetState: _animation)
+        : _animation.update(dt);
     final hasModifiers = boneModifiers.any((m) => m.weight > 0.0);
 
     if (extractor != null) {

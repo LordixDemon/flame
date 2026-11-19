@@ -78,12 +78,15 @@ void main() {
       expect(skyIrr.length, greaterThan(0.1));
     });
 
-    test('ShadowSettings validates 1 or 2 cascades', () {
+    test('ShadowSettings validates 1..4 cascades', () {
       final single = ShadowSettings();
       expect(single.cascades, 1);
       final dual = ShadowSettings(cascades: 2, cascadeSplitRatio: 0.3);
       expect(dual.cascades, 2);
-      expect(() => ShadowSettings(cascades: 3), throwsArgumentError);
+      final quad = ShadowSettings(cascades: 4);
+      expect(quad.cascades, 4);
+      expect(() => ShadowSettings(cascades: 0), throwsArgumentError);
+      expect(() => ShadowSettings(cascades: 5), throwsArgumentError);
     });
   });
 }

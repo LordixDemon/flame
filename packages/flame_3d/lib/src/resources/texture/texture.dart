@@ -25,6 +25,7 @@ class Texture(
   required final int width,
   required final int height,
   final PixelFormat format = PixelFormat.rgba8888,
+  final TextureColorSpace colorSpace = TextureColorSpace.linear,
 
   /// How the texture is sampled.
   var TextureSampler sampler = TextureSampler.nearest,
@@ -51,16 +52,24 @@ class Texture(
     final data = sourceData!;
     final backend = GpuBackend.instance;
     final levels = mipmaps ? backend.maxMipLevelCount(width, height) : 1;
+    final useSrgb = colorSpace == TextureColorSpace.srgb;
+    final resolvedFormat = switch (format) {
+      PixelFormat.rgba8888 =>
+        useSrgb && backend.supportsPixelFormat(GpuPixelFormat.rgba8888Srgb)
+            ? GpuPixelFormat.rgba8888Srgb
+            : GpuPixelFormat.rgba8888,
+      PixelFormat.bgra8888 =>
+        useSrgb && backend.supportsPixelFormat(GpuPixelFormat.bgra8888Srgb)
+            ? GpuPixelFormat.bgra8888Srgb
+            : GpuPixelFormat.bgra8888,
+      PixelFormat.rgbaFloat32 => GpuPixelFormat.rgbaFloat32,
+      _ => throw UnsupportedError('Unsupported pixel format: $format'),
+    };
     final texture = backend.createTexture(
       storageMode: GpuStorageMode.hostVisible,
       width: width,
       height: height,
-      format: switch (format) {
-        PixelFormat.rgba8888 => GpuPixelFormat.rgba8888,
-        PixelFormat.bgra8888 => GpuPixelFormat.bgra8888,
-        PixelFormat.rgbaFloat32 => GpuPixelFormat.rgbaFloat32,
-        _ => throw UnsupportedError('Unsupported pixel format: $format'),
-      },
+      format: resolvedFormat,
       mipLevelCount: levels,
     )..write(data);
     var level = data;

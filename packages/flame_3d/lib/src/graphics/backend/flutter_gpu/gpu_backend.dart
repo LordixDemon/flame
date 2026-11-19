@@ -1,5 +1,6 @@
 // ignore_for_file: avoid_redundant_argument_values
 
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flame_3d/game.dart';
@@ -7,6 +8,7 @@ import 'package:flame_3d/src/graphics/backend/flutter_gpu/shader_bundle_reflecti
 import 'package:flame_3d/src/graphics/backend/gpu_backend.dart' as base;
 import 'package:flame_3d/src/graphics/backend/gpu_enums.dart';
 import 'package:flame_3d/src/graphics/backend/gpu_handles.dart';
+import 'package:flame_3d/src/graphics/render_state.dart';
 import 'package:flame_3d/src/resources/texture/texture_sampler.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
@@ -44,6 +46,79 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
   late final int uniformAlignment = _context.minimumUniformByteAlignment;
 
   @override
+  late final int maxSamplerAnisotropy = math.max(
+    1,
+    math.min(16, _context.maxSamplerAnisotropy),
+  );
+
+  late final gpu.PixelFormat _depthStencilFormat = () {
+    final ds = _context.defaultDepthStencilFormat;
+    return ds != gpu.PixelFormat.unknown ? ds : _context.defaultStencilFormat;
+  }();
+
+  @override
+  bool supportsPixelFormat(GpuPixelFormat format) {
+    if (format == GpuPixelFormat.depthStencil) {
+      return _depthStencilFormat != gpu.PixelFormat.unknown;
+    }
+    final pf = _pixelFormat(format);
+    if (format == GpuPixelFormat.rgbaFloat16 ||
+        format == GpuPixelFormat.rgbaFloat32 ||
+        format == GpuPixelFormat.r32Float) {
+      return supportsFloatTextureTargets && _context.supportsTextureFormat(pf);
+    }
+    return _context.supportsTextureFormat(pf);
+  }
+
+  // The sampler options of every distinct sampler, by key, created once per
+  // backend instance so `maxSamplerAnisotropy` clamps to `_context`.
+  final List<gpu.SamplerOptions?> _samplers = List<gpu.SamplerOptions?>.filled(
+    TextureSampler.keyCount,
+    null,
+  );
+
+  gpu.SamplerOptions _samplerFor(TextureSampler sampler) {
+    return _samplers[sampler.key] ??= () {
+      final aniso = sampler.maxAnisotropy.clamp(1, maxSamplerAnisotropy);
+      // `flutter_gpu` requires minFilter, magFilter, and mipFilter to all be
+      // linear whenever `maxAnisotropy > 1`.
+      final forceLinear = aniso > 1;
+      return gpu.SamplerOptions(
+        minFilter: forceLinear
+            ? gpu.MinMagFilter.linear
+            : _filter(sampler.minFilter),
+        magFilter: forceLinear
+            ? gpu.MinMagFilter.linear
+            : _filter(sampler.magFilter),
+        mipFilter: forceLinear
+            ? gpu.MipFilter.linear
+            : switch (sampler.mipFilter) {
+                TextureFilter.nearest => gpu.MipFilter.nearest,
+                TextureFilter.linear => gpu.MipFilter.linear,
+              },
+        widthAddressMode: _addressMode(sampler.wrapU),
+        heightAddressMode: _addressMode(sampler.wrapV),
+        maxAnisotropy: aniso,
+      );
+    }();
+  }
+
+  static gpu.MinMagFilter _filter(TextureFilter filter) {
+    return switch (filter) {
+      TextureFilter.nearest => gpu.MinMagFilter.nearest,
+      TextureFilter.linear => gpu.MinMagFilter.linear,
+    };
+  }
+
+  static gpu.SamplerAddressMode _addressMode(TextureWrap wrap) {
+    return switch (wrap) {
+      TextureWrap.clamp => gpu.SamplerAddressMode.clampToEdge,
+      TextureWrap.repeat => gpu.SamplerAddressMode.repeat,
+      TextureWrap.mirror => gpu.SamplerAddressMode.mirror,
+    };
+  }
+
+  @override
   GpuTexture createTexture({
     required GpuStorageMode storageMode,
     required int width,
@@ -51,12 +126,14 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
     required GpuPixelFormat format,
     int mipLevelCount = 1,
   }) {
+    final pf = _pixelFormat(format);
     return _FlutterGpuTexture(
       _context.createTexture(
         _storageMode(storageMode),
         width,
         height,
-        format: _pixelFormat(format),
+        format: pf,
+        enableRenderTargetUsage: !format.isCompressed,
         mipLevelCount: mipLevelCount,
       ),
     );
@@ -190,7 +267,7 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
       gpu.StorageMode.deviceTransient,
       width,
       height,
-      format: _context.defaultDepthStencilFormat,
+      format: _depthStencilFormat,
       sampleCount: sampleCount,
       enableShaderReadUsage: sampleCount == 1,
     );
@@ -209,8 +286,8 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
   bool get supportsTextureTargets => true;
 
   // Flutter GPU has no query for the formats a texture can be rendered into.
-  // Metal and Vulkan render into 32-bit float textures (Vulkan requires it of
-  // every device), OpenGL ES only with an extension; framebuffer render
+  // Metal and Vulkan render into 16/32-bit float textures (Vulkan requires it
+  // of every device), OpenGL ES only with an extension; framebuffer render
   // mipmaps are documented as supported on Metal and Vulkan and not on
   // OpenGL ES, which tells the backends apart.
   @override
@@ -234,7 +311,7 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
       gpu.StorageMode.deviceTransient,
       width,
       height,
-      format: _context.defaultDepthStencilFormat,
+      format: _depthStencilFormat,
       enableShaderReadUsage: false,
     );
     return _FlutterGpuTextureTarget(
@@ -283,9 +360,19 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
     return switch (format) {
       GpuPixelFormat.rgba8888 => gpu.PixelFormat.r8g8b8a8UNormInt,
       GpuPixelFormat.bgra8888 => gpu.PixelFormat.b8g8r8a8UNormInt,
+      GpuPixelFormat.rgba8888Srgb => gpu.PixelFormat.r8g8b8a8UNormIntSRGB,
+      GpuPixelFormat.bgra8888Srgb => gpu.PixelFormat.b8g8r8a8UNormIntSRGB,
+      GpuPixelFormat.rgbaFloat16 => gpu.PixelFormat.r16g16b16a16Float,
       GpuPixelFormat.rgbaFloat32 => gpu.PixelFormat.r32g32b32a32Float,
       GpuPixelFormat.r32Float => gpu.PixelFormat.r32Float,
-      GpuPixelFormat.depthStencil => _context.defaultDepthStencilFormat,
+      GpuPixelFormat.depthStencil => _depthStencilFormat,
+      GpuPixelFormat.bc1Rgba => gpu.PixelFormat.bc1RGBAUNormInt,
+      GpuPixelFormat.bc3Rgba => gpu.PixelFormat.bc3RGBAUNormInt,
+      GpuPixelFormat.bc7Rgba => gpu.PixelFormat.bc7RGBAUNormInt,
+      GpuPixelFormat.etc2Rgb8 => gpu.PixelFormat.etc2RGB8UNormInt,
+      GpuPixelFormat.etc2Rgba8 => gpu.PixelFormat.etc2RGBA8UNormInt,
+      GpuPixelFormat.astc4x4 => gpu.PixelFormat.astc4x4LDR,
+      GpuPixelFormat.astc8x8 => gpu.PixelFormat.astc8x8LDR,
     };
   }
 
@@ -457,20 +544,6 @@ int debugColorTextureCount(GpuRenderTarget target) {
 /// A render target: a depth texture, a multisample color texture with MSAA,
 /// and the color textures its passes render into and whose images Flutter
 /// draws.
-///
-/// A color texture is rendered into again only once Flutter can no longer
-/// sample the image of its previous pass: Flutter rasterizes at most two
-/// frames at a time (the one being built and the one before it), so once two
-/// more frames have been drawn the frame that showed an image has been
-/// rasterized, and its draws have been submitted to the GPU before any new
-/// pass is. Up to [_maxColorTextures] are created; past that, when Flutter
-/// draws no frames (passes rendered outside of frames, in tests for
-/// instance), the texture rendered the longest ago is reused.
-///
-/// Every texture, and what it takes to render into it, is created once:
-/// unlike `GpuImageSurface`, whose textures can only be reused once the Dart
-/// garbage collector has collected the wrappers of the passes that rendered
-/// into them, and which therefore allocates a texture for most passes.
 class _FlutterGpuRenderTarget(
   final gpu.GpuContext _context,
   @override final int width,
@@ -568,6 +641,7 @@ class const _FlutterGpuFrame(final GpuBackend _backend)
     final commandBuffer = _backend._context.createCommandBuffer();
     if (target is _FlutterGpuTextureTarget) {
       return _FlutterGpuRenderPass(
+        _backend,
         null,
         null,
         commandBuffer,
@@ -577,6 +651,7 @@ class const _FlutterGpuFrame(final GpuBackend _backend)
     final renderTarget = target as _FlutterGpuRenderTarget;
     final buffer = renderTarget.acquire();
     return _FlutterGpuRenderPass(
+      _backend,
       renderTarget,
       buffer,
       commandBuffer,
@@ -604,6 +679,7 @@ class const _FlutterGpuFrame(final GpuBackend _backend)
 /// A render pass; [_target] and [_buffer] are those of a pass whose image is
 /// returned by [submit], and `null` for a pass into a texture target.
 class _FlutterGpuRenderPass(
+  final GpuBackend _backend,
   final _FlutterGpuRenderTarget? _target,
   final _ColorBuffer? _buffer,
   final gpu.CommandBuffer _commandBuffer,
@@ -627,6 +703,8 @@ class _FlutterGpuRenderPass(
         BlendState.alpha => _straightAlpha,
         BlendState.additive => _additive,
         BlendState.depthOnly => _keepTarget,
+        BlendState.wboitAccum => _wboitAccum,
+        BlendState.wboitReveal => _wboitReveal,
       });
   }
 
@@ -636,17 +714,34 @@ class _FlutterGpuRenderPass(
     required bool writeEnabled,
   }) {
     _renderPass
-      ..setDepthCompareOperation(switch (compare) {
-        CompareFunction.never => gpu.CompareFunction.never,
-        CompareFunction.less => gpu.CompareFunction.less,
-        CompareFunction.equal => gpu.CompareFunction.equal,
-        CompareFunction.lessEqual => gpu.CompareFunction.lessEqual,
-        CompareFunction.greater => gpu.CompareFunction.greater,
-        CompareFunction.notEqual => gpu.CompareFunction.notEqual,
-        CompareFunction.greaterEqual => gpu.CompareFunction.greaterEqual,
-        CompareFunction.always => gpu.CompareFunction.always,
-      })
+      ..setDepthCompareOperation(_compareFunction(compare))
       ..setDepthWriteEnable(writeEnabled);
+  }
+
+  static gpu.CompareFunction _compareFunction(CompareFunction compare) {
+    return switch (compare) {
+      CompareFunction.never => gpu.CompareFunction.never,
+      CompareFunction.less => gpu.CompareFunction.less,
+      CompareFunction.equal => gpu.CompareFunction.equal,
+      CompareFunction.lessEqual => gpu.CompareFunction.lessEqual,
+      CompareFunction.greater => gpu.CompareFunction.greater,
+      CompareFunction.notEqual => gpu.CompareFunction.notEqual,
+      CompareFunction.greaterEqual => gpu.CompareFunction.greaterEqual,
+      CompareFunction.always => gpu.CompareFunction.always,
+    };
+  }
+
+  static gpu.StencilOperation _stencilOp(StencilOp op) {
+    return switch (op) {
+      StencilOp.keep => gpu.StencilOperation.keep,
+      StencilOp.zero => gpu.StencilOperation.zero,
+      StencilOp.replace => gpu.StencilOperation.setToReferenceValue,
+      StencilOp.incrementClamp => gpu.StencilOperation.incrementClamp,
+      StencilOp.decrementClamp => gpu.StencilOperation.decrementClamp,
+      StencilOp.invert => gpu.StencilOperation.invert,
+      StencilOp.incrementWrap => gpu.StencilOperation.incrementWrap,
+      StencilOp.decrementWrap => gpu.StencilOperation.decrementWrap,
+    };
   }
 
   @override
@@ -663,6 +758,74 @@ class _FlutterGpuRenderPass(
     _renderPass.setWindingOrder(switch (windingOrder) {
       WindingOrder.clockwise => gpu.WindingOrder.clockwise,
       WindingOrder.counterClockwise => gpu.WindingOrder.counterClockwise,
+    });
+  }
+
+  @override
+  void setViewport(
+    int x,
+    int y,
+    int width,
+    int height, {
+    double zNear = 0.0,
+    double zFar = 1.0,
+  }) {
+    _renderPass.setViewport(
+      gpu.Viewport(
+        x: x,
+        y: y,
+        width: width,
+        height: height,
+        depthRange: gpu.DepthRange(zNear: zNear, zFar: zFar),
+      ),
+    );
+  }
+
+  @override
+  void setScissor(int x, int y, int width, int height) {
+    _renderPass.setScissor(
+      gpu.Scissor(x: x, y: y, width: width, height: height),
+    );
+  }
+
+  @override
+  void setStencil(StencilState? stencil) {
+    if (stencil == null) {
+      _renderPass
+        ..setStencilReference(0)
+        ..setStencilConfig(_disabledStencil);
+      return;
+    }
+    _renderPass
+      ..setStencilReference(stencil.referenceValue & 0xFF)
+      ..setStencilConfig(
+        gpu.StencilConfig(
+          compareFunction: _compareFunction(stencil.compare),
+          stencilFailureOperation: _stencilOp(stencil.stencilFail),
+          depthFailureOperation: _stencilOp(stencil.depthFail),
+          depthStencilPassOperation: _stencilOp(stencil.pass),
+          readMask: stencil.readMask & 0xFF,
+          writeMask: stencil.writeMask & 0xFF,
+        ),
+      );
+  }
+
+  @override
+  void setPolygonMode(PolygonFillMode mode) {
+    _renderPass.setPolygonMode(switch (mode) {
+      PolygonFillMode.fill => gpu.PolygonMode.fill,
+      PolygonFillMode.wireframe => gpu.PolygonMode.line,
+    });
+  }
+
+  @override
+  void setPrimitiveTopology(PrimitiveTopology topology) {
+    _renderPass.setPrimitiveType(switch (topology) {
+      PrimitiveTopology.triangles => gpu.PrimitiveType.triangle,
+      PrimitiveTopology.triangleStrip => gpu.PrimitiveType.triangleStrip,
+      PrimitiveTopology.lines => gpu.PrimitiveType.line,
+      PrimitiveTopology.lineStrip => gpu.PrimitiveType.lineStrip,
+      PrimitiveTopology.points => gpu.PrimitiveType.point,
     });
   }
 
@@ -718,42 +881,8 @@ class _FlutterGpuRenderPass(
       (slot as _FlutterGpuUniformSlot).raw,
       (texture as _FlutterGpuTexture).raw,
       // Passed explicitly: `flutter_gpu` allocates default options otherwise.
-      sampler: _samplerFor(sampler),
+      sampler: _backend._samplerFor(sampler),
     );
-  }
-
-  // The sampler options of every distinct sampler, by key, created once.
-  static final _samplers = List<gpu.SamplerOptions?>.filled(
-    TextureSampler.keyCount,
-    null,
-  );
-
-  static gpu.SamplerOptions _samplerFor(TextureSampler sampler) {
-    return _samplers[sampler.key] ??= gpu.SamplerOptions(
-      minFilter: _filter(sampler.minFilter),
-      magFilter: _filter(sampler.magFilter),
-      mipFilter: switch (sampler.mipFilter) {
-        TextureFilter.nearest => gpu.MipFilter.nearest,
-        TextureFilter.linear => gpu.MipFilter.linear,
-      },
-      widthAddressMode: _addressMode(sampler.wrapU),
-      heightAddressMode: _addressMode(sampler.wrapV),
-    );
-  }
-
-  static gpu.MinMagFilter _filter(TextureFilter filter) {
-    return switch (filter) {
-      TextureFilter.nearest => gpu.MinMagFilter.nearest,
-      TextureFilter.linear => gpu.MinMagFilter.linear,
-    };
-  }
-
-  static gpu.SamplerAddressMode _addressMode(TextureWrap wrap) {
-    return switch (wrap) {
-      TextureWrap.clamp => gpu.SamplerAddressMode.clampToEdge,
-      TextureWrap.repeat => gpu.SamplerAddressMode.repeat,
-      TextureWrap.mirror => gpu.SamplerAddressMode.mirror,
-    };
   }
 
   @override
@@ -788,6 +917,11 @@ class _FlutterGpuRenderPass(
     );
   }
 
+  static final _disabledStencil = gpu.StencilConfig(
+    readMask: 0xFF,
+    writeMask: 0,
+  );
+
   static final _premultiplied = gpu.ColorBlendEquation(
     sourceColorBlendFactor: gpu.BlendFactor.one,
     destinationColorBlendFactor: gpu.BlendFactor.oneMinusSourceAlpha,
@@ -816,5 +950,19 @@ class _FlutterGpuRenderPass(
     destinationColorBlendFactor: gpu.BlendFactor.one,
     sourceAlphaBlendFactor: gpu.BlendFactor.zero,
     destinationAlphaBlendFactor: gpu.BlendFactor.one,
+  );
+
+  static final _wboitAccum = gpu.ColorBlendEquation(
+    sourceColorBlendFactor: gpu.BlendFactor.one,
+    destinationColorBlendFactor: gpu.BlendFactor.one,
+    sourceAlphaBlendFactor: gpu.BlendFactor.one,
+    destinationAlphaBlendFactor: gpu.BlendFactor.one,
+  );
+
+  static final _wboitReveal = gpu.ColorBlendEquation(
+    sourceColorBlendFactor: gpu.BlendFactor.zero,
+    destinationColorBlendFactor: gpu.BlendFactor.oneMinusSourceColor,
+    sourceAlphaBlendFactor: gpu.BlendFactor.zero,
+    destinationAlphaBlendFactor: gpu.BlendFactor.oneMinusSourceAlpha,
   );
 }

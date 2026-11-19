@@ -1,6 +1,9 @@
+export 'src/model/animation_retargeter_3d.dart';
 export 'src/model/animation_state.dart';
+export 'src/model/animation_state_machine_3d.dart';
 export 'src/model/blend_space_3d.dart';
 export 'src/model/bone_socket_3d.dart';
+export 'src/model/foot_ik_and_ragdoll_3d.dart';
 export 'src/model/model.dart';
 export 'src/model/model_animation.dart';
 export 'src/model/model_component.dart';

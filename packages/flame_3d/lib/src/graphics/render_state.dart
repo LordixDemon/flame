@@ -1,9 +1,120 @@
 import 'package:flame_3d/src/graphics/backend/gpu_enums.dart';
 import 'package:meta/meta.dart';
 
+/// {@template stencil_state}
+/// Stencil test and stencil buffer update configuration for a [RenderState].
+///
+/// Useful for portals, mirrors, planar cutouts, UI masks, and silhouette
+/// outlines visible through walls.
+/// {@endtemplate}
+@immutable
+class const StencilState({
+  /// Comparison tested between `(referenceValue & readMask)` and
+  /// `(storedStencil & readMask)`.
+  final CompareFunction compare = CompareFunction.always,
+
+  /// Operation applied when the stencil test fails.
+  final StencilOp stencilFail = StencilOp.keep,
+
+  /// Operation applied when the stencil test passes, but the depth test fails.
+  final StencilOp depthFail = StencilOp.keep,
+
+  /// Operation applied when both stencil and depth tests pass.
+  final StencilOp pass = StencilOp.keep,
+
+  /// 8-bit bitmask (`0..255`) ANDed with reference and stored stencil values
+  /// before comparison.
+  final int readMask = 0xFF,
+
+  /// 8-bit bitmask (`0..255`) controlling which stencil bits may be written.
+  final int writeMask = 0xFF,
+
+  /// 8-bit reference value (`0..255`) compared against or written by
+  /// [StencilOp.replace].
+  final int referenceValue = 0,
+}) {
+  /// Writes [referenceValue] into the stencil buffer wherever depth passes.
+  const StencilState.writeReference(int referenceValue)
+    : this(
+        pass: StencilOp.replace,
+        referenceValue: referenceValue,
+      );
+
+  /// Passes only fragments where the stencil buffer equals [referenceValue],
+  /// without modifying the stencil buffer.
+  const StencilState.testEqual(int referenceValue)
+    : this(
+        compare: CompareFunction.equal,
+        writeMask: 0,
+        referenceValue: referenceValue,
+      );
+
+  /// Passes only fragments where the stencil buffer differs from
+  /// [referenceValue], without modifying the stencil buffer.
+  const StencilState.testNotEqual(int referenceValue)
+    : this(
+        compare: CompareFunction.notEqual,
+        writeMask: 0,
+        referenceValue: referenceValue,
+      );
+
+  /// Returns a copy of this stencil state with selected fields replaced.
+  StencilState copyWith({
+    CompareFunction? compare,
+    StencilOp? stencilFail,
+    StencilOp? depthFail,
+    StencilOp? pass,
+    int? readMask,
+    int? writeMask,
+    int? referenceValue,
+  }) {
+    return StencilState(
+      compare: compare ?? this.compare,
+      stencilFail: stencilFail ?? this.stencilFail,
+      depthFail: depthFail ?? this.depthFail,
+      pass: pass ?? this.pass,
+      readMask: readMask ?? this.readMask,
+      writeMask: writeMask ?? this.writeMask,
+      referenceValue: referenceValue ?? this.referenceValue,
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is StencilState &&
+        other.compare == compare &&
+        other.stencilFail == stencilFail &&
+        other.depthFail == depthFail &&
+        other.pass == pass &&
+        other.readMask == readMask &&
+        other.writeMask == writeMask &&
+        other.referenceValue == referenceValue;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    compare,
+    stencilFail,
+    depthFail,
+    pass,
+    readMask,
+    writeMask,
+    referenceValue,
+  );
+
+  @override
+  String toString() {
+    return 'StencilState(compare: ${compare.name}, '
+        'stencilFail: ${stencilFail.name}, depthFail: ${depthFail.name}, '
+        'pass: ${pass.name}, readMask: $readMask, writeMask: $writeMask, '
+        'referenceValue: $referenceValue)';
+  }
+}
+
 /// {@template render_state}
 /// The fixed-function state a material draws with: blending, the depth test
-/// and depth writes, face culling, and whether it is translucent.
+/// and depth writes, stencil test, polygon mode, face culling, and whether it
+/// is translucent.
 ///
 /// Translucent draws are drawn after every opaque draw, sorted back to front,
 /// and are never batched into instanced draws. Opaque draws are grouped to
@@ -32,6 +143,13 @@ class const RenderState({
 
   /// Which faces are culled.
   final CullMode cullMode = CullMode.none,
+
+  /// Optional stencil test and stencil-buffer write configuration (`null`
+  /// disables stencil testing and writing).
+  final StencilState? stencil,
+
+  /// Polygon rasterization mode (`fill` or hardware `wireframe`).
+  final PolygonFillMode polygonMode = PolygonFillMode.fill,
 
   /// Whether draws are translucent, defaults to `true` for every [blend]
   /// other than [BlendState.opaque].
@@ -120,6 +238,9 @@ class const RenderState({
     CompareFunction? depthCompare,
     bool? depthWrite,
     CullMode? cullMode,
+    StencilState? stencil,
+    bool clearStencil = false,
+    PolygonFillMode? polygonMode,
     bool? translucent,
     bool? depthPrepass,
   }) {
@@ -129,6 +250,8 @@ class const RenderState({
       depthCompare: depthCompare ?? this.depthCompare,
       depthWrite: depthWrite ?? this.depthWrite,
       cullMode: cullMode ?? this.cullMode,
+      stencil: clearStencil ? null : (stencil ?? this.stencil),
+      polygonMode: polygonMode ?? this.polygonMode,
       translucent: translucent ?? this.translucent,
       depthPrepass: depthPrepass ?? this.depthPrepass,
     );
@@ -142,6 +265,8 @@ class const RenderState({
         other.depthCompare == depthCompare &&
         other.depthWrite == depthWrite &&
         other.cullMode == cullMode &&
+        other.stencil == stencil &&
+        other.polygonMode == polygonMode &&
         other.translucent == translucent &&
         other.depthPrepass == depthPrepass;
   }
@@ -153,6 +278,8 @@ class const RenderState({
     depthCompare,
     depthWrite,
     cullMode,
+    stencil,
+    polygonMode,
     translucent,
     depthPrepass,
   );
@@ -161,7 +288,8 @@ class const RenderState({
   String toString() {
     return 'RenderState(blend: ${blend.name}, depthTest: $depthTest, '
         'depthCompare: ${depthCompare.name}, depthWrite: $depthWrite, '
-        'cullMode: ${cullMode.name}, translucent: $translucent, '
+        'cullMode: ${cullMode.name}, stencil: $stencil, '
+        'polygonMode: ${polygonMode.name}, translucent: $translucent, '
         'depthPrepass: $depthPrepass)';
   }
 }

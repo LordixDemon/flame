@@ -8,7 +8,8 @@ import 'package:meta/meta.dart';
 /// Represents a vertex in 3D space.
 ///
 /// A vertex consists out of space coordinates, UV/texture coordinates and a
-/// color.
+/// color, plus optional normal, skinning joints/weights, MikkTSpace [tangent]
+/// (`xyz` tangent, `w` bitangent handedness), and secondary [texCoord1] UV.
 /// {@endtemplate}
 @immutable
 // ignore: prefer_const_constructors_in_immutables
@@ -21,6 +22,8 @@ class Vertex({
   Vector3? normal,
   Vector4? joints,
   Vector4? weights,
+  Vector4? tangent,
+  Vector2? texCoord1,
 }) {
   Float32List get storage => _storage;
   final Float32List _storage = Float32List.fromList([
@@ -47,6 +50,12 @@ class Vertex({
   /// The weights of the vertex.
   final ImmutableVector4? weights = weights?.immutable;
 
+  /// Optional 4-component tangent (`xyz` tangent, `w` bitangent sign).
+  final ImmutableVector4? tangent = tangent?.immutable;
+
+  /// Optional secondary UV coordinates (`TEXCOORD_1` for lightmaps/AO).
+  final ImmutableVector2? texCoord1 = texCoord1?.immutable;
+
   @override
   bool operator ==(Object other) =>
       other is Vertex &&
@@ -55,7 +64,9 @@ class Vertex({
       normal == other.normal &&
       color == other.color &&
       joints == other.joints &&
-      weights == other.weights;
+      weights == other.weights &&
+      tangent == other.tangent &&
+      texCoord1 == other.texCoord1;
 
   @override
   int get hashCode => Object.hashAll([
@@ -65,6 +76,8 @@ class Vertex({
     color,
     joints,
     weights,
+    tangent,
+    texCoord1,
   ]);
 
   Vertex copyWith({
@@ -74,8 +87,9 @@ class Vertex({
     Color? color,
     Vector4? joints,
     Vector4? weights,
+    Vector4? tangent,
+    Vector2? texCoord1,
   }) {
-    // TODO(wolfenrain): optimize this.
     return Vertex(
       position: position ?? this.position.mutable,
       texCoord: texCoord ?? this.texCoord.mutable,
@@ -83,6 +97,8 @@ class Vertex({
       color: color ?? this.color,
       joints: joints ?? this.joints?.mutable,
       weights: weights ?? this.weights?.mutable,
+      tangent: tangent ?? this.tangent?.mutable,
+      texCoord1: texCoord1 ?? this.texCoord1?.mutable,
     );
   }
 

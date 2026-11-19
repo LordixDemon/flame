@@ -141,6 +141,19 @@ extension type GPURenderPassEncoder._(JSObject _) implements JSObject {
 
   external void setBindGroup(int index, GPUBindGroup bindGroup);
 
+  external void setViewport(
+    num x,
+    num y,
+    num width,
+    num height,
+    num minDepth,
+    num maxDepth,
+  );
+
+  external void setScissorRect(int x, int y, int width, int height);
+
+  external void setStencilReference(int reference);
+
   external void setVertexBuffer(
     int slot,
     GPUBuffer buffer,
@@ -190,6 +203,7 @@ extension type GPUTextureDescriptor._(JSObject _) implements JSObject {
     String format,
     int usage,
     int mipLevelCount,
+    int sampleCount,
   });
 }
 
@@ -200,6 +214,7 @@ extension type GPUSamplerDescriptor._(JSObject _) implements JSObject {
     String mipmapFilter,
     String addressModeU,
     String addressModeV,
+    int maxAnisotropy,
   });
 }
 
@@ -320,12 +335,29 @@ extension type GPUPrimitiveState._(JSObject _) implements JSObject {
   });
 }
 
+extension type GPUStencilFaceState._(JSObject _) implements JSObject {
+  external factory GPUStencilFaceState({
+    String compare,
+    String failOp,
+    String depthFailOp,
+    String passOp,
+  });
+}
+
 extension type GPUDepthStencilState._(JSObject _) implements JSObject {
   external factory GPUDepthStencilState({
     String format,
     bool depthWriteEnabled,
     String depthCompare,
+    GPUStencilFaceState stencilFront,
+    GPUStencilFaceState stencilBack,
+    int stencilReadMask,
+    int stencilWriteMask,
   });
+}
+
+extension type GPUMultisampleState._(JSObject _) implements JSObject {
+  external factory GPUMultisampleState({int count});
 }
 
 extension type GPURenderPipelineDescriptor._(JSObject _) implements JSObject {
@@ -335,12 +367,14 @@ extension type GPURenderPipelineDescriptor._(JSObject _) implements JSObject {
     required GPUFragmentState fragment,
     required GPUPrimitiveState primitive,
     required GPUDepthStencilState depthStencil,
+    GPUMultisampleState? multisample,
   }) => GPURenderPipelineDescriptor._raw(
     layout: layout.toJS,
     vertex: vertex,
     fragment: fragment,
     primitive: primitive,
     depthStencil: depthStencil,
+    multisample: multisample ?? GPUMultisampleState(count: 1),
   );
 
   external factory GPURenderPipelineDescriptor._raw({
@@ -349,6 +383,7 @@ extension type GPURenderPipelineDescriptor._(JSObject _) implements JSObject {
     GPUFragmentState fragment,
     GPUPrimitiveState primitive,
     GPUDepthStencilState depthStencil,
+    GPUMultisampleState multisample,
   });
 }
 
@@ -359,6 +394,7 @@ extension type GPUColor._(JSObject _) implements JSObject {
 extension type GPURenderPassColorAttachment._(JSObject _) implements JSObject {
   external factory GPURenderPassColorAttachment({
     GPUTextureView view,
+    GPUTextureView? resolveTarget,
     GPUColor clearValue,
     String loadOp,
     String storeOp,
@@ -372,6 +408,9 @@ extension type GPURenderPassDepthStencilAttachment._(JSObject _)
     double depthClearValue,
     String depthLoadOp,
     String depthStoreOp,
+    int stencilClearValue,
+    String stencilLoadOp,
+    String stencilStoreOp,
   });
 }
 

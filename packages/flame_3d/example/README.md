@@ -1,24 +1,27 @@
 # flame_3d example & showcase testbed
 
-Interactive examples and an all-in-one 16-lab engine showcase for `package:flame_3d`:
+Interactive examples and an all-in-one 20-lab engine showcase for `package:flame_3d`:
 
 - **`showcase`** (`ShowcaseGame` / `ShowcaseView` — press `T` or run `setup showcase` in the
   console):
-  - **16 feature labs (`ShowcasePreset`)** exercising retained `Scene3DComponent` layers,
-    `ShadowSettings.cacheWhenStatic`, 2-cascade directional shadow atlases (`cascades: 2`),
-    perspective `SpotLight` shadows, shared `ShadowGroup`, `ShadowCatcherMaterial`, 2,048-instance
-    `InstancedGroup3D` batching, `LodMeshComponent`, PBR `SpatialMaterial` (`EnvironmentProbe3D`
-    `SH9` IBL, normal/ORM/AO/emissive maps), `StylizedMaterial`, `WaterMaterial` (`shoreFoamDepth`),
-    `TerrainMesh3D`, `TubeSplineMesh`, HD-2D `BillboardBatch3D`, `Text3DComponent`, 64-bone
-    skinning, morph targets, `AnimationLayer3D`, IK/LookAt/SpringBone, `BlendSpace1D`/`BlendSpace2D`,
-    `AnimationEvent3D`, `RootMotionExtractor3D`, 64-agent `SkinnedCrowdBatch3D`, background-isolate
-    `AsyncModelLoader3D` + `SceneLoader3D`, `PointerRouter3D` 3D input & gizmos, 3D effects &
-    `FixedTransformInterpolation3D`, `OrbitCameraController3D` / `SpringArmCamera3D` /
-    `CameraDollyTrack3D` / `CameraShake3D`, `PhysicsWorld3D` (`RigidBody3D`, `HingeJoint3D`,
-    `throwDice3D`), `CollisionSystem3D` + `ShapeCast3D` + `KinematicCharacterController3D`,
-    `NavMesh3D` + `CrowdSteering3D`, `SpatialAudio3D`, half-res `DepthNormalPrepass` (SSAO, 3D DoF,
-    soft particles), live GPU `RenderTexture3D` portals, `DebugRenderer3D`, and a **48-check**
-    automated **Self-Test** (`ShowcaseDiagnostics`).
+  - **20 feature labs (`ShowcasePreset`)** exercising retained `Scene3DComponent` layers,
+    `ShadowSettings.cacheWhenStatic`, Float16 HDR (`hdrEnabled`), `ColorLut3D`, `RenderDebugMode3D`,
+    split-sum `BrdfLut3D`, box-projected `ReflectionProbeVolume3D`, 3D `LightProbeGrid3D`, PBR
+    `SpatialMaterial` (Clearcoat, Transmission/IOR, `Surface.computeTangents`, `anisotropic16x`,
+    `Ktx2TextureLoader` BC1), unified `ShadowAtlas3D` (`4`-CSM + `SpotLight` + Dual-Paraboloid
+    `PointLight` shadows), Weighted Blended OIT (`OitMode3D.weightedBlended`), Grab-Pass refraction,
+    `StencilState`, `RenderGraph3D`, `LightClusterGrid3D` (`128+` lights), Hi-Z `OcclusionCuller3D`
+    and `PortalOcclusionGraph3D`, `StaticMeshBatcher3D`, 64-bit `FloatingOriginController3D`, CDLOD
+    `ChunkedTerrain3D` with `10,000+` `FoliageSystem3D` & `VolumeDecalBatch3D`, `DynamicAabbTree3D`,
+    `120 m/s` CCD `RigidBody3D`, `CompoundShape3D` & `HeightfieldShape3D`, 6-DOF joints,
+    `BuoyancyVolume3D`, `RaycastVehicle3D`, `XpbdCloth3D` / `XpbdRope3D`, Recast `NavMeshBuilder3D`,
+    `NavMeshObstacle3D` & `OffMeshLink3D`, CRC32 `PhysicsSnapshot3D` rollback,
+    `AnimationStateMachine3D` HFSM, `AnimationRetargeter3D`, `FabrikIkConstraint3D`,
+    `FootPlacementIk3D`, `RagdollController3D`, `PrefabRegistry3D` + `'F3DS'` `SceneSerializer3D`,
+    `GpuResourceManager3D`, `CameraStack3D`, `Timeline3D` + `VirtualCameraBrain3D`,
+    `MsdfTextBatch3D`, `WidgetSurface3D`, `MeshoptDecoder3D` + `WorldChunkStreamer3D`,
+    `SpatialAudioMixer3D`, `TransformGizmo3D` + `SceneInspector3D`, and a **64-check** automated
+    **Self-Test** (`ShowcaseDiagnostics`).
 - **`boxes`**, **`colors`**, **`culling`**, **`models`**, **`particles`**, **`houses`** (`H`), and
   **`shadows`**.
 

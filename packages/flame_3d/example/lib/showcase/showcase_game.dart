@@ -40,8 +40,13 @@ class ShowcaseController() extends ChangeNotifier {
   bool ssao = false;
   bool dof = false;
   bool csm2Cascades = false;
+  bool csm4Cascades = false;
+  bool hdr = false;
+  bool wboit = false;
   bool debug3D = false;
 
+  RenderDebugMode3D renderDebugMode = RenderDebugMode3D.none;
+  ColorLut3D? activeColorLut;
   ToneMapMode toneMap = ToneMapMode.none;
   ShadowMapEncoding shadowEncoding = ShadowMapEncoding.auto;
   ShadowFit shadowFit = ShadowFit.scene;
@@ -844,6 +849,30 @@ class ShowcaseGame({ShowcaseController? controller})
     controller.preset = next;
     variationRig.clearMounted();
 
+    // Cleanly reset Lab 17 HDR, WBOIT, Grab-Pass, 3D LUT, Debug View, Probes &
+    // 4-CSM state whenever switching presets so Labs 1-16 behave identically.
+    controller
+      ..hdr = false
+      ..wboit = false
+      ..csm4Cascades = false
+      ..renderDebugMode = RenderDebugMode3D.none
+      ..activeColorLut = null;
+    dynamicLayer.world
+      ..hdrEnabled = false
+      ..oitMode = OitMode3D.none
+      ..grabSceneColorEnabled = false
+      ..renderDebugMode3D = RenderDebugMode3D.none
+      ..lightProbeGrid = null
+      ..customPasses.clear();
+    for (final probe
+        in dynamicLayer.world.children
+            .whereType<ReflectionProbeVolume3D>()
+            .toList()) {
+      probe.removeFromParent();
+    }
+    _postProcessSettings.colorLut = null;
+    _dynamicShadows.cascades = controller.csm2Cascades ? 2 : 1;
+
     switch (next) {
       case ShowcasePreset.allInOne:
         controller
@@ -977,6 +1006,43 @@ class ShowcaseGame({ShowcaseController? controller})
         variationRig.buildSsaoDofCsmPortalAndDebug3DLab(
           debugEnabled: controller.debug3D,
         );
+      case ShowcasePreset.hdrIblShadowAtlasAndOit:
+        controller
+          ..retainedStaticLayer = false
+          ..staticShadowCache = false
+          ..toneMap = ToneMapMode.acesFilmic
+          ..fxaa = true
+          ..stressInstances = false;
+        variationRig.buildHdrIblShadowAtlasAndOitLab(
+          dynamicWorld: dynamicLayer.world,
+          postProcess: _postProcessSettings,
+          dynamicShadows: _dynamicShadows,
+          controller: controller,
+        );
+      case ShowcasePreset.clusteredOcclusionCdlodAndFoliage:
+        controller
+          ..retainedStaticLayer = false
+          ..staticShadowCache = true
+          ..stressInstances = false;
+        variationRig.buildClusteredOcclusionCdlodAndFoliageLab();
+      case ShowcasePreset.ccdCompoundClothRecastAndRollback:
+        controller
+          ..retainedStaticLayer = false
+          ..staticShadowCache = true
+          ..stressInstances = false;
+        variationRig.buildCcdCompoundClothRecastAndRollbackLab(
+          dynamicLayer.world,
+        );
+      case ShowcasePreset.animGraphRetargetRagdollUiAndGizmo:
+        controller
+          ..retainedStaticLayer = true
+          ..staticShadowCache = true
+          ..stressInstances = false;
+        variationRig.buildAnimGraphRetargetRagdollUiAndGizmoLab(
+          dynamicWorld: dynamicLayer.world,
+          dynamicLayer: dynamicLayer,
+          world2D: world,
+        );
     }
 
     if (variationRig.staticExtras.isNotEmpty) {
@@ -1004,6 +1070,14 @@ class ShowcaseGame({ShowcaseController? controller})
     ];
     final idx = order.indexOf(controller.toneMap);
     controller.toneMap = order[(idx + 1) % order.length];
+    syncControllerState();
+  }
+
+  /// Cycles `RenderDebugMode3D` diagnostic buffer views.
+  void cycleRenderDebugMode() {
+    const modes = RenderDebugMode3D.values;
+    controller.renderDebugMode =
+        modes[(controller.renderDebugMode.index + 1) % modes.length];
     syncControllerState();
   }
 
@@ -1101,7 +1175,8 @@ class ShowcaseGame({ShowcaseController? controller})
       ..ssaoRadius = 0.032
       ..dofBlurStrength = controller.dof ? 0.45 : 0.0
       ..dofFocusDepth = 0.5
-      ..dofFocusRange = 0.16;
+      ..dofFocusRange = 0.16
+      ..colorLut = controller.activeColorLut;
 
     final needDepthPrepass =
         controller.ssao ||
@@ -1126,22 +1201,28 @@ class ShowcaseGame({ShowcaseController? controller})
           ? _postProcessSettings
           : null;
     dynamicLayer.world
+      ..hdrEnabled = controller.hdr
+      ..oitMode = controller.wboit ? OitMode3D.weightedBlended : OitMode3D.none
+      ..grabSceneColorEnabled =
+          controller.preset == ShowcasePreset.hdrIblShadowAtlasAndOit
+      ..renderDebugMode3D = controller.renderDebugMode
       ..depthPrepassEnabled = needDepthPrepass
       ..spatialIndex3DEnabled = controller.spatialIndex3D
       ..prioritizeNearestLights = controller.prioritizeNearestLights;
 
-    final desiredCascades = controller.csm2Cascades ? 2 : 1;
+    final staticCascades = controller.csm2Cascades ? 2 : 1;
+    final dynamicCascades = controller.csm4Cascades ? 4 : staticCascades;
     _staticShadows
       ..cacheWhenStatic = controller.staticShadowCache
       ..encoding = controller.shadowEncoding
       ..fit = controller.shadowFit
       ..softness = controller.shadowSoftness
-      ..cascades = desiredCascades;
+      ..cascades = staticCascades;
     _dynamicShadows
       ..encoding = controller.shadowEncoding
       ..fit = controller.shadowFit
       ..softness = controller.shadowSoftness
-      ..cascades = desiredCascades;
+      ..cascades = dynamicCascades;
 
     if (variationRig.labDebugRenderer case final labDbg?) {
       labDbg.enabled = controller.debug3D;

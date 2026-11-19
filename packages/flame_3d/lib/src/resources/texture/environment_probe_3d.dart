@@ -3,12 +3,14 @@ import 'dart:typed_data';
 import 'dart:ui' show Color;
 
 import 'package:flame_3d/core.dart';
+import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 
 /// {@template environment_probe_3d}
 /// Pre-filtered Image-Based Lighting (IBL) probe storing 9-band (`L0..L2`)
 /// Spherical Harmonics (`SH9`) diffuse irradiance coefficients alongside a
-/// mipmapped equirectangular specular reflection [reflectionTexture].
+/// roughness-prefiltered mipmapped equirectangular specular reflection
+/// [reflectionTexture].
 ///
 /// Can be baked on the CPU from any RGBA8888 equirectangular panorama via
 /// [EnvironmentProbe3D.fromEquirectangular] or synthesized procedurally from
@@ -86,7 +88,8 @@ class EnvironmentProbe3D({
   }
 
   /// Projects an RGBA8888 `2:1` equirectangular [pixels] buffer onto `SH9`
-  /// radiance coefficients and builds a mipmapped specular reflection texture.
+  /// radiance coefficients and builds a roughness-prefiltered mipmapped
+  /// specular reflection texture.
   factory EnvironmentProbe3D.fromEquirectangular(
     ByteData pixels, {
     required int width,
@@ -146,17 +149,10 @@ class EnvironmentProbe3D({
       }
     }
 
-    final tex = Texture(
+    final tex = _PrefilteredEquirectTexture(
       pixels,
       width: width,
       height: height,
-      mipmaps: true,
-      sampler: const TextureSampler(
-        minFilter: TextureFilter.linear,
-        magFilter: TextureFilter.linear,
-        mipFilter: TextureFilter.linear,
-        wrapU: TextureWrap.repeat,
-      ),
     );
     return EnvironmentProbe3D(
       shCoefficients: coeffs,
@@ -166,7 +162,7 @@ class EnvironmentProbe3D({
   }
 
   /// Synthesizes a procedural atmospheric sky dome panorama (`width x height`)
-  /// and bakes its exact `SH9` diffuse probe + mipmapped reflection map.
+  /// and bakes its exact `SH9` diffuse probe + roughness-prefiltered mip chain.
   factory EnvironmentProbe3D.skyDome({
     int width = 128,
     int height = 64,
@@ -192,7 +188,6 @@ class EnvironmentProbe3D({
       final cosT = math.cos(theta);
       for (var col = 0; col < width; col++) {
         final phi = ((col + 0.5) / width - 0.5) * 2.0 * math.pi;
-        // Note `spatial_material.frag` maps equirect `v = acos(clamp(y))/pi`.
         dir.setValues(sinT * math.cos(phi), cosT, sinT * math.sin(phi));
         final elev = dir.dot(up);
         double r;
@@ -239,4 +234,116 @@ class EnvironmentProbe3D({
   }
 
   static double _lerp(double a, double b, double t) => a + (b - a) * t;
+}
+
+/// Equirectangular specular reflection texture whose mip chain is pre-convolved
+/// with widening GGX roughness lobes (wrapping horizontally across `u = 0..1`
+/// and clamping at the poles) so `textureLod(..., roughness * maxMip)` produces
+/// smooth blurred reflections at higher roughness values.
+class _PrefilteredEquirectTexture(
+  super.sourceData, {
+  required super.width,
+  required super.height,
+}) extends Texture {
+  this
+    : super(
+        mipmaps: true,
+        sampler: const TextureSampler(
+          minFilter: TextureFilter.linear,
+          magFilter: TextureFilter.linear,
+          mipFilter: TextureFilter.linear,
+          wrapU: TextureWrap.repeat,
+        ),
+      );
+
+  @override
+  GpuTexture createResource() {
+    final data = sourceData!;
+    final backend = GpuBackend.instance;
+    final levels = math.min(6, backend.maxMipLevelCount(width, height));
+    final gpuTex = backend.createTexture(
+      storageMode: GpuStorageMode.hostVisible,
+      width: width,
+      height: height,
+      format: GpuPixelFormat.rgba8888,
+      mipLevelCount: levels,
+    )..write(data);
+
+    var prevBytes = data.buffer.asUint8List(
+      data.offsetInBytes,
+      data.lengthInBytes,
+    );
+    var prevW = width;
+    var prevH = height;
+
+    for (var level = 1; level < levels; level++) {
+      final mipW = math.max(1, width >> level);
+      final mipH = math.max(1, height >> level);
+      final roughness = levels > 1 ? level / (levels - 1) : 0.0;
+      final next = _convolveRoughnessMip(
+        prevBytes,
+        prevW,
+        prevH,
+        mipW,
+        mipH,
+        roughness,
+      );
+      gpuTex.write(ByteData.sublistView(next), mipLevel: level);
+      prevBytes = next;
+      prevW = mipW;
+      prevH = mipH;
+    }
+    return gpuTex;
+  }
+
+  static Uint8List _convolveRoughnessMip(
+    Uint8List src,
+    int srcW,
+    int srcH,
+    int dstW,
+    int dstH,
+    double roughness,
+  ) {
+    final dst = Uint8List(dstW * dstH * 4);
+    final radius = math.max(1, (roughness * 3.0).ceil());
+    final sigma = math.max(0.65, roughness * 2.2);
+    final inv2Sigma2 = 0.5 / (sigma * sigma);
+
+    for (var y = 0; y < dstH; y++) {
+      final cy = ((y + 0.5) / dstH * srcH - 0.5).round();
+      for (var x = 0; x < dstW; x++) {
+        final cx = ((x + 0.5) / dstW * srcW - 0.5).round();
+        var sumR = 0.0;
+        var sumG = 0.0;
+        var sumB = 0.0;
+        var sumA = 0.0;
+        var sumW = 0.0;
+
+        for (var dy = -radius; dy <= radius; dy++) {
+          final sy = (cy + dy).clamp(0, srcH - 1);
+          for (var dx = -radius; dx <= radius; dx++) {
+            var sx = (cx + dx) % srcW;
+            if (sx < 0) {
+              sx += srcW;
+            }
+            final w = math.exp(-(dx * dx + dy * dy) * inv2Sigma2);
+            final o = (sy * srcW + sx) * 4;
+            sumR += src[o] * w;
+            sumG += src[o + 1] * w;
+            sumB += src[o + 2] * w;
+            sumA += src[o + 3] * w;
+            sumW += w;
+          }
+        }
+
+        final invW = sumW > 0.0 ? 1.0 / sumW : 1.0;
+        final outIdx = (y * dstW + x) * 4;
+        dst[outIdx] = (sumR * invW).round().clamp(0, 255);
+        dst[outIdx + 1] = (sumG * invW).round().clamp(0, 255);
+        dst[outIdx + 2] = (sumB * invW).round().clamp(0, 255);
+        dst[outIdx + 3] = (sumA * invW).round().clamp(0, 255);
+      }
+    }
+    return dst;
+  }
 }

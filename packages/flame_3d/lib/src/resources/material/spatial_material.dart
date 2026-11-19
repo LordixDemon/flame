@@ -1,16 +1,23 @@
+import 'dart:math' as math;
 import 'dart:ui' hide FragmentShader;
 
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 
+const bool _kIsWeb = identical(0, 0.0);
+
 /// {@template spatial_material}
 /// Physically-based Cook-Torrance metallic-roughness material supporting full
-/// glTF 2.0 maps ([albedoTexture], tangent-free [normalTexture],
-/// [metallicRoughnessTexture], [occlusionTexture], [emissiveTexture]),
-/// equirectangular [environmentTexture] IBL reflections, UV tiling/offset,
-/// directional PCF shadows, [SpotLight]s, [FogSettings], `MASK` [alphaCutoff],
-/// `4x4` Bayer [ditherFade], and seamless single-piece translucency.
+/// glTF 2.0 maps ([albedoTexture], MikkTSpace or cotangent [normalTexture],
+/// [metallicRoughnessTexture], [occlusionTexture], [emissiveTexture], UV1
+/// [lightmapTexture]), Karis Split-Sum `BrdfLut3D` + prefiltered roughness-mip
+/// + Kulla–Conty multi-scattering IBL reflections ([environmentTexture],
+/// [environmentProbe], local box-projected `ReflectionProbeVolume3D`, and 3D
+/// `LightProbeGrid3D`), [clearcoat], dielectric [transmission] / [ior]
+/// Grab-Pass refraction, unified 4-Cascade CSM + Multi-Spot + Dual-Paraboloid
+/// Point shadows, [FogSettings], `MASK` [alphaCutoff], `4x4` Bayer
+/// [ditherFade], and linear HDR output.
 /// {@endtemplate}
 class SpatialMaterial({
   /// Base color multiplier (`rgb` and `a`).
@@ -19,8 +26,9 @@ class SpatialMaterial({
   var double metallic = 0.8,
   var double roughness = 0.6,
 
-  /// Optional tangent-space RGB normal map perturbed via a screen-space
-  /// cotangent frame (no vertex tangent attribute required).
+  /// Optional tangent-space RGB normal map (uses MikkTSpace `vertexTangent`
+  /// when present in the surface's `VertexLayout`, or a screen-space cotangent
+  /// frame otherwise).
   var Texture? normalTexture,
 
   /// Strength multiplier applied to the XY perturbation of [normalTexture].
@@ -55,6 +63,26 @@ class SpatialMaterial({
   /// probe (`EnvironmentProbe3D`).
   var EnvironmentProbe3D? environmentProbe,
 
+  /// Optional baked diffuse lightmap texture sampled with secondary UV channel
+  /// `vertexTexCoord1` (`TEXCOORD_1`, falling back to `vertexTexCoord`).
+  var Texture? lightmapTexture,
+
+  /// Multiplier applied to [lightmapTexture].
+  var double lightmapIntensity = 1.0,
+
+  /// Clearcoat layer intensity (`0..1`, `F0 = 0.04` polyurethane/car-paint
+  /// specular coat).
+  var double clearcoat = 0.0,
+
+  /// Perceptual roughness (`0.04..1.0`) of the [clearcoat] layer.
+  var double clearcoatRoughness = 0.1,
+
+  /// Dielectric physical transmission factor (`0..1` for refractive glass).
+  var double transmission = 0.0,
+
+  /// Index of refraction (`1.0..3.0`; `1.5` = crown glass, `F0 = 0.04`).
+  var double ior = 1.5,
+
   /// UV scale (`(1, 1)` by default).
   Vector2? uvScale,
 
@@ -80,42 +108,99 @@ class SpatialMaterial({
   this
     : super(
         vertexShader: VertexShader.fromAsset(
-          'packages/flame_3d/assets/shaders/spatial_material.shaderbundle',
+          _kIsWeb ? _webBundle : _pbrBundle,
           slots: [
             RenderContext3D.cameraMatricesBlock,
             RenderContext3D.jointMatricesBlock,
           ],
         ),
         fragmentShader: FragmentShader.fromAsset(
-          'packages/flame_3d/assets/shaders/spatial_material.shaderbundle',
-          slots: [
-            'albedoTexture',
-            'normalTexture',
-            'metallicRoughnessTexture',
-            'occlusionTexture',
-            'emissiveTexture',
-            'environmentTexture',
-            RenderContext3D.shadowMapSampler,
-            'Material',
-            RenderContext3D.ambientLightBlock,
-            RenderContext3D.lightsBlock,
-            RenderContext3D.directionalLightsBlock,
-            RenderContext3D.spotLightsBlock,
-            RenderContext3D.hemisphereLightBlock,
-            RenderContext3D.cameraBlock,
-            RenderContext3D.shadowsBlock,
-            RenderContext3D.fogBlock,
-          ],
+          _kIsWeb ? _webBundle : _pbrBundle,
+          slots: _kIsWeb ? _webFragmentSlots : _pbrFragmentSlots,
         ),
       ) {
-    if (doubleSided && !translucent) {
+    final needsTranslucent = translucent || transmission > 1e-4;
+    if (doubleSided && !needsTranslucent) {
       renderState = RenderState.opaque;
     }
-    if (translucent) {
-      renderState = singlePieceTranslucent
+    if (needsTranslucent) {
+      final base = singlePieceTranslucent
           ? RenderState.singlePieceAlphaBlend
           : RenderState.alphaBlend;
+      renderState = (transmission > 1e-4 && !doubleSided)
+          ? base.copyWith(cullMode: CullMode.backFace)
+          : base;
     }
+  }
+
+  static const String _webBundle =
+      'packages/flame_3d/assets/shaders/spatial_material.shaderbundle';
+  static const String _pbrBundle =
+      'packages/flame_3d/assets/shaders/spatial_material_pbr.shaderbundle';
+  static const String _pbrTangentBundle =
+      'packages/flame_3d/assets/shaders/'
+      'spatial_material_pbr_tangent.shaderbundle';
+
+  static const List<String> _webFragmentSlots = [
+    'albedoTexture',
+    'normalTexture',
+    'metallicRoughnessTexture',
+    'occlusionTexture',
+    'emissiveTexture',
+    'environmentTexture',
+    RenderContext3D.shadowMapSampler,
+    'Material',
+    RenderContext3D.ambientLightBlock,
+    RenderContext3D.lightsBlock,
+    RenderContext3D.directionalLightsBlock,
+    RenderContext3D.spotLightsBlock,
+    RenderContext3D.hemisphereLightBlock,
+    RenderContext3D.cameraBlock,
+    RenderContext3D.shadowsBlock,
+    RenderContext3D.fogBlock,
+  ];
+
+  static const List<String> _pbrFragmentSlots = [
+    'albedoTexture',
+    'normalTexture',
+    'metallicRoughnessTexture',
+    'occlusionTexture',
+    'emissiveTexture',
+    'environmentTexture',
+    'lightmapTexture',
+    RenderContext3D.brdfLutSampler,
+    RenderContext3D.probeGridSampler,
+    RenderContext3D.sceneColorSampler,
+    RenderContext3D.shadowMapSampler,
+    'Material',
+    RenderContext3D.passOptionsBlock,
+    RenderContext3D.shadowAtlasBlock,
+    RenderContext3D.ambientLightBlock,
+    RenderContext3D.lightsBlock,
+    RenderContext3D.directionalLightsBlock,
+    RenderContext3D.spotLightsBlock,
+    RenderContext3D.hemisphereLightBlock,
+    RenderContext3D.cameraBlock,
+    RenderContext3D.shadowsBlock,
+    RenderContext3D.fogBlock,
+  ];
+
+  Shader? _tangentVertexShader;
+
+  @override
+  Shader vertexShaderFor(VertexLayout layout) {
+    if (!_kIsWeb &&
+        layout.attribute(VertexLayout.tangentAttribute) != null &&
+        layout.attribute(VertexLayout.texCoord1Attribute) != null) {
+      return _tangentVertexShader ??= VertexShader.fromAsset(
+        _pbrTangentBundle,
+        slots: [
+          RenderContext3D.cameraMatricesBlock,
+          RenderContext3D.jointMatricesBlock,
+        ],
+      );
+    }
+    return vertexShader;
   }
 
   /// Base albedo texture multiplied by [albedoColor].
@@ -132,7 +217,10 @@ class SpatialMaterial({
   static final Vector4 _paramsVec = Vector4.zero();
   static final Vector4 _flagsVec = Vector4.zero();
   static final Vector4 _flags2Vec = Vector4.zero();
+  static final Vector4 _pbrExtVec = Vector4.zero();
+  static final Vector4 _iblParamsVec = Vector4.zero();
   static final Vector4 _shScratch = Vector4.zero();
+  static final Vector3 _originScratch = Vector3.zero();
 
   @override
   void apply(RenderContext context) {
@@ -140,7 +228,22 @@ class SpatialMaterial({
     final ormTex = metallicRoughnessTexture;
     final occTex = occlusionTexture;
     final emiTex = emissiveTexture;
-    final probe = environmentProbe;
+    final lmTex = lightmapTexture;
+
+    var probe = environmentProbe;
+    if (probe == null &&
+        environmentTexture == null &&
+        context is RenderContext3D &&
+        context.reflectionProbes.isNotEmpty) {
+      final m = context.model.storage;
+      _originScratch.setValues(m[12], m[13], m[14]);
+      final local =
+          context.selectReflectionProbe(_originScratch) ??
+          context.selectReflectionProbe(context.cameraPosition) ??
+          (context.reflectionProbes.first, 1.0);
+      probe = local.$1.probe;
+    }
+
     final envTex = environmentTexture ?? probe?.reflectionTexture;
     final premul = renderState.blend == BlendState.premultipliedAlpha;
 
@@ -192,6 +295,34 @@ class SpatialMaterial({
           emiTex != null ? 1.0 : 0.0,
         ),
       );
+
+    if (!_kIsWeb) {
+      var maxMip = 0.0;
+      if (envTex != null) {
+        envTex.resource;
+        maxMip = math.max(0, envTex.mipLevelCount - 1).toDouble();
+      }
+      fragmentShader
+        ..setTexture('lightmapTexture', lmTex ?? Texture.standard)
+        ..setVector4(
+          'Material.pbrExt',
+          _pbrExtVec..setValues(
+            clearcoat,
+            clearcoatRoughness,
+            transmission,
+            ior,
+          ),
+        )
+        ..setVector4(
+          'Material.iblParams',
+          _iblParamsVec..setValues(
+            lmTex != null ? 1.0 : 0.0,
+            lightmapIntensity,
+            maxMip,
+            envTex != null ? 1.0 : 0.0,
+          ),
+        );
+    }
 
     final matBlock = fragmentShader.block('Material');
     if (probe != null && probe.intensity > 0) {

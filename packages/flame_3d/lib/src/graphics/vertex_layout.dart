@@ -84,9 +84,29 @@ class VertexLayout(List<VertexAttribute> attributes) {
     VertexAttribute('vertexWeights', 4),
   ]);
 
+  /// Extended 26-float PBR layout adding orthogonalized `vec4` MikkTSpace
+  /// [tangentAttribute] (`xyz` tangent, `w` bitangent sign) and secondary UV
+  /// [texCoord1Attribute] (`TEXCOORD_1` for lightmaps and baked AO).
+  static final VertexLayout pbrStandard = VertexLayout(const [
+    VertexAttribute(positionAttribute, 3),
+    VertexAttribute('vertexTexCoord', 2),
+    VertexAttribute('vertexColor', 4),
+    VertexAttribute('vertexNormal', 3),
+    VertexAttribute('vertexJoints', 4),
+    VertexAttribute('vertexWeights', 4),
+    VertexAttribute(tangentAttribute, 4),
+    VertexAttribute(texCoord1Attribute, 2),
+  ]);
+
   /// The name of the position attribute. Surfaces compute their bounds from
   /// the attribute with this name.
   static const String positionAttribute = 'vertexPosition';
+
+  /// The name of the 4-component tangent attribute (`xyz` tangent, `w` sign).
+  static const String tangentAttribute = 'vertexTangent';
+
+  /// The name of the secondary 2-component UV attribute (`TEXCOORD_1`).
+  static const String texCoord1Attribute = 'vertexTexCoord1';
 
   /// The per-instance inputs flame_3d feeds from its instance buffer, in the
   /// order they are stored for each instance: the four columns of the model

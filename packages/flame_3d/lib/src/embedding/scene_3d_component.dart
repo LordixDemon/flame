@@ -34,6 +34,8 @@ class Scene3DComponent({
   Scene3DCacheMode cacheMode = Scene3DCacheMode.none,
   BloomSettings? bloom,
   PostProcessSettings? postProcess,
+  bool? hdrEnabled,
+  RenderDebugMode3D? renderDebugMode3D,
   super.cameraMask,
   super.position,
   super.size,
@@ -54,6 +56,12 @@ class Scene3DComponent({
     }
     if (postProcess != null) {
       this.world.postProcess = postProcess;
+    }
+    if (hdrEnabled != null) {
+      this.world.hdrEnabled = hdrEnabled;
+    }
+    if (renderDebugMode3D != null) {
+      this.world.renderDebugMode3D = renderDebugMode3D;
     }
     this.maxTextureSize = maxTextureSize;
     add(this.world);
@@ -86,10 +94,21 @@ class Scene3DComponent({
   BloomSettings? get bloom => world.bloom;
   set bloom(BloomSettings? value) => world.bloom = value;
 
-  /// Optional GPU tone-mapping, color-grading, vignette, and FXAA applied to
-  /// this layer (forwards to `world.postProcess`).
+  /// Optional GPU tone-mapping, color-grading, 3D LUT, vignette, and FXAA
+  /// applied to this layer (forwards to `world.postProcess`).
   PostProcessSettings? get postProcess => world.postProcess;
   set postProcess(PostProcessSettings? value) => world.postProcess = value;
+
+  /// Whether this layer renders un-tonemapped linear HDR into `rgbaFloat16`
+  /// before post-processing (forwards to `world.hdrEnabled`).
+  bool get hdrEnabled => world.hdrEnabled;
+  set hdrEnabled(bool value) => world.hdrEnabled = value;
+
+  /// Diagnostic buffer visualization mode (forwards to
+  /// `world.renderDebugMode3D`).
+  RenderDebugMode3D get renderDebugMode3D => world.renderDebugMode3D;
+  set renderDebugMode3D(RenderDebugMode3D value) =>
+      world.renderDebugMode3D = value;
 
   /// Number of frames satisfied directly from the [Scene3DCacheMode.retained]
   /// image cache without opening a GPU pass.
@@ -99,15 +118,13 @@ class Scene3DComponent({
   int _manualVersion = 0;
 
   /// Marks this layer's retained image cache (if any) as out of date, forcing a
-  /// fresh GPU pass on the next frame (for instance after mutating material
-  /// uniforms or `MeshComponent.instanceData` in place).
+  /// fresh GPU pass on the next frame.
   void markDirty() {
     _manualVersion++;
     Game.notifyVisualMutation();
   }
 
-  /// The largest width and height in pixels of the render target, at least
-  /// 64.
+  /// The largest width and height in pixels of the render target, at least 64.
   int get maxTextureSize => _maxTextureSize;
   set maxTextureSize(int value) {
     if (value < _bucket) {
@@ -152,8 +169,7 @@ class Scene3DComponent({
     return projection.localPointToRay(localPoint, output: output);
   }
 
-  /// Casts a ray from [localPoint] (in this component's 2D coordinates) against
-  /// all [Object3D]s in [world], returning the closest [RayHit3D] or `null`.
+  /// Casts a ray from [localPoint] against all [Object3D]s in [world].
   RayHit3D? raycastLocal(
     Vector2 localPoint, {
     double maxDistance = double.infinity,
@@ -187,10 +203,7 @@ class Scene3DComponent({
   }
 
   /// Renders this layer once into an independent [Image] of [size] logical
-  /// pixels (scaled by [pixelRatio]), placing the projection's local origin at
-  /// [origin] and scaling by [zoom].
-  ///
-  /// The caller owns the returned [Image] and should `dispose()` it when done.
+  /// pixels.
   Image renderToImage(
     Size size, {
     Offset origin = Offset.zero,
@@ -430,6 +443,10 @@ class Scene3DComponent({
         targetHeight,
         pixelScale,
         msaa.sampleCount,
+        world.hdrEnabled,
+        world.oitMode,
+        world.grabSceneColorEnabled,
+        world.renderDebugMode3D,
         bloomSettings?.threshold,
         bloomSettings?.softKnee,
         bloomSettings?.intensity,
@@ -443,6 +460,8 @@ class Scene3DComponent({
         postSettings?.vignetteSmoothness,
         postSettings?.tint,
         postSettings?.fxaa,
+        postSettings?.colorLut,
+        postSettings?.colorLutIntensity,
       ]);
       if (_retainedImage != null &&
           _retainedKey == nextKey &&
@@ -490,34 +509,16 @@ class Scene3DComponent({
     context
       ..cameraMask = cameraMask
       ..setCamera(_viewMatrix, _projectionMatrix);
+    world.syncContextOptions(context);
     RenderProfile.lap(RenderPhase.setup);
     world
       ..renderShadows(canvas)
       ..renderDepthNormals(canvas, targetWidth, targetHeight);
 
-    final bloomSettings = world.bloom;
-    final postSettings = world.postProcess;
-    final usePost =
-        device.backend.supportsTextureTargets &&
-        ((bloomSettings != null &&
-                bloomSettings.intensity > 0 &&
-                bloomSettings.radius > 0) ||
-            (postSettings != null && postSettings.isActive));
-
-    final Image image;
-    if (usePost) {
-      final texTarget = device.textureTarget(
-        targetWidth,
-        targetHeight,
-        GpuPixelFormat.rgba8888,
-        clearValue: device.clearValue,
-      );
-      device.beginTexturePass(texTarget, frontFace: context.frontFace);
-      world.renderScene(canvas);
-      context.flush();
-      device.endTexturePass();
-
-      if (isRetained) {
+    final usePost = world.needsPostCompositePass(device);
+    GpuRenderTarget? ownedTarget;
+    if (isRetained) {
+      if (usePost) {
         if (_retainedBloomTarget == null ||
             _retainedTargetW != targetWidth ||
             _retainedTargetH != targetHeight) {
@@ -529,23 +530,8 @@ class Scene3DComponent({
             clearValue: device.clearValue,
           );
         }
-        image = device.applyBloomFromTarget(
-          texTarget,
-          bloomSettings,
-          postProcess: postSettings,
-          depthNormalTexture: context.activeDepthNormalTexture,
-          outputTarget: _retainedBloomTarget,
-        );
+        ownedTarget = _retainedBloomTarget;
       } else {
-        image = device.applyBloomFromTarget(
-          texTarget,
-          bloomSettings,
-          postProcess: postSettings,
-          depthNormalTexture: context.activeDepthNormalTexture,
-        );
-      }
-    } else {
-      if (isRetained) {
         if (_retainedSceneTarget == null ||
             _retainedTargetW != targetWidth ||
             _retainedTargetH != targetHeight ||
@@ -561,21 +547,20 @@ class Scene3DComponent({
           );
           _retainedBloomTarget = null;
         }
-        device.beginOwnedPass(
-          _retainedSceneTarget!,
-          frontFace: context.frontFace,
-        );
-      } else {
-        device.beginPass(
-          Size(targetWidth.toDouble(), targetHeight.toDouble()),
-          msaaSampleCount: msaa.sampleCount,
-          frontFace: context.frontFace,
-        );
+        ownedTarget = _retainedSceneTarget;
       }
-      world.renderScene(canvas);
-      context.flush();
-      image = device.endPass();
     }
+
+    final image = world.executeWorldRenderPipeline(
+      device: device,
+      renderContext: context,
+      width: targetWidth,
+      height: targetHeight,
+      msaaSampleCount: msaa.sampleCount,
+      clearValue: device.clearValue,
+      ownedOutputTarget: ownedTarget,
+      recordDraws: () => world.renderScene(canvas),
+    );
 
     _subtract(device.stats, _statsBefore, _stats);
     if (closeFrame) {
@@ -799,8 +784,8 @@ class Scene3DComponent({
       ..instances = after.instances - before.instances
       ..triangles = after.triangles - before.triangles
       ..pipelineChanges = after.pipelineChanges - before.pipelineChanges
-      ..stateChanges = after.stateChanges - before.stateChanges
       ..materialChanges = after.materialChanges - before.materialChanges
+      ..stateChanges = after.stateChanges - before.stateChanges
       ..uniformUploads = after.uniformUploads - before.uniformUploads
       ..uploadedBytes = after.uploadedBytes - before.uploadedBytes
       ..particles = after.particles - before.particles

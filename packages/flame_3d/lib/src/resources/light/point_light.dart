@@ -8,7 +8,8 @@ import 'package:flame_3d/resources.dart';
 /// nothing at that distance: `intensity * (1 - d / range)²`, and does not
 /// reach further.
 ///
-/// At most `RenderContext3D.maxPointLights` point lights are used per scene.
+/// When [shadows] is non-null, omnidirectional Dual-Paraboloid (`+Z` and `-Z`
+/// hemisphere) shadow tiles are rendered into the unified `ShadowAtlas3D`.
 /// {@endtemplate}
 class PointLight({
   required super.color,
@@ -17,4 +18,7 @@ class PointLight({
   /// The distance at which the light fades out, or `null` (or a value that is
   /// not above zero) for an inverse-square falloff.
   var double? range,
+
+  /// Optional omnidirectional Dual-Paraboloid shadow settings.
+  var ShadowSettings? shadows,
 }) extends LightSource;

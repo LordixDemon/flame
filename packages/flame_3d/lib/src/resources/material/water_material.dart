@@ -7,7 +7,8 @@ import 'package:flame_3d/resources.dart';
 /// {@template water_material}
 /// Animated 4-wave Gerstner GPU water material with scrolling micro-ripples,
 /// shallow/deep color gradient, crest foam, Fresnel sky reflection, sun/point
-/// specular glints, directional PCF shadow reception, and [FogSettings].
+/// specular glints, directional PCF shadow reception, Grab-Pass underwater
+/// screen-space refraction, and [FogSettings].
 ///
 /// Works in both `+Y`-up (`upAxis: Vector3(0, 1, 0)`) and `+Z`-up
 /// (`upAxis: Vector3(0, 0, 1)`) worlds. Advance [time] each frame to animate.
@@ -34,6 +35,10 @@ class WaterMaterial({
   /// where opaque scene geometry meets the water surface when
   /// `World3D.depthPrepassEnabled` is active).
   var double shoreFoamDepth = 0.0,
+
+  /// Screen-UV offset multiplier applied when `World3D.grabSceneColorEnabled`
+  /// refracts opaque underwater geometry.
+  var double refractionStrength = 0.04,
 }) extends Material {
   /// {@macro water_material}
   this
@@ -50,6 +55,8 @@ class WaterMaterial({
             RenderContext3D.shadowMapSampler,
             RenderContext3D.depthNormalSampler,
             RenderContext3D.depthNormalBlock,
+            RenderContext3D.sceneColorSampler,
+            RenderContext3D.sceneColorBlock,
           ],
         ),
       ) {
@@ -107,7 +114,7 @@ class WaterMaterial({
       )
       ..setVector4(
         'WaterMaterial.shoreParams',
-        _shoreVec..setValues(shoreFoamDepth, 0, 0, 0),
+        _shoreVec..setValues(shoreFoamDepth, refractionStrength, 0, 0),
       );
   }
 }

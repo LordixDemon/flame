@@ -25,6 +25,9 @@ abstract class Object3D({
   super.scale,
   super.rotation,
   super.children,
+  super.visible,
+  super.tags3D,
+  super.prefabId,
 
   /// Whether this object casts shadows, when the scene has a light that
   /// casts them (see [ShadowSettings]). It applies to this object's own
@@ -39,6 +42,9 @@ abstract class Object3D({
 
   @override
   void renderTree(Canvas canvas) {
+    if (!isEffectivelyVisible) {
+      return;
+    }
     final world = worldRef;
     assert(
       world.isRendering,
@@ -72,9 +78,20 @@ abstract class Object3D({
     _ancestorFullyInside = wasAncestorFullyInside;
     RenderProfile.lap(RenderPhase.traversal);
 
-    final visible = cullResult == CullResult.inside || isVisible(frustum);
+    final inFrustum = cullResult == CullResult.inside || isVisible(frustum);
     RenderProfile.lap(RenderPhase.culling);
-    if (visible && (castsShadows || !context.isShadowPass)) {
+    if (inFrustum) {
+      bind(context);
+    }
+  }
+
+  /// Binds and records this object's draws into [context] unless hidden by
+  /// [isEffectivelyVisible] or excluded from a shadow pass by [castsShadows].
+  void bind(RenderContext context) {
+    if (!isEffectivelyVisible) {
+      return;
+    }
+    if (castsShadows || context is! RenderContext3D || !context.isShadowPass) {
       draw(context);
     }
   }
@@ -90,13 +107,21 @@ abstract class Object3D({
   /// not drawn then.
   void draw(RenderContext context);
 
+  /// Whether this component should be culled for [frustum] (either because
+  /// [isEffectivelyVisible] is `false` or because its [aabb] is outside
+  /// [frustum]).
+  bool shouldCull(Frustum frustum) => !isVisible(frustum);
+
   /// Whether this component itself should be drawn when its [aabb] is not
   /// fully inside the camera's [frustum] (the light's view in a shadow
   /// pass).
   ///
-  /// The default implementation checks whether the world-space [aabb]
-  /// intersects the frustum, so a partially visible component is drawn.
+  /// Returns `false` immediately when [isEffectivelyVisible] is `false`.
+  /// Otherwise checks whether the world-space [aabb] intersects [frustum].
   bool isVisible(Frustum frustum) {
+    if (!isEffectivelyVisible) {
+      return false;
+    }
     return frustum.intersectsWithAabb3(aabb);
   }
 

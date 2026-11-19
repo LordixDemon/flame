@@ -75,6 +75,9 @@ class GraphicsDevice({
   bool _depthWrite = true;
   CullMode _cullMode = CullMode.none;
   WindingOrder _frontFace = WindingOrder.counterClockwise;
+  StencilState? _stencil;
+  PolygonFillMode _polygonMode = PolygonFillMode.fill;
+  PrimitiveTopology _topology = PrimitiveTopology.triangles;
 
   /// Incremented whenever the pass's bindings are cleared (by [clearBindings]
   /// or by binding a different pipeline), after which every resource of the
@@ -134,16 +137,6 @@ class GraphicsDevice({
   }
 
   /// Begin a render pass at the given [size], in physical pixels.
-  ///
-  /// The size is rounded to the nearest whole pixel (at least one). After
-  /// [beginPass] is called, resources can be bound. Call [endPass] to finalize
-  /// the pass and obtain the rendered [Image].
-  ///
-  /// [frontFace] is the winding order of front faces the pass starts with;
-  /// pass [WindingOrder.clockwise] when the camera mirrors the scene. It can be
-  /// changed per draw with [setFrontFace].
-  ///
-  /// Supported values for [msaaSampleCount] are `1` or `4`.
   void beginPass(
     Size size, {
     int msaaSampleCount = 1,
@@ -161,9 +154,6 @@ class GraphicsDevice({
 
   /// Begins a render pass into a caller-owned [target] (created with
   /// [GpuBackend.createRenderTarget]) instead of the shared rotating pool.
-  ///
-  /// The [Image] returned by [endPass] is backed by [target]'s own color
-  /// texture and is never overwritten by subsequent passes on other targets.
   void beginOwnedPass(
     GpuRenderTarget target, {
     WindingOrder frontFace = WindingOrder.counterClockwise,
@@ -188,6 +178,8 @@ class GraphicsDevice({
     PostProcessSettings? postProcess,
     Texture? depthNormalTexture,
     GpuRenderTarget? outputTarget,
+    bool hdrEnabled = false,
+    RenderDebugMode3D renderDebugMode = RenderDebugMode3D.none,
   }) {
     return _bloom.applyFromTarget(
       sceneTarget,
@@ -195,6 +187,8 @@ class GraphicsDevice({
       postProcess: postProcess,
       depthNormalTexture: depthNormalTexture,
       outputTarget: outputTarget,
+      hdrEnabled: hdrEnabled,
+      debugMode: renderDebugMode,
     );
   }
 
@@ -212,8 +206,8 @@ class GraphicsDevice({
       total += perTarget * entry.value.length;
     }
     for (final key in _textureTargets.keys) {
-      final (w, h, _, _) = key;
-      total += w * h * 8;
+      final (w, h, fmt, _) = key;
+      total += w * h * (fmt.bytesPerBlock + 4);
     }
     return total;
   }
@@ -243,6 +237,9 @@ class GraphicsDevice({
     _depthWrite = true;
     _cullMode = CullMode.none;
     _frontFace = WindingOrder.counterClockwise;
+    _stencil = null;
+    _polygonMode = PolygonFillMode.fill;
+    _topology = PrimitiveTopology.triangles;
     if (frontFace != _frontFace) {
       renderPass.setWindingOrder(frontFace);
       _frontFace = frontFace;
@@ -251,8 +248,6 @@ class GraphicsDevice({
   }
 
   /// Submit the render pass to the GPU and return the rendered [Image].
-  ///
-  /// The caller owns the image and should dispose it once it has been drawn.
   Image endPass() {
     final renderPass = _pass;
     RenderProfile.lap(RenderPhase.release);
@@ -265,14 +260,7 @@ class GraphicsDevice({
   }
 
   /// The render target of [width]x[height] pixels that renders into a
-  /// texture of [format] for later passes to sample (a shadow map, for
-  /// instance), see [GpuTextureTarget].
-  ///
-  /// It is created on first use and kept: every call with the same size and
-  /// format returns the same target, until a frame ends in which it was not
-  /// used for [targetRetainFrames] frames. Throws an [UnsupportedError] when
-  /// the backend cannot render into textures, see
-  /// [GpuBackend.supportsTextureTargets].
+  /// texture of [format] for later passes to sample.
   GpuTextureTarget textureTarget(
     int width,
     int height,
@@ -307,9 +295,6 @@ class GraphicsDevice({
   }
 
   /// Begin a render pass into [target], whose texture later passes sample.
-  ///
-  /// The texture and the depth are cleared first. Bind and draw as in any
-  /// pass, then call [endTexturePass]. [frontFace] is as for [beginPass].
   void beginTexturePass(
     GpuTextureTarget target, {
     WindingOrder frontFace = WindingOrder.counterClockwise,
@@ -323,9 +308,6 @@ class GraphicsDevice({
   }
 
   /// Submit the pass begun by [beginTexturePass] to the GPU.
-  ///
-  /// The passes of a device run on the GPU in the order they end, so the
-  /// passes that follow can sample the texture of its target.
   void endTexturePass() {
     final renderPass = _pass;
     RenderProfile.lap(RenderPhase.release);
@@ -359,9 +341,6 @@ class GraphicsDevice({
   }
 
   /// Bind [pipeline].
-  ///
-  /// Binding a different pipeline clears every binding of the pass first, see
-  /// [bindingEpoch]. Returns whether the pipeline changed.
   bool bindPipeline(DevicePipeline pipeline) {
     final gpuPipeline = pipeline.pipeline;
     if (identical(gpuPipeline, _pipeline)) {
@@ -379,9 +358,8 @@ class GraphicsDevice({
     return true;
   }
 
-  /// Apply the blending, depth and culling of [state] to the following draws.
-  ///
-  /// Only the parts that differ from the current state are changed.
+  /// Apply the blending, depth, stencil, polygon mode and culling of [state]
+  /// to the following draws.
   void setRenderState(RenderState state) {
     final renderPass = _pass;
     if (state.blend != _blend) {
@@ -402,6 +380,64 @@ class GraphicsDevice({
     if (state.cullMode != _cullMode) {
       renderPass.setCullMode(state.cullMode);
       _cullMode = state.cullMode;
+      stats.stateChanges++;
+    }
+    if (state.stencil != _stencil) {
+      renderPass.setStencil(state.stencil);
+      _stencil = state.stencil;
+      stats.stateChanges++;
+    }
+    if (state.polygonMode != _polygonMode) {
+      renderPass.setPolygonMode(state.polygonMode);
+      _polygonMode = state.polygonMode;
+      stats.stateChanges++;
+    }
+  }
+
+  /// Sets the viewport rectangle and depth range `[zNear, zFar]` inside the
+  /// current render pass.
+  void setViewport(
+    int x,
+    int y,
+    int width,
+    int height, {
+    double zNear = 0.0,
+    double zFar = 1.0,
+  }) {
+    _pass.setViewport(x, y, width, height, zNear: zNear, zFar: zFar);
+    stats.stateChanges++;
+  }
+
+  /// Sets the pixel scissor clip rectangle inside the current render pass.
+  void setScissor(int x, int y, int width, int height) {
+    _pass.setScissor(x, y, width, height);
+    stats.stateChanges++;
+  }
+
+  /// Sets the stencil state (`null` disables stencil testing and writes) in the
+  /// current render pass.
+  void setStencil(StencilState? stencil) {
+    if (stencil != _stencil) {
+      _pass.setStencil(stencil);
+      _stencil = stencil;
+      stats.stateChanges++;
+    }
+  }
+
+  /// Sets polygon fill or wireframe rasterization mode in the current pass.
+  void setPolygonMode(PolygonFillMode mode) {
+    if (mode != _polygonMode) {
+      _pass.setPolygonMode(mode);
+      _polygonMode = mode;
+      stats.stateChanges++;
+    }
+  }
+
+  /// Sets primitive assembly topology in the current pass.
+  void setPrimitiveTopology(PrimitiveTopology topology) {
+    if (topology != _topology) {
+      _pass.setPrimitiveTopology(topology);
+      _topology = topology;
       stats.stateChanges++;
     }
   }
@@ -444,8 +480,7 @@ class GraphicsDevice({
     RenderProfile.lap(RenderPhase.binding);
   }
 
-  /// Upload the first [count] instances of [instances] (each
-  /// [VertexLayout.instanceStrideInFloats] floats) and bind them as the
+  /// Upload the first [count] instances of [instances] and bind them as the
   /// instance buffer.
   void bindInstances(Float32List instances, int count) {
     final floats = count * VertexLayout.instanceStrideInFloats;
@@ -464,11 +499,7 @@ class GraphicsDevice({
   }
 
   /// Upload the instances `order[start]` to `order[start + count - 1]` of
-  /// [instances] (each [VertexLayout.instanceStrideInFloats] floats), in that
-  /// order, and bind them as the instance buffer.
-  ///
-  /// It is [bindInstances] of the instances gathered together, without
-  /// gathering them first.
+  /// [instances], in that order, and bind them as the instance buffer.
   @internal
   void bindInstancesOf(
     Float32List instances,
@@ -500,11 +531,20 @@ class GraphicsDevice({
 
   /// Draw the bound [surface] [instanceCount] times.
   void drawSurface(Surface surface, {int instanceCount = 1}) {
+    setPrimitiveTopology(surface.topology);
     _pass.drawIndexed(surface.indexCount, instanceCount: instanceCount);
+    final trisPerInstance = switch (surface.topology) {
+      PrimitiveTopology.triangles => surface.indexCount ~/ 3,
+      PrimitiveTopology.triangleStrip =>
+        surface.indexCount >= 3 ? surface.indexCount - 2 : 0,
+      PrimitiveTopology.lines ||
+      PrimitiveTopology.lineStrip ||
+      PrimitiveTopology.points => 0,
+    };
     stats
       ..drawCalls += 1
       ..instances += instanceCount
-      ..triangles += surface.indexCount ~/ 3 * instanceCount;
+      ..triangles += trisPerInstance * instanceCount;
   }
 
   /// Bind a [surface]'s geometry (vertex/index buffers) and draw it once.
@@ -562,9 +602,6 @@ class GraphicsDevice({
   }
 
   /// Acquire a render target from the pool, creating one if needed.
-  ///
-  /// Multiple passes at the same size within a frame get distinct targets.
-  /// Targets are reused across frames.
   GpuRenderTarget _acquireRenderTarget(Size size, int msaaSampleCount) {
     final key = (
       _pixels(size.width),
@@ -579,7 +616,6 @@ class GraphicsDevice({
       return targets[index];
     }
 
-    // Pool exhausted for this size — create a new target.
     final target = backend.createRenderTarget(
       width: key.$1,
       height: key.$2,
@@ -592,7 +628,6 @@ class GraphicsDevice({
     return target;
   }
 
-  /// Rounds a size in pixels to a whole number of at least one pixel.
   static int _pixels(double size) {
     final pixels = size.round();
     return pixels < 1 ? 1 : pixels;
@@ -646,8 +681,6 @@ class DevicePipeline._(
     }
 
     if (inputs == null) {
-      // Without reflection, assume the shader reads the whole layout and every
-      // instance input, in that order (as the built-in shaders do).
       for (final (index, attribute) in layout.attributes.indexed) {
         vertexAttributes.add(
           GpuVertexAttribute(
@@ -736,13 +769,8 @@ class _TransientBlock(final GpuBuffer buffer, final int capacity) {
   late final Uint8List staging = Uint8List(capacity);
   late final Float32List floats = staging.buffer.asFloat32List();
 
-  /// Bytes allocated this frame.
   int used = 0;
-
-  /// Bytes already uploaded to [buffer].
   int flushed = 0;
-
-  /// The offset of the latest allocation.
   int lastOffset = 0;
 
   void flush() {
@@ -759,11 +787,7 @@ class _TransientBlock(final GpuBuffer buffer, final int capacity) {
 /// The transient blocks used by one frame.
 class _FrameUploads() {
   final List<_TransientBlock> blocks = [];
-
-  /// The number of passes submitted but not completed yet.
   int pendingPasses = 0;
-
-  /// Whether the frame ended, so no more passes will use its blocks.
   bool ended = false;
 }
 
@@ -778,8 +802,6 @@ class _TransientArena(final GpuBackend _backend) {
   _FrameUploads _frame = _FrameUploads();
   _TransientBlock? _current;
 
-  /// Reserves [size] bytes aligned to [alignment] and returns the block they
-  /// are in, with [_TransientBlock.lastOffset] set to their offset.
   _TransientBlock allocate(int size, int alignment) {
     var block = _current;
     if (block != null) {
@@ -821,14 +843,12 @@ class _TransientArena(final GpuBackend _backend) {
     );
   }
 
-  /// Uploads the data allocated since the last flush.
   void flush() {
     for (final block in _frame.blocks) {
       block.flush();
     }
   }
 
-  /// The callback a pass calls once the GPU completed it.
   void Function() passCompletion() {
     final frame = _frame;
     frame.pendingPasses++;
@@ -840,7 +860,6 @@ class _TransientArena(final GpuBackend _backend) {
     };
   }
 
-  /// Ends the frame: its blocks are recycled once all its passes completed.
   void endFrame() {
     final frame = _frame..ended = true;
     if (frame.pendingPasses == 0) {

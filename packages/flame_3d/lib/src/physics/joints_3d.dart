@@ -568,6 +568,1367 @@ class HingeJoint3D({
   }
 }
 
+/// 0-DOF weld joint locking both the relative 3D anchor position and the
+/// relative 3D orientation between [bodyA] and [bodyB].
+class FixedJoint3D({
+  required super.bodyA,
+  required super.bodyB,
+  Vector3? localAnchorA,
+  Vector3? localAnchorB,
+  Quaternion? referenceRotation,
+  super.collideConnected,
+}) extends Joint3D {
+  this {
+    if (localAnchorA == null && localAnchorB == null) {
+      // Lock the two bodies at their current relative pose around the midpoint.
+      final mid = (bodyA.bodyPosition + bodyB.bodyPosition)..scale(0.5);
+      _unrotateQuat(bodyA.bodyRotation, mid - bodyA.bodyPosition, _anchorA);
+      _unrotateQuat(bodyB.bodyRotation, mid - bodyB.bodyPosition, _anchorB);
+    } else {
+      if (localAnchorA != null) {
+        _anchorA.setFrom(localAnchorA);
+      }
+      if (localAnchorB != null) {
+        _anchorB.setFrom(localAnchorB);
+      }
+    }
+    if (referenceRotation != null) {
+      _qRef
+        ..setFrom(referenceRotation)
+        ..normalize();
+    } else {
+      _quatMulConjA(bodyA.bodyRotation, bodyB.bodyRotation, _qRef);
+    }
+  }
+
+  final Vector3 _anchorA = Vector3.zero();
+  final Vector3 _anchorB = Vector3.zero();
+  final Quaternion _qRef = Quaternion.identity();
+
+  /// Anchor point in [bodyA]'s local space.
+  Vector3 get localAnchorA => _anchorA;
+
+  /// Anchor point in [bodyB]'s local space.
+  Vector3 get localAnchorB => _anchorB;
+
+  /// Target relative orientation `qA^-1 * qB`.
+  Quaternion get referenceRotation => _qRef;
+
+  final Vector3 _wA = Vector3.zero();
+  final Vector3 _wB = Vector3.zero();
+  final Vector3 _rA = Vector3.zero();
+  final Vector3 _rB = Vector3.zero();
+  final Matrix3 _linearMass = Matrix3.zero();
+  final Matrix3 _angularMass = Matrix3.zero();
+  final Vector3 _linearBias = Vector3.zero();
+  final Vector3 _angularBias = Vector3.zero();
+  final Vector3 _rhs = Vector3.zero();
+  final Vector3 _imp = Vector3.zero();
+  final Vector3 _scratch = Vector3.zero();
+  final Quaternion _qTarget = Quaternion.identity();
+  final Quaternion _qErr = Quaternion.identity();
+
+  @override
+  void prepare(double dt) {
+    _computeWorldAnchorAndLever(bodyA, _anchorA, _wA, _rA);
+    _computeWorldAnchorAndLever(bodyB, _anchorB, _wB, _rB);
+    _buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _linearMass);
+    _buildAngularInvK(bodyA, bodyB, _angularMass);
+
+    final invDt = dt > 1e-9 ? 1.0 / dt : 0.0;
+    const betaLin = 0.22;
+    _linearBias.setValues(
+      (_wB.x - _wA.x) * betaLin * invDt,
+      (_wB.y - _wA.y) * betaLin * invDt,
+      (_wB.z - _wA.z) * betaLin * invDt,
+    );
+
+    _computeWorldRotationError(
+      bodyA.bodyRotation,
+      bodyB.bodyRotation,
+      _qRef,
+      _qTarget,
+      _qErr,
+      _angularBias,
+    );
+    _angularBias.scale(0.25 * invDt);
+  }
+
+  @override
+  void solveVelocity(double dt) {
+    // 1. 3-DOF linear lock.
+    _relVel3(bodyA, _rA, bodyB, _rB, _rhs);
+    _rhs.add(_linearBias);
+    _mulMat3Neg(_linearMass, _rhs, _imp);
+    _applyLinearPairImpulse(
+      bodyA,
+      _rA,
+      bodyB,
+      _rB,
+      _imp.x,
+      _imp.y,
+      _imp.z,
+      _scratch,
+    );
+
+    // 2. 3-DOF angular lock.
+    _rhs.setValues(
+      (bodyB.angularVelocity.x - bodyA.angularVelocity.x) + _angularBias.x,
+      (bodyB.angularVelocity.y - bodyA.angularVelocity.y) + _angularBias.y,
+      (bodyB.angularVelocity.z - bodyA.angularVelocity.z) + _angularBias.z,
+    );
+    _mulMat3Neg(_angularMass, _rhs, _imp);
+    _applyAngularPairImpulse(
+      bodyA,
+      bodyB,
+      _imp.x,
+      _imp.y,
+      _imp.z,
+      _scratch,
+    );
+  }
+
+  @override
+  void solvePosition() {
+    _computeWorldAnchorAndLever(bodyA, _anchorA, _wA, _rA);
+    _computeWorldAnchorAndLever(bodyB, _anchorB, _wB, _rB);
+    final ex = _wB.x - _wA.x;
+    final ey = _wB.y - _wA.y;
+    final ez = _wB.z - _wA.z;
+    if (ex * ex + ey * ey + ez * ez > 1e-9) {
+      _buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _linearMass);
+      _rhs.setValues(ex * 0.45, ey * 0.45, ez * 0.45);
+      _mulMat3Neg(_linearMass, _rhs, _imp);
+      _applyPositionPairImpulse(
+        bodyA,
+        _rA,
+        bodyB,
+        _rB,
+        _imp.x,
+        _imp.y,
+        _imp.z,
+        _scratch,
+      );
+    }
+
+    _computeWorldRotationError(
+      bodyA.bodyRotation,
+      bodyB.bodyRotation,
+      _qRef,
+      _qTarget,
+      _qErr,
+      _rhs,
+    );
+    if (_rhs.length2 > 1e-9) {
+      _buildAngularInvK(bodyA, bodyB, _angularMass);
+      _rhs.scale(0.45);
+      _mulMat3Neg(_angularMass, _rhs, _imp);
+      _applyAngularPositionPairImpulse(
+        bodyA,
+        bodyB,
+        _imp.x,
+        _imp.y,
+        _imp.z,
+        _scratch,
+      );
+    }
+  }
+}
+
+/// 1-DOF prismatic slider joint permitting translation only along a local or
+/// world axis, with optional `[minDistance..maxDistance]` translational stops
+/// and a force-limited linear motor (`motorSpeed`, `maxMotorForce`).
+class SliderJoint3D({
+  required super.bodyA,
+  required super.bodyB,
+  Vector3? localAnchorA,
+  Vector3? localAnchorB,
+  Vector3? localAxisA,
+  Vector3? worldAxis,
+  Quaternion? referenceRotation,
+  var double? minDistance,
+  var double? maxDistance,
+  var double motorSpeed = 0.0,
+  var double maxMotorForce = 0.0,
+  super.collideConnected,
+}) extends Joint3D {
+  this
+    : assert(
+        minDistance == null ||
+            maxDistance == null ||
+            minDistance <= maxDistance,
+        'minDistance must be <= maxDistance',
+      ),
+      assert(maxMotorForce >= 0, 'maxMotorForce must be non-negative') {
+    if (worldAxis != null && worldAxis.length2 > 1e-12) {
+      final unitW = worldAxis.normalized();
+      _unrotateQuat(bodyA.bodyRotation, unitW, _axisA);
+      _axisA.normalize();
+    } else if (localAxisA != null && localAxisA.length2 > 1e-12) {
+      _axisA
+        ..setFrom(localAxisA)
+        ..normalize();
+    } else {
+      _axisA.setValues(1.0, 0.0, 0.0);
+    }
+
+    if (referenceRotation != null) {
+      _qRef
+        ..setFrom(referenceRotation)
+        ..normalize();
+    } else {
+      _quatMulConjA(bodyA.bodyRotation, bodyB.bodyRotation, _qRef);
+    }
+  }
+
+  /// Anchor point in [bodyA]'s local space.
+  final Vector3 localAnchorA = localAnchorA?.clone() ?? Vector3.zero();
+
+  /// Anchor point in [bodyB]'s local space.
+  final Vector3 localAnchorB = localAnchorB?.clone() ?? Vector3.zero();
+
+  final Vector3 _axisA = Vector3(1.0, 0.0, 0.0);
+  final Quaternion _qRef = Quaternion.identity();
+
+  /// Unit slider axis in [bodyA]'s local space.
+  Vector3 get localAxisA => _axisA;
+
+  final Vector3 _wA = Vector3.zero();
+  final Vector3 _wB = Vector3.zero();
+  final Vector3 _rA = Vector3.zero();
+  final Vector3 _rAEff = Vector3.zero();
+  final Vector3 _rB = Vector3.zero();
+  final Vector3 _n1 = Vector3.zero();
+  final Vector3 _t1 = Vector3.zero();
+  final Vector3 _t2 = Vector3.zero();
+
+  final Matrix3 _angularMass = Matrix3.zero();
+  final Vector3 _angularBias = Vector3.zero();
+  double _transM00 = 0.0;
+  double _transM01 = 0.0;
+  double _transM11 = 0.0;
+  double _transBias0 = 0.0;
+  double _transBias1 = 0.0;
+
+  double _axialMass = 0.0;
+  double _motorAccum = 0.0;
+  double _maxMotorImpulse = 0.0;
+
+  int _limitState = 0; // -1 = lower, 0 = free, +1 = upper, 2 = locked
+  double _limitBias = 0.0;
+  double _limitAccum = 0.0;
+
+  final Vector3 _rhs = Vector3.zero();
+  final Vector3 _imp = Vector3.zero();
+  final Vector3 _scratch = Vector3.zero();
+  final Quaternion _qTarget = Quaternion.identity();
+  final Quaternion _qErr = Quaternion.identity();
+
+  /// Current signed translation (meters) along the world slider axis.
+  double get currentDistance {
+    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    _rotateQuat(bodyA.bodyRotation, _axisA, _n1);
+    return (_wB.x - _wA.x) * _n1.x +
+        (_wB.y - _wA.y) * _n1.y +
+        (_wB.z - _wA.z) * _n1.z;
+  }
+
+  /// Current relative speed (`m/s`) along the world slider axis.
+  double get currentSpeed {
+    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    _rotateQuat(bodyA.bodyRotation, _axisA, _n1);
+    _rAEff.setValues(
+      _rA.x + (_wB.x - _wA.x),
+      _rA.y + (_wB.y - _wA.y),
+      _rA.z + (_wB.z - _wA.z),
+    );
+    return _relVelAlongAxis(bodyA, _rAEff, bodyB, _rB, _n1);
+  }
+
+  @override
+  void prepare(double dt) {
+    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    final dx = _wB.x - _wA.x;
+    final dy = _wB.y - _wA.y;
+    final dz = _wB.z - _wA.z;
+    _rAEff.setValues(_rA.x + dx, _rA.y + dy, _rA.z + dz);
+
+    _rotateQuat(bodyA.bodyRotation, _axisA, _n1);
+    _buildOrthonormalBasis(_n1, _t1, _t2);
+
+    // 1. 3-DOF angular orientation lock.
+    _buildAngularInvK(bodyA, bodyB, _angularMass);
+    final invDt = dt > 1e-9 ? 1.0 / dt : 0.0;
+    _computeWorldRotationError(
+      bodyA.bodyRotation,
+      bodyB.bodyRotation,
+      _qRef,
+      _qTarget,
+      _qErr,
+      _angularBias,
+    );
+    _angularBias.scale(0.25 * invDt);
+
+    // 2. 2-DOF transverse linear lock perpendicular to `_n1`.
+    final k00 = _computeLinearAxisK(bodyA, _rAEff, bodyB, _rB, _t1, _scratch);
+    final k11 = _computeLinearAxisK(bodyA, _rAEff, bodyB, _rB, _t2, _scratch);
+    final k01 = _computeLinearCoupledK(
+      bodyA,
+      _rAEff,
+      bodyB,
+      _rB,
+      _t1,
+      _t2,
+      _scratch,
+    );
+    final det = k00 * k11 - k01 * k01;
+    if (det.abs() > 1e-14) {
+      final invDet = 1.0 / det;
+      _transM00 = k11 * invDet;
+      _transM01 = -k01 * invDet;
+      _transM11 = k00 * invDet;
+    } else {
+      _transM00 = 0.0;
+      _transM01 = 0.0;
+      _transM11 = 0.0;
+    }
+    const betaLin = 0.22;
+    _transBias0 = (dx * _t1.x + dy * _t1.y + dz * _t1.z) * betaLin * invDt;
+    _transBias1 = (dx * _t2.x + dy * _t2.y + dz * _t2.z) * betaLin * invDt;
+
+    // 3. Axial motor & translational limits along `_n1`.
+    final kAxial = _computeLinearAxisK(
+      bodyA,
+      _rAEff,
+      bodyB,
+      _rB,
+      _n1,
+      _scratch,
+    );
+    _axialMass = kAxial > 1e-12 ? 1.0 / kAxial : 0.0;
+    _motorAccum = 0.0;
+    _maxMotorImpulse = maxMotorForce * math.max(0.0, dt);
+
+    _limitState = 0;
+    _limitBias = 0.0;
+    _limitAccum = 0.0;
+    if (minDistance != null || maxDistance != null) {
+      final dist = dx * _n1.x + dy * _n1.y + dz * _n1.z;
+      final lo = minDistance;
+      final hi = maxDistance;
+      if (lo != null && hi != null && (hi - lo).abs() < 1e-4) {
+        _limitState = 2;
+        _limitBias = (dist - lo) * betaLin * invDt;
+      } else if (lo != null && dist <= lo) {
+        _limitState = -1;
+        _limitBias = (dist - lo) * betaLin * invDt;
+      } else if (hi != null && dist >= hi) {
+        _limitState = 1;
+        _limitBias = (dist - hi) * betaLin * invDt;
+      }
+    }
+  }
+
+  @override
+  void solveVelocity(double dt) {
+    // 1. 3-DOF angular orientation lock.
+    _rhs.setValues(
+      (bodyB.angularVelocity.x - bodyA.angularVelocity.x) + _angularBias.x,
+      (bodyB.angularVelocity.y - bodyA.angularVelocity.y) + _angularBias.y,
+      (bodyB.angularVelocity.z - bodyA.angularVelocity.z) + _angularBias.z,
+    );
+    _mulMat3Neg(_angularMass, _rhs, _imp);
+    _applyAngularPairImpulse(
+      bodyA,
+      bodyB,
+      _imp.x,
+      _imp.y,
+      _imp.z,
+      _scratch,
+    );
+
+    // 2. 2-DOF transverse linear lock.
+    final vT1 = _relVelAlongAxis(bodyA, _rAEff, bodyB, _rB, _t1) + _transBias0;
+    final vT2 = _relVelAlongAxis(bodyA, _rAEff, bodyB, _rB, _t2) + _transBias1;
+    final l0 = -(_transM00 * vT1 + _transM01 * vT2);
+    final l1 = -(_transM01 * vT1 + _transM11 * vT2);
+    _applyLinearPairImpulse(
+      bodyA,
+      _rAEff,
+      bodyB,
+      _rB,
+      _t1.x * l0 + _t2.x * l1,
+      _t1.y * l0 + _t2.y * l1,
+      _t1.z * l0 + _t2.z * l1,
+      _scratch,
+    );
+
+    // 3. Axial motor impulse (`maxMotorForce`).
+    if (_maxMotorImpulse > 0.0 && _axialMass > 0.0 && _limitState != 2) {
+      final vAxial = _relVelAlongAxis(bodyA, _rAEff, bodyB, _rB, _n1);
+      var dMotor = _axialMass * (motorSpeed - vAxial);
+      final prev = _motorAccum;
+      _motorAccum = (prev + dMotor).clamp(-_maxMotorImpulse, _maxMotorImpulse);
+      dMotor = _motorAccum - prev;
+      if (dMotor.abs() > 1e-12) {
+        _applyLinearPairImpulse(
+          bodyA,
+          _rAEff,
+          bodyB,
+          _rB,
+          _n1.x * dMotor,
+          _n1.y * dMotor,
+          _n1.z * dMotor,
+          _scratch,
+        );
+      }
+    }
+
+    // 4. Axial translational limits.
+    if (_limitState != 0 && _axialMass > 0.0) {
+      final vAxial = _relVelAlongAxis(bodyA, _rAEff, bodyB, _rB, _n1);
+      var dLambda = -_axialMass * (vAxial + _limitBias);
+      if (_limitState == -1) {
+        final prev = _limitAccum;
+        _limitAccum = math.max(0.0, prev + dLambda);
+        dLambda = _limitAccum - prev;
+      } else if (_limitState == 1) {
+        final prev = _limitAccum;
+        _limitAccum = math.min(0.0, prev + dLambda);
+        dLambda = _limitAccum - prev;
+      } else {
+        _limitAccum += dLambda;
+      }
+      if (dLambda.abs() > 1e-12) {
+        _applyLinearPairImpulse(
+          bodyA,
+          _rAEff,
+          bodyB,
+          _rB,
+          _n1.x * dLambda,
+          _n1.y * dLambda,
+          _n1.z * dLambda,
+          _scratch,
+        );
+      }
+    }
+  }
+
+  @override
+  void solvePosition() {
+    // 1. Orientation drift correction.
+    _computeWorldRotationError(
+      bodyA.bodyRotation,
+      bodyB.bodyRotation,
+      _qRef,
+      _qTarget,
+      _qErr,
+      _rhs,
+    );
+    if (_rhs.length2 > 1e-9) {
+      _buildAngularInvK(bodyA, bodyB, _angularMass);
+      _rhs.scale(0.45);
+      _mulMat3Neg(_angularMass, _rhs, _imp);
+      _applyAngularPositionPairImpulse(
+        bodyA,
+        bodyB,
+        _imp.x,
+        _imp.y,
+        _imp.z,
+        _scratch,
+      );
+    }
+
+    // 2. Transverse & axial limit position drift correction.
+    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    final dx = _wB.x - _wA.x;
+    final dy = _wB.y - _wA.y;
+    final dz = _wB.z - _wA.z;
+    _rAEff.setValues(_rA.x + dx, _rA.y + dy, _rA.z + dz);
+    _rotateQuat(bodyA.bodyRotation, _axisA, _n1);
+    _buildOrthonormalBasis(_n1, _t1, _t2);
+
+    final e0 = dx * _t1.x + dy * _t1.y + dz * _t1.z;
+    final e1 = dx * _t2.x + dy * _t2.y + dz * _t2.z;
+    if (e0 * e0 + e1 * e1 > 1e-9) {
+      final k00 = _computeLinearAxisK(bodyA, _rAEff, bodyB, _rB, _t1, _scratch);
+      final k11 = _computeLinearAxisK(bodyA, _rAEff, bodyB, _rB, _t2, _scratch);
+      final k01 = _computeLinearCoupledK(
+        bodyA,
+        _rAEff,
+        bodyB,
+        _rB,
+        _t1,
+        _t2,
+        _scratch,
+      );
+      final det = k00 * k11 - k01 * k01;
+      if (det.abs() > 1e-14) {
+        final invDet = 1.0 / det;
+        final c0 = e0 * 0.45;
+        final c1 = e1 * 0.45;
+        final l0 = -(k11 * invDet * c0 - k01 * invDet * c1);
+        final l1 = -(-k01 * invDet * c0 + k00 * invDet * c1);
+        _applyPositionPairImpulse(
+          bodyA,
+          _rAEff,
+          bodyB,
+          _rB,
+          _t1.x * l0 + _t2.x * l1,
+          _t1.y * l0 + _t2.y * l1,
+          _t1.z * l0 + _t2.z * l1,
+          _scratch,
+        );
+      }
+    }
+
+    if (minDistance != null || maxDistance != null) {
+      _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+      _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+      final ndx = _wB.x - _wA.x;
+      final ndy = _wB.y - _wA.y;
+      final ndz = _wB.z - _wA.z;
+      _rAEff.setValues(_rA.x + ndx, _rA.y + ndy, _rA.z + ndz);
+      _rotateQuat(bodyA.bodyRotation, _axisA, _n1);
+      final dist = ndx * _n1.x + ndy * _n1.y + ndz * _n1.z;
+      var axialErr = 0.0;
+      if (minDistance != null && dist < minDistance!) {
+        axialErr = dist - minDistance!;
+      } else if (maxDistance != null && dist > maxDistance!) {
+        axialErr = dist - maxDistance!;
+      }
+      if (axialErr.abs() > 1e-4) {
+        final k = _computeLinearAxisK(bodyA, _rAEff, bodyB, _rB, _n1, _scratch);
+        if (k > 1e-12) {
+          final lambda = -(axialErr * 0.5) / k;
+          _applyPositionPairImpulse(
+            bodyA,
+            _rAEff,
+            bodyB,
+            _rB,
+            _n1.x * lambda,
+            _n1.y * lambda,
+            _n1.z * lambda,
+            _scratch,
+          );
+        }
+      }
+    }
+  }
+}
+
+/// Articulated spherical ragdoll joint combining a 3-DOF ball-and-socket anchor
+/// with a gimbal-lock-free swing cone half-angle limit ([swingLimitRad]) and
+/// twist angle limits (`[minTwistRad..maxTwistRad]`).
+class ConeTwistJoint3D({
+  required super.bodyA,
+  required super.bodyB,
+  Vector3? localAnchorA,
+  Vector3? localAnchorB,
+  Vector3? localAxisA,
+  Vector3? localAxisB,
+  var double swingLimitRad = 0.7853981633974483,
+  var double minTwistRad = -0.5235987755982988,
+  var double maxTwistRad = 0.5235987755982988,
+  super.collideConnected,
+}) extends Joint3D {
+  this
+    : assert(swingLimitRad >= 0, 'swingLimitRad must be non-negative'),
+      assert(minTwistRad <= maxTwistRad, 'minTwistRad must be <= maxTwistRad') {
+    final axA = (localAxisA?.clone() ?? Vector3(1.0, 0.0, 0.0))..normalize();
+    _quatFromXAxis(axA, _qFrameA);
+
+    if (localAxisB == null) {
+      // Align joint frame B with joint frame A in the initial world pose so
+      // both `swingAngle == 0` and `twistAngle == 0` at rest.
+      final qWorldA = bodyA.bodyRotation * _qFrameA;
+      _quatMulConjA(bodyB.bodyRotation, qWorldA, _qFrameB);
+    } else {
+      final axB = localAxisB.normalized();
+      // Build frame B around `axB`, choosing its Y/Z reference from frame A's
+      // initial world Y-axis so initial twist error is minimal.
+      final qWorldA = bodyA.bodyRotation * _qFrameA;
+      final worldRefY = Vector3.zero();
+      final localRefY = Vector3.zero();
+      _rotateQuat(qWorldA, Vector3(0.0, 1.0, 0.0), worldRefY);
+      _unrotateQuat(bodyB.bodyRotation, worldRefY, localRefY);
+      _quatFromXAndRefY(axB, localRefY, _qFrameB);
+    }
+  }
+
+  /// Anchor point in [bodyA]'s local space.
+  final Vector3 localAnchorA = localAnchorA?.clone() ?? Vector3.zero();
+
+  /// Anchor point in [bodyB]'s local space.
+  final Vector3 localAnchorB = localAnchorB?.clone() ?? Vector3.zero();
+
+  final Quaternion _qFrameA = Quaternion.identity();
+  final Quaternion _qFrameB = Quaternion.identity();
+
+  final Vector3 _wA = Vector3.zero();
+  final Vector3 _wB = Vector3.zero();
+  final Vector3 _rA = Vector3.zero();
+  final Vector3 _rB = Vector3.zero();
+  final Matrix3 _linearMass = Matrix3.zero();
+  final Vector3 _linearBias = Vector3.zero();
+
+  final Quaternion _qWorldA = Quaternion.identity();
+  final Quaternion _qWorldB = Quaternion.identity();
+  final Quaternion _qRel = Quaternion.identity();
+  final Vector3 _swingAxisWorld = Vector3.zero();
+  final Vector3 _twistAxisWorld = Vector3.zero();
+
+  bool _swingActive = false;
+  double _swingMass = 0.0;
+  double _swingBias = 0.0;
+  double _swingAccum = 0.0;
+
+  int _twistState = 0; // -1 = lower, 0 = free, +1 = upper, 2 = locked
+  double _twistMass = 0.0;
+  double _twistBias = 0.0;
+  double _twistAccum = 0.0;
+
+  final Vector3 _rhs = Vector3.zero();
+  final Vector3 _imp = Vector3.zero();
+  final Vector3 _scratch = Vector3.zero();
+
+  /// Current swing cone angle (in `[0..pi]` radians) between the two joint
+  /// twist axes.
+  double get swingAngle {
+    final (swing, _) = _decomposeSwingTwist();
+    return swing;
+  }
+
+  /// Current signed twist angle (in `[-pi..pi]` radians) around the cone axis.
+  double get twistAngle {
+    final (_, twist) = _decomposeSwingTwist();
+    return twist;
+  }
+
+  (double swing, double twist) _decomposeSwingTwist() {
+    _quatMul(bodyA.bodyRotation, _qFrameA, _qWorldA);
+    _quatMul(bodyB.bodyRotation, _qFrameB, _qWorldB);
+    _quatMulConjA(_qWorldA, _qWorldB, _qRel);
+    if (_qRel.w < 0.0) {
+      _qRel.setValues(-_qRel.x, -_qRel.y, -_qRel.z, -_qRel.w);
+    }
+
+    // Twist around local +X `(1, 0, 0)`: `qTwist = normalize(qx, 0, 0, qw)`.
+    var tx = _qRel.x;
+    var tw = _qRel.w;
+    final tLen = math.sqrt(tx * tx + tw * tw);
+    if (tLen > 1e-9) {
+      tx /= tLen;
+      tw /= tLen;
+    } else {
+      tx = 0.0;
+      tw = 1.0;
+    }
+    final twist = 2.0 * math.atan2(tx, tw);
+
+    // Pure swing `qSwing = qRel * conj(qTwist)` has zero X component:
+    // `sy = qRel.y * tw + qRel.z * tx`, `sz = qRel.z * tw - qRel.y * tx`,
+    // `sw = qRel.w * tw + qRel.x * tx`.
+    final sy = _qRel.y * tw + _qRel.z * tx;
+    final sz = _qRel.z * tw - _qRel.y * tx;
+    final sw = (_qRel.w * tw + _qRel.x * tx).clamp(-1.0, 1.0);
+    final sSin = math.sqrt(sy * sy + sz * sz);
+    final swing = 2.0 * math.atan2(sSin, sw);
+
+    if (sSin > 1e-8) {
+      _scratch.setValues(0.0, sy / sSin, sz / sSin);
+    } else {
+      _scratch.setValues(0.0, 1.0, 0.0);
+    }
+    _rotateQuat(_qWorldA, _scratch, _swingAxisWorld);
+
+    _scratch.setValues(1.0, 0.0, 0.0);
+    _rotateQuat(_qWorldA, _scratch, _twistAxisWorld);
+    return (swing, twist);
+  }
+
+  @override
+  void prepare(double dt) {
+    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    _buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _linearMass);
+
+    final invDt = dt > 1e-9 ? 1.0 / dt : 0.0;
+    const betaLin = 0.22;
+    _linearBias.setValues(
+      (_wB.x - _wA.x) * betaLin * invDt,
+      (_wB.y - _wA.y) * betaLin * invDt,
+      (_wB.z - _wA.z) * betaLin * invDt,
+    );
+
+    final (swing, twist) = _decomposeSwingTwist();
+    const betaAng = 0.25;
+
+    _swingActive = swing >= swingLimitRad;
+    _swingAccum = 0.0;
+    if (_swingActive) {
+      _sumInvInertiaMul(bodyA, bodyB, _swingAxisWorld, _scratch);
+      final kSwing = _swingAxisWorld.dot(_scratch);
+      _swingMass = kSwing > 1e-12 ? 1.0 / kSwing : 0.0;
+      _swingBias = math.max(0.0, swing - swingLimitRad) * betaAng * invDt;
+    } else {
+      _swingMass = 0.0;
+      _swingBias = 0.0;
+    }
+
+    _twistState = 0;
+    _twistAccum = 0.0;
+    _twistBias = 0.0;
+    _sumInvInertiaMul(bodyA, bodyB, _twistAxisWorld, _scratch);
+    final kTwist = _twistAxisWorld.dot(_scratch);
+    _twistMass = kTwist > 1e-12 ? 1.0 / kTwist : 0.0;
+    if ((maxTwistRad - minTwistRad).abs() < 1e-4) {
+      _twistState = 2;
+      _twistBias = (twist - minTwistRad) * betaAng * invDt;
+    } else if (twist <= minTwistRad) {
+      _twistState = -1;
+      _twistBias = (twist - minTwistRad) * betaAng * invDt;
+    } else if (twist >= maxTwistRad) {
+      _twistState = 1;
+      _twistBias = (twist - maxTwistRad) * betaAng * invDt;
+    }
+  }
+
+  @override
+  void solveVelocity(double dt) {
+    // 1. Ball-and-socket linear anchor lock.
+    _relVel3(bodyA, _rA, bodyB, _rB, _rhs);
+    _rhs.add(_linearBias);
+    _mulMat3Neg(_linearMass, _rhs, _imp);
+    _applyLinearPairImpulse(
+      bodyA,
+      _rA,
+      bodyB,
+      _rB,
+      _imp.x,
+      _imp.y,
+      _imp.z,
+      _scratch,
+    );
+
+    // 2. Swing cone half-angle limit (`swing <= swingLimitRad`).
+    if (_swingActive && _swingMass > 0.0) {
+      final dwSwing =
+          (bodyB.angularVelocity.x - bodyA.angularVelocity.x) *
+              _swingAxisWorld.x +
+          (bodyB.angularVelocity.y - bodyA.angularVelocity.y) *
+              _swingAxisWorld.y +
+          (bodyB.angularVelocity.z - bodyA.angularVelocity.z) *
+              _swingAxisWorld.z;
+      var dLambda = -_swingMass * (dwSwing + _swingBias);
+      final prev = _swingAccum;
+      _swingAccum = math.min(0.0, prev + dLambda);
+      dLambda = _swingAccum - prev;
+      if (dLambda.abs() > 1e-12) {
+        _applyAngularPairImpulse(
+          bodyA,
+          bodyB,
+          _swingAxisWorld.x * dLambda,
+          _swingAxisWorld.y * dLambda,
+          _swingAxisWorld.z * dLambda,
+          _scratch,
+        );
+      }
+    }
+
+    // 3. Twist min/max limits around cone axis.
+    if (_twistState != 0 && _twistMass > 0.0) {
+      final dwTwist =
+          (bodyB.angularVelocity.x - bodyA.angularVelocity.x) *
+              _twistAxisWorld.x +
+          (bodyB.angularVelocity.y - bodyA.angularVelocity.y) *
+              _twistAxisWorld.y +
+          (bodyB.angularVelocity.z - bodyA.angularVelocity.z) *
+              _twistAxisWorld.z;
+      var dLambda = -_twistMass * (dwTwist + _twistBias);
+      if (_twistState == -1) {
+        final prev = _twistAccum;
+        _twistAccum = math.max(0.0, prev + dLambda);
+        dLambda = _twistAccum - prev;
+      } else if (_twistState == 1) {
+        final prev = _twistAccum;
+        _twistAccum = math.min(0.0, prev + dLambda);
+        dLambda = _twistAccum - prev;
+      } else {
+        _twistAccum += dLambda;
+      }
+      if (dLambda.abs() > 1e-12) {
+        _applyAngularPairImpulse(
+          bodyA,
+          bodyB,
+          _twistAxisWorld.x * dLambda,
+          _twistAxisWorld.y * dLambda,
+          _twistAxisWorld.z * dLambda,
+          _scratch,
+        );
+      }
+    }
+  }
+
+  @override
+  void solvePosition() {
+    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    final ex = _wB.x - _wA.x;
+    final ey = _wB.y - _wA.y;
+    final ez = _wB.z - _wA.z;
+    if (ex * ex + ey * ey + ez * ez > 1e-9) {
+      _buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _linearMass);
+      _rhs.setValues(ex * 0.45, ey * 0.45, ez * 0.45);
+      _mulMat3Neg(_linearMass, _rhs, _imp);
+      _applyPositionPairImpulse(
+        bodyA,
+        _rA,
+        bodyB,
+        _rB,
+        _imp.x,
+        _imp.y,
+        _imp.z,
+        _scratch,
+      );
+    }
+
+    final (swing, twist) = _decomposeSwingTwist();
+    if (swing > swingLimitRad + 1e-4) {
+      _sumInvInertiaMul(bodyA, bodyB, _swingAxisWorld, _scratch);
+      final k = _swingAxisWorld.dot(_scratch);
+      if (k > 1e-12) {
+        final tau = -((swing - swingLimitRad) * 0.5) / k;
+        _applyAngularPositionPairImpulse(
+          bodyA,
+          bodyB,
+          _swingAxisWorld.x * tau,
+          _swingAxisWorld.y * tau,
+          _swingAxisWorld.z * tau,
+          _scratch,
+        );
+      }
+    }
+
+    var twistErr = 0.0;
+    if (twist < minTwistRad) {
+      twistErr = twist - minTwistRad;
+    } else if (twist > maxTwistRad) {
+      twistErr = twist - maxTwistRad;
+    }
+    if (twistErr.abs() > 1e-4) {
+      _sumInvInertiaMul(bodyA, bodyB, _twistAxisWorld, _scratch);
+      final k = _twistAxisWorld.dot(_scratch);
+      if (k > 1e-12) {
+        final tau = -(twistErr * 0.5) / k;
+        _applyAngularPositionPairImpulse(
+          bodyA,
+          bodyB,
+          _twistAxisWorld.x * tau,
+          _twistAxisWorld.y * tau,
+          _twistAxisWorld.z * tau,
+          _scratch,
+        );
+      }
+    }
+  }
+}
+
+/// Configurable 6-degree-of-freedom constraint with independent 3 linear and 3
+/// angular lower/upper limits (`lower == upper` locks, `lower < upper` bounds,
+/// `lower > upper` frees) plus unconditionally-stable implicit linear and
+/// angular spring stiffness and damping.
+class Generic6DofJoint3D({
+  required super.bodyA,
+  required super.bodyB,
+  Vector3? localAnchorA,
+  Vector3? localAnchorB,
+  Quaternion? localFrameA,
+  Quaternion? localFrameB,
+  Vector3? linearLowerLimit,
+  Vector3? linearUpperLimit,
+  Vector3? angularLowerLimit,
+  Vector3? angularUpperLimit,
+  Vector3? linearSpringStiffness,
+  Vector3? linearSpringDamping,
+  Vector3? angularSpringStiffness,
+  Vector3? angularSpringDamping,
+  Vector3? linearEquilibrium,
+  Vector3? angularEquilibrium,
+  super.collideConnected,
+}) extends Joint3D {
+  this {
+    if (localFrameA != null) {
+      _frameA
+        ..setFrom(localFrameA)
+        ..normalize();
+    }
+    if (localFrameB != null) {
+      _frameB
+        ..setFrom(localFrameB)
+        ..normalize();
+    } else {
+      final qWorldA = bodyA.bodyRotation * _frameA;
+      _quatMulConjA(bodyB.bodyRotation, qWorldA, _frameB);
+    }
+  }
+
+  /// Anchor point in [bodyA]'s local space.
+  final Vector3 localAnchorA = localAnchorA?.clone() ?? Vector3.zero();
+
+  /// Anchor point in [bodyB]'s local space.
+  final Vector3 localAnchorB = localAnchorB?.clone() ?? Vector3.zero();
+
+  final Quaternion _frameA = Quaternion.identity();
+  final Quaternion _frameB = Quaternion.identity();
+
+  /// Lower translational bounds `(x, y, z)` in joint frame `A`.
+  final Vector3 linearLowerLimit = linearLowerLimit?.clone() ?? Vector3.zero();
+
+  /// Upper translational bounds `(x, y, z)` in joint frame `A`.
+  final Vector3 linearUpperLimit = linearUpperLimit?.clone() ?? Vector3.zero();
+
+  /// Lower rotational bounds `(rx, ry, rz)` (radians) in joint frame `A`.
+  final Vector3 angularLowerLimit =
+      angularLowerLimit?.clone() ?? Vector3.zero();
+
+  /// Upper rotational bounds `(rx, ry, rz)` (radians) in joint frame `A`.
+  final Vector3 angularUpperLimit =
+      angularUpperLimit?.clone() ?? Vector3.zero();
+
+  /// Linear spring stiffness `(kx, ky, kz)` (`N/m`).
+  final Vector3 linearSpringStiffness =
+      linearSpringStiffness?.clone() ?? Vector3.zero();
+
+  /// Linear spring damping `(cx, cy, cz)` (`N*s/m`).
+  final Vector3 linearSpringDamping =
+      linearSpringDamping?.clone() ?? Vector3.zero();
+
+  /// Angular spring stiffness `(kx, ky, kz)` (`N*m/rad`).
+  final Vector3 angularSpringStiffness =
+      angularSpringStiffness?.clone() ?? Vector3.zero();
+
+  /// Angular spring damping `(cx, cy, cz)` (`N*m*s/rad`).
+  final Vector3 angularSpringDamping =
+      angularSpringDamping?.clone() ?? Vector3.zero();
+
+  /// Rest linear target `(x, y, z)` for linear springs.
+  final Vector3 linearEquilibrium =
+      linearEquilibrium?.clone() ?? Vector3.zero();
+
+  /// Rest angular target `(rx, ry, rz)` for angular springs.
+  final Vector3 angularEquilibrium =
+      angularEquilibrium?.clone() ?? Vector3.zero();
+
+  final Vector3 _wA = Vector3.zero();
+  final Vector3 _wB = Vector3.zero();
+  final Vector3 _rA = Vector3.zero();
+  final Vector3 _rAEff = Vector3.zero();
+  final Vector3 _rB = Vector3.zero();
+  final Quaternion _qWorldA = Quaternion.identity();
+  final Quaternion _qWorldB = Quaternion.identity();
+  final Quaternion _qRel = Quaternion.identity();
+
+  final List<Vector3> _linAxes = [
+    Vector3.zero(),
+    Vector3.zero(),
+    Vector3.zero(),
+  ];
+  final List<_Axis1DState> _linStates = [
+    _Axis1DState(),
+    _Axis1DState(),
+    _Axis1DState(),
+  ];
+  final List<_Axis1DState> _linSprings = [
+    _Axis1DState(),
+    _Axis1DState(),
+    _Axis1DState(),
+  ];
+
+  final List<Vector3> _angAxes = [
+    Vector3.zero(),
+    Vector3.zero(),
+    Vector3.zero(),
+  ];
+  final List<_Axis1DState> _angStates = [
+    _Axis1DState(),
+    _Axis1DState(),
+    _Axis1DState(),
+  ];
+  final List<_Axis1DState> _angSprings = [
+    _Axis1DState(),
+    _Axis1DState(),
+    _Axis1DState(),
+  ];
+
+  final Vector3 _scratch = Vector3.zero();
+  final Vector3 _anglesScratch = Vector3.zero();
+
+  /// Computes current linear displacement `(x, y, z)` in joint frame `A`.
+  Vector3 get currentLinearOffset {
+    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    _quatMul(bodyA.bodyRotation, _frameA, _qWorldA);
+    final diff = _wB - _wA;
+    final local = Vector3.zero();
+    _unrotateQuat(_qWorldA, diff, local);
+    return local;
+  }
+
+  /// Computes current relative rotation angles `(rx, ry, rz)` in joint frame
+  /// `A`.
+  Vector3 get currentAngularOffset {
+    _quatMul(bodyA.bodyRotation, _frameA, _qWorldA);
+    _quatMul(bodyB.bodyRotation, _frameB, _qWorldB);
+    _quatMulConjA(_qWorldA, _qWorldB, _qRel);
+    final out = Vector3.zero();
+    _extractIntrinsicXyzAngles(_qRel, out);
+    return out;
+  }
+
+  @override
+  void prepare(double dt) {
+    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    final dx = _wB.x - _wA.x;
+    final dy = _wB.y - _wA.y;
+    final dz = _wB.z - _wA.z;
+    _rAEff.setValues(_rA.x + dx, _rA.y + dy, _rA.z + dz);
+
+    _quatMul(bodyA.bodyRotation, _frameA, _qWorldA);
+    _quatMul(bodyB.bodyRotation, _frameB, _qWorldB);
+    _quatMulConjA(_qWorldA, _qWorldB, _qRel);
+
+    _scratch.setValues(1.0, 0.0, 0.0);
+    _rotateQuat(_qWorldA, _scratch, _linAxes[0]);
+    _scratch.setValues(0.0, 1.0, 0.0);
+    _rotateQuat(_qWorldA, _scratch, _linAxes[1]);
+    _scratch.setValues(0.0, 0.0, 1.0);
+    _rotateQuat(_qWorldA, _scratch, _linAxes[2]);
+
+    for (var i = 0; i < 3; i++) {
+      _angAxes[i].setFrom(_linAxes[i]);
+    }
+    _extractIntrinsicXyzAngles(_qRel, _anglesScratch);
+
+    final invDt = dt > 1e-9 ? 1.0 / dt : 0.0;
+    const beta = 0.22;
+
+    for (var i = 0; i < 3; i++) {
+      final axis = _linAxes[i];
+      final pos = dx * axis.x + dy * axis.y + dz * axis.z;
+      final k = _computeLinearAxisK(bodyA, _rAEff, bodyB, _rB, axis, _scratch);
+      _prepareAxisLimit(
+        state: _linStates[i],
+        value: pos,
+        lower: linearLowerLimit[i],
+        upper: linearUpperLimit[i],
+        k: k,
+        betaInvDt: beta * invDt,
+      );
+      _prepareAxisSpring(
+        state: _linSprings[i],
+        error: pos - linearEquilibrium[i],
+        stiffness: linearSpringStiffness[i],
+        damping: linearSpringDamping[i],
+        k: k,
+        dt: dt,
+      );
+    }
+
+    for (var i = 0; i < 3; i++) {
+      final axis = _angAxes[i];
+      final ang = _anglesScratch[i];
+      _sumInvInertiaMul(bodyA, bodyB, axis, _scratch);
+      final k = axis.dot(_scratch);
+      _prepareAxisLimit(
+        state: _angStates[i],
+        value: ang,
+        lower: angularLowerLimit[i],
+        upper: angularUpperLimit[i],
+        k: k,
+        betaInvDt: 0.25 * invDt,
+      );
+      _prepareAxisSpring(
+        state: _angSprings[i],
+        error: ang - angularEquilibrium[i],
+        stiffness: angularSpringStiffness[i],
+        damping: angularSpringDamping[i],
+        k: k,
+        dt: dt,
+      );
+    }
+  }
+
+  static void _prepareAxisLimit({
+    required _Axis1DState state,
+    required double value,
+    required double lower,
+    required double upper,
+    required double k,
+    required double betaInvDt,
+  }) {
+    state.accum = 0.0;
+    state.gamma = 0.0;
+    state.effMass = k > 1e-12 ? 1.0 / k : 0.0;
+    if (lower > upper) {
+      // Free axis (`lower > upper`).
+      state.mode = 0;
+      state.bias = 0.0;
+      return;
+    }
+    if ((upper - lower).abs() < 1e-4) {
+      state.mode = 2;
+      state.bias = (value - lower) * betaInvDt;
+    } else if (value <= lower) {
+      state.mode = -1;
+      state.bias = (value - lower) * betaInvDt;
+    } else if (value >= upper) {
+      state.mode = 1;
+      state.bias = (value - upper) * betaInvDt;
+    } else {
+      state.mode = 0;
+      state.bias = 0.0;
+    }
+  }
+
+  static void _prepareAxisSpring({
+    required _Axis1DState state,
+    required double error,
+    required double stiffness,
+    required double damping,
+    required double k,
+    required double dt,
+  }) {
+    state.accum = 0.0;
+    if ((stiffness <= 0.0 && damping <= 0.0) || k <= 1e-12 || dt <= 1e-9) {
+      state.mode = 0;
+      state.effMass = 0.0;
+      state.bias = 0.0;
+      state.gamma = 0.0;
+      return;
+    }
+    final denom = dt * (damping + dt * stiffness);
+    if (denom <= 1e-12) {
+      state.mode = 0;
+      state.effMass = 0.0;
+      return;
+    }
+    final gamma = 1.0 / denom;
+    state.mode = 2;
+    state.gamma = gamma;
+    state.bias = error * dt * stiffness * gamma;
+    state.effMass = 1.0 / (k + gamma);
+  }
+
+  @override
+  void solveVelocity(double dt) {
+    // 1. Linear springs + limits.
+    for (var i = 0; i < 3; i++) {
+      final axis = _linAxes[i];
+      final sp = _linSprings[i];
+      if (sp.mode != 0 && sp.effMass > 0.0) {
+        final vRel = _relVelAlongAxis(bodyA, _rAEff, bodyB, _rB, axis);
+        final dImp = -sp.effMass * (vRel + sp.bias + sp.gamma * sp.accum);
+        sp.accum += dImp;
+        if (dImp.abs() > 1e-12) {
+          _applyLinearPairImpulse(
+            bodyA,
+            _rAEff,
+            bodyB,
+            _rB,
+            axis.x * dImp,
+            axis.y * dImp,
+            axis.z * dImp,
+            _scratch,
+          );
+        }
+      }
+
+      final lim = _linStates[i];
+      if (lim.mode != 0 && lim.effMass > 0.0) {
+        final vRel = _relVelAlongAxis(bodyA, _rAEff, bodyB, _rB, axis);
+        final dImp = _clampLimitDelta(lim, -lim.effMass * (vRel + lim.bias));
+        if (dImp.abs() > 1e-12) {
+          _applyLinearPairImpulse(
+            bodyA,
+            _rAEff,
+            bodyB,
+            _rB,
+            axis.x * dImp,
+            axis.y * dImp,
+            axis.z * dImp,
+            _scratch,
+          );
+        }
+      }
+    }
+
+    // 2. Angular springs + limits.
+    for (var i = 0; i < 3; i++) {
+      final axis = _angAxes[i];
+      final sp = _angSprings[i];
+      if (sp.mode != 0 && sp.effMass > 0.0) {
+        final dw =
+            (bodyB.angularVelocity.x - bodyA.angularVelocity.x) * axis.x +
+            (bodyB.angularVelocity.y - bodyA.angularVelocity.y) * axis.y +
+            (bodyB.angularVelocity.z - bodyA.angularVelocity.z) * axis.z;
+        final dImp = -sp.effMass * (dw + sp.bias + sp.gamma * sp.accum);
+        sp.accum += dImp;
+        if (dImp.abs() > 1e-12) {
+          _applyAngularPairImpulse(
+            bodyA,
+            bodyB,
+            axis.x * dImp,
+            axis.y * dImp,
+            axis.z * dImp,
+            _scratch,
+          );
+        }
+      }
+
+      final lim = _angStates[i];
+      if (lim.mode != 0 && lim.effMass > 0.0) {
+        final dw =
+            (bodyB.angularVelocity.x - bodyA.angularVelocity.x) * axis.x +
+            (bodyB.angularVelocity.y - bodyA.angularVelocity.y) * axis.y +
+            (bodyB.angularVelocity.z - bodyA.angularVelocity.z) * axis.z;
+        final dImp = _clampLimitDelta(lim, -lim.effMass * (dw + lim.bias));
+        if (dImp.abs() > 1e-12) {
+          _applyAngularPairImpulse(
+            bodyA,
+            bodyB,
+            axis.x * dImp,
+            axis.y * dImp,
+            axis.z * dImp,
+            _scratch,
+          );
+        }
+      }
+    }
+  }
+
+  static double _clampLimitDelta(_Axis1DState lim, double rawDelta) {
+    if (lim.mode == -1) {
+      final prev = lim.accum;
+      lim.accum = math.max(0.0, prev + rawDelta);
+      return lim.accum - prev;
+    }
+    if (lim.mode == 1) {
+      final prev = lim.accum;
+      lim.accum = math.min(0.0, prev + rawDelta);
+      return lim.accum - prev;
+    }
+    lim.accum += rawDelta;
+    return rawDelta;
+  }
+
+  @override
+  void solvePosition() {
+    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    final dx = _wB.x - _wA.x;
+    final dy = _wB.y - _wA.y;
+    final dz = _wB.z - _wA.z;
+    _rAEff.setValues(_rA.x + dx, _rA.y + dy, _rA.z + dz);
+
+    _quatMul(bodyA.bodyRotation, _frameA, _qWorldA);
+    _scratch.setValues(1.0, 0.0, 0.0);
+    _rotateQuat(_qWorldA, _scratch, _linAxes[0]);
+    _scratch.setValues(0.0, 1.0, 0.0);
+    _rotateQuat(_qWorldA, _scratch, _linAxes[1]);
+    _scratch.setValues(0.0, 0.0, 1.0);
+    _rotateQuat(_qWorldA, _scratch, _linAxes[2]);
+
+    for (var i = 0; i < 3; i++) {
+      final lo = linearLowerLimit[i];
+      final hi = linearUpperLimit[i];
+      if (lo > hi) {
+        continue;
+      }
+      final axis = _linAxes[i];
+      final pos = dx * axis.x + dy * axis.y + dz * axis.z;
+      var err = 0.0;
+      if (pos < lo) {
+        err = pos - lo;
+      } else if (pos > hi) {
+        err = pos - hi;
+      }
+      if (err.abs() > 1e-4) {
+        final k = _computeLinearAxisK(
+          bodyA,
+          _rAEff,
+          bodyB,
+          _rB,
+          axis,
+          _scratch,
+        );
+        if (k > 1e-12) {
+          final lambda = -(err * 0.45) / k;
+          _applyPositionPairImpulse(
+            bodyA,
+            _rAEff,
+            bodyB,
+            _rB,
+            axis.x * lambda,
+            axis.y * lambda,
+            axis.z * lambda,
+            _scratch,
+          );
+        }
+      }
+    }
+
+    _quatMul(bodyA.bodyRotation, _frameA, _qWorldA);
+    _quatMul(bodyB.bodyRotation, _frameB, _qWorldB);
+    _quatMulConjA(_qWorldA, _qWorldB, _qRel);
+    _extractIntrinsicXyzAngles(_qRel, _anglesScratch);
+
+    for (var i = 0; i < 3; i++) {
+      final lo = angularLowerLimit[i];
+      final hi = angularUpperLimit[i];
+      if (lo > hi) {
+        continue;
+      }
+      final ang = _anglesScratch[i];
+      var err = 0.0;
+      if (ang < lo) {
+        err = ang - lo;
+      } else if (ang > hi) {
+        err = ang - hi;
+      }
+      if (err.abs() > 1e-4) {
+        final axis = _linAxes[i];
+        _sumInvInertiaMul(bodyA, bodyB, axis, _scratch);
+        final k = axis.dot(_scratch);
+        if (k > 1e-12) {
+          final tau = -(err * 0.45) / k;
+          _applyAngularPositionPairImpulse(
+            bodyA,
+            bodyB,
+            axis.x * tau,
+            axis.y * tau,
+            axis.z * tau,
+            _scratch,
+          );
+        }
+      }
+    }
+  }
+}
+
+class _Axis1DState() {
+  int mode = 0;
+  double effMass = 0.0;
+  double bias = 0.0;
+  double gamma = 0.0;
+  double accum = 0.0;
+}
+
 void _rotateQuat(Quaternion q, Vector3 v, Vector3 out) {
   final qx = q.x;
   final qy = q.y;
@@ -919,6 +2280,17 @@ void _integratePseudoRotation(RigidBody3D body, Vector3 dTheta) {
   if (angle <= 1e-8) {
     return;
   }
+  var oldComX = 0.0;
+  var oldComY = 0.0;
+  var oldComZ = 0.0;
+  final hasCom = body.hasCenterOfMassOffset;
+  if (hasCom) {
+    final com = body.worldCenterOfMass;
+    oldComX = com.x;
+    oldComY = com.y;
+    oldComZ = com.z;
+  }
+
   final half = 0.5 * angle;
   final s = math.sin(half) / angle;
   final dqx = dTheta.x * s;
@@ -942,5 +2314,230 @@ void _integratePseudoRotation(RigidBody3D body, Vector3 dTheta) {
   nz *= invLen;
   nw *= invLen;
   q.setValues(nx, ny, nz, nw);
+  if (hasCom) {
+    _rotateQuat(q, body.localCenterOfMass, _comRotScratch);
+    body.bodyPosition.setValues(
+      oldComX - _comRotScratch.x,
+      oldComY - _comRotScratch.y,
+      oldComZ - _comRotScratch.z,
+    );
+  }
   body.updateWorldInertia();
+}
+
+final Vector3 _comRotScratch = Vector3.zero();
+
+void _computeWorldAnchorAndLever(
+  RigidBody3D body,
+  Vector3 localAnchor,
+  Vector3 outWorldAnchor,
+  Vector3 outLever,
+) {
+  _rotateQuat(body.bodyRotation, localAnchor, outWorldAnchor);
+  outWorldAnchor.add(body.bodyPosition);
+  final com = body.worldCenterOfMass;
+  outLever.setValues(
+    outWorldAnchor.x - com.x,
+    outWorldAnchor.y - com.y,
+    outWorldAnchor.z - com.z,
+  );
+}
+
+double _computeLinearCoupledK(
+  RigidBody3D a,
+  Vector3 rA,
+  RigidBody3D b,
+  Vector3 rB,
+  Vector3 u1,
+  Vector3 u2,
+  Vector3 scratch,
+) {
+  var k = 0.0;
+  if (a.inverseMass > 0.0) {
+    final c1x = rA.y * u1.z - rA.z * u1.y;
+    final c1y = rA.z * u1.x - rA.x * u1.z;
+    final c1z = rA.x * u1.y - rA.y * u1.x;
+    final c2x = rA.y * u2.z - rA.z * u2.y;
+    final c2y = rA.z * u2.x - rA.x * u2.z;
+    final c2z = rA.x * u2.y - rA.y * u2.x;
+    a.multiplyWorldInvInertia(c2x, c2y, c2z, scratch);
+    k += c1x * scratch.x + c1y * scratch.y + c1z * scratch.z;
+  }
+  if (b.inverseMass > 0.0) {
+    final c1x = rB.y * u1.z - rB.z * u1.y;
+    final c1y = rB.z * u1.x - rB.x * u1.z;
+    final c1z = rB.x * u1.y - rB.y * u1.x;
+    final c2x = rB.y * u2.z - rB.z * u2.y;
+    final c2y = rB.z * u2.x - rB.x * u2.z;
+    final c2z = rB.x * u2.y - rB.y * u2.x;
+    b.multiplyWorldInvInertia(c2x, c2y, c2z, scratch);
+    k += c1x * scratch.x + c1y * scratch.y + c1z * scratch.z;
+  }
+  return k;
+}
+
+void _buildAngularInvK(RigidBody3D a, RigidBody3D b, Matrix3 invKOut) {
+  final sA = a.worldInvInertia.storage;
+  final sB = b.worldInvInertia.storage;
+  final k00 = sA[0] + sB[0];
+  final k01 = sA[1] + sB[1];
+  final k02 = sA[2] + sB[2];
+  final k11 = sA[4] + sB[4];
+  final k12 = sA[5] + sB[5];
+  final k22 = sA[8] + sB[8];
+
+  final c00 = k11 * k22 - k12 * k12;
+  final c01 = -(k01 * k22 - k12 * k02);
+  final c02 = k01 * k12 - k11 * k02;
+  final c11 = k00 * k22 - k02 * k02;
+  final c12 = -(k00 * k12 - k01 * k02);
+  final c22 = k00 * k11 - k01 * k01;
+
+  final det = k00 * c00 + k01 * c01 + k02 * c02;
+  if (det.abs() <= 1e-14) {
+    invKOut.setZero();
+    return;
+  }
+  final invDet = 1.0 / det;
+  final s = invKOut.storage;
+  s[0] = c00 * invDet;
+  s[1] = c01 * invDet;
+  s[2] = c02 * invDet;
+  s[3] = c01 * invDet;
+  s[4] = c11 * invDet;
+  s[5] = c12 * invDet;
+  s[6] = c02 * invDet;
+  s[7] = c12 * invDet;
+  s[8] = c22 * invDet;
+}
+
+void _quatMul(Quaternion a, Quaternion b, Quaternion out) {
+  final ax = a.x;
+  final ay = a.y;
+  final az = a.z;
+  final aw = a.w;
+  final bx = b.x;
+  final by = b.y;
+  final bz = b.z;
+  final bw = b.w;
+  out.setValues(
+    aw * bx + ax * bw + ay * bz - az * by,
+    aw * by - ax * bz + ay * bw + az * bx,
+    aw * bz + ax * by - ay * bx + az * bw,
+    aw * bw - ax * bx - ay * by - az * bz,
+  );
+  out.normalize();
+}
+
+void _quatMulConjA(Quaternion a, Quaternion b, Quaternion out) {
+  final ax = -a.x;
+  final ay = -a.y;
+  final az = -a.z;
+  final aw = a.w;
+  final bx = b.x;
+  final by = b.y;
+  final bz = b.z;
+  final bw = b.w;
+  out.setValues(
+    aw * bx + ax * bw + ay * bz - az * by,
+    aw * by - ax * bz + ay * bw + az * bx,
+    aw * bz + ax * by - ay * bx + az * bw,
+    aw * bw - ax * bx - ay * by - az * bz,
+  );
+  out.normalize();
+}
+
+void _computeWorldRotationError(
+  Quaternion qA,
+  Quaternion qB,
+  Quaternion qRef,
+  Quaternion qTargetScratch,
+  Quaternion qErrScratch,
+  Vector3 outErrorWorld,
+) {
+  // Target orientation for B is `qTarget = qA * qRef`.
+  // World-space rotation bringing `qTarget` to `qB` is `qErr = qB * qTarget^*`.
+  _quatMul(qA, qRef, qTargetScratch);
+  final tx = -qTargetScratch.x;
+  final ty = -qTargetScratch.y;
+  final tz = -qTargetScratch.z;
+  final tw = qTargetScratch.w;
+  final bx = qB.x;
+  final by = qB.y;
+  final bz = qB.z;
+  final bw = qB.w;
+  var ex = bw * tx + bx * tw + by * tz - bz * ty;
+  var ey = bw * ty - bx * tz + by * tw + bz * tx;
+  var ez = bw * tz + bx * ty - by * tx + bz * tw;
+  var ew = bw * tw - bx * tx - by * ty - bz * tz;
+  if (ew < 0.0) {
+    ex = -ex;
+    ey = -ey;
+    ez = -ez;
+    ew = -ew;
+  }
+  qErrScratch.setValues(ex, ey, ez, ew);
+  final vLen = math.sqrt(ex * ex + ey * ey + ez * ez);
+  if (vLen > 1e-8) {
+    final angle = 2.0 * math.atan2(vLen, ew);
+    final scale = angle / vLen;
+    outErrorWorld.setValues(ex * scale, ey * scale, ez * scale);
+  } else {
+    outErrorWorld.setValues(2.0 * ex, 2.0 * ey, 2.0 * ez);
+  }
+}
+
+void _quatFromXAxis(Vector3 unitX, Quaternion out) {
+  // Shortest-arc rotation from `(1, 0, 0)` to `unitX`.
+  if (unitX.x > 0.999999) {
+    out.setValues(0.0, 0.0, 0.0, 1.0);
+    return;
+  }
+  if (unitX.x < -0.999999) {
+    out.setValues(0.0, 1.0, 0.0, 0.0);
+    return;
+  }
+  final s = math.sqrt((1.0 + unitX.x) * 2.0);
+  final invS = 1.0 / s;
+  out.setValues(0.0, -unitX.z * invS, unitX.y * invS, 0.5 * s);
+  out.normalize();
+}
+
+void _quatFromXAndRefY(Vector3 unitX, Vector3 refY, Quaternion out) {
+  final yProj = refY.clone()..addScaled(unitX, -refY.dot(unitX));
+  if (yProj.length2 <= 1e-10) {
+    _quatFromXAxis(unitX, out);
+    return;
+  }
+  yProj.normalize();
+  final unitZ = unitX.cross(yProj)..normalize();
+  final m = Matrix3.columns(unitX, yProj, unitZ);
+  out.setFromRotation(m);
+  out.normalize();
+}
+
+void _extractIntrinsicXyzAngles(Quaternion qIn, Vector3 out) {
+  var x = qIn.x;
+  var y = qIn.y;
+  var z = qIn.z;
+  var w = qIn.w;
+  if (w < 0.0) {
+    x = -x;
+    y = -y;
+    z = -z;
+    w = -w;
+  }
+
+  final sinrCosp = 2.0 * (w * x + y * z);
+  final cosrCosp = 1.0 - 2.0 * (x * x + y * y);
+  final rx = math.atan2(sinrCosp, cosrCosp);
+
+  final sinp = (2.0 * (w * y - z * x)).clamp(-1.0, 1.0);
+  final ry = math.asin(sinp);
+
+  final sinyCosp = 2.0 * (w * z + x * y);
+  final cosyCosp = 1.0 - 2.0 * (y * y + z * z);
+  final rz = math.atan2(sinyCosp, cosyCosp);
+
+  out.setValues(rx, ry, rz);
 }

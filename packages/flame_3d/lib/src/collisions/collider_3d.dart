@@ -1,5 +1,7 @@
+import 'dart:math' as math;
+
 import 'package:flame/components.dart' show Component, HasWorldRef;
-import 'package:flame_3d/camera.dart' show Ray, World3D;
+import 'package:flame_3d/camera.dart' show Frustum, Plane, Ray, World3D;
 import 'package:flame_3d/collisions.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
@@ -32,6 +34,7 @@ class Collider3D({
   var int collisionMask = 0xFFFFFFFF,
   var bool isTrigger = false,
   var bool isStatic = false,
+  var PhysicsMaterial3D? material,
   super.position,
   super.scale,
   super.rotation,
@@ -120,6 +123,7 @@ class TriggerVolume3D({
   super.collisionLayer,
   super.collisionMask,
   super.isStatic,
+  super.material,
   super.position,
   super.scale,
   super.rotation,
@@ -147,7 +151,8 @@ class TriggerVolume3D({
   }
 }
 
-/// Ray hit result returned by [CollisionSystem3D.raycastColliders].
+/// Ray hit result returned by [CollisionSystem3D.raycastColliders] and
+/// [CollisionSystem3D.raycastAllColliders].
 class ColliderRayHit3D({
   required final Collider3D collider,
   required final double distance,
@@ -155,15 +160,23 @@ class ColliderRayHit3D({
   required final Vector3 normal,
 });
 
-/// World-level 3D collision manager running sort-and-sweep broadphase, 32-bit
-/// layer/mask filtering, [Narrowphase3D] manifold generation, and start/stay/end
-/// callback dispatch.
+/// World-level 3D collision manager backed by an incremental
+/// [DynamicAabbTree3D] broadphase, 32-bit layer/mask filtering,
+/// [Narrowphase3D] manifold generation, spatial overlap queries, and
+/// start/stay/end callback dispatch.
 class CollisionSystem3D({
   var bool autoStep = true,
+  double fatMargin = 0.12,
   super.priority,
 }) extends Component with HasWorldRef<World3D> {
+  /// Incremental SAH dynamic AABB broadphase tree over active [Collider3D]s.
+  final DynamicAabbTree3D<Collider3D> broadphaseTree =
+      DynamicAabbTree3D<Collider3D>(fatMargin: fatMargin);
+
   final Set<Collider3D> _manualColliders = {};
-  final List<_SweepEntry> _entries = [];
+  final Map<Collider3D, int> _proxyIds = {};
+  final Set<Collider3D> _activeSetScratch = {};
+  final List<Collider3D> _staleScratch = [];
   Map<_ColliderPairKey, (Collider3D, Collider3D)> _activePairs = {};
 
   /// Explicitly registers [collider] for standalone or unmounted simulation.
@@ -175,6 +188,10 @@ class CollisionSystem3D({
   /// callbacks for pairs involving it.
   void unregister(Collider3D collider) {
     _manualColliders.remove(collider);
+    final proxy = _proxyIds.remove(collider);
+    if (proxy != null) {
+      broadphaseTree.remove(proxy);
+    }
     _flushRemovedCollider(collider);
   }
 
@@ -183,7 +200,7 @@ class CollisionSystem3D({
   List<Collider3D> collectColliders([List<Collider3D>? out]) {
     final result = out ?? <Collider3D>[];
     result.clear();
-    final seen = <Collider3D>{};
+    final seen = _activeSetScratch..clear();
 
     void addUnique(Collider3D c) {
       if (seen.add(c)) {
@@ -211,6 +228,42 @@ class CollisionSystem3D({
     return result;
   }
 
+  /// Synchronizes [broadphaseTree] with all currently active colliders,
+  /// returning the active collider list.
+  List<Collider3D> syncBroadphase() {
+    final colliders = collectColliders(_collectedScratch);
+
+    // Prune colliders that were unmounted or removed.
+    if (_proxyIds.length != colliders.length ||
+        _proxyIds.keys.any((c) => !_activeSetScratch.contains(c))) {
+      _staleScratch.clear();
+      for (final c in _proxyIds.keys) {
+        if (!_activeSetScratch.contains(c)) {
+          _staleScratch.add(c);
+        }
+      }
+      for (var i = 0; i < _staleScratch.length; i++) {
+        final c = _staleScratch[i];
+        final proxy = _proxyIds.remove(c);
+        if (proxy != null) {
+          broadphaseTree.remove(proxy);
+        }
+      }
+    }
+
+    for (var i = 0; i < colliders.length; i++) {
+      final c = colliders[i];
+      final box = c.colliderWorldAabb;
+      final existingProxy = _proxyIds[c];
+      if (existingProxy == null) {
+        _proxyIds[c] = broadphaseTree.insert(c, box);
+      } else {
+        broadphaseTree.update(existingProxy, box);
+      }
+    }
+    return colliders;
+  }
+
   @override
   void update(double dt) {
     super.update(dt);
@@ -222,52 +275,30 @@ class CollisionSystem3D({
   /// Runs one broadphase + narrowphase detection pass and dispatches
   /// [CollisionCallbacks3D] and [TriggerVolume3D] events.
   void step() {
-    final colliders = collectColliders(_collectedScratch);
-    _entries.clear();
-    for (var i = 0; i < colliders.length; i++) {
-      final c = colliders[i];
-      final box = c.colliderWorldAabb;
-      _entries.add(
-        _SweepEntry(
-          collider: c,
-          minX: box.min.x,
-          minY: box.min.y,
-          minZ: box.min.z,
-          maxX: box.max.x,
-          maxY: box.max.y,
-          maxZ: box.max.z,
-        ),
-      );
-    }
-
-    // Sort-and-Sweep along the X axis.
-    _entries.sort((a, b) => a.minX.compareTo(b.minX));
-
+    final colliders = syncBroadphase();
     final nextPairs = <_ColliderPairKey, (Collider3D, Collider3D)>{};
 
-    for (var i = 0; i < _entries.length; i++) {
-      final a = _entries[i];
-      final maxX = a.maxX;
-      for (var j = i + 1; j < _entries.length; j++) {
-        final b = _entries[j];
-        if (b.minX > maxX) {
-          break;
+    for (var i = 0; i < colliders.length; i++) {
+      final a = colliders[i];
+      final proxyA = _proxyIds[a]!;
+      final boxA = a.colliderWorldAabb;
+      _queryAabb.setFrom(boxA);
+
+      broadphaseTree.queryAabbCallback(_queryAabb, (proxyB, b) {
+        if (proxyB <= proxyA) {
+          return;
         }
-        if (a.maxY < b.minY ||
-            a.minY > b.maxY ||
-            a.maxZ < b.minZ ||
-            a.minZ > b.maxZ) {
-          continue;
+        if (!a.canCollideWith(b)) {
+          return;
         }
-        if (!a.collider.canCollideWith(b.collider)) {
-          continue;
+        if (!_boxesOverlap(a.colliderWorldAabb, b.colliderWorldAabb)) {
+          return;
         }
 
         // Canonical pair ordering so manifold A->B direction is deterministic.
-        final swap =
-            identityHashCode(a.collider) > identityHashCode(b.collider);
-        final first = swap ? b.collider : a.collider;
-        final second = swap ? a.collider : b.collider;
+        final swap = identityHashCode(a) > identityHashCode(b);
+        final first = swap ? b : a;
+        final second = swap ? a : b;
 
         final manifold = Narrowphase3D.test(
           first.shape,
@@ -276,7 +307,7 @@ class CollisionSystem3D({
           second.colliderWorldMatrix,
         );
         if (manifold == null) {
-          continue;
+          return;
         }
 
         final key = _ColliderPairKey(first, second);
@@ -291,7 +322,7 @@ class CollisionSystem3D({
           _dispatchStay(first, second, manifold);
           _dispatchStay(second, first, flipped);
         }
-      }
+      });
     }
 
     for (final entry in _activePairs.entries) {
@@ -313,24 +344,22 @@ class CollisionSystem3D({
     bool includeTriggers = true,
     bool Function(Collider3D collider)? filter,
   }) {
+    syncBroadphase();
     shape.computeWorldAabb(worldTransform, _queryAabb);
-    final colliders = collectColliders(_collectedScratch);
     final hits = <(Collider3D, CollisionManifold3D)>[];
 
-    for (var i = 0; i < colliders.length; i++) {
-      final c = colliders[i];
+    broadphaseTree.queryAabbCallback(_queryAabb, (_, c) {
       if (!includeTriggers && c.isTrigger) {
-        continue;
+        return;
       }
       if ((c.collisionLayer & collisionMask) == 0) {
-        continue;
+        return;
       }
       if (filter != null && !filter(c)) {
-        continue;
+        return;
       }
-      final box = c.colliderWorldAabb;
-      if (!_boxesOverlap(_queryAabb, box)) {
-        continue;
+      if (!_boxesOverlap(_queryAabb, c.colliderWorldAabb)) {
+        return;
       }
       final manifold = Narrowphase3D.test(
         shape,
@@ -340,6 +369,178 @@ class CollisionSystem3D({
       );
       if (manifold != null) {
         hits.add((c, manifold));
+      }
+    });
+    return hits;
+  }
+
+  /// Returns all colliders confirmed by narrowphase to overlap the sphere at
+  /// [center] with [radius] matching [mask].
+  List<Collider3D> overlapSphere(
+    Vector3 center,
+    double radius, {
+    int mask = 0xFFFFFFFF,
+    bool includeTriggers = true,
+    bool Function(Collider3D collider)? filter,
+  }) {
+    if (radius <= 0.0) {
+      return const [];
+    }
+    syncBroadphase();
+    _candidatesScratch.clear();
+    broadphaseTree.querySphere(center, radius, out: _candidatesScratch);
+    if (_candidatesScratch.isEmpty) {
+      return const [];
+    }
+
+    final sphere = SphereShape3D(radius: radius);
+    _queryTransform.setIdentity();
+    _queryTransform.setTranslation(center);
+    sphere.computeWorldAabb(_queryTransform, _queryAabb);
+
+    final hits = <Collider3D>[];
+    for (var i = 0; i < _candidatesScratch.length; i++) {
+      final c = _candidatesScratch[i];
+      if (!includeTriggers && c.isTrigger) {
+        continue;
+      }
+      if ((c.collisionLayer & mask) == 0) {
+        continue;
+      }
+      if (filter != null && !filter(c)) {
+        continue;
+      }
+      if (!_boxesOverlap(_queryAabb, c.colliderWorldAabb)) {
+        continue;
+      }
+      final manifold = Narrowphase3D.test(
+        sphere,
+        _queryTransform,
+        c.shape,
+        c.colliderWorldMatrix,
+      );
+      if (manifold != null) {
+        hits.add(c);
+      }
+    }
+    return hits;
+  }
+
+  /// Returns all colliders confirmed by narrowphase to overlap an oriented box
+  /// at [center] with [halfExtents] and optional [rotation] matching [mask].
+  List<Collider3D> overlapBox(
+    Vector3 center,
+    Vector3 halfExtents, {
+    Quaternion? rotation,
+    int mask = 0xFFFFFFFF,
+    bool includeTriggers = true,
+    bool Function(Collider3D collider)? filter,
+  }) {
+    if (halfExtents.x <= 0.0 || halfExtents.y <= 0.0 || halfExtents.z <= 0.0) {
+      return const [];
+    }
+    final boxShape = BoxShape3D(halfExtents: halfExtents);
+    _queryTransform.setFromTranslationRotationScale(
+      center,
+      rotation ?? _identityQuat,
+      _unitScale,
+    );
+    final raw = overlapShape(
+      boxShape,
+      _queryTransform,
+      collisionMask: mask,
+      includeTriggers: includeTriggers,
+      filter: filter,
+    );
+    return [for (final (c, _) in raw) c];
+  }
+
+  /// Returns all colliders confirmed by narrowphase to overlap the capsule
+  /// sweeping segment `[p0, p1]` with cap [radius] matching [mask].
+  List<Collider3D> overlapCapsule(
+    Vector3 p0,
+    Vector3 p1,
+    double radius, {
+    int mask = 0xFFFFFFFF,
+    bool includeTriggers = true,
+    bool Function(Collider3D collider)? filter,
+  }) {
+    if (radius <= 0.0) {
+      return const [];
+    }
+    final dx = p1.x - p0.x;
+    final dy = p1.y - p0.y;
+    final dz = p1.z - p0.z;
+    final segLen = math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (segLen <= 1e-7) {
+      return overlapSphere(
+        p0,
+        radius,
+        mask: mask,
+        includeTriggers: includeTriggers,
+        filter: filter,
+      );
+    }
+
+    final capsule = CapsuleShape3D(
+      radius: radius,
+      height: segLen + 2.0 * radius,
+    );
+    _segMid.setValues(
+      0.5 * (p0.x + p1.x),
+      0.5 * (p0.y + p1.y),
+      0.5 * (p0.z + p1.z),
+    );
+    _alignYToSegment(dx / segLen, dy / segLen, dz / segLen, _segRot);
+    _queryTransform.setFromTranslationRotationScale(
+      _segMid,
+      _segRot,
+      _unitScale,
+    );
+    final raw = overlapShape(
+      capsule,
+      _queryTransform,
+      collisionMask: mask,
+      includeTriggers: includeTriggers,
+      filter: filter,
+    );
+    return [for (final (c, _) in raw) c];
+  }
+
+  /// Returns all colliders confirmed by narrowphase to intersect [frustum]
+  /// matching [mask].
+  List<Collider3D> overlapFrustum(
+    Frustum frustum, {
+    int mask = 0xFFFFFFFF,
+    bool includeTriggers = true,
+    bool Function(Collider3D collider)? filter,
+  }) {
+    syncBroadphase();
+    _candidatesScratch.clear();
+    broadphaseTree.queryFrustum(frustum, out: _candidatesScratch);
+    if (_candidatesScratch.isEmpty) {
+      return const [];
+    }
+
+    final hits = <Collider3D>[];
+    for (var i = 0; i < _candidatesScratch.length; i++) {
+      final c = _candidatesScratch[i];
+      if (!includeTriggers && c.isTrigger) {
+        continue;
+      }
+      if ((c.collisionLayer & mask) == 0) {
+        continue;
+      }
+      if (filter != null && !filter(c)) {
+        continue;
+      }
+      if (_shapeOverlapsFrustum(
+        c.shape,
+        c.colliderWorldMatrix,
+        c.colliderWorldAabb,
+        frustum,
+      )) {
+        hits.add(c);
       }
     }
     return hits;
@@ -361,51 +562,188 @@ class CollisionSystem3D({
     if (dirLen <= 1e-12) {
       return null;
     }
+    syncBroadphase();
+
+    final treeHit = broadphaseTree.raycast(
+      worldRay,
+      maxDistance: maxDistance,
+      filter: (c) {
+        if (!includeTriggers && c.isTrigger) {
+          return false;
+        }
+        if ((c.collisionLayer & collisionMask) == 0) {
+          return false;
+        }
+        return filter == null || filter(c);
+      },
+      narrowphase: (c, unitRay, limit) {
+        if (!_rayHitsAabb(unitRay, c.colliderWorldAabb, limit)) {
+          return null;
+        }
+        final hit = c.shape.raycast(
+          unitRay,
+          c.colliderWorldMatrix,
+          maxDistance: limit,
+        );
+        return hit == null ? null : (hit.$1, hit.$2);
+      },
+    );
+    if (treeHit == null || treeHit.normal == null) {
+      return null;
+    }
+
     _unitRay.origin.setFrom(worldRay.origin);
     _unitRay.direction
       ..setFrom(worldRay.direction)
       ..scale(1.0 / dirLen);
+    final t = treeHit.distance;
+    return ColliderRayHit3D(
+      collider: treeHit.item,
+      distance: t,
+      point: Vector3(
+        _unitRay.origin.x + _unitRay.direction.x * t,
+        _unitRay.origin.y + _unitRay.direction.y * t,
+        _unitRay.origin.z + _unitRay.direction.z * t,
+      ),
+      normal: treeHit.normal!,
+    );
+  }
 
-    final colliders = collectColliders(_collectedScratch);
-    ColliderRayHit3D? best;
-    var limit = maxDistance;
-
-    for (var i = 0; i < colliders.length; i++) {
-      final c = colliders[i];
-      if (!includeTriggers && c.isTrigger) {
-        continue;
-      }
-      if ((c.collisionLayer & collisionMask) == 0) {
-        continue;
-      }
-      if (filter != null && !filter(c)) {
-        continue;
-      }
-      final box = c.colliderWorldAabb;
-      if (!_rayHitsAabb(_unitRay, box, limit)) {
-        continue;
-      }
-      final hit = c.shape.raycast(
-        _unitRay,
-        c.colliderWorldMatrix,
-        maxDistance: limit,
-      );
-      if (hit != null && hit.$1 <= limit) {
-        limit = hit.$1;
-        final t = hit.$1;
-        best = ColliderRayHit3D(
-          collider: c,
-          distance: t,
-          point: Vector3(
-            _unitRay.origin.x + _unitRay.direction.x * t,
-            _unitRay.origin.y + _unitRay.direction.y * t,
-            _unitRay.origin.z + _unitRay.direction.z * t,
-          ),
-          normal: hit.$2,
-        );
-      }
+  /// Casts [worldRay] against registered/mounted colliders within
+  /// [maxDistance], returning all narrowphase hits sorted by ascending
+  /// distance.
+  List<ColliderRayHit3D> raycastAllColliders(
+    Ray worldRay, {
+    double maxDistance = double.infinity,
+    int collisionMask = 0xFFFFFFFF,
+    bool includeTriggers = true,
+    bool Function(Collider3D collider)? filter,
+  }) {
+    if (!(maxDistance > 0.0)) {
+      return const [];
     }
-    return best;
+    final dirLen = worldRay.direction.length;
+    if (dirLen <= 1e-12) {
+      return const [];
+    }
+    syncBroadphase();
+
+    final treeHits = broadphaseTree.raycastAll(
+      worldRay,
+      maxDistance: maxDistance,
+      filter: (c) {
+        if (!includeTriggers && c.isTrigger) {
+          return false;
+        }
+        if ((c.collisionLayer & collisionMask) == 0) {
+          return false;
+        }
+        return filter == null || filter(c);
+      },
+      narrowphase: (c, unitRay, limit) {
+        if (!_rayHitsAabb(unitRay, c.colliderWorldAabb, limit)) {
+          return null;
+        }
+        final hit = c.shape.raycast(
+          unitRay,
+          c.colliderWorldMatrix,
+          maxDistance: limit,
+        );
+        return hit == null ? null : (hit.$1, hit.$2);
+      },
+    );
+    if (treeHits.isEmpty) {
+      return const [];
+    }
+
+    _unitRay.origin.setFrom(worldRay.origin);
+    _unitRay.direction
+      ..setFrom(worldRay.direction)
+      ..scale(1.0 / dirLen);
+    return [
+      for (final h in treeHits)
+        if (h.normal != null)
+          ColliderRayHit3D(
+            collider: h.item,
+            distance: h.distance,
+            point: Vector3(
+              _unitRay.origin.x + _unitRay.direction.x * h.distance,
+              _unitRay.origin.y + _unitRay.direction.y * h.distance,
+              _unitRay.origin.z + _unitRay.direction.z * h.distance,
+            ),
+            normal: h.normal!,
+          ),
+    ];
+  }
+
+  bool _shapeOverlapsFrustum(
+    Shape3D shape,
+    Matrix4 worldTransform,
+    Aabb3 worldAabb,
+    Frustum frustum,
+  ) {
+    final cull = worldAabb.frustumCullTest(frustum);
+    if (cull == CullResult.outside) {
+      return false;
+    }
+    if (cull == CullResult.inside) {
+      return true;
+    }
+    if (shape is CompoundShape3D) {
+      final childMat = Matrix4.identity();
+      final childBox = Aabb3();
+      for (var i = 0; i < shape.children.length; i++) {
+        final child = shape.children[i];
+        childMat
+          ..setFrom(worldTransform)
+          ..multiply(child.localTransform);
+        child.shape.computeWorldAabb(childMat, childBox);
+        if (_shapeOverlapsFrustum(child.shape, childMat, childBox, frustum)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    if (shape is HeightfieldShape3D) {
+      return true;
+    }
+    return _supportInsidePlane(shape, worldTransform, frustum.plane0) &&
+        _supportInsidePlane(shape, worldTransform, frustum.plane1) &&
+        _supportInsidePlane(shape, worldTransform, frustum.plane2) &&
+        _supportInsidePlane(shape, worldTransform, frustum.plane3) &&
+        _supportInsidePlane(shape, worldTransform, frustum.plane4) &&
+        _supportInsidePlane(shape, worldTransform, frustum.plane5);
+  }
+
+  bool _supportInsidePlane(
+    Shape3D shape,
+    Matrix4 worldTransform,
+    Plane plane,
+  ) {
+    shape.supportPoint(plane.normal, worldTransform, _frustumSupScratch);
+    return plane.normal.dot(_frustumSupScratch) + plane.constant >= 0.0;
+  }
+
+  static void _alignYToSegment(
+    double ux,
+    double uy,
+    double uz,
+    Quaternion out,
+  ) {
+    // Rotate `(0, 1, 0)` onto unit vector `(ux, uy, uz)`.
+    if (uy > 0.999999) {
+      out.setValues(0.0, 0.0, 0.0, 1.0);
+      return;
+    }
+    if (uy < -0.999999) {
+      out.setValues(1.0, 0.0, 0.0, 0.0);
+      return;
+    }
+    // `(0, 1, 0) x (ux, uy, uz) = (uz, 0, -ux)`.
+    final s = math.sqrt((1.0 + uy) * 2.0);
+    final invS = 1.0 / s;
+    out.setValues(uz * invS, 0.0, -ux * invS, 0.5 * s);
+    out.normalize();
   }
 
   void _flushRemovedCollider(Collider3D removed) {
@@ -511,20 +849,18 @@ class CollisionSystem3D({
         slab(ray.origin.z, ray.direction.z, box.min.z, box.max.z);
   }
 
+  static final Quaternion _identityQuat = Quaternion.identity();
+  static final Vector3 _unitScale = Vector3.all(1.0);
+
   final List<Collider3D> _collectedScratch = [];
+  final List<Collider3D> _candidatesScratch = [];
   final Aabb3 _queryAabb = Aabb3();
+  final Matrix4 _queryTransform = Matrix4.identity();
+  final Vector3 _segMid = Vector3.zero();
+  final Quaternion _segRot = Quaternion.identity();
+  final Vector3 _frustumSupScratch = Vector3.zero();
   final Ray _unitRay = Ray();
 }
-
-class _SweepEntry({
-  required final Collider3D collider,
-  required final double minX,
-  required final double minY,
-  required final double minZ,
-  required final double maxX,
-  required final double maxY,
-  required final double maxZ,
-});
 
 @immutable
 class const _ColliderPairKey(this.a, this.b) {

@@ -17,6 +17,13 @@ class GlbParser() extends ModelParser {
     return root.toFlameModel();
   }
 
+  /// Parses an in-memory `.glb` binary buffer directly into a [Model].
+  Future<Model> parseModelBytes(Uint8List content, {String prefix = ''}) async {
+    final glb = parseGlbBytes(content, prefix: prefix);
+    final root = await glb.parse();
+    return root.toFlameModel();
+  }
+
   Future<GltfRoot> parseRoot(String filePath) async {
     final glb = await parseGlb(filePath);
     return await glb.parse();

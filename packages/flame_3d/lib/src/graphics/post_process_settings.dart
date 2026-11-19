@@ -1,5 +1,7 @@
 import 'dart:ui' show Color;
 
+import 'package:flame_3d/src/resources/texture/color_lut_3d.dart';
+
 /// Tone-mapping operator applied during final scene composition in
 /// [PostProcessSettings].
 enum ToneMapMode() {
@@ -17,8 +19,8 @@ enum ToneMapMode() {
 }
 
 /// {@template post_process_settings}
-/// GPU color-grading, tone-mapping, vignette, and fast anti-aliasing
-/// configuration for a `World3D` or `Scene3DComponent`.
+/// GPU color-grading, tone-mapping, 3D color LUT, vignette, SSAO, 3D DoF, and
+/// fast anti-aliasing configuration for a `World3D` or `Scene3DComponent`.
 ///
 /// When paired with `BloomSettings`, all post-processing operations execute
 /// inside the final bloom composite shader with **zero extra GPU render
@@ -33,6 +35,12 @@ class PostProcessSettings({
   var double vignetteSmoothness = 0.5,
   var Color tint = const Color(0xFFFFFFFF),
   var bool fxaa = false,
+
+  /// Optional `16x16x16` (`256x16` 2D strip) trilinear 3D color-grading LUT.
+  var ColorLut3D? colorLut,
+
+  /// Blend factor `[0..1]` for [colorLut].
+  var double colorLutIntensity = 1.0,
 
   /// Screen-space ambient occlusion strength (`0` disables SSAO).
   var double ssaoIntensity = 0.0,
@@ -61,5 +69,6 @@ class PostProcessSettings({
       vignetteIntensity > 1e-4 ||
       tint != const Color(0xFFFFFFFF) ||
       fxaa ||
+      (colorLut != null && colorLutIntensity > 1e-4) ||
       needsDepthNormal;
 }

@@ -1,11 +1,14 @@
+import 'dart:collection' show UnmodifiableSetView;
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' show Canvas;
 
 import 'package:flame/components.dart' show Component, HasWorldRef;
 import 'package:flame/extensions.dart' show Matrix4Extension;
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/game.dart';
+import 'package:flame_3d/resources.dart';
 import 'package:meta/meta.dart';
 
 /// {@template component_3d}
@@ -39,6 +42,9 @@ abstract class Component3D({
   Vector3? scale,
   Quaternion? rotation,
   List<Component3D> children = const [],
+  bool visible = true,
+  Iterable<String>? tags3D,
+  var String? prefabId,
   super.cameraMask,
 }) extends Component with HasWorldRef<World3D> {
   final Transform3D transform = Transform3D()
@@ -50,10 +56,78 @@ abstract class Component3D({
   this : super(children: children) {
     this.children.register<Component3D>();
     _childComponents = this.children.query<Component3D>();
+    if (tags3D != null) {
+      for (final tag in tags3D) {
+        addTag3D(tag);
+      }
+    }
     transform.addListener(_onTransformChanged);
   }
 
   late final Iterable<Component3D> _childComponents;
+
+  bool _visible = visible;
+
+  /// Whether this component (and its 3D subtree) is locally visible.
+  ///
+  /// Toggling [visible] marks the enclosing [World3D] dirty without unmounting
+  /// any components. See [isEffectivelyVisible] for hierarchical visibility.
+  bool get visible => _visible;
+  set visible(bool value) {
+    if (_visible == value) {
+      return;
+    }
+    _visible = value;
+    markSubtreeDirty();
+    _cachedWorld?.markSceneDirty(shadows: this is! LightComponent);
+  }
+
+  /// Whether this component AND all of its [Component3D] ancestors have
+  /// [visible] set to `true`.
+  bool get isEffectivelyVisible {
+    if (!_visible) {
+      return false;
+    }
+    var cursor = parent;
+    while (cursor != null) {
+      if (cursor is Component3D && !cursor._visible) {
+        return false;
+      }
+      cursor = cursor.parent;
+    }
+    return true;
+  }
+
+  int _worldTransformVersion = 0;
+
+  /// Monotonically increasing counter bumped whenever this component's local
+  /// [transform] or an ancestor [Component3D]'s transform invalidates
+  /// [worldTransformMatrix].
+  ///
+  /// Downstream caches (`Collider3D`, [SceneSpatialIndex3D], `SpatialAudio3D`)
+  /// can compare [worldTransformVersion] against a previously recorded integer
+  /// in `O(1)` to skip unchanged world transforms.
+  int get worldTransformVersion => _worldTransformVersion;
+
+  Set<String>? _tags3D;
+
+  /// Unmodifiable view of lightweight string tags attached to this component.
+  Set<String> get tags3D {
+    final tags = _tags3D;
+    return tags == null ? const <String>{} : UnmodifiableSetView(tags);
+  }
+
+  /// Adds [tag] to [tags3D], returning `true` if it was not already present.
+  bool addTag3D(String tag) => (_tags3D ??= <String>{}).add(tag);
+
+  /// Removes [tag] from [tags3D], returning `true` if it was present.
+  bool removeTag3D(String tag) => _tags3D?.remove(tag) ?? false;
+
+  /// Whether [tags3D] contains [tag].
+  bool hasTag3D(String tag) => _tags3D?.contains(tag) ?? false;
+
+  /// Removes all tags from [tags3D].
+  void clearTags3D() => _tags3D?.clear();
 
   /// The total transformation matrix for the component. This matrix combines
   /// translation, rotation and scale transforms into a single entity. The
@@ -226,17 +300,113 @@ abstract class Component3D({
     }
   }
 
+  @override
+  void renderTree(Canvas canvas) {
+    if (!_visible) {
+      return;
+    }
+    super.renderTree(canvas);
+  }
+
+  /// Creates a shallow copy of this component's own subtype and
+  /// subtype-specific properties, without copying children.
+  ///
+  /// [clone] invokes [cloneSelf] and then copies [transform], [visible],
+  /// [cameraMask], [priority], [prefabId], [tags3D], and (when requested)
+  /// descendant [Component3D]s. Custom subclasses can override [cloneSelf] to
+  /// preserve custom state.
+  @protected
+  Component3D cloneSelf() {
+    switch (this) {
+      case final MeshComponent self:
+        return MeshComponent(
+          mesh: self.mesh,
+          castsShadows: self.castsShadows,
+          color: self.color,
+          instanceData: self.instanceData.clone(),
+          jointTransforms: self.jointTransforms == null
+              ? null
+              : {
+                  for (final entry in self.jointTransforms!.entries)
+                    entry.key: [for (final m in entry.value) m.clone()],
+                },
+        );
+      case final LightComponent self:
+        return LightComponent(
+          source: _cloneLightSource(self.source),
+          lightMask: self.lightMask,
+        );
+      case final LodMeshComponent self:
+        return LodMeshComponent(
+          levels: List.of(self.levels),
+          shadowMesh: self.shadowMesh,
+          lowestLodInShadowPass: self.lowestLodInShadowPass,
+          color: self.color,
+          instanceData: self.instanceData.clone(),
+          castsShadows: self.castsShadows,
+        );
+      case final InstancedGroup3D self:
+        final copy = InstancedGroup3D(
+          mesh: self.mesh,
+          initialCapacity: math.max(1, self.length),
+          castsShadows: self.castsShadows,
+        );
+        for (var i = 0; i < self.length; i++) {
+          copy.addInstance(transform: self.instanceTransform(i));
+        }
+        return copy;
+      case final SkyboxComponent3D self:
+        return SkyboxComponent3D(material: self.material);
+      case final Text3DComponent self:
+        return Text3DComponent(
+          text: self.text,
+          style: self.style,
+          worldHeight: self.worldHeight,
+          backgroundColor: self.backgroundColor,
+          borderColor: self.borderColor,
+          cornerRadius: self.cornerRadius,
+          padding: self.padding,
+          orientation: self.orientation,
+        );
+      case _:
+        return Group3D();
+    }
+  }
+
+  /// Deep-clones (or shallow-clones when [includeChildren] is `false`) this
+  /// [Component3D], preserving local TRS [transform], [visible], [cameraMask],
+  /// [priority], [prefabId], and [tags3D].
+  Component3D clone({bool includeChildren = true}) {
+    final copy = cloneSelf()
+      ..position.setFrom(position)
+      ..rotation.setFrom(rotation)
+      ..scale.setFrom(scale)
+      ..visible = _visible
+      ..cameraMask = cameraMask
+      ..priority = priority
+      ..prefabId = prefabId;
+    if (_tags3D case final tags? when tags.isNotEmpty) {
+      for (final tag in tags) {
+        copy.addTag3D(tag);
+      }
+    }
+    if (includeChildren) {
+      for (final child in children) {
+        if (child is Component3D) {
+          copy.add(child.clone());
+        }
+      }
+    }
+    return copy;
+  }
+
   /// Mark this component's world transform, and therefore its AABB, as
   /// needing recomputation.
   ///
   /// This propagates down to child [Component3D]s so the entire subtree
   /// stays consistent.
   void _markWorldTransformDirty() {
-    // The world transform and the AABB are recomputed independently, so one
-    // can be dirty while the other is not. Only stop when both already are.
-    if (_worldTransformDirty && _aabbDirty) {
-      return;
-    }
+    _worldTransformVersion++;
     _worldTransformDirty = true;
     _aabbDirty = true;
     for (final child in _childComponents) {
@@ -253,7 +423,83 @@ abstract class Component3D({
     }
     _cachedWorld?.markSceneDirty();
   }
+
+  static LightSource _cloneLightSource(LightSource source) {
+    switch (source) {
+      case final AmbientLight s:
+        return AmbientLight(color: s.color, intensity: s.intensity);
+      case final HemisphereLight s:
+        return HemisphereLight(
+          skyColor: s.skyColor,
+          groundColor: s.groundColor,
+          intensity: s.intensity,
+          up: s.up.clone(),
+        );
+      case final DirectionalLight s:
+        return DirectionalLight(
+          color: s.color,
+          intensity: s.intensity,
+          direction: s.direction?.clone(),
+          specular: s.specular,
+          shadows: _cloneShadows(s.shadows),
+        );
+      case final PointLight s:
+        return PointLight(
+          color: s.color,
+          intensity: s.intensity,
+          range: s.range,
+        );
+      case final SpotLight s:
+        return SpotLight(
+          color: s.color,
+          intensity: s.intensity,
+          direction: s.direction?.clone(),
+          innerConeAngle: s.innerConeAngle,
+          outerConeAngle: s.outerConeAngle,
+          range: s.range,
+          specular: s.specular,
+          shadows: _cloneShadows(s.shadows),
+        );
+      case _:
+        return AmbientLight(color: source.color, intensity: source.intensity);
+    }
+  }
+
+  static ShadowSettings? _cloneShadows(ShadowSettings? shadows) {
+    if (shadows == null) {
+      return null;
+    }
+    return ShadowSettings(
+      resolution: shadows.resolution,
+      fit: shadows.fit,
+      bounds: shadows.bounds == null ? null : Aabb3.copy(shadows.bounds!),
+      maxDistance: shadows.maxDistance,
+      strength: shadows.strength,
+      color: shadows.color,
+      softness: shadows.softness,
+      depthBias: shadows.depthBias,
+      normalBias: shadows.normalBias,
+      encoding: shadows.encoding,
+      stabilize: shadows.stabilize,
+      cacheWhenStatic: shadows.cacheWhenStatic,
+      cascades: shadows.cascades,
+      cascadeSplitRatio: shadows.cascadeSplitRatio,
+    );
+  }
 }
+
+/// Concrete grouping [Component3D] node without geometry of its own, used to
+/// organize, transform, hide/show, tag, and clone 3D subtrees.
+class Group3D({
+  super.position,
+  super.scale,
+  super.rotation,
+  super.children,
+  super.visible,
+  super.tags3D,
+  super.prefabId,
+  super.cameraMask,
+}) extends Component3D;
 
 /// {@template component_bounds}
 /// The union of the world-space bounds ([Component3D.aabb]) of a set of

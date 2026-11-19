@@ -1,9 +1,12 @@
 export 'src/parser/async_model_loader_3d.dart';
 export 'src/parser/glb_parser.dart';
+export 'src/parser/gltf/buffer_view.dart' show ExtMeshoptCompression;
 export 'src/parser/gltf/glb_chunk.dart';
 export 'src/parser/gltf/gltf_extensions.dart';
 export 'src/parser/gltf/gltf_root.dart';
 export 'src/parser/gltf_parser.dart';
+export 'src/parser/meshopt_decoder_3d.dart';
 export 'src/parser/model_parser.dart';
 export 'src/parser/obj_parser.dart';
 export 'src/parser/scene_loader_3d.dart';
+export 'src/parser/world_chunk_streamer_3d.dart';

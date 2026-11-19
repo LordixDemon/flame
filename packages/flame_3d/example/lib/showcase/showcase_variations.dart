@@ -3,7 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flame/components.dart'
-    show Anchor, PositionComponent, TextComponent, TextPaint;
+    show Anchor, PositionComponent, TextComponent, TextPaint, World;
 import 'package:flame_3d/audio.dart';
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/collisions.dart';
@@ -19,9 +19,11 @@ import 'package:flame_3d/parser.dart';
 import 'package:flame_3d/particles.dart';
 import 'package:flame_3d/physics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d_example/showcase/showcase_game.dart';
 import 'package:flame_3d_example/showcase/showcase_meshes.dart';
 import 'package:flame_3d_example/showcase/showcase_v2_builders.dart';
 import 'package:flame_3d_example/showcase/showcase_v3_builders.dart';
+import 'package:flame_3d_example/showcase/showcase_v4_builders.dart';
 import 'package:flutter/painting.dart' show Shadow, TextStyle;
 
 /// Curated testbed variations exercising distinct feature matrices of
@@ -91,6 +93,26 @@ enum ShowcasePreset(final String label, final String summary) {
     '16. SSAO, DoF, CSM & Portal',
     'DepthNormal SSAO/DoF + SoftPtcl + CSM 2x + SpotShadow + Portal + Debug3D',
   ),
+  hdrIblShadowAtlasAndOit(
+    '17. HDR, IBL, 4-CSM & OIT',
+    'Float16 HDR + BrdfLut/Probes + Clearcoat/Refract + '
+        '4-CSM/Spot/Point Sh + WBOIT',
+  ),
+  clusteredOcclusionCdlodAndFoliage(
+    '18. Clustered 128+, Occlusion & CDLOD',
+    '128+ Clustered Lights + Hi-Z/Portal Occlusion + '
+        'Batcher + CDLOD + 10k Foliage',
+  ),
+  ccdCompoundClothRecastAndRollback(
+    '19. CCD, Compound, Cloth, Recast & Rollback',
+    'DynamicBVH + CCD 120m/s + Compound/Heightfield + '
+        '6DOF/Cloth/Buoy + Recast + Rollback',
+  ),
+  animGraphRetargetRagdollUiAndGizmo(
+    '20. AnimGraph, Retarget, Ragdoll, 3D UI & Gizmo',
+    'AnimGraph HFSM + Retarget + FABRIK/FootIK/Ragdoll + '
+        'Prefab/Serializer + MSDF/3D UI + Gizmo',
+  ),
 }
 
 /// Draws an overlapping multi-part mesh as a single seamless translucent piece
@@ -154,6 +176,7 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
 
   final ShowcaseV2Builders v2 = ShowcaseV2Builders();
   final ShowcaseV3Builders v3 = ShowcaseV3Builders();
+  final ShowcaseV4Builders v4 = ShowcaseV4Builders();
   final AssetScope3D assetScope3D = AssetScope3D();
 
   Model? isolateGlbModel;
@@ -304,6 +327,7 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
         },
       );
     }
+    await v4.preloadAssets();
   }
 
   void clearMounted() {
@@ -401,6 +425,7 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
     softMistMaterial = null;
     shoreFoamWaterMaterial = null;
     labDebugRenderer = null;
+    v4.reset();
   }
 
   void buildMaterialsAndGradingLab() {
@@ -2249,6 +2274,45 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
     dynamicExtras.add(labDebugRenderer!);
   }
 
+  void buildHdrIblShadowAtlasAndOitLab({
+    required World3D dynamicWorld,
+    required PostProcessSettings postProcess,
+    required ShadowSettings dynamicShadows,
+    required ShowcaseController controller,
+  }) {
+    v4.buildHdrIblShadowAtlasAndOitLab(
+      rig: this,
+      dynamicWorld: dynamicWorld,
+      postProcess: postProcess,
+      dynamicShadows: dynamicShadows,
+      controller: controller,
+    );
+  }
+
+  void buildClusteredOcclusionCdlodAndFoliageLab() {
+    v4.buildClusteredOcclusionCdlodAndFoliageLab(this);
+  }
+
+  void buildCcdCompoundClothRecastAndRollbackLab(World3D dynamicWorld) {
+    v4.buildCcdCompoundClothRecastAndRollbackLab(
+      rig: this,
+      dynamicWorld: dynamicWorld,
+    );
+  }
+
+  void buildAnimGraphRetargetRagdollUiAndGizmoLab({
+    required World3D dynamicWorld,
+    required Scene3DComponent dynamicLayer,
+    required World world2D,
+  }) {
+    v4.buildAnimGraphRetargetRagdollUiAndGizmoLab(
+      rig: this,
+      dynamicWorld: dynamicWorld,
+      dynamicLayer: dynamicLayer,
+      world2D: world2D,
+    );
+  }
+
   void update(double time, double dt) {
     for (final mat in animatedWindMaterials) {
       mat.windTime = time;
@@ -2352,5 +2416,6 @@ class ShowcaseVariationRig({required final ShowcaseAssets assets}) {
     if (shoreFoamWaterMaterial case final wMat?) {
       wMat.time = time;
     }
+    v4.update(time, dt);
   }
 }

@@ -8,8 +8,9 @@ import 'package:flame_3d/resources.dart';
 import 'package:meta/meta.dart';
 
 /// Runs soft-knee bright-pass extraction, multi-pass Kawase blur, and unified
-/// single-pass composition for [BloomSettings] and [PostProcessSettings] inside
-/// an open [GraphicsDevice] frame.
+/// single-pass composition for [BloomSettings], [PostProcessSettings],
+/// [ColorLut3D], linear HDR -> sRGB encoding, and [RenderDebugMode3D] inside an
+/// open [GraphicsDevice] frame.
 @internal
 class BloomPass(final GraphicsDevice _device) {
   static const String _prefilterBundle =
@@ -57,6 +58,7 @@ class BloomPass(final GraphicsDevice _device) {
       'sceneTexture',
       'bloomTexture',
       'depthNormalTexture',
+      'lutTexture',
     ],
   );
 
@@ -68,6 +70,7 @@ class BloomPass(final GraphicsDevice _device) {
   final Vector4 _tint = Vector4.zero();
   final Vector4 _ssao = Vector4.zero();
   final Vector4 _dof = Vector4.zero();
+  final Vector4 _lutParams = Vector4.zero();
 
   /// Applies optional [bloom] and optional [postProcess] to [sceneTarget]
   /// (into which the 3D scene pass has just ended via `endTexturePass`),
@@ -79,6 +82,8 @@ class BloomPass(final GraphicsDevice _device) {
     PostProcessSettings? postProcess,
     Texture? depthNormalTexture,
     GpuRenderTarget? outputTarget,
+    bool hdrEnabled = false,
+    RenderDebugMode3D debugMode = RenderDebugMode3D.none,
   }) {
     final fullWidth = sceneTarget.width;
     final fullHeight = sceneTarget.height;
@@ -91,22 +96,31 @@ class BloomPass(final GraphicsDevice _device) {
     );
 
     Texture bloomReadTex = Texture.empty;
-    final runBloom = bloom != null && bloom.intensity > 0 && bloom.radius > 0;
+    final runBloom =
+        debugMode == RenderDebugMode3D.none &&
+        bloom != null &&
+        bloom.intensity > 0 &&
+        bloom.radius > 0;
 
     if (runBloom) {
       final halfWidth = math.max(1, fullWidth >> 1);
       final halfHeight = math.max(1, fullHeight >> 1);
+      final bloomFormat =
+          sceneTarget.format == GpuPixelFormat.rgbaFloat16 &&
+              _device.backend.supportsPixelFormat(GpuPixelFormat.rgbaFloat16)
+          ? GpuPixelFormat.rgbaFloat16
+          : GpuPixelFormat.rgba8888;
 
       final ping = _device.textureTarget(
         halfWidth,
         halfHeight,
-        GpuPixelFormat.rgba8888,
+        bloomFormat,
         clearValue: const Color(0x00000002),
       );
       final pong = _device.textureTarget(
         halfWidth,
         halfHeight,
-        GpuPixelFormat.rgba8888,
+        bloomFormat,
         clearValue: const Color(0x00000003),
       );
 
@@ -165,7 +179,10 @@ class BloomPass(final GraphicsDevice _device) {
     final exposure = postProcess?.exposure ?? 1.0;
     final contrast = postProcess?.contrast ?? 1.0;
     final saturation = postProcess?.saturation ?? 1.0;
-    final toneMap = (postProcess?.toneMap ?? ToneMapMode.none).index.toDouble();
+    final effectiveToneMap =
+        postProcess?.toneMap ??
+        (hdrEnabled ? ToneMapMode.acesFilmic : ToneMapMode.none);
+    final toneMap = effectiveToneMap.index.toDouble();
     final vigIntensity = postProcess?.vignetteIntensity ?? 0.0;
     final vigSmooth = postProcess?.vignetteSmoothness ?? 0.5;
     final fxaa = (postProcess?.fxaa ?? false) ? 1.0 : 0.0;
@@ -178,23 +195,38 @@ class BloomPass(final GraphicsDevice _device) {
     final dofRange = postProcess?.dofFocusRange ?? 0.15;
     final hasDn = depthNormalTexture != null ? 1.0 : 0.0;
 
+    final lut = postProcess?.colorLut;
+    final lutStrength = lut != null
+        ? (postProcess?.colorLutIntensity ?? 1.0).clamp(0.0, 1.0)
+        : 0.0;
+    final lutSize = lut?.size.toDouble() ?? 0.0;
+    final lutTex = lut?.textureFor(_device.backend) ?? Texture.standard;
+
     _params.setValues(bloomIntensity, exposure, contrast, saturation);
     _grading.setValues(toneMap, vigIntensity, vigSmooth, fxaa);
     _tint.setValues(c.r, c.g, c.b, 1.0);
     _texel.setValues(1.0 / fullWidth, 1.0 / fullHeight, 0, 0);
     _ssao.setValues(ssaoIntensity, ssaoRadius, hasDn, 0);
     _dof.setValues(dofBlur, dofFocus, dofRange, 0);
+    _lutParams.setValues(
+      lutStrength,
+      lutSize,
+      hdrEnabled ? 1.0 : 0.0,
+      debugMode.index.toDouble(),
+    );
 
     _compositeFrag
       ..setTexture('sceneTexture', sceneTexture)
       ..setTexture('bloomTexture', bloomReadTex)
       ..setTexture('depthNormalTexture', depthNormalTexture ?? Texture.standard)
+      ..setTexture('lutTexture', lutTex)
       ..setVector4('BloomComposite.params', _params)
       ..setVector4('BloomComposite.grading', _grading)
       ..setVector4('BloomComposite.tint', _tint)
       ..setVector4('BloomComposite.texel', _texel)
       ..setVector4('BloomComposite.ssao', _ssao)
-      ..setVector4('BloomComposite.dof', _dof);
+      ..setVector4('BloomComposite.dof', _dof)
+      ..setVector4('BloomComposite.lutParams', _lutParams);
 
     if (outputTarget != null) {
       _device.beginOwnedPass(outputTarget);

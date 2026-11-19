@@ -6,6 +6,7 @@ import 'package:flame_3d/src/graphics/backend/flutter_gpu/gpu_backend.dart'
     as backend;
 import 'package:flame_3d/src/graphics/backend/gpu_enums.dart';
 import 'package:flame_3d/src/graphics/backend/gpu_handles.dart';
+import 'package:flame_3d/src/graphics/render_state.dart';
 import 'package:flame_3d/src/resources/texture/texture_sampler.dart';
 
 /// {@template gpu_backend}
@@ -52,6 +53,15 @@ abstract base class GpuBackend() {
   /// The alignment, in bytes, that the offset of a uniform block binding must
   /// have within a [GpuBuffer].
   int get uniformAlignment => 256;
+
+  /// Maximum anisotropic filtering clamp supported by samplers on this device
+  /// (`1` when anisotropic filtering is unsupported, up to `16` on capable
+  /// GPUs).
+  int get maxSamplerAnisotropy => 1;
+
+  /// Whether this backend and GPU hardware support allocating and sampling
+  /// textures in [format].
+  bool supportsPixelFormat(GpuPixelFormat format) => !format.isCompressed;
 
   /// Creates a [GpuTexture] with [mipLevelCount] mip levels (at most
   /// [maxMipLevelCount]).
@@ -122,8 +132,8 @@ abstract base class GpuBackend() {
   bool get supportsTextureTargets => false;
 
   /// Whether a [GpuTextureTarget] can render into a
-  /// [GpuPixelFormat.r32Float] texture. When it cannot, a depth stored in a
-  /// texture is packed into the 8-bit channels of a
+  /// [GpuPixelFormat.r32Float] or [GpuPixelFormat.rgbaFloat16] texture. When it
+  /// cannot, a depth stored in a texture is packed into the 8-bit channels of a
   /// [GpuPixelFormat.rgba8888] texture instead.
   bool get supportsFloatTextureTargets => false;
 
@@ -189,6 +199,30 @@ abstract interface class GpuRenderPass() {
 
   /// Sets which winding order is front-facing for the following draws.
   void setWindingOrder(WindingOrder windingOrder);
+
+  /// Sets the viewport rectangle and normalized depth range `[zNear, zFar]`
+  /// inside the active render target.
+  void setViewport(
+    int x,
+    int y,
+    int width,
+    int height, {
+    double zNear = 0.0,
+    double zFar = 1.0,
+  });
+
+  /// Sets the pixel scissor clip rectangle inside the active render target.
+  void setScissor(int x, int y, int width, int height);
+
+  /// Configures stencil testing and stencil buffer updates (`null` disables
+  /// stencil test and writes).
+  void setStencil(StencilState? stencil);
+
+  /// Sets polygon fill or wireframe rasterization mode.
+  void setPolygonMode(PolygonFillMode mode);
+
+  /// Sets primitive assembly topology for subsequent draws.
+  void setPrimitiveTopology(PrimitiveTopology topology);
 
   /// Binds [lengthInBytes] bytes of [buffer] starting at [offsetInBytes] to
   /// the vertex buffer [slot].

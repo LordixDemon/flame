@@ -59,6 +59,20 @@ class SeededRng3D(int seed) {
     return result;
   }
 
+  /// Captures the internal 128-bit state for deterministic rollback snapshots.
+  (int, int, int, int) saveState() => (_s0, _s1, _s2, _s3);
+
+  /// Restores the internal 128-bit state captured by [saveState].
+  void restoreState((int, int, int, int) state) {
+    _s0 = state.$1 & 0xFFFFFFFF;
+    _s1 = state.$2 & 0xFFFFFFFF;
+    _s2 = state.$3 & 0xFFFFFFFF;
+    _s3 = state.$4 & 0xFFFFFFFF;
+    if ((_s0 | _s1 | _s2 | _s3) == 0) {
+      _s0 = 1;
+    }
+  }
+
   /// Returns a uniform double in `[0.0, 1.0)`.
   double nextDouble() => _nextUint32() / 4294967296.0;
 
@@ -90,12 +104,15 @@ class RigidBody3D({
   double mass = 1.0,
   var double restitution = 0.0,
   var double friction = 0.5,
+  var PhysicsMaterial3D? material,
   var double linearDamping = 0.01,
   var double angularDamping = 0.05,
   Vector3? linearVelocity,
   Vector3? angularVelocity,
   var bool canSleep = true,
   var bool isSleeping = false,
+  var bool ccdEnabled = false,
+  double? ccdSweptSphereRadius,
   var int collisionLayer = 1,
   var int collisionMask = 0xFFFFFFFF,
   var bool syncParent = true,
@@ -105,6 +122,7 @@ class RigidBody3D({
   super.children,
 }) extends Component3D {
   this : assert(mass >= 0, 'mass must be non-negative') {
+    _customCcdRadius = ccdSweptSphereRadius;
     _recomputeMassProperties();
   }
 
@@ -146,6 +164,17 @@ class RigidBody3D({
     markAabbDirty();
   }
 
+  double? _customCcdRadius;
+
+  /// Swept sphere radius used when [ccdEnabled] is `true` (defaults to the
+  /// minimum inscribed radius of [shape]).
+  double get ccdSweptSphereRadius =>
+      _customCcdRadius ?? math.max(1e-3, _shape.inscribedSphereRadius);
+  set ccdSweptSphereRadius(double value) {
+    assert(value > 0, 'ccdSweptSphereRadius must be positive');
+    _customCcdRadius = value;
+  }
+
   double _mass = mass;
 
   /// Mass in kilograms (used when [bodyType] is [BodyType3D.dynamic]).
@@ -170,6 +199,12 @@ class RigidBody3D({
 
   double _inverseMass = 0.0;
   final Vector3 _localInvInertia = Vector3.zero();
+  final Matrix3 _localInvInertiaTensor = Matrix3.zero();
+  bool _hasOffDiagonalInertia = false;
+
+  /// Local-space center-of-mass offset populated from [shape].
+  final Vector3 localCenterOfMass = Vector3.zero();
+  bool _hasComOffset = false;
 
   /// Inverse mass (`0` for `static` and `kinematic` bodies).
   double get inverseMass => _inverseMass;
@@ -187,6 +222,22 @@ class RigidBody3D({
   final Aabb3 _localAabb = Aabb3();
   final Vector3 _scratchR = Vector3.zero();
   final Vector3 _scratchCross = Vector3.zero();
+  final Vector3 _worldComScratch = Vector3.zero();
+
+  /// Whether [localCenterOfMass] is non-zero.
+  bool get hasCenterOfMassOffset => _hasComOffset;
+
+  /// World-space center of mass (`bodyPosition + bodyRotation *
+  /// localCenterOfMass`).
+  Vector3 get worldCenterOfMass {
+    final pos = bodyPosition;
+    if (!_hasComOffset) {
+      return pos;
+    }
+    _rotateQuat(bodyRotation, localCenterOfMass, _worldComScratch);
+    _worldComScratch.add(pos);
+    return _worldComScratch;
+  }
 
   /// Accumulated world force for the upcoming physics step.
   Vector3 get accumulatedForce => _forceAccum;
@@ -236,8 +287,8 @@ class RigidBody3D({
     return _worldAabb;
   }
 
-  /// Recomputes [worldInvInertia] (`R * diag(localInvInertia) * R^T`) from the
-  /// current [bodyRotation] with zero heap allocations.
+  /// Recomputes [worldInvInertia] (`R * I_local^-1 * R^T`) from the current
+  /// [bodyRotation] with zero heap allocations.
   void updateWorldInertia() {
     if (_bodyType != BodyType3D.dynamic || _inverseMass <= 0.0) {
       worldInvInertia.setZero();
@@ -271,18 +322,58 @@ class RigidBody3D({
     final r12 = yz - wx;
     final r22 = 1.0 - (xx + yy);
 
-    final ix = _localInvInertia.x;
-    final iy = _localInvInertia.y;
-    final iz = _localInvInertia.z;
-
-    final m00 = r00 * r00 * ix + r01 * r01 * iy + r02 * r02 * iz;
-    final m01 = r00 * r10 * ix + r01 * r11 * iy + r02 * r12 * iz;
-    final m02 = r00 * r20 * ix + r01 * r21 * iy + r02 * r22 * iz;
-    final m11 = r10 * r10 * ix + r11 * r11 * iy + r12 * r12 * iz;
-    final m12 = r10 * r20 * ix + r11 * r21 * iy + r12 * r22 * iz;
-    final m22 = r20 * r20 * ix + r21 * r21 * iy + r22 * r22 * iz;
-
     final out = worldInvInertia.storage;
+    if (!_hasOffDiagonalInertia) {
+      final ix = _localInvInertia.x;
+      final iy = _localInvInertia.y;
+      final iz = _localInvInertia.z;
+
+      final m00 = r00 * r00 * ix + r01 * r01 * iy + r02 * r02 * iz;
+      final m01 = r00 * r10 * ix + r01 * r11 * iy + r02 * r12 * iz;
+      final m02 = r00 * r20 * ix + r01 * r21 * iy + r02 * r22 * iz;
+      final m11 = r10 * r10 * ix + r11 * r11 * iy + r12 * r12 * iz;
+      final m12 = r10 * r20 * ix + r11 * r21 * iy + r12 * r22 * iz;
+      final m22 = r20 * r20 * ix + r21 * r21 * iy + r22 * r22 * iz;
+
+      out[0] = m00;
+      out[1] = m01;
+      out[2] = m02;
+      out[3] = m01;
+      out[4] = m11;
+      out[5] = m12;
+      out[6] = m02;
+      out[7] = m12;
+      out[8] = m22;
+      return;
+    }
+
+    // Full symmetric `R * I_local^-1 * R^T`.
+    final li = _localInvInertiaTensor.storage;
+    final i00 = li[0];
+    final i01 = li[1];
+    final i02 = li[2];
+    final i11 = li[4];
+    final i12 = li[5];
+    final i22 = li[8];
+
+    // `T = R * I_local^-1` (3x3).
+    final t00 = r00 * i00 + r01 * i01 + r02 * i02;
+    final t01 = r00 * i01 + r01 * i11 + r02 * i12;
+    final t02 = r00 * i02 + r01 * i12 + r02 * i22;
+    final t10 = r10 * i00 + r11 * i01 + r12 * i02;
+    final t11 = r10 * i01 + r11 * i11 + r12 * i12;
+    final t12 = r10 * i02 + r11 * i12 + r12 * i22;
+    final t20 = r20 * i00 + r21 * i01 + r22 * i02;
+    final t21 = r20 * i01 + r21 * i11 + r22 * i12;
+    final t22 = r20 * i02 + r21 * i12 + r22 * i22;
+
+    final m00 = t00 * r00 + t01 * r01 + t02 * r02;
+    final m01 = t00 * r10 + t01 * r11 + t02 * r12;
+    final m02 = t00 * r20 + t01 * r21 + t02 * r22;
+    final m11 = t10 * r10 + t11 * r11 + t12 * r12;
+    final m12 = t10 * r20 + t11 * r21 + t12 * r22;
+    final m22 = t20 * r20 + t21 * r21 + t22 * r22;
+
     out[0] = m00;
     out[1] = m01;
     out[2] = m02;
@@ -329,7 +420,8 @@ class RigidBody3D({
   }
 
   /// Applies an instantaneous linear [impulse] (`N*s`), optionally at
-  /// [worldPoint] (generating torque `(worldPoint - bodyPosition) x impulse`).
+  /// [worldPoint] (generating torque `(worldPoint - worldCenterOfMass) x
+  /// impulse`).
   void applyImpulse(Vector3 impulse, {Vector3? worldPoint}) {
     if (_bodyType != BodyType3D.dynamic || _inverseMass <= 0.0) {
       return;
@@ -337,11 +429,11 @@ class RigidBody3D({
     wakeUp();
     linearVelocity.addScaled(impulse, _inverseMass);
     if (worldPoint != null) {
-      final pos = bodyPosition;
+      final com = worldCenterOfMass;
       _scratchR.setValues(
-        worldPoint.x - pos.x,
-        worldPoint.y - pos.y,
-        worldPoint.z - pos.z,
+        worldPoint.x - com.x,
+        worldPoint.y - com.y,
+        worldPoint.z - com.z,
       );
       _cross(_scratchR, impulse, _scratchCross);
       updateWorldInertia();
@@ -364,11 +456,11 @@ class RigidBody3D({
     wakeUp();
     _forceAccum.add(force);
     if (worldPoint != null) {
-      final pos = bodyPosition;
+      final com = worldCenterOfMass;
       _scratchR.setValues(
-        worldPoint.x - pos.x,
-        worldPoint.y - pos.y,
-        worldPoint.z - pos.z,
+        worldPoint.x - com.x,
+        worldPoint.y - com.y,
+        worldPoint.z - com.z,
       );
       _cross(_scratchR, force, _scratchCross);
       _torqueAccum.add(_scratchCross);
@@ -463,20 +555,94 @@ class RigidBody3D({
   Aabb3? computeLocalAabb() => _shape.computeLocalAabb(out: _localAabb);
 
   void _recomputeMassProperties() {
+    localCenterOfMass.setFrom(_shape.localCenterOfMass);
+    _hasComOffset = localCenterOfMass.length2 > 1e-12;
+
     if (_bodyType != BodyType3D.dynamic || _mass <= 0.0) {
       _inverseMass = 0.0;
       _localInvInertia.setZero();
+      _localInvInertiaTensor.setZero();
+      _hasOffDiagonalInertia = false;
       worldInvInertia.setZero();
       return;
     }
     _inverseMass = 1.0 / _mass;
+
+    if (_shape is CompoundShape3D) {
+      final tensor = _shape.computeLocalInertiaTensor(_mass);
+      final ts = tensor.storage;
+      final offDiag2 = ts[1] * ts[1] + ts[2] * ts[2] + ts[5] * ts[5];
+      if (offDiag2 > 1e-12 &&
+          _invertSymmetric3(tensor, _localInvInertiaTensor)) {
+        _hasOffDiagonalInertia = true;
+        final inv = _localInvInertiaTensor.storage;
+        _localInvInertia.setValues(inv[0], inv[4], inv[8]);
+        updateWorldInertia();
+        return;
+      }
+    }
+
+    _hasOffDiagonalInertia = false;
     final diag = _shape.computeLocalInertiaDiagonal(_mass);
     _localInvInertia.setValues(
       diag.x > 1e-12 ? 1.0 / diag.x : 0.0,
       diag.y > 1e-12 ? 1.0 / diag.y : 0.0,
       diag.z > 1e-12 ? 1.0 / diag.z : 0.0,
     );
+    _localInvInertiaTensor.setZero();
+    _localInvInertiaTensor.storage[0] = _localInvInertia.x;
+    _localInvInertiaTensor.storage[4] = _localInvInertia.y;
+    _localInvInertiaTensor.storage[8] = _localInvInertia.z;
     updateWorldInertia();
+  }
+
+  static bool _invertSymmetric3(Matrix3 sym, Matrix3 out) {
+    final s = sym.storage;
+    final a00 = s[0];
+    final a01 = s[1];
+    final a02 = s[2];
+    final a11 = s[4];
+    final a12 = s[5];
+    final a22 = s[8];
+
+    final c00 = a11 * a22 - a12 * a12;
+    final c01 = -(a01 * a22 - a12 * a02);
+    final c02 = a01 * a12 - a11 * a02;
+    final c11 = a00 * a22 - a02 * a02;
+    final c12 = -(a00 * a12 - a01 * a02);
+    final c22 = a00 * a11 - a01 * a01;
+
+    final det = a00 * c00 + a01 * c01 + a02 * c02;
+    if (det.abs() <= 1e-14) {
+      return false;
+    }
+    final invDet = 1.0 / det;
+    final o = out.storage;
+    o[0] = c00 * invDet;
+    o[1] = c01 * invDet;
+    o[2] = c02 * invDet;
+    o[3] = c01 * invDet;
+    o[4] = c11 * invDet;
+    o[5] = c12 * invDet;
+    o[6] = c02 * invDet;
+    o[7] = c12 * invDet;
+    o[8] = c22 * invDet;
+    return true;
+  }
+
+  static void _rotateQuat(Quaternion q, Vector3 v, Vector3 out) {
+    final qx = q.x;
+    final qy = q.y;
+    final qz = q.z;
+    final qw = q.w;
+    final tx = 2.0 * (qy * v.z - qz * v.y);
+    final ty = 2.0 * (qz * v.x - qx * v.z);
+    final tz = 2.0 * (qx * v.y - qy * v.x);
+    out.setValues(
+      v.x + qw * tx + (qy * tz - qz * ty),
+      v.y + qw * ty + (qz * tx - qx * tz),
+      v.z + qw * tz + (qx * ty - qy * tx),
+    );
   }
 
   static void _cross(Vector3 a, Vector3 b, Vector3 out) {

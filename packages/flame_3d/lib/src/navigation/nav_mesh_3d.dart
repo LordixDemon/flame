@@ -32,10 +32,115 @@ class NavPoly3D({
   required final List<NavPortal3D> portals,
 });
 
-/// 3D triangle navigation mesh built from any [Mesh] (including
-/// [TerrainMesh3D], multi-level bridges/ramps, and custom level meshes),
-/// featuring spatial vertex welding, portal adjacency, A* corridor search, and
-/// 3D Simple Stupid Funnel string-pulling with elevation draping.
+/// Dynamic oriented box obstacle that blocks overlapping [NavMesh3D] polygons
+/// in `O(log P)` via the navmesh BVH without rebuilding static geometry.
+class NavMeshObstacle3D({
+  required Vector3 center,
+  required Vector3 halfExtents,
+  Quaternion? rotation,
+  var bool enabled = true,
+}) {
+  this
+    : assert(
+        halfExtents.x > 0 && halfExtents.y > 0 && halfExtents.z > 0,
+        'halfExtents must be positive',
+      );
+
+  /// Creates an axis-aligned obstacle covering [bounds].
+  factory NavMeshObstacle3D.fromAabb(Aabb3 bounds, {bool enabled = true}) {
+    final center = Vector3(
+      0.5 * (bounds.min.x + bounds.max.x),
+      0.5 * (bounds.min.y + bounds.max.y),
+      0.5 * (bounds.min.z + bounds.max.z),
+    );
+    final half = Vector3(
+      math.max(1e-3, 0.5 * (bounds.max.x - bounds.min.x)),
+      math.max(1e-3, 0.5 * (bounds.max.y - bounds.min.y)),
+      math.max(1e-3, 0.5 * (bounds.max.z - bounds.min.z)),
+    );
+    return NavMeshObstacle3D(
+      center: center,
+      halfExtents: half,
+      enabled: enabled,
+    );
+  }
+
+  /// World-space center of this obstacle.
+  final Vector3 center = center.clone();
+
+  /// Local half-extents `(hx, hy, hz)`.
+  final Vector3 halfExtents = halfExtents.clone();
+
+  /// World-space orientation of this obstacle.
+  final Quaternion rotation = (rotation?.clone() ?? Quaternion.identity())
+    ..normalize();
+
+  final Matrix3 _rotMat = Matrix3.zero();
+  final Aabb3 _worldAabb = Aabb3();
+
+  /// Computes the tight world-space AABB enclosing this oriented box.
+  Aabb3 computeWorldAabb({Aabb3? out}) {
+    final res = out ?? _worldAabb;
+    _rotMat.setFrom(rotation.asRotationMatrix());
+    final r = _rotMat.storage;
+    final hx = halfExtents.x;
+    final hy = halfExtents.y;
+    final hz = halfExtents.z;
+    final ex = r[0].abs() * hx + r[3].abs() * hy + r[6].abs() * hz;
+    final ey = r[1].abs() * hx + r[4].abs() * hy + r[7].abs() * hz;
+    final ez = r[2].abs() * hx + r[5].abs() * hy + r[8].abs() * hz;
+    res.min.setValues(center.x - ex, center.y - ey, center.z - ez);
+    res.max.setValues(center.x + ex, center.y + ey, center.z + ez);
+    return res;
+  }
+}
+
+/// Traversal connection bridging two disconnected or elevated points on a
+/// [NavMesh3D] (such as a jump pad, gap leap, ladder, or teleporter).
+class OffMeshLink3D({
+  required Vector3 start,
+  required Vector3 end,
+  final bool bidirectional = true,
+  final double costMultiplier = 1.0,
+  final String linkTag = 'jump',
+  var bool enabled = true,
+}) {
+  this : assert(costMultiplier > 0, 'costMultiplier must be positive');
+
+  /// World-space start endpoint of the link.
+  final Vector3 start = start.clone();
+
+  /// World-space end endpoint of the link.
+  final Vector3 end = end.clone();
+}
+
+/// A contiguous surface walk leg or [OffMeshLink3D] traversal leg returned by
+/// [NavMesh3D.findSegmentedPath].
+class NavPathSegment3D({
+  required List<Vector3> waypoints,
+  this.offMeshLink,
+  this.linkTag,
+}) {
+  /// Ordered 3D waypoints along this segment (`[entry, exit]` for off-mesh
+  /// links; string-pulled funnel waypoints for surface walk legs).
+  final List<Vector3> waypoints = List.unmodifiable(waypoints);
+
+  /// The traversed [OffMeshLink3D], or `null` for an ordinary surface walk leg.
+  final OffMeshLink3D? offMeshLink;
+
+  /// Semantic traversal tag (e.g. `'jump'`, `'ladder'`) when [isOffMeshLink] is
+  /// `true`, or `null` for surface walk legs.
+  final String? linkTag;
+
+  /// Whether this segment traverses an [OffMeshLink3D].
+  bool get isOffMeshLink => offMeshLink != null;
+}
+
+/// 3D triangle navigation mesh built from any [Mesh] or Recast voxel
+/// `NavMeshBuilder3D`, featuring spatial vertex welding, portal adjacency,
+/// weighted polygon area costs, `O(log P)` dynamic [NavMeshObstacle3D]
+/// blocking, [OffMeshLink3D] connections, A* search, and 3D Simple Stupid
+/// Funnel string-pulling with elevation draping.
 class NavMesh3D._({
   required final List<Vector3> vertices,
   required final List<NavPoly3D> polygons,
@@ -51,6 +156,10 @@ class NavMesh3D._({
       ..addScaled(this.upAxis, -_basisU.dot(this.upAxis))
       ..normalize();
     _basisV.setFrom(this.upAxis.cross(_basisU)..normalize());
+
+    polygonCosts = Float32List(polygons.length)
+      ..fillRange(0, polygons.length, 1.0);
+    _polyObstacleRefCount = Int32List(polygons.length);
   }
 
   /// Extracts walkable triangles (`normal.dot(up) >= cos(maxSlopeAngleRad)`)
@@ -103,7 +212,7 @@ class NavMesh3D._({
     }
 
     final m = transform?.storage;
-    final rawPolys = <(int, int, int, Vector3, Vector3)>[];
+    final rawTris = <(int, int, int, Vector3)>[];
 
     for (final surface in mesh.surfaces) {
       if (surface.indexCount < 3) {
@@ -167,8 +276,6 @@ class NavMesh3D._({
         ny /= nLen;
         nz /= nLen;
 
-        // If `transform` had negative determinant (mirror), flip winding so
-        // geometric normal stays outward.
         var flipWinding = false;
         if (transform != null && transform.determinant() < 0.0) {
           nx = -nx;
@@ -192,19 +299,44 @@ class NavMesh3D._({
         final i0 = w0;
         final i1 = flipWinding ? w2 : w1;
         final i2 = flipWinding ? w1 : w2;
-        final p0 = weldedVerts[i0];
-        final p1 = weldedVerts[i1];
-        final p2 = weldedVerts[i2];
-        final centroid = Vector3(
-          (p0.x + p1.x + p2.x) * (1.0 / 3.0),
-          (p0.y + p1.y + p2.y) * (1.0 / 3.0),
-          (p0.z + p1.z + p2.z) * (1.0 / 3.0),
-        );
-        rawPolys.add((i0, i1, i2, centroid, Vector3(nx, ny, nz)));
+        rawTris.add((i0, i1, i2, Vector3(nx, ny, nz)));
       }
     }
 
-    // Build edge -> polygon adjacency map.
+    return NavMesh3D.fromIndexedTriangles(
+      vertices: weldedVerts,
+      triangles: rawTris,
+      upAxis: up,
+    );
+  }
+
+  /// Builds a [NavMesh3D] directly from pre-welded [vertices] and walkable
+  /// `(i0, i1, i2, normal)` [triangles], connecting shared edges into
+  /// [NavPortal3D]s.
+  factory NavMesh3D.fromIndexedTriangles({
+    required List<Vector3> vertices,
+    required List<(int, int, int, Vector3)> triangles,
+    Vector3? upAxis,
+  }) {
+    final up = (upAxis?.clone() ?? Vector3(0.0, 1.0, 0.0))..normalize();
+    final rawPolys = <(int, int, int, Vector3, Vector3)>[];
+
+    for (var idx = 0; idx < triangles.length; idx++) {
+      final (i0, i1, i2, norm) = triangles[idx];
+      if (i0 == i1 || i1 == i2 || i2 == i0) {
+        continue;
+      }
+      final p0 = vertices[i0];
+      final p1 = vertices[i1];
+      final p2 = vertices[i2];
+      final centroid = Vector3(
+        (p0.x + p1.x + p2.x) * (1.0 / 3.0),
+        (p0.y + p1.y + p2.y) * (1.0 / 3.0),
+        (p0.z + p1.z + p2.z) * (1.0 / 3.0),
+      );
+      rawPolys.add((i0, i1, i2, centroid, norm.clone()));
+    }
+
     final edgeMap = <(int, int), List<int>>{};
     for (var pIdx = 0; pIdx < rawPolys.length; pIdx++) {
       final (i0, i1, i2, _, _) = rawPolys[pIdx];
@@ -225,8 +357,8 @@ class NavMesh3D._({
       if (owners.length < 2) {
         continue;
       }
-      final va = weldedVerts[ea];
-      final vb = weldedVerts[eb];
+      final va = vertices[ea];
+      final vb = vertices[eb];
 
       for (var i = 0; i < owners.length; i++) {
         final polyA = owners[i];
@@ -234,10 +366,8 @@ class NavMesh3D._({
         final oppIdx = (a0 != ea && a0 != eb)
             ? a0
             : ((a1 != ea && a1 != eb) ? a1 : a2);
-        final opp = weldedVerts[oppIdx];
+        final opp = vertices[oppIdx];
 
-        // Orient `(left, right)` from `opp` looking across `(ea, eb)`:
-        // `((right - opp) x (left - opp)) . up > 0`.
         final orient = _triArea2Up(opp, va, vb, up);
         final right = orient >= 0.0 ? va : vb;
         final left = orient >= 0.0 ? vb : va;
@@ -274,7 +404,7 @@ class NavMesh3D._({
     }, growable: false);
 
     return NavMesh3D._(
-      vertices: List.unmodifiable(weldedVerts),
+      vertices: List.unmodifiable([for (final v in vertices) v.clone()]),
       polygons: List.unmodifiable(polys),
       upAxis: up,
     );
@@ -284,26 +414,267 @@ class NavMesh3D._({
   /// portals.
   final Vector3 upAxis = upAxis.normalized();
 
+  /// Per-polygon traversal cost multipliers (`1.0` default; higher values such
+  /// as `3.5` represent slow mud/sand, respected by A* pathfinding).
+  late final Float32List polygonCosts;
+
+  late final Int32List _polyObstacleRefCount;
+  int _blockedPolyCount = 0;
+  double _minPolygonCost = 1.0;
+
+  final Map<NavMeshObstacle3D, Int32List> _obstaclePolys = {};
+  final List<OffMeshLink3D> _offMeshLinks = [];
+  final List<_ResolvedOffMeshLink> _resolvedLinks = [];
+  bool _linksDirty = false;
+
   final Vector3 _basisU = Vector3.zero();
   final Vector3 _basisV = Vector3.zero();
+  final List<int> _bvhCandidatesScratch = [];
   late final _NavPolyBvh _bvh = _NavPolyBvh.build(vertices, polygons);
 
   /// Number of walkable triangles in this navmesh.
   int get polyCount => polygons.length;
 
-  /// Clamps an arbitrary 3D [point] onto the closest walkable triangle,
-  /// returning `null` when the navmesh has no walkable polygons.
-  NavPolyHit3D? findNearestPoly(Vector3 point) {
+  /// Number of polygons currently blocked by active [NavMeshObstacle3D]s.
+  int get blockedPolygonCount => _blockedPolyCount;
+
+  /// Registered [OffMeshLink3D] connections.
+  List<OffMeshLink3D> get offMeshLinks => List.unmodifiable(_offMeshLinks);
+
+  /// Returns `true` when polygon [polyIndex] is currently blocked by at least
+  /// one active [NavMeshObstacle3D].
+  bool isPolygonBlocked(int polyIndex) => _polyObstacleRefCount[polyIndex] > 0;
+
+  /// Sets the traversal cost multiplier of [polyIndex] (`> 0`).
+  void setPolygonCost(int polyIndex, double cost) {
+    assert(cost > 0, 'polygon cost must be positive');
+    polygonCosts[polyIndex] = cost;
+    if (cost < _minPolygonCost) {
+      _minPolygonCost = cost;
+    }
+  }
+
+  /// Returns the traversal cost multiplier of [polyIndex].
+  double getPolygonCost(int polyIndex) => polygonCosts[polyIndex];
+
+  /// Sets the traversal [cost] (`> 0`) of all walkable polygons intersecting
+  /// [bounds] in `O(log P)` via the navmesh BVH, returning the number of
+  /// updated polygons.
+  int setRegionCostInAabb(Aabb3 bounds, double cost) {
+    assert(cost > 0, 'region cost must be positive');
+    if (polygons.isEmpty) {
+      return 0;
+    }
+    _bvhCandidatesScratch.clear();
+    _bvh.queryAabb(bounds, _bvhCandidatesScratch);
+    var updated = 0;
+    for (var i = 0; i < _bvhCandidatesScratch.length; i++) {
+      final pIdx = _bvhCandidatesScratch[i];
+      final poly = polygons[pIdx];
+      if (_triangleIntersectsAabb(
+        vertices[poly.v0],
+        vertices[poly.v1],
+        vertices[poly.v2],
+        bounds,
+      )) {
+        polygonCosts[pIdx] = cost;
+        updated++;
+      }
+    }
+    if (updated > 0 && cost < _minPolygonCost) {
+      _minPolygonCost = cost;
+    }
+    return updated;
+  }
+
+  /// Dynamically blocks all walkable polygons intersected by [obstacle] in
+  /// `O(log P)` via the BVH.
+  void addObstacle(NavMeshObstacle3D obstacle) {
+    if (_obstaclePolys.containsKey(obstacle)) {
+      updateObstacle(obstacle);
+      return;
+    }
+    final blocked = obstacle.enabled
+        ? _computeBlockedPolygons(obstacle)
+        : Int32List(0);
+    _obstaclePolys[obstacle] = blocked;
+    _incrementRefCounts(blocked);
+    _linksDirty = true;
+  }
+
+  /// Refreshes the blocked polygon set after [obstacle] moves, rotates,
+  /// resizes, or toggles `enabled`.
+  void updateObstacle(NavMeshObstacle3D obstacle) {
+    final prev = _obstaclePolys[obstacle];
+    if (prev != null) {
+      _decrementRefCounts(prev);
+    }
+    final next = obstacle.enabled
+        ? _computeBlockedPolygons(obstacle)
+        : Int32List(0);
+    _obstaclePolys[obstacle] = next;
+    _incrementRefCounts(next);
+    _linksDirty = true;
+  }
+
+  /// Removes [obstacle] and immediately unblocks its polygons.
+  void removeObstacle(NavMeshObstacle3D obstacle) {
+    final prev = _obstaclePolys.remove(obstacle);
+    if (prev != null) {
+      _decrementRefCounts(prev);
+      _linksDirty = true;
+    }
+  }
+
+  /// Registers an [OffMeshLink3D] (jump, drop, ladder, or teleporter) for
+  /// seamless A* traversal.
+  void addOffMeshLink(OffMeshLink3D link) {
+    if (!_offMeshLinks.contains(link)) {
+      _offMeshLinks.add(link);
+      _linksDirty = true;
+    }
+  }
+
+  /// Unregisters [link].
+  void removeOffMeshLink(OffMeshLink3D link) {
+    if (_offMeshLinks.remove(link)) {
+      _linksDirty = true;
+    }
+  }
+
+  Int32List _computeBlockedPolygons(NavMeshObstacle3D obstacle) {
+    if (polygons.isEmpty) {
+      return Int32List(0);
+    }
+    final worldBox = obstacle.computeWorldAabb();
+    _bvhCandidatesScratch.clear();
+    _bvh.queryAabb(worldBox, _bvhCandidatesScratch);
+    if (_bvhCandidatesScratch.isEmpty) {
+      return Int32List(0);
+    }
+
+    final rotT = obstacle.rotation.conjugated();
+    final localBox = Aabb3.minMax(-obstacle.halfExtents, obstacle.halfExtents);
+    final v0L = Vector3.zero();
+    final v1L = Vector3.zero();
+    final v2L = Vector3.zero();
+    final matched = <int>[];
+
+    for (var i = 0; i < _bvhCandidatesScratch.length; i++) {
+      final pIdx = _bvhCandidatesScratch[i];
+      final poly = polygons[pIdx];
+      _toLocalObb(vertices[poly.v0], obstacle.center, rotT, v0L);
+      _toLocalObb(vertices[poly.v1], obstacle.center, rotT, v1L);
+      _toLocalObb(vertices[poly.v2], obstacle.center, rotT, v2L);
+      if (_triangleIntersectsAabb(v0L, v1L, v2L, localBox)) {
+        matched.add(pIdx);
+      }
+    }
+    return Int32List.fromList(matched);
+  }
+
+  static void _toLocalObb(
+    Vector3 worldPt,
+    Vector3 center,
+    Quaternion invRot,
+    Vector3 out,
+  ) {
+    out
+      ..setFrom(worldPt)
+      ..sub(center);
+    invRot.rotate(out);
+  }
+
+  void _incrementRefCounts(Int32List polyIds) {
+    for (var i = 0; i < polyIds.length; i++) {
+      final p = polyIds[i];
+      if (_polyObstacleRefCount[p] == 0) {
+        _blockedPolyCount++;
+      }
+      _polyObstacleRefCount[p]++;
+    }
+  }
+
+  void _decrementRefCounts(Int32List polyIds) {
+    for (var i = 0; i < polyIds.length; i++) {
+      final p = polyIds[i];
+      if (_polyObstacleRefCount[p] > 0) {
+        _polyObstacleRefCount[p]--;
+        if (_polyObstacleRefCount[p] == 0) {
+          _blockedPolyCount--;
+        }
+      }
+    }
+  }
+
+  void _ensureLinksResolved() {
+    if (!_linksDirty) {
+      return;
+    }
+    _linksDirty = false;
+    _resolvedLinks.clear();
+    if (polygons.isEmpty || _offMeshLinks.isEmpty) {
+      return;
+    }
+
+    for (var i = 0; i < _offMeshLinks.length; i++) {
+      final link = _offMeshLinks[i];
+      if (!link.enabled) {
+        continue;
+      }
+      final sHit = findNearestPoly(link.start);
+      final eHit = findNearestPoly(link.end);
+      if (sHit == null || eHit == null || sHit.polyIndex == eHit.polyIndex) {
+        continue;
+      }
+      final baseDist = math.max(1e-3, sHit.point.distanceTo(eHit.point));
+      final cost = baseDist * link.costMultiplier;
+      _resolvedLinks.add(
+        _ResolvedOffMeshLink(
+          link: link,
+          fromPoly: sHit.polyIndex,
+          toPoly: eHit.polyIndex,
+          entryPoint: sHit.point,
+          exitPoint: eHit.point,
+          cost: cost,
+        ),
+      );
+      if (link.bidirectional) {
+        _resolvedLinks.add(
+          _ResolvedOffMeshLink(
+            link: link,
+            fromPoly: eHit.polyIndex,
+            toPoly: sHit.polyIndex,
+            entryPoint: eHit.point,
+            exitPoint: sHit.point,
+            cost: cost,
+          ),
+        );
+      }
+    }
+  }
+
+  /// Clamps an arbitrary 3D [point] onto the closest unblocked walkable
+  /// triangle, returning `null` when no unblocked walkable polygon exists.
+  NavPolyHit3D? findNearestPoly(
+    Vector3 point, {
+    bool ignoreObstacles = false,
+  }) {
     if (polygons.isEmpty) {
       return null;
     }
-    return _bvh.findNearest(point, vertices, polygons);
+    return _bvh.findNearest(
+      point,
+      vertices,
+      polygons,
+      ignoreObstacles ? null : _polyObstacleRefCount,
+    );
   }
 
   /// Samples the walkable surface elevation (coordinate along [upAxis]) at the
   /// horizontal projection of [pos], picking the layer closest in elevation to
   /// [pos] on multi-level bridges/overpasses, or `null` if [pos] lies outside
-  /// all walkable polygons horizontally.
+  /// all unblocked walkable polygons horizontally.
   double? sampleHeightAt(Vector3 pos) {
     if (polygons.isEmpty) {
       return null;
@@ -316,6 +687,9 @@ class NavMesh3D._({
     var bestVerticalDiff = double.infinity;
 
     for (var i = 0; i < polygons.length; i++) {
+      if (_polyObstacleRefCount[i] > 0) {
+        continue;
+      }
       final poly = polygons[i];
       final a = vertices[poly.v0];
       final b = vertices[poly.v1];
@@ -364,55 +738,135 @@ class NavMesh3D._({
     if (sHit == null || gHit == null) {
       return const [];
     }
-    final corridor = _astarCorridor(
-      sHit.polyIndex,
-      gHit.polyIndex,
-      gHit.point,
-    );
-    if (corridor == null) {
+    final res = _astarSearch(sHit.polyIndex, gHit.polyIndex, gHit.point);
+    if (res == null) {
       return const [];
     }
     return [
       sHit.point.clone(),
-      for (final pIdx in corridor) polygons[pIdx].centroid.clone(),
+      for (final pIdx in res.polySequence) polygons[pIdx].centroid.clone(),
       gHit.point.clone(),
     ];
   }
 
-  /// Finds the smooth shortest 3D path between [start] and [goal] by clamping
-  /// both endpoints onto the navmesh, running A* over polygon portals, and
-  /// string-pulling via the **3D Simple Stupid Funnel** algorithm with
-  /// portal-edge elevation draping across ramps and bridges.
-  ///
-  /// Returns an empty list if no connected path exists.
-  List<Vector3> findPath(Vector3 start, Vector3 goal) {
+  /// Plans a path from [start] to [goal] segmented into surface walk legs and
+  /// [OffMeshLink3D] traversal legs (preserving `linkTag` metadata such as
+  /// `'jump'` or `'ladder'`).
+  List<NavPathSegment3D> findSegmentedPath(Vector3 start, Vector3 goal) {
     final sHit = findNearestPoly(start);
     final gHit = findNearestPoly(goal);
     if (sHit == null || gHit == null) {
       return const [];
     }
     if (sHit.polyIndex == gHit.polyIndex) {
-      if (sHit.point.distanceToSquared(gHit.point) <= 1e-12) {
-        return [sHit.point.clone()];
-      }
-      return [sHit.point.clone(), gHit.point.clone()];
+      final pts = sHit.point.distanceToSquared(gHit.point) <= 1e-12
+          ? [sHit.point.clone()]
+          : [sHit.point.clone(), gHit.point.clone()];
+      return [NavPathSegment3D(waypoints: pts)];
     }
 
-    final corridor = _astarCorridor(
-      sHit.polyIndex,
-      gHit.polyIndex,
-      gHit.point,
-    );
-    if (corridor == null) {
+    final search = _astarSearch(sHit.polyIndex, gHit.polyIndex, gHit.point);
+    if (search == null) {
       return const [];
     }
 
-    // Build portal sequence `portals[0 .. k]` where `portals[0..k-1]` are the
-    // shared edges along `corridor` and `portals[k]` collapses to `gHit.point`.
-    final portalsLeft = <Vector3>[sHit.point];
-    final portalsRight = <Vector3>[sHit.point];
+    final polySeq = search.polySequence;
+    final edgeLinkIndices = search.edgeLinkIndices;
 
-    for (var i = 0; i < corridor.length - 1; i++) {
+    final segments = <NavPathSegment3D>[];
+    var subStartIdx = 0;
+    var subStartPoint = sHit.point;
+
+    for (var e = 0; e < edgeLinkIndices.length; e++) {
+      final linkIdx = edgeLinkIndices[e];
+      if (linkIdx < 0) {
+        continue;
+      }
+      final resolved = _resolvedLinks[linkIdx];
+
+      // 1. Walk segment from `subStartPoint` (`polySeq[subStartIdx..e]`) to
+      // `resolved.entryPoint`.
+      final walkPts = _funnelSubCorridor(
+        polySeq,
+        subStartIdx,
+        e,
+        subStartPoint,
+        resolved.entryPoint,
+      );
+      if (walkPts.isNotEmpty) {
+        segments.add(NavPathSegment3D(waypoints: walkPts));
+      }
+
+      // 2. Off-mesh link traversal segment `[entryPoint, exitPoint]`.
+      segments.add(
+        NavPathSegment3D(
+          waypoints: [resolved.entryPoint.clone(), resolved.exitPoint.clone()],
+          offMeshLink: resolved.link,
+          linkTag: resolved.link.linkTag,
+        ),
+      );
+
+      subStartIdx = e + 1;
+      subStartPoint = resolved.exitPoint;
+    }
+
+    // Final walk segment from `subStartPoint` to `gHit.point`.
+    final tailWalk = _funnelSubCorridor(
+      polySeq,
+      subStartIdx,
+      polySeq.length - 1,
+      subStartPoint,
+      gHit.point,
+    );
+    if (tailWalk.isNotEmpty) {
+      segments.add(NavPathSegment3D(waypoints: tailWalk));
+    }
+    return segments;
+  }
+
+  /// Finds the smooth shortest 3D path between [start] and [goal] by clamping
+  /// both endpoints onto the navmesh, running cost-aware A* over portals and
+  /// [OffMeshLink3D]s, and string-pulling surface legs via the **3D Simple
+  /// Stupid Funnel** algorithm with portal-edge elevation draping.
+  List<Vector3> findPath(Vector3 start, Vector3 goal) {
+    final segments = findSegmentedPath(start, goal);
+    if (segments.isEmpty) {
+      return const [];
+    }
+    if (segments.length == 1) {
+      return [for (final p in segments.first.waypoints) p.clone()];
+    }
+    final combined = <Vector3>[];
+    for (var s = 0; s < segments.length; s++) {
+      final wps = segments[s].waypoints;
+      for (var i = 0; i < wps.length; i++) {
+        final pt = wps[i];
+        if (combined.isEmpty || combined.last.distanceToSquared(pt) > 1e-10) {
+          combined.add(pt.clone());
+        }
+      }
+    }
+    return combined;
+  }
+
+  List<Vector3> _funnelSubCorridor(
+    List<int> corridor,
+    int fromIdx,
+    int toIdx,
+    Vector3 startPt,
+    Vector3 goalPt,
+  ) {
+    if (fromIdx == toIdx) {
+      if (startPt.distanceToSquared(goalPt) <= 1e-12) {
+        return [startPt.clone()];
+      }
+      return [startPt.clone(), goalPt.clone()];
+    }
+
+    final portalsLeft = <Vector3>[startPt];
+    final portalsRight = <Vector3>[startPt];
+
+    for (var i = fromIdx; i < toIdx; i++) {
       final curr = polygons[corridor[i]];
       final nextIdx = corridor[i + 1];
       NavPortal3D? portal;
@@ -428,18 +882,15 @@ class NavMesh3D._({
       portalsLeft.add(portal.left);
       portalsRight.add(portal.right);
     }
-    portalsLeft.add(gHit.point);
-    portalsRight.add(gHit.point);
+    portalsLeft.add(goalPt);
+    portalsRight.add(goalPt);
 
-    // 3D Simple Stupid Funnel (in horizontal plane perpendicular to `upAxis`),
-    // recording which portal index produced each corner so we can drape over
-    // 3D ramp/bridge creases between consecutive corners!
-    final cornerPoints = <Vector3>[sHit.point.clone()];
+    final cornerPoints = <Vector3>[startPt.clone()];
     final cornerPortalIndices = <int>[0];
 
-    var apex = sHit.point;
-    var portalLeft = sHit.point;
-    var portalRight = sHit.point;
+    var apex = startPt;
+    var portalLeft = startPt;
+    var portalRight = startPt;
     var apexIndex = 0;
     var leftIndex = 0;
     var rightIndex = 0;
@@ -448,14 +899,12 @@ class NavMesh3D._({
       final left = portalsLeft[i];
       final right = portalsRight[i];
 
-      // 1. Update right side of funnel (`triArea2(apex, portalRight, right)`).
       if (_triArea2Horiz(apex, portalRight, right) >= 0.0) {
         if (_horizDist2(apex, portalRight) <= 1e-12 ||
             _triArea2Horiz(apex, portalLeft, right) < 0.0) {
           portalRight = right;
           rightIndex = i;
         } else {
-          // `right` crossed over `portalLeft`: `portalLeft` is a taut corner!
           if (_horizDist2(cornerPoints.last, portalLeft) > 1e-10) {
             cornerPoints.add(portalLeft.clone());
             cornerPortalIndices.add(leftIndex);
@@ -471,14 +920,12 @@ class NavMesh3D._({
         }
       }
 
-      // 2. Update left side of funnel (`triArea2(apex, portalLeft, left)`).
       if (_triArea2Horiz(apex, portalLeft, left) <= 0.0) {
         if (_horizDist2(apex, portalLeft) <= 1e-12 ||
             _triArea2Horiz(apex, portalRight, left) > 0.0) {
           portalLeft = left;
           leftIndex = i;
         } else {
-          // `left` crossed over `portalRight`: `portalRight` is a taut corner!
           if (_horizDist2(cornerPoints.last, portalRight) > 1e-10) {
             cornerPoints.add(portalRight.clone());
             cornerPortalIndices.add(rightIndex);
@@ -495,18 +942,15 @@ class NavMesh3D._({
       }
     }
 
-    if (cornerPoints.last.distanceToSquared(gHit.point) > 1e-10) {
-      cornerPoints.add(gHit.point.clone());
+    if (cornerPoints.last.distanceToSquared(goalPt) > 1e-10) {
+      cornerPoints.add(goalPt.clone());
       cornerPortalIndices.add(portalsLeft.length - 1);
     } else {
-      cornerPoints[cornerPoints.length - 1] = gHit.point.clone();
+      cornerPoints[cornerPoints.length - 1] = goalPt.clone();
       cornerPortalIndices[cornerPortalIndices.length - 1] =
           portalsLeft.length - 1;
     }
 
-    // Drape each horizontal funnel span across intermediate portals where 3D
-    // elevation changes (ramps/bridges), preserving zero extra points on flat
-    // spans!
     final smoothWaypoints = <Vector3>[cornerPoints.first];
     for (var s = 0; s < cornerPoints.length - 1; s++) {
       final wpA = cornerPoints[s];
@@ -572,7 +1016,6 @@ class NavMesh3D._({
       final eu = r.dot(_basisU) - lu;
       final ev = r.dot(_basisV) - lv;
 
-      // 2D segment intersection `(au,av) + t*(du,dv) == (lu,lv) + s*(eu,ev)`.
       final denom = du * ev - dv * eu;
       if (denom.abs() <= 1e-10) {
         continue;
@@ -623,26 +1066,52 @@ class NavMesh3D._({
     }
   }
 
-  List<int>? _astarCorridor(int startPoly, int goalPoly, Vector3 goalPoint) {
+  _AStarCorridorResult? _astarSearch(
+    int startPoly,
+    int goalPoly,
+    Vector3 goalPoint,
+  ) {
+    if (_polyObstacleRefCount[startPoly] > 0 ||
+        _polyObstacleRefCount[goalPoly] > 0) {
+      return null;
+    }
+    _ensureLinksResolved();
+
     final n = polygons.length;
     final gScore = Float64List(n)..fillRange(0, n, double.infinity);
     final cameFrom = Int32List(n)..fillRange(0, n, -1);
+    final cameViaLink = Int32List(n)..fillRange(0, n, -1);
     final closed = Uint8List(n);
     final heap = _MinPolyHeap(n);
 
+    // Admissible heuristic scaled by `_minPolygonCost` (zeroed when off-mesh
+    // links exist so teleport/jump shortcuts are never pruned sub-optimally!).
+    final hScale = _resolvedLinks.isEmpty ? _minPolygonCost : 0.0;
+
     gScore[startPoly] = 0.0;
-    heap.push(startPoly, polygons[startPoly].centroid.distanceTo(goalPoint));
+    heap.push(
+      startPoly,
+      polygons[startPoly].centroid.distanceTo(goalPoint) * hScale,
+    );
 
     while (!heap.isEmpty) {
       final current = heap.pop();
       if (current == goalPoly) {
-        final path = <int>[];
+        final revPolys = <int>[];
+        final revLinks = <int>[];
         var curr = goalPoly;
         while (curr != -1) {
-          path.add(curr);
-          curr = cameFrom[curr];
+          revPolys.add(curr);
+          final prev = cameFrom[curr];
+          if (prev != -1) {
+            revLinks.add(cameViaLink[curr]);
+          }
+          curr = prev;
         }
-        return path.reversed.toList(growable: false);
+        return _AStarCorridorResult(
+          polySequence: revPolys.reversed.toList(growable: false),
+          edgeLinkIndices: revLinks.reversed.toList(growable: false),
+        );
       }
       if (closed[current] != 0) {
         continue;
@@ -651,18 +1120,53 @@ class NavMesh3D._({
 
       final portals = polygons[current].portals;
       final curG = gScore[current];
+      final curCost = polygonCosts[current];
+
+      // 1. Shared-edge surface portals.
       for (var i = 0; i < portals.length; i++) {
         final portal = portals[i];
         final next = portal.targetPoly;
-        if (closed[next] != 0) {
+        if (closed[next] != 0 || _polyObstacleRefCount[next] > 0) {
           continue;
         }
-        final tentativeG = curG + portal.cost;
+        final areaWeight = 0.5 * (curCost + polygonCosts[next]);
+        final tentativeG = curG + portal.cost * areaWeight;
         if (tentativeG < gScore[next]) {
           gScore[next] = tentativeG;
           cameFrom[next] = current;
-          final f = tentativeG + polygons[next].centroid.distanceTo(goalPoint);
+          cameViaLink[next] = -1;
+          final f =
+              tentativeG +
+              polygons[next].centroid.distanceTo(goalPoint) * hScale;
           heap.pushOrDecrease(next, f);
+        }
+      }
+
+      // 2. Outgoing OffMeshLink3D connections originating on `current`.
+      if (_resolvedLinks.isNotEmpty) {
+        for (var l = 0; l < _resolvedLinks.length; l++) {
+          final rl = _resolvedLinks[l];
+          if (rl.fromPoly != current || !rl.link.enabled) {
+            continue;
+          }
+          final next = rl.toPoly;
+          if (closed[next] != 0 || _polyObstacleRefCount[next] > 0) {
+            continue;
+          }
+          final approach =
+              polygons[current].centroid.distanceTo(rl.entryPoint) * curCost +
+              polygons[next].centroid.distanceTo(rl.exitPoint) *
+                  polygonCosts[next];
+          final tentativeG = curG + rl.cost + approach * 0.5;
+          if (tentativeG < gScore[next]) {
+            gScore[next] = tentativeG;
+            cameFrom[next] = current;
+            cameViaLink[next] = l;
+            final f =
+                tentativeG +
+                polygons[next].centroid.distanceTo(goalPoint) * hScale;
+            heap.pushOrDecrease(next, f);
+          }
         }
       }
     }
@@ -694,7 +1198,111 @@ class NavMesh3D._({
     final cz = abx * acy - aby * acx;
     return cx * up.x + cy * up.y + cz * up.z;
   }
+
+  /// Exact 3D Triangle-vs-AABB intersection via 6-plane Sutherland-Hodgman
+  /// clipping.
+  static bool _triangleIntersectsAabb(
+    Vector3 v0,
+    Vector3 v1,
+    Vector3 v2,
+    Aabb3 box,
+  ) {
+    final min = box.min;
+    final max = box.max;
+    if (math.max(v0.x, math.max(v1.x, v2.x)) < min.x - 1e-6 ||
+        math.min(v0.x, math.min(v1.x, v2.x)) > max.x + 1e-6 ||
+        math.max(v0.y, math.max(v1.y, v2.y)) < min.y - 1e-6 ||
+        math.min(v0.y, math.min(v1.y, v2.y)) > max.y + 1e-6 ||
+        math.max(v0.z, math.max(v1.z, v2.z)) < min.z - 1e-6 ||
+        math.min(v0.z, math.min(v1.z, v2.z)) > max.z + 1e-6) {
+      return false;
+    }
+
+    var poly = <Vector3>[v0, v1, v2];
+    poly = _clipAxis(poly, 0, min.x, isMin: true);
+    if (poly.isEmpty) {
+      return false;
+    }
+    poly = _clipAxis(poly, 0, max.x, isMin: false);
+    if (poly.isEmpty) {
+      return false;
+    }
+    poly = _clipAxis(poly, 1, min.y, isMin: true);
+    if (poly.isEmpty) {
+      return false;
+    }
+    poly = _clipAxis(poly, 1, max.y, isMin: false);
+    if (poly.isEmpty) {
+      return false;
+    }
+    poly = _clipAxis(poly, 2, min.z, isMin: true);
+    if (poly.isEmpty) {
+      return false;
+    }
+    poly = _clipAxis(poly, 2, max.z, isMin: false);
+    return poly.isNotEmpty;
+  }
+
+  static List<Vector3> _clipAxis(
+    List<Vector3> poly,
+    int axis,
+    double bound, {
+    required bool isMin,
+  }) {
+    final out = <Vector3>[];
+    final n = poly.length;
+    if (n == 0) {
+      return out;
+    }
+    double coord(Vector3 v) => axis == 0 ? v.x : (axis == 1 ? v.y : v.z);
+    bool inside(double val) =>
+        isMin ? val >= bound - 1e-6 : val <= bound + 1e-6;
+
+    var prev = poly[n - 1];
+    var prevVal = coord(prev);
+    var prevIn = inside(prevVal);
+
+    for (var i = 0; i < n; i++) {
+      final curr = poly[i];
+      final currVal = coord(curr);
+      final currIn = inside(currVal);
+      if (prevIn != currIn) {
+        final denom = currVal - prevVal;
+        final t = denom.abs() > 1e-12
+            ? ((bound - prevVal) / denom).clamp(0.0, 1.0)
+            : 0.5;
+        out.add(
+          Vector3(
+            prev.x + (curr.x - prev.x) * t,
+            prev.y + (curr.y - prev.y) * t,
+            prev.z + (curr.z - prev.z) * t,
+          ),
+        );
+      }
+      if (currIn) {
+        out.add(curr);
+      }
+      prev = curr;
+      prevVal = currVal;
+      prevIn = currIn;
+    }
+    return out;
+  }
 }
+
+class _ResolvedOffMeshLink({
+  required final OffMeshLink3D link,
+  required final int fromPoly,
+  required final int toPoly,
+  required final Vector3 entryPoint,
+  required final Vector3 exitPoint,
+  required final double cost,
+});
+
+class _AStarCorridorResult({
+  required final List<int> polySequence,
+  required final List<int> edgeLinkIndices,
+});
 
 class _MinPolyHeap(int maxPolys) {
   final Int32List _nodes = Int32List(maxPolys + 1);
@@ -932,13 +1540,51 @@ class _NavPolyBvh._({
     );
   }
 
-  final Int32List _stack = Int32List(128);
+  Int32List _stack = Int32List(128);
   final Vector3 _cand = Vector3.zero();
+
+  void queryAabb(Aabb3 box, List<int> outPolyIndices) {
+    if (nodeCount == 0) {
+      return;
+    }
+    final qMinX = box.min.x;
+    final qMinY = box.min.y;
+    final qMinZ = box.min.z;
+    final qMaxX = box.max.x;
+    final qMaxY = box.max.y;
+    final qMaxZ = box.max.z;
+
+    var sp = 0;
+    _push(sp++, 0);
+    while (sp > 0) {
+      final node = _stack[--sp];
+      final nb = node * 6;
+      if (bounds[nb + 3] < qMinX ||
+          bounds[nb] > qMaxX ||
+          bounds[nb + 4] < qMinY ||
+          bounds[nb + 1] > qMaxY ||
+          bounds[nb + 5] < qMinZ ||
+          bounds[nb + 2] > qMaxZ) {
+        continue;
+      }
+      final cnt = counts[node];
+      if (cnt > 0) {
+        final start = leftOrFirst[node];
+        for (var i = start; i < start + cnt; i++) {
+          outPolyIndices.add(polyIndices[i]);
+        }
+      } else {
+        _push(sp++, rightChild[node]);
+        _push(sp++, leftOrFirst[node]);
+      }
+    }
+  }
 
   NavPolyHit3D? findNearest(
     Vector3 query,
     List<Vector3> verts,
     List<NavPoly3D> polys,
+    Int32List? blockedRefCounts,
   ) {
     if (nodeCount == 0) {
       return null;
@@ -952,7 +1598,7 @@ class _NavPolyBvh._({
     final bestPt = Vector3.zero();
 
     var sp = 0;
-    _stack[sp++] = 0;
+    _push(sp++, 0);
 
     while (sp > 0) {
       final node = _stack[--sp];
@@ -964,6 +1610,9 @@ class _NavPolyBvh._({
         final start = leftOrFirst[node];
         for (var i = start; i < start + cnt; i++) {
           final pIdx = polyIndices[i];
+          if (blockedRefCounts != null && blockedRefCounts[pIdx] > 0) {
+            continue;
+          }
           final poly = polys[pIdx];
           _closestPointOnTri(
             qx,
@@ -991,17 +1640,17 @@ class _NavPolyBvh._({
         final dR = _boxDist2(right, qx, qy, qz);
         if (dL < dR) {
           if (dR < bestD2) {
-            _stack[sp++] = right;
+            _push(sp++, right);
           }
           if (dL < bestD2) {
-            _stack[sp++] = left;
+            _push(sp++, left);
           }
         } else {
           if (dL < bestD2) {
-            _stack[sp++] = left;
+            _push(sp++, left);
           }
           if (dR < bestD2) {
-            _stack[sp++] = right;
+            _push(sp++, right);
           }
         }
       }
@@ -1015,6 +1664,13 @@ class _NavPolyBvh._({
       point: bestPt,
       distanceSquared: bestD2,
     );
+  }
+
+  void _push(int sp, int node) {
+    if (sp >= _stack.length) {
+      _stack = Int32List(_stack.length * 2)..setAll(0, _stack);
+    }
+    _stack[sp] = node;
   }
 
   double _boxDist2(int node, double qx, double qy, double qz) {

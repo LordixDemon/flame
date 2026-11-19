@@ -237,20 +237,18 @@ sharing a mesh on a ground in a `Scene3DComponent` render with 2 draw calls in 1
 shadows, and 4 draw calls in 2 passes with them (2 of them in the shadow pass).
 
 
-## Two-cascade directional shadow atlas and spot-light shadows
+## Multi-light shadow atlas, 4-cascade CSM, spot and point shadows
 
-- **2-Cascade Directional Shadow Maps (`ShadowSettings(cascades: 2, cascadeSplitRatio: 0.28)`):**
-  setting `cascades: 2` renders a crisp high-texel-density near cascade (`Cascade 0`) and a full
-  scene/view far cascade (`Cascade 1`), packing them side-by-side into a `2 * resolution x resolution`
-  shadow atlas (`shaders/shadow_atlas_pack`) sampled seamlessly with zero extra texture bindings.
-- **Perspective `SpotLight` Shadows:** giving a `SpotLight` (`LightComponent.spot(shadows: ShadowSettings(...))`)
-  shadow settings renders a perspective spot shadow map along its cone when no directional light is
-  claiming the pass's shadow map (or when directional lights are masked out via `LightComponent.lightMask`).
+- **Up to 4-Cascade Directional Shadow Maps (`ShadowSettings(cascades: 4)`):** `ShadowSettings`
+  supports `1..4` directional cascades (`cascadeSplits`, `cascadeBlendRange`), packing cascades
+  into a unified `ShadowAtlas3D` via `setViewport` and `setScissor` with smooth inter-cascade
+  blending at split boundaries.
+- **Simultaneous `SpotLight` & Dual-Paraboloid `PointLight` Shadows:** `ShadowAtlas3D` packs
+  directional cascades alongside up to two perspective `SpotLight(shadows: ...)` tiles and
+  omnidirectional `PointLight(shadows: ...)` Dual-Paraboloid (`+Z` and `-Z` hemisphere) tiles in
+  one `2048x2048` atlas pass so sun, spotlights and point lights cast shadows together.
 
 
 ## Limitations
 
-- One shadow-casting light (either a 1- or 2-cascade `DirectionalLight`, or a perspective
-  `SpotLight`) casts a shadow map per pass; point lights cast no shadow maps (use
-  `DecalBatch3D.addBlobShadow` for grounded contact shadows).
-- `UnlitMaterial` receives no shadows, and shadows are not available on the web yet.
+- `UnlitMaterial` receives no shadows.

@@ -176,6 +176,12 @@ class SpatialAudioListener3D({
 /// `BoneSocket3D`), computing stereo `pan`, distance rolloff, directional sound
 /// cones, raycast wall occlusion via `World3D.raycast`, and Doppler `pitch`.
 class SpatialAudioEmitter3D({
+  var String clipId = 'default',
+  var double clipDuration = 0.0,
+  var bool looping = true,
+  var bool playing = true,
+  var double playbackPosition = 0.0,
+  int priority = 0,
   var double baseVolume = 1.0,
   var double minDistance = 1.0,
   var double maxDistance = 50.0,
@@ -204,7 +210,9 @@ class SpatialAudioEmitter3D({
   this
     : assert(minDistance > 0, 'minDistance must be positive'),
       assert(maxDistance >= minDistance, 'maxDistance must be >= minDistance'),
-      assert(innerConeRad <= outerConeRad, 'innerConeRad <= outerConeRad');
+      assert(innerConeRad <= outerConeRad, 'innerConeRad <= outerConeRad') {
+    this.priority = priority;
+  }
 
   /// Local emission axis for directional cones (`(0, 0, -1)` by default).
   final Vector3 localForward =

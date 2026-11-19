@@ -46,10 +46,10 @@ class ShowcaseDiagnosticReport({
   };
 }
 
-/// Automated 48-point functional & rendering health suite for
+/// Automated 64-point functional & rendering health suite for
 /// `package:flame_3d`.
 ///
-/// Exercises all 16 [ShowcasePreset] feature labs plus [PureCameraLabGame],
+/// Exercises all 20 [ShowcasePreset] feature labs plus [PureCameraLabGame],
 /// both interactively on desktop/mobile and headlessly under
 /// `flutter test --enable-impeller --enable-flutter-gpu`.
 class ShowcaseDiagnostics() {
@@ -85,6 +85,11 @@ class ShowcaseDiagnostics() {
     final savedSsao = ctrl.ssao;
     final savedDof = ctrl.dof;
     final savedCsm2 = ctrl.csm2Cascades;
+    final savedCsm4 = ctrl.csm4Cascades;
+    final savedHdr = ctrl.hdr;
+    final savedWboit = ctrl.wboit;
+    final savedDbgMode = ctrl.renderDebugMode;
+    final savedLut = ctrl.activeColorLut;
     final savedDebug3D = ctrl.debug3D;
     final savedEncoding = ctrl.shadowEncoding;
     final savedFit = ctrl.shadowFit;
@@ -507,17 +512,27 @@ class ShowcaseDiagnostics() {
       final hasFlipbook = pSystems.any(
         (ps) => ps.flipbook != null && (ps.material?.frameBlending ?? false),
       );
+      final layerParticles = game.dynamicLayer.renderStats.particles;
+      final devParticles = game.dynamicLayer.device.stats.particles;
+      final renderedParticles = layerParticles > devParticles
+          ? layerParticles
+          : devParticles;
+      final liveParticles = pSystems.fold<int>(
+        0,
+        (sum, ps) => sum + ps.particleCount,
+      );
       final ptclBillboardOk =
           billboards.containsAll(ParticleBillboard.values) &&
           hasFlipbook &&
-          game.dynamicLayer.renderStats.particles >= 100;
+          renderedParticles >= 100 &&
+          liveParticles >= 50;
       record(
         'particle_billboards_and_flipbook',
         '4 ParticleBillboards + 4x4 Flipbook FrameBlending',
         ok: ptclBillboardOk,
         detail:
             'billboards=${billboards.length}/4, flipbook=$hasFlipbook, '
-            'particles=${game.dynamicLayer.renderStats.particles}',
+            'particles=$renderedParticles(live=$liveParticles)',
       );
 
       // 19. 5 `EmitterShape3D`s + `ParticleAttractor3D` + `onGroundHit`.
@@ -1332,9 +1347,10 @@ class ShowcaseDiagnostics() {
       // 47. 2-Cascade Directional Shadow Atlas + Shadowing `SpotLight` +
       //     `EnvironmentProbe3D` `SH9` IBL + `cameraMask`/`lightMask`.
       final dynCsmPasses = game.dynamicLayer.renderStats.shadowPasses;
+      final dynAtlasTiles = game.dynamicLayer.context.shadowAtlas.tiles.length;
       final statCsmPasses = game.staticLayer.renderStats.shadowPasses;
       // Mask out directional sun for 1 frame (`lightMask = 0`) so `_ShadowPass`
-      // renders the perspective `SpotLight` shadow map.
+      // renders only the perspective `SpotLight` shadow map.
       final dynSun = game.dynamicLayer.world.children
           .whereType<LightComponent>()
           .firstWhere((l) => l.source is DirectionalLight);
@@ -1348,9 +1364,11 @@ class ShowcaseDiagnostics() {
       final probe = rig.v3.skyDomeProbe;
       final skyIrr = probe.evaluateIrradiance(Vector3(0, 0, 1));
       final gndIrr = probe.evaluateIrradiance(Vector3(0, 0, -1));
+      final dynCsmOk =
+          dynCsmPasses == 2 || (dynCsmPasses == 1 && dynAtlasTiles == 3);
       final csmSpotIblOk =
           statCsmPasses == 2 &&
-          dynCsmPasses == 2 &&
+          dynCsmOk &&
           spotShPasses == 1 &&
           spotShadowActive &&
           skyIrr.z > gndIrr.z;
@@ -1359,7 +1377,7 @@ class ShowcaseDiagnostics() {
         '2-Cascade CSM Atlas + SpotLight Shadows + SH9 IBL + Layer Masks',
         ok: csmSpotIblOk,
         detail:
-            'csmPasses=$statCsmPasses/$dynCsmPasses, '
+            'csmPasses=$statCsmPasses/$dynCsmPasses(tiles=$dynAtlasTiles), '
             'spotShPasses=$spotShPasses, sh9=${skyIrr.z > gndIrr.z}',
       );
 
@@ -1406,6 +1424,22 @@ class ShowcaseDiagnostics() {
             'portalFrames=${portal?.renderCount ?? 0}, dbgSegs=$dbgSegs, '
             'vramKB=${vramBytes ~/ 1024}, fbTris=$fallbackTris',
       );
+
+      // --- LABS 17-20: Checks 49..64 ---
+      await rig.v4.runChecks49To64(
+        game: game,
+        pumpFrames: (frames) async {
+          for (var f = 0; f < frames; f++) {
+            await pumpFrame();
+          }
+        },
+        record: (id, {required passed, required detail}) => record(
+          id,
+          id,
+          ok: passed,
+          detail: detail,
+        ),
+      );
     } finally {
       game.applyPreset(savedPreset);
       ctrl
@@ -1428,6 +1462,11 @@ class ShowcaseDiagnostics() {
         ..ssao = savedSsao
         ..dof = savedDof
         ..csm2Cascades = savedCsm2
+        ..csm4Cascades = savedCsm4
+        ..hdr = savedHdr
+        ..wboit = savedWboit
+        ..renderDebugMode = savedDbgMode
+        ..activeColorLut = savedLut
         ..debug3D = savedDebug3D
         ..shadowEncoding = savedEncoding
         ..shadowFit = savedFit

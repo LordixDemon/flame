@@ -2,7 +2,8 @@
 
 // Stylized + physically-inspired Gerstner water fragment shader with dual
 // scrolling micro-ripples, shallow/deep gradient, crest foam, Fresnel sky
-// reflection, sun/spot specular glints, directional PCF shadows, and fog.
+// reflection, sun/spot specular glints, directional PCF shadows, Grab-Pass
+// underwater refraction, and fog.
 
 in vec3 fragPosition;
 in vec3 fragNormal;
@@ -14,10 +15,16 @@ in vec4 fragClipPos;
 out vec4 outColor;
 
 uniform sampler2D depthNormalTexture;
+uniform sampler2D sceneColorTexture;
 
 uniform DepthNormal {
   vec4 params;
 } depthNormal;
+
+uniform SceneColor {
+  // x: active (1=on, 0=off), y: 1/width, z: 1/height, w: unused
+  vec4 params;
+} sceneColor;
 
 uniform WaterMaterial {
   vec4 shallowColor;
@@ -27,7 +34,7 @@ uniform WaterMaterial {
   vec4 params;
   // x: fresnelPower, y: specularStrength, z: opacity, w: rippleScale
   vec4 params2;
-  // x: shoreFoamDepth (clip-depth span), yzw: unused
+  // x: shoreFoamDepth (clip-depth span), y: refractionStrength, zw: unused
   vec4 shoreParams;
 } waterMat;
 
@@ -150,6 +157,13 @@ void main() {
       (pow(ndoth, waterMat.params.w) * waterMat.params2.y * e);
   }
 
+  vec3 ndc = fragClipPos.xyz / max(fragClipPos.w, 1e-6);
+  vec2 screenUv = clamp(
+    vec2(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y),
+    vec2(0.001),
+    vec2(0.999)
+  );
+
   // Crest + micro-ripple foam + optional shoreline depth intersection foam.
   float rippleCrest = fragCrest + 0.14 * (rx + ry);
   float foamMask = smoothstep(
@@ -159,22 +173,34 @@ void main() {
   );
   float shoreAlphaFade = 1.0;
   if (waterMat.shoreParams.x > 1e-5 && depthNormal.params.x > 0.5) {
-    vec3 ndc = fragClipPos.xyz / max(fragClipPos.w, 1e-6);
-    vec2 screenUv = clamp(
-      vec2(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y),
-      vec2(0.001),
-      vec2(0.999)
-    );
     vec4 dn = texture(depthNormalTexture, screenUv);
     float sceneDepth = (dn.r * 255.0 * 256.0 + dn.g * 255.0) / 65535.0;
     float columnDepth = max(sceneDepth - ndc.z, 0.0);
     float shore = 1.0 - clamp(columnDepth / waterMat.shoreParams.x, 0.0, 1.0);
     foamMask = max(foamMask, shore * shore * 0.95);
-    shoreAlphaFade = clamp(columnDepth / (waterMat.shoreParams.x * 0.25), 0.15, 1.0);
+    shoreAlphaFade = clamp(
+      columnDepth / (waterMat.shoreParams.x * 0.25),
+      0.15,
+      1.0
+    );
+  }
+
+  vec3 litBody = waterBody * (vec3(0.35) + directDiffuse);
+  bool hasRefract = sceneColor.params.x > 0.5;
+  if (hasRefract) {
+    float refrScale = max(0.015, waterMat.shoreParams.y);
+    vec2 refrUv = clamp(
+      screenUv + vec2(rx, ry) * refrScale,
+      vec2(0.002),
+      vec2(0.998)
+    );
+    vec3 refractedScene = texture(sceneColorTexture, refrUv).rgb;
+    litBody = mix(refractedScene * mix(vec3(1.0), waterBody, 0.55), litBody,
+      clamp(waterMat.params2.z * 0.65, 0.15, 0.85));
   }
 
   vec3 color = mix(
-    waterBody * (vec3(0.35) + directDiffuse),
+    litBody,
     skyColor,
     clamp(fresnel * 0.72, 0.0, 0.92)
   ) + specLight;
@@ -189,10 +215,12 @@ void main() {
     scene.Camera_position
   );
 
-  float alpha = clamp(
-    waterMat.params2.z + foamMask * 0.25 + fresnel * 0.15,
-    0.0,
-    1.0
-  ) * fragColor.a * shoreAlphaFade;
+  float alpha = hasRefract
+      ? fragColor.a
+      : clamp(
+          waterMat.params2.z + foamMask * 0.25 + fresnel * 0.15,
+          0.0,
+          1.0
+        ) * fragColor.a * shoreAlphaFade;
   outColor = vec4(color, alpha);
 }

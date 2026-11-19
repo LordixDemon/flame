@@ -8,8 +8,8 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
 /// Interactive Flutter host widget for [ShowcaseGame]: renders the 3D scene
-/// with a 16-preset lab switcher, collapsible telemetry HUD, live subsystem
-/// toggles, offscreen `renderToImage` preview card, and 1-tap 48-check engine
+/// with a 20-preset lab switcher, collapsible telemetry HUD, live subsystem
+/// toggles, offscreen `renderToImage` preview card, and 1-tap 64-check engine
 /// self-test.
 class const ShowcaseView({
   final ShowcaseGame? game,
@@ -431,6 +431,16 @@ class _ShowcaseViewState() extends State<ShowcaseView> {
                             ),
                           ),
                           _Chip(
+                            label: 'HDR16',
+                            active: ctrl.hdr,
+                            onTap: () => _toggle((c) => c.hdr = !c.hdr),
+                          ),
+                          _Chip(
+                            label: 'WBOIT',
+                            active: ctrl.wboit,
+                            onTap: () => _toggle((c) => c.wboit = !c.wboit),
+                          ),
+                          _Chip(
                             label: 'Debug3D',
                             active: ctrl.debug3D,
                             onTap: () => _toggle((c) => c.debug3D = !c.debug3D),
@@ -499,6 +509,15 @@ class _ShowcaseViewState() extends State<ShowcaseView> {
                             onTap: () {
                               if (_game.isLoaded) {
                                 _game.cycleToneMap();
+                              }
+                            },
+                          ),
+                          _ActionChip(
+                            label: 'DbgView:${ctrl.renderDebugMode.name}',
+                            color: const Color(0xFF38BDF8),
+                            onTap: () {
+                              if (_game.isLoaded) {
+                                _game.cycleRenderDebugMode();
                               }
                             },
                           ),
@@ -588,7 +607,7 @@ class _ShowcaseViewState() extends State<ShowcaseView> {
                           _ActionChip(
                             label: _runningSelfTest
                                 ? 'Testing...'
-                                : 'Self-Test (48)',
+                                : 'Self-Test (64)',
                             color: const Color(0xFF34D399),
                             onTap: _runSelfTest,
                           ),

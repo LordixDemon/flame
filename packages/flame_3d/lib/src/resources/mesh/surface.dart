@@ -18,8 +18,8 @@ class MorphTargetData({
 
 /// {@template surface}
 /// Base surface [Resource], it describes a single surface to be rendered: an
-/// interleaved vertex buffer laid out as described by [layout], triangle
-/// indices, and the [material] it is drawn with.
+/// interleaved vertex buffer laid out as described by [layout], primitive
+/// [indices] assembled with [topology], and the [material] it is drawn with.
 ///
 /// Indices are 16-bit, or 32-bit when the surface has more than 65,535
 /// vertices (or when built from a [Uint32List]).
@@ -28,8 +28,9 @@ class Surface extends Resource<GpuBuffer> {
   /// {@macro surface}
   ///
   /// Builds the surface from [Vertex] objects, packed with the
-  /// [VertexLayout.standard] layout. If [calculateNormals] is `true`, the
-  /// normals are calculated when a vertex does not provide one.
+  /// [VertexLayout.standard] layout (or [VertexLayout.pbrStandard] when any
+  /// vertex supplies `tangent` or `texCoord1`). If [calculateNormals] is
+  /// `true`, the normals are calculated when a vertex does not provide one.
   Surface({
     required List<Vertex> vertices,
     required List<int> indices,
@@ -37,21 +38,30 @@ class Surface extends Resource<GpuBuffer> {
     this.jointMap,
     List<MorphTargetData> morphTargets = const [],
     bool calculateNormals = true,
+    this.topology = PrimitiveTopology.triangles,
   }) : material = material ?? Material.defaultMaterial,
-       layout = VertexLayout.standard,
        morphTargets = List.unmodifiable(morphTargets) {
     final normalizedVertices = _normalize(
       vertices: vertices,
       indices: indices,
-      calculateNormals: calculateNormals,
+      calculateNormals:
+          calculateNormals &&
+          topology == PrimitiveTopology.triangles &&
+          indices.length >= 3,
     );
-    vertexData = _packVertices(normalizedVertices);
+    final hasExtendedPbr = normalizedVertices.any(
+      (v) => v.tangent != null || v.texCoord1 != null,
+    );
+    _layout = hasExtendedPbr ? VertexLayout.pbrStandard : VertexLayout.standard;
+    vertexData = hasExtendedPbr
+        ? _packPbrVertices(normalizedVertices)
+        : _packVertices(normalizedVertices);
     vertexCount = normalizedVertices.length;
     if (this.morphTargets.isNotEmpty) {
       _baseVertexData = Float32List.fromList(vertexData);
     }
     _setIndices(_indexList(indices, vertexCount));
-    _aabb = _computeAabb(vertexData, layout, vertexCount);
+    _aabb = _computeAabb(vertexData, _layout, vertexCount);
   }
 
   /// {@macro surface}
@@ -60,9 +70,6 @@ class Surface extends Resource<GpuBuffer> {
   /// objects: [vertices] holds the interleaved floats of every vertex as
   /// described by [layout] (the [VertexLayout.standard] layout by default),
   /// and [indices] is a [Uint16List] or a [Uint32List].
-  ///
-  /// The arrays are used as given, not copied. The bounds are computed from
-  /// the [VertexLayout.positionAttribute] unless [aabb] is given.
   Surface.fromBuffers({
     required Float32List vertices,
     required List<int> indices,
@@ -71,15 +78,16 @@ class Surface extends Resource<GpuBuffer> {
     this.jointMap,
     List<MorphTargetData> morphTargets = const [],
     Aabb3? aabb,
+    this.topology = PrimitiveTopology.triangles,
   }) : material = material ?? Material.defaultMaterial,
-       layout = layout ?? VertexLayout.standard,
+       _layout = layout ?? VertexLayout.standard,
        morphTargets = List.unmodifiable(morphTargets) {
-    final stride = this.layout.strideInFloats;
+    final stride = _layout.strideInFloats;
     if (vertices.length % stride != 0) {
       throw ArgumentError.value(
         vertices.length,
         'vertices',
-        'Must hold whole vertices of ${this.layout.strideInFloats} floats',
+        'Must hold whole vertices of ${_layout.strideInFloats} floats',
       );
     }
     if (indices is! Uint16List && indices is! Uint32List) {
@@ -95,7 +103,7 @@ class Surface extends Resource<GpuBuffer> {
       _baseVertexData = Float32List.fromList(vertexData);
     }
     _setIndices(indices);
-    _aabb = aabb ?? _computeAabb(vertexData, this.layout, vertexCount);
+    _aabb = aabb ?? _computeAabb(vertexData, _layout, vertexCount);
   }
 
   static int _nextId = 0;
@@ -106,6 +114,9 @@ class Surface extends Resource<GpuBuffer> {
   /// The material the surface is drawn with.
   Material material;
 
+  /// Primitive assembly topology (`triangles` by default).
+  PrimitiveTopology topology;
+
   /// Maps the joint indices of the model to the joint indices used by this
   /// surface's vertices, for skinned surfaces.
   Map<int, int>? jointMap;
@@ -115,8 +126,10 @@ class Surface extends Resource<GpuBuffer> {
 
   Float32List? _baseVertexData;
 
+  late VertexLayout _layout;
+
   /// The layout of [vertexData].
-  final VertexLayout layout;
+  VertexLayout get layout => _layout;
 
   /// The interleaved vertex data, [VertexLayout.strideInFloats] floats per
   /// vertex.
@@ -185,6 +198,256 @@ class Surface extends Resource<GpuBuffer> {
       );
   }
 
+  /// Computes MikkTSpace-style Gram-Schmidt orthogonalized `vec4` tangents
+  /// (`[tx, ty, tz, sign, ...]` with `sign` in `{-1.0, +1.0}`) for every vertex
+  /// of this surface.
+  ///
+  /// When [storeInSurface] is `true` (the default), this surface's [layout] and
+  /// [vertexData] are upgraded in-place to include `vertexTangent` (and
+  /// `vertexTexCoord1` from [texCoord1] or `vertexTexCoord`) so
+  /// `SpatialMaterial` automatically uses the exact vertex TBN frame.
+  Float32List computeTangents({
+    bool storeInSurface = true,
+    Float32List? texCoord1,
+  }) {
+    final posOff = _layout.offsetOf(VertexLayout.positionAttribute);
+    final nrmOff = _layout.offsetOf('vertexNormal');
+    final uvOff = _layout.offsetOf('vertexTexCoord');
+    if (posOff == null || nrmOff == null) {
+      return Float32List(vertexCount * 4);
+    }
+
+    final stride = _layout.strideInFloats;
+    final pos = Float32List(vertexCount * 3);
+    final nrm = Float32List(vertexCount * 3);
+    final uv = Float32List(vertexCount * 2);
+    for (var v = 0; v < vertexCount; v++) {
+      final base = v * stride;
+      pos[v * 3] = vertexData[base + posOff];
+      pos[v * 3 + 1] = vertexData[base + posOff + 1];
+      pos[v * 3 + 2] = vertexData[base + posOff + 2];
+      nrm[v * 3] = vertexData[base + nrmOff];
+      nrm[v * 3 + 1] = vertexData[base + nrmOff + 1];
+      nrm[v * 3 + 2] = vertexData[base + nrmOff + 2];
+      if (uvOff != null) {
+        uv[v * 2] = vertexData[base + uvOff];
+        uv[v * 2 + 1] = vertexData[base + uvOff + 1];
+      }
+    }
+
+    final tangents = calculateTangents(
+      positions: pos,
+      normals: nrm,
+      texCoords: uv,
+      indices: _indices,
+    );
+
+    if (!storeInSurface) {
+      return tangents;
+    }
+
+    final existingTanOff = _layout.offsetOf(VertexLayout.tangentAttribute);
+    final existingUv1Off = _layout.offsetOf(VertexLayout.texCoord1Attribute);
+    if (existingTanOff != null &&
+        (texCoord1 == null || existingUv1Off != null)) {
+      for (var v = 0; v < vertexCount; v++) {
+        final base = v * stride;
+        vertexData[base + existingTanOff] = tangents[v * 4];
+        vertexData[base + existingTanOff + 1] = tangents[v * 4 + 1];
+        vertexData[base + existingTanOff + 2] = tangents[v * 4 + 2];
+        vertexData[base + existingTanOff + 3] = tangents[v * 4 + 3];
+        if (texCoord1 != null && existingUv1Off != null) {
+          vertexData[base + existingUv1Off] = texCoord1[v * 2];
+          vertexData[base + existingUv1Off + 1] = texCoord1[v * 2 + 1];
+        }
+      }
+      if (_baseVertexData != null) {
+        _baseVertexData = Float32List.fromList(vertexData);
+      }
+      if (hasResource && _resourceSizeInBytes == _sizeInBytes) {
+        resource.write(ByteData.sublistView(vertexData));
+      }
+    } else {
+      final newAttrs = <VertexAttribute>[
+        ..._layout.attributes,
+        if (existingTanOff == null)
+          const VertexAttribute(VertexLayout.tangentAttribute, 4),
+        if (existingUv1Off == null)
+          const VertexAttribute(VertexLayout.texCoord1Attribute, 2),
+      ];
+      final newLayout = newAttrs == VertexLayout.pbrStandard.attributes
+          ? VertexLayout.pbrStandard
+          : VertexLayout(newAttrs);
+      final resolvedLayout = newLayout == VertexLayout.pbrStandard
+          ? VertexLayout.pbrStandard
+          : newLayout;
+      final newStride = resolvedLayout.strideInFloats;
+      final newTanOff = resolvedLayout.offsetOf(VertexLayout.tangentAttribute)!;
+      final newUv1Off = resolvedLayout.offsetOf(
+        VertexLayout.texCoord1Attribute,
+      )!;
+      final repacked = Float32List(vertexCount * newStride);
+      for (var v = 0; v < vertexCount; v++) {
+        final oldBase = v * stride;
+        final newBase = v * newStride;
+        repacked.setRange(newBase, newBase + stride, vertexData, oldBase);
+        repacked[newBase + newTanOff] = tangents[v * 4];
+        repacked[newBase + newTanOff + 1] = tangents[v * 4 + 1];
+        repacked[newBase + newTanOff + 2] = tangents[v * 4 + 2];
+        repacked[newBase + newTanOff + 3] = tangents[v * 4 + 3];
+        if (texCoord1 != null && v * 2 + 1 < texCoord1.length) {
+          repacked[newBase + newUv1Off] = texCoord1[v * 2];
+          repacked[newBase + newUv1Off + 1] = texCoord1[v * 2 + 1];
+        } else if (existingUv1Off != null) {
+          repacked[newBase + newUv1Off] = vertexData[oldBase + existingUv1Off];
+          repacked[newBase + newUv1Off + 1] =
+              vertexData[oldBase + existingUv1Off + 1];
+        } else if (uvOff != null) {
+          repacked[newBase + newUv1Off] = vertexData[oldBase + uvOff];
+          repacked[newBase + newUv1Off + 1] = vertexData[oldBase + uvOff + 1];
+        }
+      }
+      _layout = resolvedLayout;
+      vertexData = repacked;
+      if (_baseVertexData != null) {
+        _baseVertexData = Float32List.fromList(vertexData);
+      }
+      if (hasResource) {
+        dispose();
+      }
+    }
+
+    return tangents;
+  }
+
+  /// Computes MikkTSpace-style Gram-Schmidt orthogonalized `vec4` tangents
+  /// (`[tx, ty, tz, handedness]`) from raw [positions] (`3 * N`), [normals]
+  /// (`3 * N`), [texCoords] (`2 * N`), and triangle [indices].
+  static Float32List calculateTangents({
+    required Float32List positions,
+    required Float32List normals,
+    required Float32List texCoords,
+    required List<int> indices,
+  }) {
+    final vertexCount = positions.length ~/ 3;
+    final tan1 = Float32List(vertexCount * 3);
+    final tan2 = Float32List(vertexCount * 3);
+
+    for (var i = 0; i + 2 < indices.length; i += 3) {
+      final i0 = indices[i];
+      final i1 = indices[i + 1];
+      final i2 = indices[i + 2];
+
+      final p0x = positions[i0 * 3];
+      final p0y = positions[i0 * 3 + 1];
+      final p0z = positions[i0 * 3 + 2];
+
+      final dx1 = positions[i1 * 3] - p0x;
+      final dy1 = positions[i1 * 3 + 1] - p0y;
+      final dz1 = positions[i1 * 3 + 2] - p0z;
+
+      final dx2 = positions[i2 * 3] - p0x;
+      final dy2 = positions[i2 * 3 + 1] - p0y;
+      final dz2 = positions[i2 * 3 + 2] - p0z;
+
+      final u0 = texCoords[i0 * 2];
+      final v0 = texCoords[i0 * 2 + 1];
+      final du1 = texCoords[i1 * 2] - u0;
+      final dv1 = texCoords[i1 * 2 + 1] - v0;
+      final du2 = texCoords[i2 * 2] - u0;
+      final dv2 = texCoords[i2 * 2 + 1] - v0;
+
+      final denom = du1 * dv2 - du2 * dv1;
+      if (denom.abs() <= 1e-10) {
+        continue;
+      }
+      final r = 1.0 / denom;
+
+      final sx = (dv2 * dx1 - dv1 * dx2) * r;
+      final sy = (dv2 * dy1 - dv1 * dy2) * r;
+      final sz = (dv2 * dz1 - dv1 * dz2) * r;
+
+      final tx = (du1 * dx2 - du2 * dx1) * r;
+      final ty = (du1 * dy2 - du2 * dy1) * r;
+      final tz = (du1 * dz2 - du2 * dz1) * r;
+
+      tan1[i0 * 3] += sx;
+      tan1[i0 * 3 + 1] += sy;
+      tan1[i0 * 3 + 2] += sz;
+      tan1[i1 * 3] += sx;
+      tan1[i1 * 3 + 1] += sy;
+      tan1[i1 * 3 + 2] += sz;
+      tan1[i2 * 3] += sx;
+      tan1[i2 * 3 + 1] += sy;
+      tan1[i2 * 3 + 2] += sz;
+
+      tan2[i0 * 3] += tx;
+      tan2[i0 * 3 + 1] += ty;
+      tan2[i0 * 3 + 2] += tz;
+      tan2[i1 * 3] += tx;
+      tan2[i1 * 3 + 1] += ty;
+      tan2[i1 * 3 + 2] += tz;
+      tan2[i2 * 3] += tx;
+      tan2[i2 * 3 + 1] += ty;
+      tan2[i2 * 3 + 2] += tz;
+    }
+
+    final out = Float32List(vertexCount * 4);
+    for (var v = 0; v < vertexCount; v++) {
+      final nx = normals[v * 3];
+      final ny = normals[v * 3 + 1];
+      final nz = normals[v * 3 + 2];
+
+      final tx = tan1[v * 3];
+      final ty = tan1[v * 3 + 1];
+      final tz = tan1[v * 3 + 2];
+
+      // Gram-Schmidt orthogonalization: t' = normalize(t - n * dot(n, t)).
+      final nDotT = nx * tx + ny * ty + nz * tz;
+      var ox = tx - nx * nDotT;
+      var oy = ty - ny * nDotT;
+      var oz = tz - nz * nDotT;
+      final len2 = ox * ox + oy * oy + oz * oz;
+
+      if (len2 > 1e-12) {
+        final invLen = 1.0 / math.sqrt(len2);
+        ox *= invLen;
+        oy *= invLen;
+        oz *= invLen;
+
+        // Handedness: sign(dot(cross(n, t), b)).
+        final cx = ny * tx - nz * ty;
+        final cy = nz * tx - nx * tz;
+        final cz = nx * ty - ny * tx;
+        final bx = tan2[v * 3];
+        final by = tan2[v * 3 + 1];
+        final bz = tan2[v * 3 + 2];
+        final sign = (cx * bx + cy * by + cz * bz) < 0.0 ? -1.0 : 1.0;
+
+        out[v * 4] = ox;
+        out[v * 4 + 1] = oy;
+        out[v * 4 + 2] = oz;
+        out[v * 4 + 3] = sign;
+      } else {
+        // Fallback orthonormal tangent when UVs are degenerate.
+        final rx = ny.abs() < 0.9 ? 0.0 : 1.0;
+        final ry = ny.abs() < 0.9 ? 1.0 : 0.0;
+        var fx = ry * nz;
+        var fy = -rx * nz;
+        var fz = rx * ny - ry * nx;
+        final fl = math.sqrt(math.max(1e-12, fx * fx + fy * fy + fz * fz));
+        fx /= fl;
+        fy /= fl;
+        fz /= fl;
+        out[v * 4] = fx;
+        out[v * 4 + 1] = fy;
+        out[v * 4 + 2] = fz;
+        out[v * 4 + 3] = 1.0;
+      }
+    }
+    return out;
+  }
+
   /// Updates the interleaved vertex buffer in place on the GPU (when already
   /// uploaded), refreshes [aabb], and invalidates any cached [bvh].
   void updateVertices(Float32List newVertices, {Aabb3? aabb}) {
@@ -201,7 +464,7 @@ class Surface extends Resource<GpuBuffer> {
     if (aabb != null) {
       _aabb.setFrom(aabb);
     } else {
-      final recomputed = _computeAabb(vertexData, layout, vertexCount);
+      final recomputed = _computeAabb(vertexData, _layout, vertexCount);
       _aabb.setFrom(recomputed);
     }
     if (_positions != null) {
@@ -222,9 +485,9 @@ class Surface extends Resource<GpuBuffer> {
     final base = _baseVertexData ??= Float32List.fromList(vertexData);
     vertexData.setAll(0, base);
 
-    final posOffset = layout.offsetOf(VertexLayout.positionAttribute);
-    final nrmOffset = layout.offsetOf('vertexNormal');
-    final stride = layout.strideInFloats;
+    final posOffset = _layout.offsetOf(VertexLayout.positionAttribute);
+    final nrmOffset = _layout.offsetOf('vertexNormal');
+    final stride = _layout.strideInFloats;
     final targetCount = math.min(weights.length, morphTargets.length);
 
     for (var t = 0; t < targetCount; t++) {
@@ -296,11 +559,11 @@ class Surface extends Resource<GpuBuffer> {
   }
 
   void _fillPositions(Float32List out) {
-    final offset = layout.offsetOf(VertexLayout.positionAttribute);
+    final offset = _layout.offsetOf(VertexLayout.positionAttribute);
     if (offset == null) {
       return;
     }
-    final stride = layout.strideInFloats;
+    final stride = _layout.strideInFloats;
     for (var i = 0; i < vertexCount; i++) {
       final base = i * stride + offset;
       out[i * 3] = vertexData[base];
@@ -369,6 +632,32 @@ class Surface extends Resource<GpuBuffer> {
     final packed = Float32List(vertices.length * stride);
     for (var i = 0; i < vertices.length; i++) {
       packed.setRange(i * stride, (i + 1) * stride, vertices[i].storage);
+    }
+    return packed;
+  }
+
+  static Float32List _packPbrVertices(List<Vertex> vertices) {
+    final stride = VertexLayout.pbrStandard.strideInFloats;
+    final packed = Float32List(vertices.length * stride);
+    for (var i = 0; i < vertices.length; i++) {
+      final v = vertices[i];
+      final base = i * stride;
+      packed.setRange(base, base + 20, v.storage);
+      final tan = v.tangent;
+      if (tan != null) {
+        packed[base + 20] = tan.x;
+        packed[base + 21] = tan.y;
+        packed[base + 22] = tan.z;
+        packed[base + 23] = tan.w;
+      } else {
+        packed[base + 20] = 1.0;
+        packed[base + 21] = 0.0;
+        packed[base + 22] = 0.0;
+        packed[base + 23] = 1.0;
+      }
+      final uv1 = v.texCoord1 ?? v.texCoord;
+      packed[base + 24] = uv1.x;
+      packed[base + 25] = uv1.y;
     }
     return packed;
   }
