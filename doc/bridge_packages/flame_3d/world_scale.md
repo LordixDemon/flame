@@ -331,7 +331,7 @@ final stationOrigin = FloatingOriginTransform3D(
 station.add(stationOrigin);
 world.add(station);
 
-// Move the station in world coordinates, never through station.position:
+// Move the station in world coordinates, with full 64-bit precision:
 stationOrigin.translateWorld(0.5, 0, 0);
 ```
 
@@ -340,14 +340,18 @@ stationOrigin.translateWorld(0.5, 0, 0);
 - A `FloatingOriginTransform3D` owns the 64-bit position of its parent `Component3D` (or of
   `target`) and sets the parent's local `position` to `worldPosition - origin` when it is
   registered and after every rebase. Move bound objects with `setWorldValues` or
-  `translateWorld`: a change made directly to `position` is overwritten at the next rebase.
+  `translateWorld` to keep 64-bit precision. Moving one through its `position` works too: at the
+  next rebase, a binding whose object is no longer where it put it takes the object's world
+  position from its local `position` (with 32-bit precision) before re-applying it.
 - Without `controller`, the binding looks for a `FloatingOriginController3D` among the direct
-  children of its `World3D` when it mounts, so the controller must be mounted first.
+  children of its `World3D` when it mounts, and a controller that mounts later registers every
+  binding of its world that has no controller yet, so the order does not matter.
 - Options: `rebaseThreshold` (2048 world units), `rebaseY` (`true`; with `false` the origin only
-  moves horizontally), `initialOrigin`, `trackedTarget` (watched when `camera` is `null`).
-- On a rebase the controller moves `camera.position` and `camera.target`, re-applies every bound
-  object, calls the listeners (`onOriginShifted`, `addOriginShiftListener`) with the local shift,
-  and marks the world dirty. `rebaseToWorldOrigin` moves the origin to a given 64-bit position,
+  moves horizontally), `initialOrigin`, `trackedTarget` (watched when `camera` is `null`; it must
+  be a direct child of the world, as its `position` is compared with the threshold).
+- On a rebase the controller moves `camera.position` and `camera.target`, moves `trackedTarget`
+  back by the shift unless a binding places it, re-applies every bound object, calls the listeners
+  (`onOriginShifted`, `addOriginShiftListener`) with the local shift, and marks the world dirty. `rebaseToWorldOrigin` moves the origin to a given 64-bit position,
   for teleports. `localToWorld64`, `world64ToLocal` and `cameraWorldPosition64` convert.
 - Objects that are neither bound nor moved by a listener stay at their local coordinates, so they
   jump by the shift relative to the camera.
@@ -589,9 +593,8 @@ the streamer: do it in `onChunkEvicted`.
 - `PortalOcclusionGraph3D` keeps one rectangle per room, so rooms seen through two separate
   portals may be reported visible through the wall between them.
 - Occlusion results applied through `visible` also remove the objects' shadows.
-- `FloatingOriginController3D` only moves the camera and bound objects; a `trackedTarget` must be
-  bound and moved with `translateWorld`, otherwise the origin moves again every frame (an unbound
-  target is never moved back) or the target snaps back to its stale 64-bit position.
+- `FloatingOriginController3D` only moves the camera, the tracked target and bound objects; other
+  objects must follow the shift through a listener.
 - `WorldChunkStreamer3D` does not catch loader errors: a throwing `chunkLoader` raises an unhandled
   error and is called again at every update. Chunks still in the cache when the streamer is removed
   are not passed to `onChunkEvicted`.

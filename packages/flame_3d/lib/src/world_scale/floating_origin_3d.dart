@@ -125,9 +125,19 @@ class FloatingOriginTransform3D({
   var FloatingOriginController3D? controller,
 }) extends Component {
   /// Authoritative 64-bit world coordinate of [resolvedTarget].
+  ///
+  /// Moving the target through its local `position` instead of
+  /// [translateWorld] or [setWorldValues] works too: at the next rebase the
+  /// controller notices that the target is no longer where this binding put
+  /// it and takes its world position from there (with the precision of the
+  /// 32-bit local position).
   final WorldPosition64 worldPosition = WorldPosition64.copy(worldPosition);
 
   final Vector3 _scratch = Vector3.zero();
+  // The local position this binding last gave its target, to tell whether
+  // the target was moved directly since.
+  final Vector3 _appliedLocal = Vector3.zero();
+  Component3D? _appliedTarget;
 
   /// Resolved [Component3D] controlled by this binding.
   Component3D? get resolvedTarget {
@@ -168,6 +178,30 @@ class FloatingOriginTransform3D({
     }
     worldPosition.toCameraRelativeVector3(origin, out: _scratch);
     comp.position.setFrom(_scratch);
+    _appliedLocal.setFrom(comp.position);
+    _appliedTarget = comp;
+  }
+
+  /// Takes [worldPosition] from the target's local position when the target
+  /// was moved directly since this binding last placed it, [origin] being the
+  /// origin it was placed against.
+  void _syncFromTarget(WorldPosition64 origin) {
+    final comp = resolvedTarget;
+    if (comp == null) {
+      return;
+    }
+    final local = comp.position;
+    if (identical(comp, _appliedTarget) &&
+        local.x == _appliedLocal.x &&
+        local.y == _appliedLocal.y &&
+        local.z == _appliedLocal.z) {
+      return;
+    }
+    worldPosition.setValues(
+      origin.x + local.x,
+      origin.y + local.y,
+      origin.z + local.z,
+    );
   }
 
   @override
@@ -186,6 +220,7 @@ class FloatingOriginTransform3D({
         }
       }
     }
+    // When the controller mounts later, it registers this binding itself.
     controller?.register(this);
   }
 
@@ -220,6 +255,11 @@ class FloatingOriginController3D({
 
   /// Optional local [Component3D] (e.g. player vehicle/character) monitored
   /// when [camera] is `null`.
+  ///
+  /// It must be a direct child of the world, so that its `position` is in
+  /// the world's local coordinates. On a rebase the controller moves it back
+  /// by the shift, unless a registered [FloatingOriginTransform3D] binds it
+  /// (the binding then places it).
   var Component3D? trackedTarget,
 
   /// Maximum local distance from `(0, 0, 0)` before triggering an origin
@@ -266,6 +306,24 @@ class FloatingOriginController3D({
 
   /// Local shift vector `(-dx, -dy, -dz)` from the most recent rebase.
   Vector3 get lastShiftDelta => _lastShiftDelta;
+
+  @override
+  void onMount() {
+    super.onMount();
+    // Bindings mounted before this controller found no controller: adopt
+    // those of the world that have none.
+    for (final ancestor in ancestors()) {
+      if (ancestor is World3D) {
+        for (final binding
+            in ancestor.descendants().whereType<FloatingOriginTransform3D>()) {
+          if (binding.controller == null) {
+            register(binding);
+          }
+        }
+        break;
+      }
+    }
+  }
 
   /// Registers an additional listener notified on every origin rebase.
   void addOriginShiftListener(OriginShiftCallback3D listener) {
@@ -379,11 +437,32 @@ class FloatingOriginController3D({
   }
 
   /// Shifts [origin] by `(dx, dy, dz)` in exact 64-bit double precision,
-  /// translates [camera] by `(-dx, -dy, -dz)`, refreshes all registered
+  /// translates [camera] and an unbound [trackedTarget] by
+  /// `(-dx, -dy, -dz)`, refreshes all registered
   /// [FloatingOriginTransform3D]s, and notifies origin-shift listeners.
   void shiftOriginBy(double dx, double dy, double dz) {
+    // Bound targets moved through their local position since their binding
+    // placed them: take their world position from there first.
+    var trackedIsBound = false;
+    final tracked = trackedTarget;
+    for (var i = 0; i < _transforms.length; i++) {
+      final binding = _transforms[i];
+      binding._syncFromTarget(origin);
+      if (tracked != null && identical(binding.resolvedTarget, tracked)) {
+        trackedIsBound = true;
+      }
+    }
+
     origin.translate(dx, dy, dz);
     _rebaseCount++;
+
+    if (tracked != null && !trackedIsBound) {
+      tracked.position.setValues(
+        tracked.position.x - dx,
+        tracked.position.y - dy,
+        tracked.position.z - dz,
+      );
+    }
 
     final cam = camera;
     if (cam != null) {
