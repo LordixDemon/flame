@@ -465,9 +465,10 @@ class Swarm extends Object3D {
   ordered as if it stood at the world origin.
 - In a shadow pass, the draw is skipped when the material casts no shadows. The shadow pass and the
   depth-normal prepass draw the surface with their own shaders, which read the four columns as a
-  model matrix: data laid out otherwise must not cast shadows nor write depth. Skip the call when
-  `context.isShadowPass` or `context.isDepthNormalPass` is `true`, as particle systems of
-  billboards and stroke batches do.
+  model matrix: a material whose instances hold something else returns `false` from
+  `Material.instancesHoldModelMatrices`, and both passes leave its draws out. Particle systems of
+  billboards and stroke batches also skip the call when `context.isShadowPass` or
+  `context.isDepthNormalPass` is `true`, which spares writing their instances.
 
 The vertex shader of `ParticleMaterial` reads the columns as: the center and the width
 (`instanceModel0`), the velocity and the height (`instanceModel1`), the rotation, the flipbook

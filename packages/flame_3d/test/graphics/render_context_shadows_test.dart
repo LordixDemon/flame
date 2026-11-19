@@ -11,6 +11,12 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../_fakes/fake_gpu_backend.dart';
 
+/// A material whose instances are not model matrices, as a billboard's.
+class _Billboard() extends _Receiver {
+  @override
+  bool get instancesHoldModelMatrices => false;
+}
+
 /// A material whose shaders are faked and receive shadows.
 class _Receiver() extends Material {
   this
@@ -262,10 +268,19 @@ void main() {
       final glass = _Receiver()
         ..renderState = RenderState.premultipliedAlphaBlend;
       final glow = _Receiver()..castsShadows = false;
+      // Opaque, but its instances are no model matrices: the caster shaders
+      // cannot draw it where it is.
+      final billboard = _Billboard();
       final surface = triangle(receiver);
       final instances = Float32List(VertexLayout.instanceStrideInFloats * 2);
       void draw() {
-        for (final material in [receiver, glass, glow]) {
+        context.drawInstances(
+          surface,
+          material: billboard,
+          instances: instances,
+          count: 2,
+        );
+        for (final material in [receiver, glass, glow, billboard]) {
           context.drawSurface(
             surface,
             material: material,
@@ -302,7 +317,7 @@ void main() {
       device
         ..endPass()
         ..end();
-      expect(context.drawCount, 4);
+      expect(context.drawCount, 6);
     });
 
     test('tells the receivers about the light and its map', () {

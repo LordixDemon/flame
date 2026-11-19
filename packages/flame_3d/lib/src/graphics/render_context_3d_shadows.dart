@@ -1124,7 +1124,11 @@ class _ShadowPass(final RenderContext3D _context) {
     VertexLayout? lastLayout;
     _CasterPipeline? caster;
     for (var i = 0; i < count; i++) {
-      if (!context._materials[i]!.castsShadows) {
+      // The caster shaders read every instance as a model matrix: draws
+      // whose instances hold something else (billboards, ribbons) cannot
+      // cast where they are, so they cast nothing.
+      final material = context._materials[i]!;
+      if (!material.castsShadows || !material.instancesHoldModelMatrices) {
         continue;
       }
       final surface = context._surfaces[i]!;

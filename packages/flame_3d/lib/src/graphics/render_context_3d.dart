@@ -430,7 +430,9 @@ class RenderContext3D(super.device) extends RenderContext {
   }) {
     final drawMaterial = material ?? surface.material;
     final shadowPass = _shadows.recording;
-    if (shadowPass && !drawMaterial.castsShadows) {
+    if (shadowPass &&
+        (!drawMaterial.castsShadows ||
+            !drawMaterial.instancesHoldModelMatrices)) {
       return;
     }
     final i = _count;
@@ -541,7 +543,9 @@ class RenderContext3D(super.device) extends RenderContext {
       'instances holds fewer than $count instances',
     );
     final drawMaterial = material ?? surface.material;
-    if (_shadows.recording && !drawMaterial.castsShadows) {
+    if (_shadows.recording &&
+        (!drawMaterial.castsShadows ||
+            !drawMaterial.instancesHoldModelMatrices)) {
       return;
     }
     final pipeline = _pipelineFor(drawMaterial, surface.layout);
