@@ -180,8 +180,9 @@ With `base` the albedo color times the albedo map, the vertex color and the inst
 ```text
 f0      = mix(((ior - 1) / (ior + 1))², base, metallic)   // 0.04 for ior 1.5
 kD      = (1 - F(n·v)) * (1 - metallic) * (1 - transmission)
-ambient = kD * base * (ambient light + hemisphere light + probe SH9
-                       + lightmap * lightmapIntensity + probe grid)
+ambient = kD * base * (ambient light + hemisphere light
+                       + (probe SH9 + probe grid) / π
+                       + lightmap * lightmapIntensity)
           + reflections (see Lighting)
 ambient = ambient * occlusion
 direct  = Σ lights: (kD * base / π + D * G * F / (4 n·v n·l) * specular)

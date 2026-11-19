@@ -66,7 +66,8 @@ uniform PassOptions {
   vec4 flags;
   // xyz: lightProbeGrid bounds min, w: grid intensity (>0 active)
   vec4 gridBoundsMin;
-  // xyz: lightProbeGrid 1 / bounds span, w: irradiance of a texel value of 1
+  // xyz: lightProbeGrid 1 / bounds span, w: irradiance of a texel value of 1,
+  // divided by pi
   vec4 gridInvSpan;
   // xyz: (resX, resY, resZ), w: unused
   vec4 gridRes;
@@ -228,7 +229,7 @@ vec3 sampleProbeGridBand(float band, vec3 uvw) {
 }
 
 // Irradiance of the LightProbeGrid3D at worldPos for the unit normal n,
-// times the grid's intensity. With F+ and F- the irradiance
+// divided by pi, times the grid's intensity. With F+ and F- the irradiance
 // along +axis and -axis, E(n) = sum over the axes of
 //   n_i^2 (F+ + F-) / 2 + n_i (F+ - F-) / 2,
 // the probe's SH9 irradiance without the xy, yz and zx terms of band 2.
@@ -602,6 +603,8 @@ void main() {
   );
   ambient += kD * baseColor * sky * hemisphereLight.intensity;
 
+  // shCoeffs[0].w includes the 1 / pi that turns irradiance into the diffuse
+  // light of a Lambertian surface (direct lights use kD * base / pi too).
   if (material.shCoeffs[0].w > 0.0) {
     float nx = normal.x;
     float ny = normal.y;

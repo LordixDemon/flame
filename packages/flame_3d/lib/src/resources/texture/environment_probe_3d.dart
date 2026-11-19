@@ -26,6 +26,11 @@ class EnvironmentProbe3D({
 
   /// Evaluates diffuse irradiance (`RGB`, linear) for unit world [normal]
   /// using the Ramamoorthi & Hanrahan `L0..L2` cosine-lobe convolution.
+  ///
+  /// A Lambertian surface of albedo `a` reflects `a * E / π` of it, which is
+  /// what `SpatialMaterial` adds to its ambient term (times [intensity]): a
+  /// uniform panorama of value `v` gives `E = π v` and lights the surface as
+  /// an ambient light of value `v`.
   Vector3 evaluateIrradiance(Vector3 normal, {Vector3? out}) {
     final res = out ?? Vector3.zero();
     final x = normal.x;

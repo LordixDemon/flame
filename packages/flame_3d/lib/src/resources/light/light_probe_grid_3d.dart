@@ -99,18 +99,24 @@ class LightProbeGrid3D({
               sh[0].x += avgR * src.intensity * omnidirY00;
               sh[0].y += avgG * src.intensity * omnidirY00;
               sh[0].z += avgB * src.intensity * omnidirY00;
+              // The light gives the diffuse light (avg + diff * n.up) times
+              // the color: irradiance pi * (avg + diff * n.up), whose band-1
+              // coefficients are diff * up * 3 / (2 * 0.488603).
+              const l1 = 1.5 / 0.488603;
               final diffR = (src.skyColor.r - src.groundColor.r) * 0.5;
               final diffG = (src.skyColor.g - src.groundColor.g) * 0.5;
               final diffB = (src.skyColor.b - src.groundColor.b) * 0.5;
-              _projectDirectionalLobe(
-                sh,
-                up.x,
-                up.y,
-                up.z,
-                diffR * src.intensity * math.pi,
-                diffG * src.intensity * math.pi,
-                diffB * src.intensity * math.pi,
-              );
+              final k = src.intensity * l1;
+              // SH order: 1 is y, 2 is z, 3 is x.
+              sh[1].x += diffR * k * up.y;
+              sh[1].y += diffG * k * up.y;
+              sh[1].z += diffB * k * up.y;
+              sh[2].x += diffR * k * up.z;
+              sh[2].y += diffG * k * up.z;
+              sh[2].z += diffB * k * up.z;
+              sh[3].x += diffR * k * up.x;
+              sh[3].y += diffG * k * up.x;
+              sh[3].z += diffB * k * up.x;
             } else if (src is DirectionalLight) {
               light.direction(dir);
               _projectDirectionalLobe(
@@ -312,7 +318,10 @@ class LightProbeGrid3D({
   final List<Vector3> _scratchSh9 = List.generate(9, (_) => Vector3.zero());
 
   /// Evaluates trilinearly interpolated diffuse irradiance (`RGB`, linear) at
-  /// [worldPosition] along unit [normal].
+  /// [worldPosition] along unit [normal], times [intensity].
+  ///
+  /// A Lambertian surface of albedo `a` reflects `a * E / π` of it, which is
+  /// what `SpatialMaterial` adds to its ambient term.
   Vector3 sampleIrradiance(
     Vector3 worldPosition,
     Vector3 normal, {

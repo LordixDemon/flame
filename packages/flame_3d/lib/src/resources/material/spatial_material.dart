@@ -354,9 +354,11 @@ class SpatialMaterial({
         ..setVector4('Material.probeCenter', _probeCenterVec);
     }
 
+    // The coefficients give irradiance: like the direct lights, the diffuse
+    // light is the irradiance times kD * base / pi.
     final matBlock = fragmentShader.block('Material');
     if (probe != null && probe.intensity > 0) {
-      final diffuseScale = probe.intensity * volumeWeight;
+      final diffuseScale = probe.intensity * volumeWeight / math.pi;
       for (var i = 0; i < 9; i++) {
         final c = probe.shCoefficients[i];
         matBlock.setVector4(

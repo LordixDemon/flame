@@ -918,7 +918,13 @@ class RenderContext3D(super.device) extends RenderContext {
         )
         ..setVector4(
           'gridInvSpan',
-          v..setValues(1.0 / sx, 1.0 / sy, 1.0 / sz, grid.volumeTextureRange),
+          // The grid holds irradiance: the diffuse light is E * kD * base / pi.
+          v..setValues(
+            1.0 / sx,
+            1.0 / sy,
+            1.0 / sz,
+            grid.volumeTextureRange / math.pi,
+          ),
         )
         ..setVector4(
           'gridRes',

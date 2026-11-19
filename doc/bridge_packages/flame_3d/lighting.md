@@ -344,9 +344,11 @@ final chrome = SpatialMaterial(
 
 What `SpatialMaterial` does with it:
 
-- Diffuse: it adds `kD * base * E(n) * intensity` to the ambient term, where `E` is the irradiance
-  the coefficients give for the normal (the Ramamoorthi-Hanrahan cosine convolution). `intensity`
-  scales this diffuse term only.
+- Diffuse: it adds `kD * base * E(n) / π * intensity` to the ambient term, where `E` is the
+  irradiance the coefficients give for the normal (the Ramamoorthi-Hanrahan cosine convolution),
+  divided by `π` like the light of the direct lights: a uniform panorama of value `v` lights a
+  surface as an ambient or hemisphere light of value `v` does. `intensity` scales this diffuse term
+  only.
 - Reflections: it samples `environmentTexture` when set, else the probe's reflection texture, along
   the reflected view direction at the mip level `roughness * (mip levels - 1)`, scaled by
   `environmentIntensity`. On native backends the reflection is weighted by the split-sum BRDF
@@ -450,12 +452,16 @@ world.lightProbeGrid = LightProbeGrid3D.bakeFromLights(
 - `LightProbeGrid3D(bounds:, resolutionX: 4, resolutionY: 2, resolutionZ: 4, intensity: 1)` makes
   an empty grid; `setProbeSh9(ix, iy, iz, coefficients)` fills a probe; `sampleSh9At` and
   `sampleIrradiance(position, normal)` read it on the CPU with trilinear interpolation and the full
-  spherical harmonics.
+  spherical harmonics. The coefficients hold radiance projected onto the spherical harmonics, and
+  `sampleIrradiance` gives irradiance: a surface of albedo `a` reflects `a * E / π` of it, which is
+  what `SpatialMaterial` adds (times `kD` and `intensity`).
 - `bakeFromLights(bounds:, lights:, ..., ambientColor: white, ambientIntensity: 0.02)` evaluates
   every light at every lattice point analytically: no occlusion, no bounced light. It stores direct
-  light, not global illumination. Lights baked into the grid and also left in the world light
-  twice.
-- On the GPU every probe is an ambient cube: the irradiance its spherical harmonics give along
+  light, not global illumination, scaled so that a baked light lights a surface as it does as a
+  world light (exactly for ambient and hemisphere lights; directional, point and spot lights are
+  approximated by band 2 of the harmonics, which softens their falloff around the surface). Lights
+  baked into the grid and also left in the world light twice.
+- On the GPU every probe is stored as the irradiance its spherical harmonics give along
   `+X`, `-X`, `+Y`, `-Y`, `+Z` and `-Z`, packed into a strip texture (`volumeTextureFor`) as
   `sqrt(E / range)` in 8 bits, where `range` (`volumeTextureRange`) is the grid's largest value, so
   bright probes do not clip and dim ones keep their precision. Each fragment reads the six values
@@ -565,10 +571,6 @@ material's slots (see [Materials](materials.md#custom-shaders)):
   world's order, while the light arrays skip zero-intensity point lights and are reordered by
   priority (always for more than four spot lights, with `prioritizeNearestLights` for more than
   eight point lights). The shadow then darkens another light, or none.
-- The diffuse light of environment probes and light probe grids is the irradiance itself, not
-  irradiance divided by `π` as for the direct lights: a uniform sky of brightness `v` adds `π * v`
-  times the base color, where a hemisphere light of that color adds `v` times it. Lower
-  `EnvironmentProbe3D.intensity` and `LightProbeGrid3D.intensity` to about `1/π` to match.
 - Reflections: one volume per object (one per instanced draw of your own), no blending between
   overlapping volumes; boxes are axis-aligned; `priority` is the component's ordering priority as
   well.
