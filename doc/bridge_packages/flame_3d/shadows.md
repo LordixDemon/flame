@@ -441,19 +441,16 @@ order the pass holds them in.
 
 ## Point-light shadows
 
-A `PointLight` with `ShadowSettings` casts shadows in every direction. `LightComponent.point` has
-no `shadows` parameter; give the light source yourself:
+A `PointLight` with `ShadowSettings` casts shadows in every direction:
 
 ```dart
 world.add(
-  LightComponent(
+  LightComponent.point(
     position: Vector3(0, 2, 0),
-    source: PointLight(
-      color: const Color(0xFFFFD8A0),
-      intensity: 20,
-      range: 10,
-      shadows: ShadowSettings(),
-    ),
+    color: const Color(0xFFFFD8A0),
+    intensity: 20,
+    range: 10,
+    shadows: ShadowSettings(),
   ),
 );
 ```

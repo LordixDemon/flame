@@ -96,5 +96,15 @@ void main() {
       );
       expect(LightComponent.ambient().source, isA<AmbientLight>());
     });
+
+    test('point lights take shadow settings', () {
+      final settings = ShadowSettings(resolution: 512);
+      final point = LightComponent.point(shadows: settings);
+      expect(
+        point.source,
+        isA<PointLight>().having((l) => l.shadows, 'shadows', settings),
+      );
+      expect((LightComponent.point().source as PointLight).shadows, isNull);
+    });
   });
 }

@@ -24,17 +24,21 @@ class LightComponent({
 }) extends Component3D {
   /// A [PointLight] at [position]. With a [range], its light fades out at that
   /// distance; without, it falls off with the inverse square of the distance.
+  ///
+  /// With [shadows] it casts shadows all around it, see [ShadowSettings].
   LightComponent.point({
     Vector3? position,
     Color color = const Color(0xFFFFFFFF),
     double intensity = 1.0,
     double? range,
+    ShadowSettings? shadows,
     int lightMask = 0xFFFFFFFF,
   }) : this(
          source: PointLight(
            color: color,
            intensity: intensity,
            range: range,
+           shadows: shadows,
          ),
          lightMask: lightMask,
          position: position,
