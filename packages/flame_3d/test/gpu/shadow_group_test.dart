@@ -54,10 +54,22 @@ MeshComponent _cube() {
   );
 }
 
-LightComponent _sun({ShadowFit fit = ShadowFit.view}) {
+LightComponent _sun({ShadowFit fit = ShadowFit.view, int cascades = 1}) {
   return LightComponent.directional(
     direction: Vector3(1, 0, -1),
-    shadows: ShadowSettings(fit: fit),
+    shadows: ShadowSettings(fit: fit, cascades: cascades),
+  );
+}
+
+/// A spot light with shadows far above the scene, shining away from it: it
+/// lights nothing, but puts the frame on the shadow atlas.
+LightComponent _farSpot() {
+  return LightComponent.spot(
+    position: Vector3(2, 2, 50),
+    direction: Vector3(0, 0, 1),
+    intensity: 0.5,
+    range: 2,
+    shadows: ShadowSettings(resolution: 256),
   );
 }
 
@@ -232,6 +244,63 @@ void main() {
       for (final point in inShadow) {
         expect(layers.redAt(pixels, point), 0x80, reason: 'at $point');
       }
+    });
+
+    for (final (name, lights) in [
+      ('2 cascades', () => [_sun(cascades: 2)]),
+      ('4 cascades', () => [_sun(cascades: 4)]),
+      ('a second shadow-casting light', () => [_sun(), _farSpot()]),
+    ]) {
+      testGpu('the upper layer casts onto the lower one with $name', (
+        tester,
+      ) async {
+        final layers = _TwoLayers(
+          lower: [...lights(), _catcher()],
+          upper: [...lights(), _cube()],
+        )..share(ShadowGroup());
+        final pixels = await layers.render(tester);
+        for (final point in inShadow) {
+          expect(
+            layers.redAt(pixels, point),
+            closeTo(darkened, 2),
+            reason: 'at $point',
+          );
+        }
+        for (final point in lit) {
+          expect(layers.redAt(pixels, point), 0x80, reason: 'at $point');
+        }
+        // One atlas pass, reused by the upper layer.
+        expect(layers.lowerLayer.renderStats.shadowPasses, 1);
+        expect(layers.upperLayer.renderStats.shadowPasses, 0);
+        expect(layers.lowerLayer.context.hasShadowAtlas, isTrue);
+      });
+    }
+
+    testGpu('a spot light casts across the group from its atlas tile', (
+      tester,
+    ) async {
+      // The spot light's tile comes after the sun's in the atlas: the
+      // cube's shadow from it falls around y 2 to 5.
+      LightComponent spot() => LightComponent.spot(
+        position: Vector3(2, 0, 4),
+        direction: Vector3(0, 3, -4),
+        range: 12,
+        outerConeAngle: 0.8,
+        shadows: ShadowSettings(resolution: 512),
+      );
+      final layers = _TwoLayers(
+        lower: [_sun(), spot(), _catcher()],
+        upper: [_sun(), spot(), _cube()],
+      )..share(ShadowGroup());
+      final pixels = await layers.render(tester);
+      for (final point in [...inShadow, Vector3(2, 4, 0)]) {
+        expect(
+          layers.redAt(pixels, point),
+          closeTo(darkened, 2),
+          reason: 'at $point',
+        );
+      }
+      expect(layers.redAt(pixels, Vector3(5, 2, 0)), 0x80);
     });
   });
 }

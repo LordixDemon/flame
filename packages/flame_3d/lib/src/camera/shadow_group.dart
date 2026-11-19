@@ -4,6 +4,10 @@ part of 'world_3d.dart';
 /// Worlds that share one shadow map: the objects of every world of the group
 /// cast their shadows onto the objects of every other, as if they were one
 /// scene.
+///
+/// The map is that of the lights of the world that renders first in a frame,
+/// a single map or the atlas (cascades, spot and point lights): every tile
+/// gets the casters of every world.
 /// {@endtemplate}
 class ShadowGroup() {
   /// {@macro shadow_group}
@@ -88,18 +92,28 @@ class ShadowGroup() {
       return false;
     }
     try {
-      world._recordCasters(canvas);
-      for (final member in _worlds) {
-        if (identical(member, world) ||
-            !identical(member._contextOrNull, context)) {
-          continue;
-        }
-        member._recordCasters(canvas);
-      }
+      // Every view of the lights (each tile of the atlas) gets the casters
+      // of every world.
+      do {
+        _recordAll(world, context, canvas);
+      } while (context.advanceShadowAtlasTile());
     } finally {
       context.endShadowPass();
     }
     _version = context.shadowMapVersion;
     return true;
+  }
+
+  /// Records the casters of [world], then of the other worlds of the group
+  /// rendered through [context].
+  void _recordAll(World3D world, RenderContext3D context, Canvas canvas) {
+    world._recordCasters(canvas);
+    for (final member in _worlds) {
+      if (identical(member, world) ||
+          !identical(member._contextOrNull, context)) {
+        continue;
+      }
+      member._recordCasters(canvas);
+    }
   }
 }

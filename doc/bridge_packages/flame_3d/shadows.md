@@ -259,9 +259,8 @@ those of the world that renders first:
 A ground of `ShadowCatcherMaterial` belongs in the lowest layer of the group, below the objects of
 every layer.
 
-A group supports the single map only: one sun with `cascades: 1`, or a lone spot light. On the atlas
-path (two or more cascades, a point light, several lights) it renders the first tile only, so the
-other cascades, spot lights and point lights cast nothing.
+A group shares whichever map its first world's lights need: the single map, or the atlas (cascades,
+spot lights, a point light), each tile of which gets the casters of every world.
 
 
 ## Static shadows
@@ -561,7 +560,6 @@ These are the parts of shadows that are not finished at this point:
 
 - `WaterMaterial` has no spot lights, so it receives the shadows of the sun and of the point light
   only.
-- A `ShadowGroup` supports the single map only: on the atlas only the first tile is rendered.
 - `cacheWhenStatic` is ignored on the atlas, and its key does not see changes that do not change
   `World3D.castersVersion` (see [Static shadows](#static-shadows)).
 - With an orthographic camera, or `ShadowFit.scene`, the inner cascades are fixed in the middle of
