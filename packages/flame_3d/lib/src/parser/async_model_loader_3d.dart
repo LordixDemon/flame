@@ -9,6 +9,7 @@ import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/model.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/parser/meshopt_decoder_3d.dart';
 import 'package:flame_3d/src/resources/texture/mipmaps.dart';
 
 // cSpell:ignore usemtl newmtl mtllib TEXCOORD CUBICSPLINE
@@ -905,16 +906,44 @@ abstract final class AsyncModelLoader3D() {
         resolvedBuffers.add(binChunks[i]);
       } else {
         final bm = rawBuffers[i]! as Map<String, Object?>;
-        resolvedBuffers.add(resolveUriBytes(bm['uri']! as String));
+        final uri = bm['uri'] as String?;
+        // A buffer without URI outside the GLB chunk is a placeholder (the
+        // fallback of `EXT_meshopt_compression`); reading it fails below.
+        resolvedBuffers.add(uri == null ? Uint8List(0) : resolveUriBytes(uri));
       }
     }
 
     final rawViews = (jsonMap['bufferViews'] as List<Object?>?) ?? const [];
+    final decodedViews = <int, Uint8List>{};
     Uint8List sliceView(int viewIdx) {
+      final cached = decodedViews[viewIdx];
+      if (cached != null) {
+        return cached;
+      }
       final vm = rawViews[viewIdx]! as Map<String, Object?>;
+      final extensions = vm['extensions'] as Map<String, Object?>?;
+      final meshopt =
+          extensions?['EXT_meshopt_compression'] as Map<String, Object?>?;
+      if (meshopt != null) {
+        final source = resolvedBuffers[(meshopt['buffer']! as num).toInt()];
+        final offset = (meshopt['byteOffset'] as num?)?.toInt() ?? 0;
+        final length = (meshopt['byteLength']! as num).toInt();
+        return decodedViews[viewIdx] = MeshoptDecoder3D.decodeBufferView(
+          Uint8List.sublistView(source, offset, offset + length),
+          count: (meshopt['count']! as num).toInt(),
+          byteStride: (meshopt['byteStride']! as num).toInt(),
+          mode: MeshoptMode3D.valueOf(meshopt['mode']! as String),
+          filter: MeshoptFilter3D.valueOf(meshopt['filter'] as String?),
+        );
+      }
       final bufIdx = (vm['buffer']! as num).toInt();
       final offset = (vm['byteOffset'] as num?)?.toInt() ?? 0;
       final length = (vm['byteLength']! as num).toInt();
+      if (offset + length > resolvedBuffers[bufIdx].length) {
+        throw FormatException(
+          'bufferView $viewIdx reads past the end of buffer $bufIdx',
+        );
+      }
       return Uint8List.sublistView(
         resolvedBuffers[bufIdx],
         offset,
@@ -927,77 +956,115 @@ abstract final class AsyncModelLoader3D() {
       return (vm['byteStride'] as num?)?.toInt();
     }
 
+    int componentSize(int compType) => switch (compType) {
+      5120 || 5121 => 1,
+      5122 || 5123 => 2,
+      5125 || 5126 => 4,
+      _ => throw FormatException('Unknown componentType $compType'),
+    };
+
+    num readComponent(ByteData bd, int compType, int off) => switch (compType) {
+      5120 => bd.getInt8(off),
+      5121 => bd.getUint8(off),
+      5122 => bd.getInt16(off, Endian.little),
+      5123 => bd.getUint16(off, Endian.little),
+      5125 => bd.getUint32(off, Endian.little),
+      _ => bd.getFloat32(off, Endian.little),
+    };
+
     // Accessors
     final rawAccessors = (jsonMap['accessors'] as List<Object?>?) ?? const [];
+
+    /// The raw components of accessor [accIdx]: those of its buffer view (zeros
+    /// without one) with the `sparse` substitutions applied.
+    Float64List readComponents(int accIdx, int components) {
+      final am = rawAccessors[accIdx]! as Map<String, Object?>;
+      final compType = (am['componentType']! as num).toInt();
+      final count = (am['count']! as num).toInt();
+      final compSize = componentSize(compType);
+      final out = Float64List(count * components);
+      final viewIdx = (am['bufferView'] as num?)?.toInt();
+      if (viewIdx != null) {
+        final byteOffset = (am['byteOffset'] as num?)?.toInt() ?? 0;
+        final bd = ByteData.sublistView(sliceView(viewIdx));
+        final stride = strideOfView(viewIdx) ?? (components * compSize);
+        for (var elem = 0; elem < count; elem++) {
+          final base = byteOffset + elem * stride;
+          for (var c = 0; c < components; c++) {
+            out[elem * components + c] = readComponent(
+              bd,
+              compType,
+              base + c * compSize,
+            ).toDouble();
+          }
+        }
+      }
+      final sparse = am['sparse'] as Map<String, Object?>?;
+      if (sparse != null) {
+        final sparseCount = (sparse['count']! as num).toInt();
+        final im = sparse['indices']! as Map<String, Object?>;
+        final vm = sparse['values']! as Map<String, Object?>;
+        final indexType = (im['componentType']! as num).toInt();
+        final indexSize = componentSize(indexType);
+        final indexOffset = (im['byteOffset'] as num?)?.toInt() ?? 0;
+        final valueOffset = (vm['byteOffset'] as num?)?.toInt() ?? 0;
+        final indexData = ByteData.sublistView(
+          sliceView((im['bufferView']! as num).toInt()),
+        );
+        final valueData = ByteData.sublistView(
+          sliceView((vm['bufferView']! as num).toInt()),
+        );
+        for (var i = 0; i < sparseCount; i++) {
+          final target = readComponent(
+            indexData,
+            indexType,
+            indexOffset + i * indexSize,
+          ).toInt();
+          if (target < 0 || target >= count) {
+            throw FormatException(
+              'Sparse accessor index $target out of range 0..${count - 1}',
+            );
+          }
+          final base = valueOffset + i * components * compSize;
+          for (var c = 0; c < components; c++) {
+            out[target * components + c] = readComponent(
+              valueData,
+              compType,
+              base + c * compSize,
+            ).toDouble();
+          }
+        }
+      }
+      return out;
+    }
+
     List<double> readDoubles(int accIdx, int expectedComponents) {
       final am = rawAccessors[accIdx]! as Map<String, Object?>;
-      final viewIdx = (am['bufferView']! as num).toInt();
-      final byteOffset = (am['byteOffset'] as num?)?.toInt() ?? 0;
       final compType = (am['componentType']! as num).toInt();
       final normalized = (am['normalized'] as bool?) ?? false;
-      final count = (am['count']! as num).toInt();
-      final bytes = sliceView(viewIdx);
-      final bd = ByteData.sublistView(bytes);
-      final compSize = switch (compType) {
-        5120 || 5121 => 1,
-        5122 || 5123 => 2,
-        5125 || 5126 => 4,
-        _ => throw FormatException('Unknown componentType $compType'),
-      };
-      final stride = strideOfView(viewIdx) ?? (expectedComponents * compSize);
-      final out = Float64List(count * expectedComponents);
-      for (var elem = 0; elem < count; elem++) {
-        final base = byteOffset + elem * stride;
-        for (var c = 0; c < expectedComponents; c++) {
-          final off = base + c * compSize;
-          final raw = switch (compType) {
-            5120 => bd.getInt8(off),
-            5121 => bd.getUint8(off),
-            5122 => bd.getInt16(off, Endian.little),
-            5123 => bd.getUint16(off, Endian.little),
-            5125 => bd.getUint32(off, Endian.little),
-            _ => bd.getFloat32(off, Endian.little),
+      final out = readComponents(accIdx, expectedComponents);
+      if (normalized) {
+        for (var i = 0; i < out.length; i++) {
+          final v = out[i];
+          out[i] = switch (compType) {
+            5120 => math.max(v / 127.0, -1.0),
+            5121 => v / 255.0,
+            5122 => math.max(v / 32767.0, -1.0),
+            5123 => v / 65535.0,
+            _ => v,
           };
-          var v = raw.toDouble();
-          if (normalized) {
-            v = switch (compType) {
-              5120 => math.max(v / 127.0, -1.0),
-              5121 => v / 255.0,
-              5122 => math.max(v / 32767.0, -1.0),
-              5123 => v / 65535.0,
-              _ => v,
-            };
-          }
-          out[elem * expectedComponents + c] = v;
         }
       }
       return out;
     }
 
     List<int> readScalarInts(int accIdx) {
-      final am = rawAccessors[accIdx]! as Map<String, Object?>;
-      final viewIdx = (am['bufferView']! as num).toInt();
-      final byteOffset = (am['byteOffset'] as num?)?.toInt() ?? 0;
-      final compType = (am['componentType']! as num).toInt();
-      final count = (am['count']! as num).toInt();
-      final bytes = sliceView(viewIdx);
-      final bd = ByteData.sublistView(bytes);
-      final compSize = switch (compType) {
-        5120 || 5121 => 1,
-        5122 || 5123 => 2,
-        _ => 4,
-      };
-      final stride = strideOfView(viewIdx) ?? compSize;
-      return List<int>.generate(count, (elem) {
-        final off = byteOffset + elem * stride;
-        return switch (compType) {
-          5120 => bd.getInt8(off),
-          5121 => bd.getUint8(off),
-          5122 => bd.getInt16(off, Endian.little),
-          5123 => bd.getUint16(off, Endian.little),
-          _ => bd.getUint32(off, Endian.little),
-        };
-      }, growable: false);
+      final raw = readComponents(accIdx, 1);
+      return List<int>.generate(
+        raw.length,
+        (i) => raw[i].toInt(),
+        growable: false,
+      );
     }
 
     // Images, Samplers, Textures, Materials

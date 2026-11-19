@@ -60,7 +60,9 @@ uses `Model` and `ModelComponent`.
   `COLOR_0` (`VEC3` or `VEC4`), `JOINTS_0` and `WEIGHTS_0`, indexed or not, into
   `VertexLayout.standard` surfaces; 16-bit or 32-bit indices as needed;
 - every accessor component type, including normalized integers, so quantized data
-  (`KHR_mesh_quantization`) is read; interleaved buffer views (`byteStride`);
+  (`KHR_mesh_quantization`) is read; interleaved buffer views (`byteStride`); sparse accessors
+  (applied over their buffer view, or over zeros for accessors without one, as Blender writes
+  shape keys);
 - skins: joints and inverse bind matrices; primitives skinned by more than 64 joints are split into
   surfaces of at most 64 joints each (see [Skinning](#skinning));
 - morph targets with `POSITION` and `NORMAL` deltas, and the mesh's default `weights`;
@@ -104,7 +106,6 @@ Silently ignored:
 
 Rejected with an exception:
 
-- sparse accessors (`UnsupportedError`) and accessors without a `bufferView`;
 - textures without a `source` (for example images given only through `KHR_texture_basisu` or
   `EXT_texture_webp` without a fallback).
 
@@ -131,8 +132,8 @@ and is tested against meshoptimizer's reference streams:
 
 A truncated or malformed stream, a stream with bytes left over, a codec version newer than these,
 or a buffer view that breaks the extension's rules (a filter on index data, a stride a filter does
-not allow) throws a `FormatException` instead of producing wrong geometry. Decoding runs on the
-main isolate while the model is parsed.
+not allow) throws a `FormatException` instead of producing wrong geometry. `ModelParser` decodes
+on the main isolate while the model is parsed; `AsyncModelLoader3D` decodes on its isolate.
 
 The class also has encoders (`encodeVertexStream`, `encodeIndexStream`, `encodeFilterOct`,
 `encodeFilterQuat`, `encodeFilterExp`) that write streams meshoptimizer decodes; they are handy in
@@ -174,11 +175,11 @@ world.add(ModelComponent(model: model));
 scope.release(model); // disposes its surfaces and textures
 ```
 
-Its GLB reader is separate from `ModelParser`'s and supports less: buffers and images must be
-inside the GLB or in `data:` URIs (external URIs throw `UnsupportedError`), and it does not decode
-`EXT_meshopt_compression` and does not apply sparse accessors (it reads their base buffer view and
-ignores the substitutions). It shares one material per glTF material (so primitives with the same
-material batch), and builds the same surfaces, skins, morph targets and animations as `ModelParser`.
+Its GLB reader is separate from `ModelParser`'s: buffers and images must be inside the GLB or in
+`data:` URIs (external URIs throw `UnsupportedError`; a buffer without URI is only allowed as the
+data-less fallback of `EXT_meshopt_compression`). It decodes `EXT_meshopt_compression` and sparse
+accessors like `ModelParser`, shares one material per glTF material (so primitives with the same
+material batch), and builds the same surfaces, skins, morph targets and animations.
 
 With `buildBvhs: true` (the default) every surface's ray-casting BVH is built when the model is
 materialized, on the main isolate. Pass `false` unless you ray cast against the model, and let the
@@ -774,11 +775,10 @@ the main isolate; `AsyncModelLoader3D` moves the geometry work to an isolate.
 
 ## Limitations
 
-- **Meshopt**: only through `ModelParser` and `SceneLoader3D`, decoded on the main isolate;
-  `KHR_meshopt_compression` and its `COLOR` filter are not read.
+- **Meshopt**: `KHR_meshopt_compression` and its `COLOR` filter are not read.
 - **Crossfades**: at most 4 nested interrupted fades; a fifth interruption completes the oldest.
 - **Layers** override only; no additive layers.
-- **glTF**: no sparse accessors, no second UV set, no tangents, at most 4 joint influences per
+- **glTF**: no second UV set, no tangents, at most 4 joint influences per
   vertex, only `KHR_materials_unlit`, `KHR_materials_emissive_strength`, `KHR_texture_transform`
   (offset and scale) and `KHR_mesh_quantization` among material and mesh extensions.
 - **OBJ**: fan triangulation (concave polygons come out wrong), only the diffuse color of

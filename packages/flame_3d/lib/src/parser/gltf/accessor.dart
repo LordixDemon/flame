@@ -18,7 +18,7 @@ class RawAccessor({
   /// The reference to the buffer view.
   /// When undefined, the accessor **MUST** be initialized with zeros; `sparse`
   /// property or extensions **MAY** override zeros with actual values.
-  required final GltfRef<BufferView> bufferView,
+  required final GltfRef<BufferView>? bufferView,
 
   /// The offset relative to the start of the buffer view in bytes.
   ///
@@ -72,8 +72,15 @@ class RawAccessor({
     };
   }
 
+  /// The raw components of the accessor's buffer view, from [byteOffset] to
+  /// the end of the view (empty without a buffer view; sparse substitutions
+  /// are not applied, see the typed accessors).
   Iterable<num> data() sync* {
-    final buffer = bufferView.get();
+    final view = bufferView;
+    if (view == null) {
+      return;
+    }
+    final buffer = view.get();
     final bytes = buffer.data();
     final byteData = ByteData.sublistView(bytes);
     final step = componentType.byteSize;
@@ -91,38 +98,17 @@ class RawAccessor({
     T Function(List<num>) producer, {
     required bool applyNormalization,
   }) {
-    _verifyNotSparse();
     _verifyAccessorType(size);
     if (count == 0) {
       return <T>[];
     }
-
-    final buffer = bufferView.get();
-    final bytes = buffer.data();
-    final byteData = ByteData.sublistView(bytes);
-    final compBytes = componentType.byteSize;
-    final elemBytes = size * compBytes;
-    final strideBytes = buffer.byteStride ?? elemBytes;
-    if (strideBytes <= 0) {
-      throw StateError('Byte stride must be > 0');
-    }
-    final requiredBytes = byteOffset + (count - 1) * strideBytes + elemBytes;
-    if (requiredBytes > bytes.lengthInBytes) {
-      throw RangeError(
-        'Accessor requires $requiredBytes bytes, bufferView has '
-        '${bytes.lengthInBytes}',
-      );
-    }
-
+    final components = _readComponents(size);
     final scratch = List<num>.filled(size, 0);
     final result = <T>[];
     for (var elem = 0; elem < count; elem++) {
-      final base = byteOffset + elem * strideBytes;
+      final base = elem * size;
       for (var c = 0; c < size; c++) {
-        final raw = componentType.parseData(
-          byteData,
-          cursor: base + c * compBytes,
-        );
+        final raw = components[base + c];
         scratch[c] = applyNormalization ? normalizeComponent(raw) : raw;
       }
       result.add(producer(scratch));
@@ -130,15 +116,82 @@ class RawAccessor({
     return result;
   }
 
+  /// Reads `count * size` raw components: the buffer view's (zeros without
+  /// one), with the [sparse] substitutions applied.
+  List<num> _readComponents(int size) {
+    final components = List<num>.filled(count * size, 0);
+    final compBytes = componentType.byteSize;
+    final elemBytes = size * compBytes;
+
+    final view = bufferView?.get();
+    if (view != null) {
+      final bytes = view.data();
+      final byteData = ByteData.sublistView(bytes);
+      final strideBytes = view.byteStride ?? elemBytes;
+      if (strideBytes <= 0) {
+        throw StateError('Byte stride must be > 0');
+      }
+      final requiredBytes = byteOffset + (count - 1) * strideBytes + elemBytes;
+      if (requiredBytes > bytes.lengthInBytes) {
+        throw RangeError(
+          'Accessor requires $requiredBytes bytes, bufferView has '
+          '${bytes.lengthInBytes}',
+        );
+      }
+      for (var elem = 0; elem < count; elem++) {
+        final base = byteOffset + elem * strideBytes;
+        for (var c = 0; c < size; c++) {
+          components[elem * size + c] = componentType.parseData(
+            byteData,
+            cursor: base + c * compBytes,
+          );
+        }
+      }
+    }
+
+    final sparse = this.sparse;
+    if (sparse != null && sparse.count > 0) {
+      final indexView = sparse.indices.bufferView.get().data();
+      final indexData = ByteData.sublistView(indexView);
+      final indexType = sparse.indices.componentType;
+      final indexBytes = indexType.byteSize;
+      final valueView = sparse.values.bufferView.get().data();
+      final valueData = ByteData.sublistView(valueView);
+      if (sparse.indices.byteOffset + sparse.count * indexBytes >
+              indexView.lengthInBytes ||
+          sparse.values.byteOffset + sparse.count * elemBytes >
+              valueView.lengthInBytes) {
+        throw const FormatException(
+          'Sparse accessor reads past the end of its buffer views',
+        );
+      }
+      for (var i = 0; i < sparse.count; i++) {
+        final target = indexType
+            .parseData(
+              indexData,
+              cursor: sparse.indices.byteOffset + i * indexBytes,
+            )
+            .toInt();
+        if (target < 0 || target >= count) {
+          throw FormatException(
+            'Sparse accessor index $target out of range 0..${count - 1}',
+          );
+        }
+        final valueBase = sparse.values.byteOffset + i * elemBytes;
+        for (var c = 0; c < size; c++) {
+          components[target * size + c] = componentType.parseData(
+            valueData,
+            cursor: valueBase + c * compBytes,
+          );
+        }
+      }
+    }
+    return components;
+  }
+
   void _verifyAccessorType(int size) {
     if (type.size != size) {
       throw StateError('Accessor type mismatch: $type != $size');
-    }
-  }
-
-  void _verifyNotSparse() {
-    if (sparse != null) {
-      throw UnsupportedError('Accessor is sparse: not supported yet.');
     }
   }
 
@@ -158,7 +211,7 @@ class RawAccessor({
     Map<String, Object?> map,
   ) : this(
         root: root,
-        bufferView: Parser.ref(root, map, 'bufferView')!,
+        bufferView: Parser.ref(root, map, 'bufferView'),
         byteOffset: Parser.integer(map, 'byteOffset') ?? 0,
         componentType: ComponentType.parse(map, 'componentType')!,
         normalized: Parser.boolean(map, 'normalized') ?? false,
