@@ -6,6 +6,7 @@ import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/extensions/clip_space.dart';
 import 'package:flame_3d/src/graphics/material_pipeline_cache.dart';
 import 'package:flame_3d/src/graphics/prefixed_uniform_block.dart';
 import 'package:meta/meta.dart';

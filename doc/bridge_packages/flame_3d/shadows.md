@@ -461,9 +461,9 @@ The projection is applied to the vertices only, and the triangles between them a
 straight: large triangles close to the light cast a distorted shadow, so tessellate casters that
 come near point lights.
 
-The tiles of a point light are culled with the frustum of the tile rendered before them (the main
-camera's when the point light casts alone): casters outside that frustum cast no point-light shadow
-(see [Limitations](#limitations)).
+The casters of each tile are culled with a box around the half of the light's reach the tile covers
+(`range` on every side of the light, along its half of the z axis): casters out of the camera's
+view still cast into it.
 
 
 ## Rendering the shadow pass yourself
@@ -493,8 +493,10 @@ void renderShadows(
 }
 ```
 
-`RenderContext3D.isShadowPass` is `true` while casters are recorded. Leaving out the tile loop
-leaves the other tiles of the atlas empty (lit). `needsShadowCascade1`, `beginShadowCascade1` and
+`RenderContext3D.isShadowPass` is `true` while casters are recorded; `view`, `projection`,
+`frustum` and `cameraPosition` are then the light's (for a point light's tile, a box around the half
+of its reach the tile covers), and `viewerPosition` stays the main camera's. Leaving out the tile
+loop leaves the other tiles of the atlas empty (lit). `needsShadowCascade1`, `beginShadowCascade1` and
 `endShadowCascade1` are deprecated and do nothing: two cascades are atlas tiles.
 
 
@@ -567,9 +569,7 @@ These are the parts of shadows that are not finished at this point:
   the region and do not follow the camera.
 - The atlas is always 2048 by 2048 texels, with tiles of at most 1024, and its tiles are traversed
   and rendered every frame.
-- Point-light tiles are culled with the frustum of the previous tile, so casters outside it (or
-  outside the main camera's view, for a point light alone) cast no point-light shadow. Only one
-  point light casts shadows, split along the world z axis.
+- Only one point light casts shadows, split along the world z axis.
 - The index of the light a shadow belongs to is counted among the lights in the order they were
   added. When the pass picks its lights by distance (more than four spot lights, or
   `prioritizeNearestLights` with more than eight point lights), or when a point light of zero
@@ -577,13 +577,13 @@ These are the parts of shadows that are not finished at this point:
   [Selection beyond the limits](lighting.md#selection-beyond-the-limits)).
 - Spot-light shadows ignore `fit`, `bounds`, `maxDistance` and `stabilize`, and on the atlas their
   `normalBias`.
-- In a shadow pass, `RenderContext3D.cameraPosition` is the position of the light's view, which
-  for a sun is the world origin (for the tiles of a point light, it is left over from the tile
-  before them, or from the main camera). Components that pick their level of detail should use
-  `RenderContext3D.viewerPosition` and `viewerViewProjection`, which stay those of the main camera
-  while a shadow pass records: `ChunkedTerrain3D`, `FoliageSystem3D` and `LodMeshComponent` (when
-  it has no `shadowMesh` and `lowestLodInShadowPass` is off) cast from the detail the camera of the
-  frame selects (see [Large Worlds](world_scale.md#frustum-culling-and-bounds)).
+- In a shadow pass, `RenderContext3D.cameraPosition` is the position of the light's view: the
+  world origin for a sun, the light itself for a spot light or the tiles of a point light.
+  Components that pick their level of detail should use `RenderContext3D.viewerPosition` and
+  `viewerViewProjection`, which stay those of the main camera while a shadow pass records:
+  `ChunkedTerrain3D`, `FoliageSystem3D` and `LodMeshComponent` (when it has no `shadowMesh` and
+  `lowestLodInShadowPass` is off) cast from the detail the camera of the frame selects (see
+  [Large Worlds](world_scale.md#frustum-culling-and-bounds)).
 - The sun's map is fitted to `World3D.sceneBounds`, the union of the bounds of every component of
   the world, whether it casts shadows or not. A component with huge bounds spreads the map over
   them until the shadows vanish: a `DebugRenderer3D`, whose bounds reach ±100000 units, removes

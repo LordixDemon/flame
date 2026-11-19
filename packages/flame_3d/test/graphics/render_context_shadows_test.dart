@@ -604,6 +604,81 @@ void main() {
     });
   });
 
+  group('Point light tiles', () {
+    // The main camera sees x and y in [-1, 1]; the point light at
+    // (2.5, 0, -3) reaches 10 units around it.
+    final pointLight = Light(
+      position: Vector3(2.5, 0, -3),
+      source: PointLight(
+        color: const Color(0xFFFFFFFF),
+        intensity: 1,
+        range: 10,
+        shadows: ShadowSettings(resolution: 256),
+      ),
+    );
+    final spotAway = Light(
+      position: Vector3(-0.5, 0, -2),
+      source: SpotLight(
+        direction: Vector3(-1, 0, 0),
+        range: 3,
+        outerConeAngle: 0.3,
+        shadows: ShadowSettings(resolution: 256),
+      ),
+    );
+    // Out of the main camera's view, and of the spot light's.
+    final outOfView = Aabb3.minMax(
+      Vector3(1.05, -0.2, -4.2),
+      Vector3(1.45, 0.2, -3.8),
+    );
+    // Out of the light's reach.
+    final outOfReach = Aabb3.minMax(Vector3(20, 0, -4), Vector3(21, 1, -3));
+
+    for (final (name, lights) in [
+      ('alone', [pointLight]),
+      ('after a spot light', [spotAway, pointLight]),
+    ]) {
+      test('cull with the bounds of the light, $name', () {
+        device.begin();
+        context
+          ..lights = lights
+          ..setCamera(
+            Matrix4.identity(),
+            Matrix4.identity()..setEntry(2, 2, -0.1),
+          );
+        expect(
+          context.beginShadowPass(
+            projection: projection,
+            sceneBounds: Aabb3.minMax(Vector3(-1, -1, -5), Vector3(1.5, 1, -3)),
+          ),
+          isTrue,
+        );
+        var index = 0;
+        var pointTiles = 0;
+        var seen = 0;
+        do {
+          final tile = context.shadowAtlas.tiles[index++];
+          if (tile.kind == ShadowAtlasTileKind3D.pointParaboloidFront ||
+              tile.kind == ShadowAtlasTileKind3D.pointParaboloidBack) {
+            pointTiles++;
+            // The cube is below the light: in the tile of its -z half.
+            if (context.frustum.intersectsWithAabb3(outOfView)) {
+              seen++;
+              expect(tile.kind, ShadowAtlasTileKind3D.pointParaboloidBack);
+            }
+            expect(context.frustum.intersectsWithAabb3(outOfReach), isFalse);
+          }
+          // Components pick what they draw (levels of detail, chunks) as the
+          // main camera sees them.
+          expect(context.viewerPosition, Vector3.zero());
+        } while (context.advanceShadowAtlasTile());
+        expect(pointTiles, 2);
+        expect(seen, 1);
+        context.endShadowPass();
+        device.end();
+      });
+    }
+  });
+
   group('ShadowSettings', () {
     test('checks its resolution and softness', () {
       final settings = ShadowSettings();

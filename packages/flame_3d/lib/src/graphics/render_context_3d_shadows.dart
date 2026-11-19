@@ -83,6 +83,11 @@ class _ShadowPass(final RenderContext3D _context) {
   // The camera of the main pass, set back when the shadow pass ends.
   final Matrix4 _mainView = Matrix4.identity();
   final Matrix4 _mainProjection = Matrix4.identity();
+
+  // The view the casters of a point light's tile are culled with: a box
+  // around the hemisphere the tile covers.
+  final Matrix4 _pointCullView = Matrix4.identity();
+  final Matrix4 _pointCullProjection = Matrix4.identity();
   int _drawCallsBefore = 0;
 
   static final Vector3 _direction = Vector3.zero();
@@ -933,25 +938,40 @@ class _ShadowPass(final RenderContext3D _context) {
         pos.z,
         1.0 / math.max(1e-3, tile.lightRange),
       );
-      _paraboloidParams.setValues(
-        tile.kind == ShadowAtlasTileKind3D.pointParaboloidFront ? 1.0 : -1.0,
+      final side = tile.kind == ShadowAtlasTileKind3D.pointParaboloidFront
+          ? 1.0
+          : -1.0;
+      _paraboloidParams.setValues(side, 0, 0, 0);
+      // The casters are culled with a box around the hemisphere of the light
+      // the tile covers (its shaders do not use the camera's matrices).
+      final range = tile.lightRange;
+      writeLookAt(
+        _pointCullView.storage,
+        pos.x,
+        pos.y,
+        pos.z,
+        pos.x,
+        pos.y,
+        pos.z + side,
         0,
-        0,
+        1,
         0,
       );
-      // Keep main view/projection active so component culling doesn't discard
-      // casters behind a single perspective cone while `recording` is true.
-      context
-        .._viewMatrix.setFrom(_mainView)
-        .._projectionMatrix.setFrom(_mainProjection)
-        .._viewProjectionMatrix.setFrom(_mainProjection)
-        .._viewProjectionMatrix.multiply(_mainView);
+      writeOrthographic(
+        _pointCullProjection.storage,
+        -range,
+        range,
+        -range,
+        range,
+        -0.05 * range,
+        range,
+      );
+      context.setCamera(_pointCullView, _pointCullProjection);
     } else {
       _recordingParaboloidTile = false;
-      final preserveAtlasFlag = atlasActive;
       context.setCamera(tile.view!, tile.projection!);
-      atlasActive = preserveAtlasFlag;
     }
+    atlasActive = true;
   }
 
   /// Flushes the casters recorded for the current `ShadowAtlas3D` tile and
