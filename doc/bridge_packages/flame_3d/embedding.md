@@ -160,6 +160,18 @@ built from the canvas transform, so a scene point lands exactly where the projec
 switches multisample anti-aliasing on for the scene pass, also when the scene renders into a texture
 for bloom, post-processing or HDR (the composite pass itself has one sample).
 
+A layer drawn into an offscreen picture that is rasterized at a scale of its own renders at the
+resolution of that picture instead: under a Flame post process that rasterizes its subtree
+(`PostProcess.rasterizeSubtree`, such as a `ShaderPostProcess` that samples it), inside the
+offscreen world of a camera whose `worldRenderScale` is not `1`, and in
+`CameraComponent.renderToImageSync`. Those pictures scale their canvas to their pixels themselves
+and report it with Flame's `RasterScale` (see the post processing page of Flame), so the layer
+takes the canvas units as pixels and renders `renderScale` pixels per unit, with the image aligned
+to the picture's pixel grid. Leave `renderScale` at the value you would use on screen. A post
+process of your own that records the subtree into a scaled picture without `rasterizeSubtree`
+reports its scale with `RasterScale.push` and `RasterScale.pop`; otherwise the layer renders at the
+device pixel ratio times the picture's scale.
+
 The render target is rounded up to a multiple of 64 pixels in both directions, and the target of the
 last render is kept while the part fits in it and covers at least half of it, so that panning,
 zooming and moving objects keep using the same target. It is at most `maxTextureSize` pixels wide
@@ -421,9 +433,6 @@ game share a device of their own, `layer.device`, whose `lastFrameStats` cover a
 
 - Canvas transforms with a perspective part (a 3D rotation of the canvas) are not supported; the
   2D transforms that Flame's cameras and components apply are.
-- A layer drawn into an offscreen picture whose transform already includes the device pixel ratio
-  (for example by a camera with a `worldRenderScale` other than `1`) renders at a higher
-  resolution than needed; lower its `renderScale`.
 - The image is aligned to the device's pixel grid when the game is painted in its own layer at a
   whole number of physical pixels, as a full-screen `GameWidget` is.
 - A retained layer does not see the changes listed under "What renders the layer again" that the

@@ -4,6 +4,7 @@ import 'dart:ui';
 
 import 'package:flame/components.dart';
 import 'package:flame/game.dart' show Game;
+import 'package:flame/rendering.dart' show RasterScale;
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/game.dart';
@@ -156,6 +157,13 @@ class Scene3DComponent({
   int _maxTextureSize = 4096;
 
   /// The fraction of the device pixels the scene is rendered at.
+  ///
+  /// The pass renders `devicePixelRatio * renderScale` pixels per unit of
+  /// the canvas, or `renderScale` pixels per unit while the layer draws into
+  /// an offscreen picture that rasterizes at a scale of its own
+  /// (`RasterScale.isActive`: under a post process that rasterizes its
+  /// subtree, or a camera whose `worldRenderScale` is not `1`), whose canvas
+  /// units are already pixels.
   double get renderScale => world.renderScale;
   set renderScale(double value) => world.renderScale = value;
 
@@ -491,8 +499,13 @@ class Scene3DComponent({
       if (game == null || !game.hasLayout) {
         return;
       }
+      // The game's area, in the pixels of an offscreen picture when the
+      // layer draws into one.
       final gameSize = game.canvasSize;
-      visible = visible.intersect(Rect.fromLTWH(0, 0, gameSize.x, gameSize.y));
+      final scale = RasterScale.current ?? 1.0;
+      visible = visible.intersect(
+        Rect.fromLTWH(0, 0, gameSize.x * scale, gameSize.y * scale),
+      );
     }
     final width = size.x;
     final height = size.y;
@@ -530,7 +543,11 @@ class Scene3DComponent({
       return;
     }
 
-    final fullScale = _pixelRatioOf(game) * world.renderScale;
+    // On screen the canvas is in logical pixels; in an offscreen picture
+    // that rasterizes at a scale of its own (a post process, a camera's
+    // scaled world), its units are already the picture's pixels.
+    final canvasPixelRatio = RasterScale.isActive ? 1.0 : _pixelRatioOf(game);
+    final fullScale = canvasPixelRatio * world.renderScale;
     var pixelScale = fullScale;
     var left = (visible.left * pixelScale).floor();
     var top = (visible.top * pixelScale).floor();
