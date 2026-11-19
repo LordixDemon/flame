@@ -358,12 +358,23 @@ abstract class Component3D({
   ///
   /// [clone] invokes [cloneSelf] and then copies [transform], [visible],
   /// [cameraMask], [priority], [prefabId], [tags3D], and (when requested)
-  /// descendant [Component3D]s. Custom subclasses can override [cloneSelf] to
-  /// preserve custom state.
+  /// descendant [Component3D]s.
+  ///
+  /// The built-in implementation copies [Group3D], [MeshComponent],
+  /// [LightComponent], [LodMeshComponent], [InstancedGroup3D] (with the
+  /// colors and instance data of its instances), [SkyboxComponent3D] and
+  /// [Text3DComponent]; `ModelComponent` overrides it. Meshes, materials and
+  /// models are shared with the copy, not copied. Any other type, a subclass
+  /// of these types included, throws an [UnsupportedError] unless it
+  /// overrides [cloneSelf] to copy its own state: a copy of another type
+  /// would silently lose it.
   @protected
   Component3D cloneSelf() {
+    final type = runtimeType;
     switch (this) {
-      case final MeshComponent self:
+      case _ when type == Group3D:
+        return Group3D();
+      case final MeshComponent self when type == MeshComponent:
         return MeshComponent(
           mesh: self.mesh,
           castsShadows: self.castsShadows,
@@ -376,12 +387,12 @@ abstract class Component3D({
                     entry.key: [for (final m in entry.value) m.clone()],
                 },
         );
-      case final LightComponent self:
+      case final LightComponent self when type == LightComponent:
         return LightComponent(
           source: _cloneLightSource(self.source),
           lightMask: self.lightMask,
         );
-      case final LodMeshComponent self:
+      case final LodMeshComponent self when type == LodMeshComponent:
         return LodMeshComponent(
           levels: List.of(self.levels),
           shadowMesh: self.shadowMesh,
@@ -390,19 +401,25 @@ abstract class Component3D({
           instanceData: self.instanceData.clone(),
           castsShadows: self.castsShadows,
         );
-      case final InstancedGroup3D self:
+      case final InstancedGroup3D self when type == InstancedGroup3D:
         final copy = InstancedGroup3D(
           mesh: self.mesh,
           initialCapacity: math.max(1, self.length),
           castsShadows: self.castsShadows,
         );
+        final transform = Matrix4.zero();
+        final data = Vector4.zero();
         for (var i = 0; i < self.length; i++) {
-          copy.addInstance(transform: self.instanceTransform(i));
+          copy.addInstance(
+            transform: self.instanceTransform(i, out: transform),
+            color: self.instanceColor(i),
+            instanceData: self.instanceDataAt(i, out: data),
+          );
         }
         return copy;
-      case final SkyboxComponent3D self:
+      case final SkyboxComponent3D self when type == SkyboxComponent3D:
         return SkyboxComponent3D(material: self.material);
-      case final Text3DComponent self:
+      case final Text3DComponent self when type == Text3DComponent:
         return Text3DComponent(
           text: self.text,
           style: self.style,
@@ -414,7 +431,11 @@ abstract class Component3D({
           orientation: self.orientation,
         );
       case _:
-        return Group3D();
+        throw UnsupportedError(
+          '$type cannot be cloned: it does not override Component3D.cloneSelf '
+          'to copy its own state. Override cloneSelf, or register a builder '
+          'prefab (PrefabRegistry3D.registerBuilder) instead of a prototype.',
+        );
     }
   }
 
@@ -517,6 +538,7 @@ abstract class Component3D({
           color: s.color,
           intensity: s.intensity,
           range: s.range,
+          shadows: _cloneShadows(s.shadows),
         );
       case final SpotLight s:
         return SpotLight(
@@ -530,7 +552,9 @@ abstract class Component3D({
           shadows: _cloneShadows(s.shadows),
         );
       case _:
-        return AmbientLight(color: source.color, intensity: source.intensity);
+        throw UnsupportedError(
+          'A LightComponent with a ${source.runtimeType} cannot be cloned.',
+        );
     }
   }
 
@@ -553,6 +577,10 @@ abstract class Component3D({
       cacheWhenStatic: shadows.cacheWhenStatic,
       cascades: shadows.cascades,
       cascadeSplitRatio: shadows.cascadeSplitRatio,
+      cascadeSplits: shadows.cascadeSplits == null
+          ? null
+          : List.of(shadows.cascadeSplits!),
+      cascadeBlendRange: shadows.cascadeBlendRange,
     );
   }
 }

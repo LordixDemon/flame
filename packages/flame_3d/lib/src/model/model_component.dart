@@ -527,6 +527,40 @@ class ModelComponent({
     worldOrNull?.markSceneDirty(shadows: castsShadows);
   }
 
+  /// Copies this component for [clone]: the copy shares the [model] and
+  /// has the same [color], [instanceData], [offscreenPolicy],
+  /// [onAnimationEvent], [castsShadows] and hidden nodes. It starts in the
+  /// rest pose, with no animation playing.
+  ///
+  /// Throws an [UnsupportedError] when a [stateMachine], [rootMotion] or
+  /// [boneModifiers] are set, since they are bound to this component's
+  /// animation and pose; build such components with a builder prefab.
+  @override
+  Component3D cloneSelf() {
+    if (runtimeType != ModelComponent) {
+      return super.cloneSelf();
+    }
+    if (_stateMachine != null ||
+        rootMotion != null ||
+        boneModifiers.isNotEmpty) {
+      throw UnsupportedError(
+        'A ModelComponent with a stateMachine, rootMotion or boneModifiers '
+        'cannot be cloned: they are bound to its pose. Register a builder '
+        'prefab (PrefabRegistry3D.registerBuilder) instead of a prototype.',
+      );
+    }
+    final copy = ModelComponent(
+      model: model,
+      color: color,
+      instanceData: instanceData.clone(),
+      offscreenPolicy: offscreenPolicy,
+      onAnimationEvent: onAnimationEvent,
+      castsShadows: castsShadows,
+    );
+    copy._hiddenNodes.addAll(_hiddenNodes);
+    return copy;
+  }
+
   void _markPoseChanged() {
     _poseDirty = true;
     worldOrNull?.markSceneDirty(shadows: castsShadows);

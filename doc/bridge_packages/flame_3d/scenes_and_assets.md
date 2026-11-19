@@ -62,16 +62,22 @@ clone that copy for every instance, with `Component3D.clone()`. A clone copies t
 `visible`, `cameraMask`, `priority`, `prefabId`, the tags and, by default, the `Component3D`
 children. What else is copied depends on the type:
 
+- `Group3D`: nothing more;
 - `MeshComponent`: the same `Mesh` (shared, not copied), its color, instance data, `castsShadows`
   and joint transforms;
-- `LightComponent`: a copy of its light, except the shadows of a point light;
+- `LightComponent`: a copy of its light, shadow settings included;
 - `LodMeshComponent`, `SkyboxComponent3D`, `Text3DComponent`: their settings;
-- `InstancedGroup3D`: the mesh and the instance transforms, not the per-instance colors and data.
+- `InstancedGroup3D`: the mesh and every instance's transform, color and instance data;
+- `ModelComponent`: the same `Model`, its color, instance data, `offscreenPolicy`,
+  `onAnimationEvent`, `castsShadows` and hidden nodes; the copy starts in the rest pose with no
+  animation playing. A model component with a `stateMachine`, `rootMotion` or `boneModifiers`
+  cannot be cloned, as those are bound to its pose.
 
-Any other type, `ModelComponent`, `ParticleSystem3D` and the components of
-[Large Worlds](world_scale.md) included, comes out as an empty `Group3D`, and children that are
-not `Component3D`s are dropped. A custom component keeps its type by overriding `cloneSelf()`.
-Use a builder for anything else.
+Any other type (`ParticleSystem3D`, the components of [Large Worlds](world_scale.md), custom
+components) and any subclass of the types above throws an `UnsupportedError` naming the type,
+instead of coming out as a different, emptier object: override `cloneSelf()` to copy the type's
+state, or register a builder. Since `registerPrototype` clones the prototype right away, the error
+shows when the prefab is registered. Children that are not `Component3D`s are not cloned.
 
 
 ## Saving and loading scenes
@@ -369,9 +375,6 @@ Loading glTF models and their materials and animations is described in
   components of [Large Worlds](world_scale.md): save them with codecs or prefabs (otherwise the
   save throws, see [What cannot be saved](#what-cannot-be-saved)). Both encoders build the whole
   tree in memory.
-- `Component3D.clone()` (and so prototype prefabs) turns unknown types, including
-  `ModelComponent`, into empty groups, drops point-light shadows and the per-instance colors and
-  data of `InstancedGroup3D`.
 - `Resource.dispose()` frees GPU memory only when the GPU object is garbage collected, and a
   disposed resource that is used again is uploaded again. Budgets and leak reports of
   `GpuResourceManager3D` are estimates, and a stale lease can release a reference it does not own.
