@@ -132,6 +132,22 @@ abstract class Material({
   /// them, as it does not know which one is bound.
   Shader vertexShaderFor(VertexLayout layout) => vertexShader;
 
+  /// The material that draws this material's surfaces in the depth-normal
+  /// prepass ([RenderContext3D.isDepthNormalPass]), or `null` (the default)
+  /// for the prepass's own shaders.
+  ///
+  /// The prepass's own shaders place each vertex with the instance model
+  /// matrix and cover the whole surface. A material whose vertex shader
+  /// reads the instance inputs as other data (billboards do), or that
+  /// discards pixels (an alpha cutoff), returns a material whose vertex
+  /// shader places the vertices the same way, reading the instance inputs,
+  /// and whose fragment shader discards the same pixels and writes the
+  /// prepass's encoding (see `shaders/flame_3d/depth_normal_fragment.glsl`).
+  /// The prepass draws only the surfaces of opaque materials that write
+  /// depth; a material that has a depth-normal material is drawn with it
+  /// even when [instancesHoldModelMatrices] is `false`.
+  Material? get depthNormalMaterial => null;
+
   /// Writes this material's values into its shaders, see [Material].
   ///
   /// Uniform blocks filled by the [RenderContext3D] (see

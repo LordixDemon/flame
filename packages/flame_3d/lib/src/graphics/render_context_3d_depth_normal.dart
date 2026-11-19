@@ -98,14 +98,22 @@ class _DepthNormalPass(final RenderContext3D _context) {
     final surfaceKeys = context._surfaceKeys;
     final sortDepths = context._sortDepths;
     var opaqueCount = 0;
+    // Draws whose material has a depthNormalMaterial, from the end of
+    // `order` backwards.
+    var ownCount = 0;
 
     VertexLayout? lastLayout;
     _CasterPipeline? pipe;
     for (var i = 0; i < count; i++) {
       final mat = context._materials[i]!;
-      if (mat.renderState.translucent ||
-          !mat.renderState.depthWrite ||
-          !mat.instancesHoldModelMatrices) {
+      if (mat.renderState.translucent || !mat.renderState.depthWrite) {
+        continue;
+      }
+      if (mat.depthNormalMaterial != null) {
+        order[count - 1 - ownCount++] = i;
+        continue;
+      }
+      if (!mat.instancesHoldModelMatrices) {
         continue;
       }
       final surface = context._surfaces[i]!;
@@ -140,6 +148,9 @@ class _DepthNormalPass(final RenderContext3D _context) {
       }
       _submit(order, start, end - start);
       start = end;
+    }
+    for (var k = 0; k < ownCount; k++) {
+      _submitOwn(order, count - 1 - k);
     }
 
     context
@@ -189,6 +200,49 @@ class _DepthNormalPass(final RenderContext3D _context) {
     device
       ..bindInstancesOf(context._instances, order, start, count)
       ..drawSurface(surface, instanceCount: count);
+  }
+
+  /// Submits the draw at [position] in [order] with the depth-normal
+  /// material of its material ([Material.depthNormalMaterial]).
+  void _submitOwn(Int32List order, int position) {
+    final context = _context;
+    final device = context.device;
+    final draw = order[position];
+    final material = context._materials[draw]!.depthNormalMaterial!;
+    final surface = context._surfaces[draw]!;
+    final pipeline = context._pipelineFor(material, surface.layout);
+    if (!pipeline.instanced) {
+      throw StateError(
+        'A depthNormalMaterial needs a vertex shader that reads the instance '
+        'inputs (the four instanceModel columns)',
+      );
+    }
+    final vertexShader = material.vertexShaderFor(surface.layout);
+    final joints = context._joints[draw];
+    device.bindPipeline(pipeline);
+    context
+      .._bindPassSlots(material, vertexShader)
+      .._jointTransforms = joints
+      .._applyMaterial(material, vertexShader)
+      .._bindJoints(vertexShader, joints)
+      // The next draw binds its own slots again.
+      .._bindingEpoch = -1
+      .._boundMaterial = null;
+    device
+      ..setRenderState(_renderState)
+      ..setFrontFace(context.frontFace)
+      ..bindSurface(surface);
+    final external = context._external[draw];
+    if (external != null) {
+      final instanceCount = context._externalCounts[draw];
+      device
+        ..bindInstances(external, instanceCount)
+        ..drawSurface(surface, instanceCount: instanceCount);
+      return;
+    }
+    device
+      ..bindInstancesOf(context._instances, order, position, 1)
+      ..drawSurface(surface);
   }
 
   _CasterPipeline? _pipelineFor(VertexLayout layout) {

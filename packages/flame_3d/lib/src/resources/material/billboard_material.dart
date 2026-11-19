@@ -80,13 +80,44 @@ class BillboardMaterial3D({
   static final Vector4 _vec = Vector4.zero();
 
   /// Billboard instances hold a center, an up axis and a size, not model
-  /// matrices.
+  /// matrices: the opaque ones reach the depth-normal prepass through
+  /// [depthNormalMaterial].
   @override
   bool get instancesHoldModelMatrices => false;
 
+  /// Draws the opaque billboards of this material in the depth-normal
+  /// prepass, placed and cut out as in the main pass.
+  @override
+  Material? get depthNormalMaterial => renderState.translucent
+      ? null
+      : (_depthNormalMaterial ??= _BillboardDepthNormalMaterial(this));
+  _BillboardDepthNormalMaterial? _depthNormalMaterial;
+
   @override
   void apply(RenderContext context) {
-    final ctx3d = context as RenderContext3D;
+    _writeFrame(context as RenderContext3D, vertexShader);
+    // 1 when blending premultiplied colors, plus 2 when the texture holds
+    // premultiplied colors.
+    final blendFlags =
+        (renderState.blend == BlendState.premultipliedAlpha ? 1.0 : 0.0) +
+        (premultipliedTexture ? 2.0 : 0.0);
+    fragmentShader
+      ..setTexture('albedoTexture', albedoTexture)
+      ..setColor('BillboardLook.albedoColor', albedoColor)
+      ..setVector4(
+        'BillboardLook.params',
+        _vec..setValues(
+          alphaCutoff,
+          shadeWeight,
+          blendFlags,
+          ditherFade ? 1.0 : 0.0,
+        ),
+      );
+  }
+
+  /// Writes the camera's right, up and back directions, as the billboards of
+  /// the pass see them, into the `BillboardFrame` block of [vertexShader].
+  static void _writeFrame(RenderContext3D ctx3d, Shader vertexShader) {
     final view = ctx3d.view.storage;
     final vp = ctx3d.viewProjection.storage;
     _right.setValues(view[0], view[4], view[8]);
@@ -121,22 +152,40 @@ class BillboardMaterial3D({
         'BillboardFrame.camBack',
         _vec..setValues(_back.x, _back.y, _back.z, 0),
       );
+  }
+}
 
-    // 1 when blending premultiplied colors, plus 2 when the texture holds
-    // premultiplied colors.
-    final blendFlags =
-        (renderState.blend == BlendState.premultipliedAlpha ? 1.0 : 0.0) +
-        (premultipliedTexture ? 2.0 : 0.0);
+/// Draws the billboards of [_source] in the depth-normal prepass.
+class _BillboardDepthNormalMaterial(final BillboardMaterial3D _source)
+    extends Material {
+  this
+    : super(
+        vertexShader: VertexShader.fromAsset(
+          _bundle,
+          slots: [RenderContext3D.cameraMatricesBlock, 'BillboardFrame'],
+        ),
+        fragmentShader: FragmentShader.fromAsset(
+          _bundle,
+          slots: ['albedoTexture', 'BillboardDepthLook'],
+        ),
+      );
+
+  static const String _bundle =
+      'packages/flame_3d/assets/shaders/billboard_depth_normal.shaderbundle';
+
+  @override
+  void apply(RenderContext context) {
+    BillboardMaterial3D._writeFrame(context as RenderContext3D, vertexShader);
+    final source = _source;
     fragmentShader
-      ..setTexture('albedoTexture', albedoTexture)
-      ..setColor('BillboardLook.albedoColor', albedoColor)
+      ..setTexture('albedoTexture', source.albedoTexture)
       ..setVector4(
-        'BillboardLook.params',
-        _vec..setValues(
-          alphaCutoff,
-          shadeWeight,
-          blendFlags,
-          ditherFade ? 1.0 : 0.0,
+        'BillboardDepthLook.params',
+        BillboardMaterial3D._vec..setValues(
+          source.alphaCutoff,
+          source.albedoColor.a,
+          0,
+          source.ditherFade ? 1.0 : 0.0,
         ),
       );
   }

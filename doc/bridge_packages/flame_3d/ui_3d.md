@@ -119,8 +119,6 @@ a slot or the transform changes.
 
 - A non-uniform scale scales the sprite sizes by its largest axis: a sprite has no fixed axis to
   stretch along. The bounds are grown to match.
-- Opaque billboards are missing from the depth-normal prepass, see
-  [Depth and sorting](#depth-and-sorting).
 - Sprites inside one batch are not sorted against each other; a translucent batch is sorted
   against other translucent draws as one piece, by the center of its bounds.
 
@@ -405,10 +403,10 @@ never split, so two translucent labels that overlap in depth can sort the wrong 
 component here is skipped in the shadow pass and draws once per main pass.
 
 The depth-normal prepass (`World3D.depthPrepassEnabled`, used by SSAO, depth of field, soft
-particles and shoreline foam, see [Post-Processing](post_processing.md)) draws opaque draws with
-a generic vertex shader that reads the instance data as a model matrix. Opaque billboards and
-camera-facing font text store other data there, so they do not appear in the prepass at their
-place: in a check, a sprite was absent from the `depth` debug view while a quad of the same size
-showed. Those effects therefore ignore them (depth of field blurs them by the depth behind them,
-for example). Fixed font text, a mesh, is in the prepass; translucent components are left out of
-it by design.
+particles and shoreline foam, see [Post-Processing](post_processing.md)) holds opaque billboards
+and camera-facing font text: `BillboardMaterial3D.depthNormalMaterial` draws them there placed as
+in the main pass and cut out at the same `alphaCutoff` (and dither), so the effects see the
+sprite's shape. `debug_and_ui_3d_gpu_test.dart` checks in the `depth` debug view that a billboard
+covers what a quad of the same size covers, and that the transparent half of a sprite is left out.
+Fixed font text, a mesh, is drawn by the prepass's own shaders, which do not cut out: each fixed
+glyph is a full quad there. Translucent components are left out of the prepass by design.

@@ -4,13 +4,16 @@ import 'dart:ui';
 
 import 'package:flame/components.dart' show RectangleComponent, World;
 import 'package:flame/game.dart';
+import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/debug.dart';
-import 'package:flame_3d/extensions.dart';
+import 'package:flame_3d/game.dart';
+import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/ui3d.dart';
 import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
-import 'package:flutter/widgets.dart' show GlobalKey, RepaintBoundary;
+import 'package:flutter/widgets.dart'
+    show GlobalKey, ObjectKey, RepaintBoundary;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'gpu_test_helpers.dart';
@@ -244,6 +247,99 @@ void main() {
         expectColor(frame.pixels, (128, 128, 128, 128));
       },
     );
+  });
+
+  group('Depth-normal prepass', () {
+    /// The `depth` debug view of a world of [children], seen by the default
+    /// camera: gray `255 * (1 - depth)` where the prepass has geometry.
+    Future<Pixels> renderDepth(
+      WidgetTester tester,
+      List<Component3D> children,
+    ) async {
+      final world = World3D(
+        children: children,
+        renderDebugMode3D: RenderDebugMode3D.depth,
+      );
+      final game = FlameGame3D(world: world);
+      await tester.pumpWidget(GameWidget(key: ObjectKey(game), game: game));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 16));
+      return (await tester.runAsync(() async {
+        final device = GraphicsDevice();
+        final context = RenderContext3D(device);
+        device.begin();
+        final image = world.renderToImage(
+          const Size(64, 64),
+          view: defaultView,
+          projection: defaultProjection,
+          clearValue: const Color(0xFF000000),
+          device: device,
+          context: context,
+        );
+        device.end();
+        final pixels = await readImage(image);
+        image.dispose();
+        return pixels;
+      }))!;
+    }
+
+    testGpu('holds opaque billboards, cut out as drawn', (tester) async {
+      // A cube on the left, a billboard of the same size on the right, both
+      // at depth 0.5, and below them a billboard whose right half is
+      // transparent.
+      final halfTransparent = Texture(
+        ByteData.sublistView(
+          Uint8List.fromList([255, 255, 255, 255, 0, 0, 0, 0]),
+        ),
+        width: 2,
+        height: 1,
+      );
+      final pixels = await renderDepth(tester, [
+        MeshComponent(
+          mesh: CuboidMesh(
+            size: Vector3(0.5, 0.5, 0.01),
+            material: opaqueUnlit(const Color(0xFFFFFFFF)),
+          ),
+          position: Vector3(-0.5, 0.5, -5),
+        ),
+        BillboardBatch3D()..addBillboard(
+          position: Vector3(0.5, 0.5, -5),
+          width: 0.5,
+          height: 0.5,
+          orientation: BillboardOrientation3D.spherical,
+          anchorY: 0,
+        ),
+        BillboardBatch3D(
+          material: BillboardMaterial3D(albedoTexture: halfTransparent),
+        )..addBillboard(
+          position: Vector3(0, -0.5, -5),
+          width: 1,
+          height: 0.5,
+          orientation: BillboardOrientation3D.spherical,
+          anchorY: 0,
+        ),
+      ]);
+      int region(int x0, int y0, int x1, int y1) {
+        var count = 0;
+        for (var y = y0; y < y1; y++) {
+          for (var x = x0; x < x1; x++) {
+            if ((pixels.at(x, y).$1 - 128).abs() < 8) {
+              count++;
+            }
+          }
+        }
+        return count;
+      }
+
+      // About 16 by 16 pixels each, at the half resolution of the prepass:
+      // the billboard covers what the cube covers.
+      final cube = region(0, 0, 32, 32);
+      expect(cube, greaterThan(150));
+      expect(region(32, 0, 64, 32), closeTo(cube, 8));
+      // Only the opaque left half of the lower billboard.
+      expect(region(0, 32, 32, 64), closeTo(cube, 8));
+      expect(region(32, 32, 64, 64), 0);
+    });
   });
 
   group('MsdfTextBatch3D', () {
