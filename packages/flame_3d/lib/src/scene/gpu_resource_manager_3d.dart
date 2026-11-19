@@ -64,8 +64,12 @@ class ResourceLeakReport3D(final List<ResourceLeakEntry3D> entries) {
 }
 
 /// Registry of GPU context-loss recovery hooks for recreating GPU buffers,
-/// textures, and procedural targets after mobile backgrounding or WebGPU
-/// device loss.
+/// textures, and procedural targets after a device loss.
+///
+/// Nothing detects a device loss: the application calls [markResourcesLost]
+/// and [recoverAll] (or [GpuResourceManager3D.recoverAfterDeviceLoss]) when
+/// it knows the GPU context was lost. A texture that wraps an existing GPU
+/// texture cannot be rebuilt from its data; give it an `onRebuild` hook.
 class GpuDeviceLossRecovery3D() {
   final LinkedHashMap<String, _RecoveryTask> _tasks = LinkedHashMap();
   int _recoveryCount = 0;
@@ -160,8 +164,12 @@ final class _ResourceRecoveryTask<T extends Resource<dynamic>>(
   }
 }
 
-/// Ref-counted GPU [Resource] pool with an LRU zero-ref cache, deterministic
-/// VRAM byte budgeting, leak auditing, and [GpuDeviceLossRecovery3D].
+/// Ref-counted GPU [Resource] pool with an LRU zero-ref cache, a VRAM budget
+/// on estimated sizes (see [estimateBytes]), leak auditing, and
+/// [GpuDeviceLossRecovery3D].
+///
+/// Evicting a resource disposes it, which drops its GPU handle: the memory
+/// returns when the GPU object is garbage collected.
 class GpuResourceManager3D({
   int maxVramBytes = 256 * 1024 * 1024,
   GpuDeviceLossRecovery3D? deviceLossRecovery,
