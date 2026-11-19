@@ -127,6 +127,16 @@ abstract base class GpuBackend() {
     int msaaSampleCount = 1,
   });
 
+  /// Records that the image the last pass into [target] returned is drawn
+  /// again in the current frame, so that [target] does not render into its
+  /// color texture while Flutter may still be drawing it (for the next two
+  /// frames, as after the pass itself).
+  ///
+  /// A caller that keeps an image and draws it on later frames without
+  /// rendering again calls this on each of them. Backends whose images do
+  /// not share the memory of the render target ignore it.
+  void representLastImage(GpuRenderTarget target) {}
+
   /// Whether this backend can create [GpuTextureTarget]s, see
   /// [createTextureTarget].
   bool get supportsTextureTargets => false;

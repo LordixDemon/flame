@@ -10,6 +10,7 @@ import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/src/embedding/embedded_renderer.dart';
 import 'package:flutter/widgets.dart' show MediaQuery;
+import 'package:meta/meta.dart' show visibleForTesting;
 
 /// Caching strategy for a [Scene3DComponent]'s GPU render pass.
 enum Scene3DCacheMode() {
@@ -281,26 +282,132 @@ class Scene3DComponent({
   Game3D? _game3D;
   EmbeddedRenderer? _renderer;
 
-  // Retained GPU cache state.
+  // Retained GPU cache state. The scene target (rendered into directly) and
+  // the bloom target (the output of the post-processing composite) each
+  // remember the size they were created at.
   GpuRenderTarget? _retainedSceneTarget;
+  int _sceneTargetWidth = 0;
+  int _sceneTargetHeight = 0;
+  int _sceneTargetMsaa = 0;
   GpuRenderTarget? _retainedBloomTarget;
-  int _retainedTargetW = 0;
-  int _retainedTargetH = 0;
-  int _retainedMsaa = 0;
+  int _bloomTargetWidth = 0;
+  int _bloomTargetHeight = 0;
+  // The target whose last image is [_retainedImage].
+  GpuRenderTarget? _retainedImageTarget;
   Image? _retainedImage;
-  Object? _retainedKey;
+  // The values the retained image was rendered with, see [_writeKey]; the
+  // next frame's values are written into the second pair and compared.
+  Float64List _retainedNumbers = Float64List(_keyNumberCount);
+  Float64List _nextNumbers = Float64List(_keyNumberCount);
+  List<Object?> _retainedObjects = List.filled(_keyObjectCount, null);
+  List<Object?> _nextObjects = List.filled(_keyObjectCount, null);
   final Float32List _retainedView = Float32List(16);
   final Float32List _retainedProj = Float32List(16);
+
+  /// The render target whose image a [Scene3DCacheMode.retained] layer
+  /// reuses, for tests.
+  @visibleForTesting
+  GpuRenderTarget? get debugRetainedTarget => _retainedImageTarget;
 
   void _disposeRetained() {
     _retainedImage?.dispose();
     _retainedImage = null;
-    _retainedKey = null;
+    _retainedImageTarget = null;
     _retainedSceneTarget = null;
     _retainedBloomTarget = null;
-    _retainedTargetW = 0;
-    _retainedTargetH = 0;
-    _retainedMsaa = 0;
+    _sceneTargetWidth = 0;
+    _sceneTargetHeight = 0;
+    _sceneTargetMsaa = 0;
+    _bloomTargetWidth = 0;
+    _bloomTargetHeight = 0;
+  }
+
+  static const int _keyNumberCount = 34;
+  static const int _keyObjectCount = 4;
+
+  /// Writes the values a retained image depends on, besides the camera
+  /// matrices, into [_nextNumbers] and [_nextObjects], without allocating.
+  void _writeKey(
+    int left,
+    int top,
+    int pixelWidth,
+    int pixelHeight,
+    int targetWidth,
+    int targetHeight,
+    double pixelScale,
+  ) {
+    final world = this.world;
+    final bloom = world.bloom;
+    final post = world.postProcess;
+    final group = world.shadowGroup;
+    _nextNumbers
+      ..[0] = world.sceneVersion.toDouble()
+      ..[1] = _manualVersion.toDouble()
+      ..[2] = (group?.castersVersion ?? world.castersVersion).toDouble()
+      ..[3] = left.toDouble()
+      ..[4] = top.toDouble()
+      ..[5] = pixelWidth.toDouble()
+      ..[6] = pixelHeight.toDouble()
+      ..[7] = targetWidth.toDouble()
+      ..[8] = targetHeight.toDouble()
+      ..[9] = pixelScale
+      ..[10] = msaa.sampleCount.toDouble()
+      ..[11] = cameraMask.toDouble()
+      ..[12] = world.hdrEnabled ? 1 : 0
+      ..[13] = world.grabSceneColorEnabled ? 1 : 0
+      ..[14] = bloom == null ? 0 : 1
+      ..[15] = bloom?.threshold ?? 0
+      ..[16] = bloom?.softKnee ?? 0
+      ..[17] = bloom?.intensity ?? 0
+      ..[18] = bloom?.radius ?? 0
+      ..[19] = (bloom?.passes ?? 0).toDouble()
+      ..[20] = post == null ? 0 : 1
+      ..[21] = post?.exposure ?? 0
+      ..[22] = post?.contrast ?? 0
+      ..[23] = post?.saturation ?? 0
+      ..[24] = post?.vignetteIntensity ?? 0
+      ..[25] = post?.vignetteSmoothness ?? 0
+      ..[26] = (post?.tint.toARGB32() ?? 0).toDouble()
+      ..[27] = (post?.fxaa ?? false) ? 1 : 0
+      ..[28] = post?.colorLutIntensity ?? 0
+      ..[29] = post?.ssaoIntensity ?? 0
+      ..[30] = post?.ssaoRadius ?? 0
+      ..[31] = post?.dofFocusDepth ?? 0
+      ..[32] = post?.dofFocusRange ?? 0
+      ..[33] = post?.dofBlurStrength ?? 0;
+    _nextObjects
+      ..[0] = world.oitMode
+      ..[1] = world.renderDebugMode3D
+      ..[2] = post?.toneMap
+      ..[3] = post?.colorLut;
+  }
+
+  /// Whether the values written by [_writeKey] equal those of the retained
+  /// image.
+  bool _keyMatches() {
+    final next = _nextNumbers;
+    final kept = _retainedNumbers;
+    for (var i = 0; i < _keyNumberCount; i++) {
+      if (next[i] != kept[i]) {
+        return false;
+      }
+    }
+    for (var i = 0; i < _keyObjectCount; i++) {
+      if (!identical(_nextObjects[i], _retainedObjects[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// Keeps the values written by [_writeKey] as those of the retained image.
+  void _keepKey() {
+    final numbers = _retainedNumbers;
+    _retainedNumbers = _nextNumbers;
+    _nextNumbers = numbers;
+    final objects = _retainedObjects;
+    _retainedObjects = _nextObjects;
+    _nextObjects = objects;
   }
 
   void _resolveRenderer() {
@@ -440,14 +547,8 @@ class Scene3DComponent({
     );
 
     final isRetained = _cacheMode == Scene3DCacheMode.retained;
-    Object? nextKey;
     if (isRetained) {
-      final bloomSettings = world.bloom;
-      final postSettings = world.postProcess;
-      nextKey = Object.hashAll([
-        world.sceneVersion,
-        _manualVersion,
-        world.shadowGroup?.castersVersion ?? world.castersVersion,
+      _writeKey(
         left,
         top,
         pixelWidth,
@@ -455,35 +556,22 @@ class Scene3DComponent({
         targetWidth,
         targetHeight,
         pixelScale,
-        msaa.sampleCount,
-        world.hdrEnabled,
-        world.oitMode,
-        world.grabSceneColorEnabled,
-        world.renderDebugMode3D,
-        bloomSettings?.threshold,
-        bloomSettings?.softKnee,
-        bloomSettings?.intensity,
-        bloomSettings?.radius,
-        bloomSettings?.passes,
-        postSettings?.toneMap,
-        postSettings?.exposure,
-        postSettings?.contrast,
-        postSettings?.saturation,
-        postSettings?.vignetteIntensity,
-        postSettings?.vignetteSmoothness,
-        postSettings?.tint,
-        postSettings?.fxaa,
-        postSettings?.colorLut,
-        postSettings?.colorLutIntensity,
-      ]);
-      if (_retainedImage != null &&
-          _retainedKey == nextKey &&
+      );
+      final retainedImage = _retainedImage;
+      final retainedTarget = _retainedImageTarget;
+      if (retainedImage != null &&
+          retainedTarget != null &&
+          _keyMatches() &&
           _sameFloats(_viewMatrix.storage, _retainedView) &&
           _sameFloats(_projectionMatrix.storage, _retainedProj)) {
         _cacheHitCount++;
+        // The image is drawn again in this frame: its color texture must not
+        // be rendered into before Flutter has finished drawing it.
+        _resolveRenderer();
+        _device!.backend.representLastImage(retainedTarget);
         _compositeImage(
           canvas,
-          _retainedImage!,
+          retainedImage,
           pixelWidth,
           pixelHeight,
           destination,
@@ -533,10 +621,10 @@ class Scene3DComponent({
     if (isRetained) {
       if (usePost) {
         if (_retainedBloomTarget == null ||
-            _retainedTargetW != targetWidth ||
-            _retainedTargetH != targetHeight) {
-          _retainedTargetW = targetWidth;
-          _retainedTargetH = targetHeight;
+            _bloomTargetWidth != targetWidth ||
+            _bloomTargetHeight != targetHeight) {
+          _bloomTargetWidth = targetWidth;
+          _bloomTargetHeight = targetHeight;
           _retainedBloomTarget = device.backend.createRenderTarget(
             width: targetWidth,
             height: targetHeight,
@@ -546,19 +634,18 @@ class Scene3DComponent({
         ownedTarget = _retainedBloomTarget;
       } else {
         if (_retainedSceneTarget == null ||
-            _retainedTargetW != targetWidth ||
-            _retainedTargetH != targetHeight ||
-            _retainedMsaa != msaa.sampleCount) {
-          _retainedTargetW = targetWidth;
-          _retainedTargetH = targetHeight;
-          _retainedMsaa = msaa.sampleCount;
+            _sceneTargetWidth != targetWidth ||
+            _sceneTargetHeight != targetHeight ||
+            _sceneTargetMsaa != msaa.sampleCount) {
+          _sceneTargetWidth = targetWidth;
+          _sceneTargetHeight = targetHeight;
+          _sceneTargetMsaa = msaa.sampleCount;
           _retainedSceneTarget = device.backend.createRenderTarget(
             width: targetWidth,
             height: targetHeight,
             clearValue: device.clearValue,
             msaaSampleCount: msaa.sampleCount,
           );
-          _retainedBloomTarget = null;
         }
         ownedTarget = _retainedSceneTarget;
       }
@@ -608,7 +695,8 @@ class Scene3DComponent({
     if (isRetained) {
       _retainedImage?.dispose();
       _retainedImage = image;
-      _retainedKey = nextKey;
+      _retainedImageTarget = ownedTarget;
+      _keepKey();
       _retainedView.setAll(0, _viewMatrix.storage);
       _retainedProj.setAll(0, _projectionMatrix.storage);
     } else {

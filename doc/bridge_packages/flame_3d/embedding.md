@@ -220,11 +220,13 @@ The layer compares, on every frame:
 - the part of the screen the layer covers and where it lands in device pixels: panning, zooming or
   rotating the 2D camera, moving, scaling or rotating the layer or one of its ancestors, resizing
   the game, and changing its `projection`;
-- the render target size, the device pixel ratio, `renderScale` and `msaa`;
+- the render target size, the device pixel ratio, `renderScale`, `msaa` and the layer's
+  `cameraMask`;
 - `hdrEnabled`, `oitMode`, `grabSceneColorEnabled` and `renderDebugMode3D`;
-- the values of the `bloom` settings and of the color settings of `postProcess` (`toneMap`,
-  `exposure`, `contrast`, `saturation`, the vignette, `tint`, `fxaa` and the color LUT), compared by
-  value, so changing them in place counts.
+- the values of the `bloom` settings and of every field of `postProcess` (`toneMap`, `exposure`,
+  `contrast`, `saturation`, the vignette, `tint`, `fxaa`, the color LUT and its intensity, and the
+  SSAO and depth-of-field fields), so changing them in place counts too (the content of a color
+  LUT does not).
 
 These do not render it again, because the engine does not see them; report them as described in
 [Basic Concepts](basic_concepts.md#scene-versions-and-dirty-marking), or call `layer.markDirty()`:
@@ -236,8 +238,7 @@ These do not render it again, because the engine does not see them; report them 
   vectors or `ShadowSettings` of a light source changed in place (`source.markChanged()`);
 - what a custom `Object3D` draws (`markDrawDirty()`), and textures whose content changes, such as a
   `RenderTexture3D` shown in the layer;
-- the fields of `fog`, the SSAO and depth-of-field fields of `postProcess`, `customPasses`, and the
-  layer's `cameraMask`.
+- the fields of `fog` and `customPasses`.
 
 `markDirty()` only renders the layer again; `world.markSceneDirty()` does too, and also marks the
 shadow casters as changed (use `shadows: false` when none moved).
@@ -253,12 +254,15 @@ a `ShadowGroup`.
 
 ### What it costs
 
-A frame served from the image costs one image draw and the comparison: about thirty values hashed
-into a new list, and the two camera matrices compared. A frame that renders costs what it costs
-without caching. The layer's render target is not taken from the device's pool: it is created on the
-first render and again whenever its size changes, and it keeps up to three color textures of the
-target size (4 bytes per pixel each, two in steady use) and a depth texture, plus a multisampled
-color texture with `msaa`. Setting `cacheMode` back to `none`, or removing the layer, releases them.
+A frame served from the image costs one image draw and the comparison: about forty values compared
+one by one with those of the kept image, and the two camera matrices, without allocating. A frame
+that renders costs what it costs without caching. The layer's render targets are not taken from the
+device's pool: one for the plain path and one for the post-processing path (`bloom`, `postProcess`,
+`hdrEnabled`), each created on its first render and again whenever its size changes. Each keeps up
+to three color textures of the target size (4 bytes per pixel each, two in steady use: the frame
+after a run of reused frames renders into another texture than the one Flutter may still be
+drawing) and a depth texture, plus a multisampled color texture with `msaa`. Setting `cacheMode`
+back to `none`, or removing the layer, releases them.
 
 While the 2D camera moves, the layer renders on every frame, like a layer without caching.
 
@@ -396,14 +400,6 @@ game share a device of their own, `layer.device`, whose `lastFrameStats` cover a
   whole number of physical pixels, as a full-screen `GameWidget` is.
 - A retained layer does not see the changes listed under "What renders the layer again" that the
   engine cannot observe; call `markDirty()` after them.
-- On the first render after a run of reused frames, a retained layer renders into the texture whose
-  image the previous frame showed, without waiting the two frames that the render targets otherwise
-  leave Flutter to finish drawing an image: while the GPU is behind, the new 3D picture can show one
-  frame early, out of step with the 2D art.
-- A retained layer whose render target size changed while `bloom`, `postProcess` or `hdrEnabled`
-  was active, and which then turns them off, renders into its earlier, smaller or larger scene
-  target and shows a cropped picture until its target size changes again. Set `cacheMode` to
-  `none` and back to `retained` after such a switch to recover.
 - `msaa` has no effect while `bloom`, `postProcess` or `hdrEnabled` is active.
 - The `postProcess` grading runs on the layer's premultiplied colors, the empty, fully transparent
   pixels included: a `contrast` below `1` turns them gray (with `contrast: 0.5`, black 2D art behind

@@ -283,6 +283,13 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
   }
 
   @override
+  void representLastImage(GpuRenderTarget target) {
+    if (target is _FlutterGpuRenderTarget) {
+      target.representLast();
+    }
+  }
+
+  @override
   bool get supportsTextureTargets => true;
 
   // Flutter GPU has no query for the formats a texture can be rendered into.
@@ -605,7 +612,15 @@ class _FlutterGpuRenderTarget(
     buffer
       ..presentedFrame = GpuBackend._drawnFrames
       ..presentedSerial = _presentations++;
+    _lastPresented = buffer;
   }
+
+  /// Records that the image last handed out is drawn again in this frame.
+  void representLast() {
+    _lastPresented?.presentedFrame = GpuBackend._drawnFrames;
+  }
+
+  _ColorBuffer? _lastPresented;
 
   int _presentations = 0;
 }
