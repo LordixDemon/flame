@@ -4,6 +4,7 @@ import 'package:flame/game.dart' show FlameGame;
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
+import 'package:flame_3d/debug.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_test/flame_test.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
@@ -28,7 +29,9 @@ class _Box({super.position}) extends Object3D {
 Aabb3? _bruteForce(World3D world) {
   Aabb3? union;
   for (final child in world.children) {
-    if (child is Component3D && child is! LightComponent) {
+    if (child is Component3D &&
+        child is! LightComponent &&
+        child.includeInSceneBounds) {
       if (union == null) {
         union = Aabb3.copy(child.aabb);
       } else {
@@ -81,6 +84,43 @@ void main() {
       final bounds = world.sceneBounds!;
       expect(bounds.min, closeToVector3(Vector3(-4.5, -0.5, -2.5)));
       expect(bounds.max, closeToVector3(Vector3(1.5, 10.5, 3.5)));
+    });
+
+    testWithGame('leaves out the components that ask for it', _game, (
+      game,
+    ) async {
+      final world = game.world as World3D;
+      final box = _Box(position: Vector3(1, 2, 3));
+      final far = _Box(position: Vector3(500, 0, 0));
+      final debug = DebugRenderer3D();
+      await world.ensureAddAll([box, far, debug]);
+      // The debug renderer's bounds (it draws anywhere) do not count.
+      expect(debug.includeInSceneBounds, isFalse);
+      expect(world.hasUnboundedComponents, isTrue);
+      expect(world.sceneBounds!.max.x, closeTo(500.5, 1e-9));
+      _expectExact(world);
+
+      far.includeInSceneBounds = false;
+      expect(world.sceneBounds!.min, closeToVector3(Vector3(0.5, 1.5, 2.5)));
+      expect(world.sceneBounds!.max, closeToVector3(Vector3(1.5, 2.5, 3.5)));
+      _expectExact(world);
+      // Moving a component that does not count changes nothing.
+      far.position.setValues(-900, 0, 0);
+      expect(world.sceneBounds!.min.x, closeTo(0.5, 1e-9));
+
+      far.includeInSceneBounds = true;
+      expect(world.sceneBounds!.min.x, closeTo(-900.5, 1e-9));
+      _expectExact(world);
+
+      debug.removeFromParent();
+      await game.ready();
+      expect(world.hasUnboundedComponents, isFalse);
+      // A nested component counts through its parent whatever it asks.
+      final nested = _Box(position: Vector3(0, 40, 0))
+        ..includeInSceneBounds = false;
+      await box.ensureAdd(nested);
+      expect(world.sceneBounds!.max.y, closeTo(42.5, 1e-9));
+      expect(world.hasUnboundedComponents, isFalse);
     });
 
     testWithGame('follows moves, additions and removals exactly', _game, (

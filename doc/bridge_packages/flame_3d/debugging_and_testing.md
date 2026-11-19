@@ -57,16 +57,18 @@ segments the last pass drew.
 - The automatic overlays walk the whole world tree on every main pass, allocate several vectors
   per object and evaluate the pose of every model. It is a tool for debugging, not for release
   builds. Shadow and depth-normal passes skip it.
-- Its bounds are a fixed box of ±100,000 units, so that it is never culled. Those bounds enter
-  `World3D.sceneBounds`, which fits the sun's shadow map: while a `DebugRenderer3D` is in the
-  world, the shadow map covers that whole box and the shadows of the scene can disappear (in a
-  check with the default shadow settings, the shadow of a cube on the ground disappeared
-  entirely). Remove the renderer when judging shadows.
+- Its bounds are a fixed box of ±100,000 units, so that it is never culled. It sets
+  `includeInSceneBounds` to `false`, so those bounds stay out of `World3D.sceneBounds`, which
+  fits the sun's shadow map: adding the renderer leaves the shadows as they are
+  (`test/gpu/debug_and_ui_3d_gpu_test.dart` compares the pixels of a shadowed scene with and
+  without it). While it is in a world, a `Scene3DComponent` renders its whole visible area instead
+  of only the part the scene's bounds cover, so that lines outside the scene still show.
 - With `xray`, the lines are still drawn among the opaque draws, ordered by pipeline and material:
   objects whose material comes later in that order draw over the lines anyway. In a check, a quad
   in front of an x-ray line covered it when the quad's material was created after the renderer,
   and did not when it was created before.
-- The dartdoc mentions bounds of the `SceneSpatialIndex3D`; nothing draws them.
+- It does not draw the bounds of a `SceneSpatialIndex3D`: draw them with `drawAabb` if you need
+  them.
 
 
 ## Inspector and transform gizmo

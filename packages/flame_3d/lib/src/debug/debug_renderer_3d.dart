@@ -13,12 +13,16 @@ import 'package:flame_3d/resources.dart';
 /// {@template debug_renderer_3d}
 /// Batched 3D debug wireframe and gizmo overlay for a [World3D].
 ///
-/// Packs all automatic scene inspection wireframes (world-space [Object3D]
-/// AABBs, [ModelComponent] bone skeletons, [PointLight] range spheres,
-/// [SpotLight] cones, and [SceneSpatialIndex3D] BVH bounds) plus custom
-/// per-frame [drawLine], [drawAabb], [drawObb], [drawSphere], [drawCapsule],
-/// [drawCone], [drawAxes], and [drawPolyline] segments into **1 single
-/// instanced GPU draw call**.
+/// Packs the automatic scene inspection wireframes (the world-space bounds
+/// of every [Object3D], [ModelComponent] bone skeletons, [PointLight] range
+/// spheres and [SpotLight] cones) plus custom [drawLine], [drawAabb],
+/// [drawObb], [drawSphere], [drawCapsule], [drawCone], [drawAxes] and
+/// [drawPolyline] segments into **1 single instanced GPU draw call**.
+/// Oriented boxes are drawn only when asked for with [drawObb].
+///
+/// The renderer may draw anywhere, so it is never culled and stays out of
+/// [World3D.sceneBounds] ([includeInSceneBounds] is `false`): adding it does
+/// not change the region the sun's shadow map is fitted to.
 /// {@endtemplate}
 class DebugRenderer3D({
   var bool enabled = true,
@@ -31,6 +35,7 @@ class DebugRenderer3D({
 }) extends Object3D {
   /// {@macro debug_renderer_3d}
   this : super(castsShadows: false) {
+    includeInSceneBounds = false;
     _material.castsShadows = false;
     _syncRenderState();
   }
@@ -68,12 +73,17 @@ class DebugRenderer3D({
   @override
   bool isVisible(Frustum frustum) => enabled;
 
-  /// Clears custom immediate segments accumulated before the next pass.
+  /// Removes every custom segment added with [drawLine] and the other
+  /// `draw...` methods.
   void clearCustomSegments() {
     _queuedSegments = 0;
   }
 
-  /// Appends a colored 3D line segment `[start .. end]` for the upcoming pass.
+  /// Appends a colored 3D line segment `[start .. end]`.
+  ///
+  /// Custom segments stay, and are drawn every frame, until
+  /// [clearCustomSegments]: to draw something that changes, clear and add
+  /// again each frame.
   void drawLine(
     Vector3 start,
     Vector3 end, {
@@ -163,6 +173,9 @@ class DebugRenderer3D({
   }
 
   /// Draws the 12 wireframe edges of world-space [box].
+  ///
+  /// Boxes larger than `1e4` along any axis (unbounded placeholders) are
+  /// skipped.
   void drawAabb(
     Aabb3 box, {
     Color color = const Color(0xFF22D3EE),
@@ -174,7 +187,9 @@ class DebugRenderer3D({
     final x1 = box.max.x;
     final y1 = box.max.y;
     final z1 = box.max.z;
-    if ((x1 - x0).abs() > 1e4 || (y1 - y0).abs() > 1e4) {
+    if ((x1 - x0).abs() > 1e4 ||
+        (y1 - y0).abs() > 1e4 ||
+        (z1 - z0).abs() > 1e4) {
       return;
     }
 

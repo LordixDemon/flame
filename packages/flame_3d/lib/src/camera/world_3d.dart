@@ -281,10 +281,19 @@ class World3D({
   FilterQuality scaledFilterQuality = FilterQuality.low;
 
   /// The union of the world-space bounds ([Component3D.aabb]) of the
-  /// [Component3D]s of this world, lights and reflection probe volumes
-  /// excepted, or `null` when there are none.
+  /// [Component3D]s of this world, or `null` when there are none.
+  ///
+  /// Lights, reflection probe volumes and the components that set
+  /// [Component3D.includeInSceneBounds] to `false` are left out. The sun's
+  /// shadow map is fitted to these bounds, and a `Scene3DComponent` renders
+  /// only the part of its area they cover unless [hasUnboundedComponents].
   Aabb3? get sceneBounds => _sceneBounds.value;
   final ComponentBounds _sceneBounds = ComponentBounds();
+  final Set<Component3D> _unboundedComponents = Set.identity();
+
+  /// Whether this world holds a component left out of [sceneBounds] (see
+  /// [Component3D.includeInSceneBounds]), which may draw outside them.
+  bool get hasUnboundedComponents => _unboundedComponents.isNotEmpty;
 
   @override
   void onChildrenChanged(flame.Component child, flame.ChildrenChangeType type) {
@@ -297,10 +306,34 @@ class World3D({
     }
     switch (type) {
       case flame.ChildrenChangeType.added:
-        _sceneBounds.add(child);
+        _addToSceneBounds(child);
       case flame.ChildrenChangeType.removed:
         _sceneBounds.remove(child);
+        _unboundedComponents.remove(child);
     }
+  }
+
+  void _addToSceneBounds(Component3D child) {
+    if (child.includeInSceneBounds) {
+      _sceneBounds.add(child);
+    } else {
+      _unboundedComponents.add(child);
+    }
+  }
+
+  /// Moves [child] in or out of [sceneBounds] after its
+  /// [Component3D.includeInSceneBounds] changed.
+  @internal
+  void updateSceneBoundsMembership(Component3D child) {
+    final wasBounded = _sceneBounds.contains(child);
+    if (!wasBounded && !_unboundedComponents.remove(child)) {
+      return;
+    }
+    if (wasBounded) {
+      _sceneBounds.remove(child);
+    }
+    _addToSceneBounds(child);
+    markSceneDirty();
   }
 
   /// Register a [light] with this world.

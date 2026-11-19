@@ -116,6 +116,34 @@ abstract class Component3D({
     _cachedWorld?.markSceneDirty(shadows: shadows);
   }
 
+  bool _includeInSceneBounds = true;
+
+  /// Whether this component's bounds ([aabb]) count in
+  /// [World3D.sceneBounds], the region the sun's shadow map is fitted to.
+  ///
+  /// It is `true` by default. Set it to `false` on a component whose bounds
+  /// are much larger than what the shadows should cover, such as an overlay
+  /// that may draw anywhere (`DebugRenderer3D` does so), so that adding it
+  /// does not spread the shadow map over its bounds and leave the scene
+  /// without visible shadows. The component is still drawn, and culled with
+  /// its [aabb]. While a world holds such a component, a `Scene3DComponent`
+  /// renders all of its visible area rather than only the part the scene
+  /// bounds cover (see [World3D.hasUnboundedComponents]).
+  ///
+  /// Only the direct children of the [World3D] are counted or left out: a
+  /// nested component counts through the bounds of its parent, which contain
+  /// it so that the parent is culled correctly.
+  bool get includeInSceneBounds => _includeInSceneBounds;
+  set includeInSceneBounds(bool value) {
+    if (value == _includeInSceneBounds) {
+      return;
+    }
+    _includeInSceneBounds = value;
+    if (parent case final World3D world) {
+      world.updateSceneBoundsMembership(this);
+    }
+  }
+
   /// Whether this component AND all of its [Component3D] ancestors have
   /// [visible] set to `true`.
   bool get isEffectivelyVisible {
@@ -633,6 +661,10 @@ class ComponentBounds() {
 
   /// The number of components in the set.
   int get length => _components.length;
+
+  /// Whether [component] is in the set.
+  bool contains(Component3D component) =>
+      identical(component._boundsOwner, this);
 
   /// Adds [component] to the set.
   void add(Component3D component) {

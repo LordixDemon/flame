@@ -797,7 +797,8 @@ class Scene3DComponent({
     double tx,
     double ty,
   ) {
-    var box = world.sceneBounds;
+    // A component left out of the scene bounds may draw anywhere.
+    var box = world.hasUnboundedComponents ? null : world.sceneBounds;
     final bound = visibleSceneBounds;
     if (bound != null) {
       if (box == null) {
