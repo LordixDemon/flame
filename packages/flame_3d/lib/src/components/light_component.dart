@@ -135,7 +135,7 @@ class LightComponent({
       return;
     }
     _light.lightMask = value;
-    worldOrNull?.markSceneDirty(shadows: false);
+    worldOrNull?.markLightsDirty(shadows: false);
   }
 
   late final Light _light = Light(
@@ -166,7 +166,7 @@ class LightComponent({
   }
 
   void _onSourceChanged({required bool shadows}) {
-    worldOrNull?.markSceneDirty(shadows: shadows);
+    worldOrNull?.markLightsDirty(shadows: shadows);
   }
 
   @override

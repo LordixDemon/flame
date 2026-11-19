@@ -503,6 +503,11 @@ abstract class Component3D({
     _worldTransformVersion++;
     _worldTransformDirty = true;
     _aabbDirty = true;
+    if (this is LightComponent) {
+      // The worlds that borrow the light follow it, see
+      // [World3D.lightsVersion].
+      _cachedWorld?.markLightsDirty(shadows: _moveCanMoveShadows());
+    }
     for (final child in _childComponents) {
       child._markWorldTransformDirty();
     }

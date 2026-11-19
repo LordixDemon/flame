@@ -266,8 +266,11 @@ world renders the group's map again only when another shadow map was rendered in
 The light, the `ShadowSettings` and, with `ShadowFit.view`, the camera the map is fitted to are
 those of the world that renders first:
 
-- give the worlds of a group the same lights, in the same order: a shader tells the light that
-  casts the shadows by its index among the directional lights;
+- let the worlds of a group render with the same lights, in the same order, since a shader tells
+  the light that casts the shadows by its index among the directional lights: keep the lights in
+  one world and let the others borrow them with `World3D.lightsFrom` (see
+  [Lights shared by several worlds](lighting.md#lights-shared-by-several-worlds)), or give each
+  world a copy of every light, in the same order;
 - render first the layer that covers the most of the screen (the one whose shadow catchers cover
   the ground), or fit the map to `ShadowSettings.bounds` that cover what every layer shows, with
   `ShadowFit.scene`: receivers outside the map are lit.
@@ -277,6 +280,22 @@ every layer.
 
 A group shares whichever map its first world's lights need: the single map, or the atlas (cascades,
 spot lights, a point light), each tile of which gets the casters of every world.
+
+```dart
+// One sun for both layers, in the buildings' world.
+buildings.world.add(
+  LightComponent.directional(
+    direction: sunDirection,
+    shadows: ShadowSettings(),
+  ),
+);
+characters.world.lightsFrom = buildings.world;
+```
+
+A world that borrows lights counts the changes of the lent lights in its own versions, so the
+group's map follows the borrowed sun, also when it is cached with `cacheWhenStatic`. A borrowed
+light that casts shadows must reach every layer of the group through its `lightMask`, since the map
+is rendered with the lights of the first layer's pass.
 
 
 ## Static shadows

@@ -179,7 +179,17 @@ When a directional light of the scene casts shadows, the layer renders the shado
 to the part of the scene it renders, and its components receive them (see [Shadows](shadows.md)).
 The shadow map is aligned with its texels as the 2D camera pans, so the edges of the shadows do not
 shimmer. Each layer only shadows itself; to let the objects of several layers shadow one another,
-put their worlds in one `ShadowGroup` (see [Shadows](shadows.md)).
+put their worlds in one `ShadowGroup` (see [Shadows](shadows.md)), and keep the lights in one of
+the worlds, which the others borrow with `World3D.lightsFrom` (see
+[Lighting](lighting.md#lights-shared-by-several-worlds)):
+
+```dart
+final shadows = ShadowGroup();
+buildings.world.shadowGroup = shadows;
+characters.world
+  ..shadowGroup = shadows
+  ..lightsFrom = buildings.world;
+```
 
 To cast shadows onto the 2D art below the layer, give the scene an invisible ground of
 `ShadowCatcherMaterial`: it draws only the shadows falling on it, blended over the 2D components
@@ -230,7 +240,8 @@ The layer compares, on every frame:
 - the world's `sceneVersion`: components added, removed, moved, shown or hidden, drawing
   properties (`color`, `instanceData`, `jointTransforms`, `castsShadows`) and light source fields
   assigned, lights added, removed or moved, animations that advance, particle systems and ribbons
-  with live particles, running effects, batch changes and world settings assigned a new value (see
+  with live particles, running effects, batch changes, world settings assigned a new value, and
+  the changes of the lights it borrows with `World3D.lightsFrom` (see
   [Basic Concepts](basic_concepts.md#scene-versions-and-dirty-marking) for the full list);
 - the `castersVersion` of the world, or of its `ShadowGroup` (all the worlds of the group);
 - `layer.markDirty()` calls;

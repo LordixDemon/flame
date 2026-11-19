@@ -79,7 +79,11 @@ class ShadowGroup() {
       }
     }
 
-    final key = World3D._shadowCasterKey(this, groupCastersHash, world._lights);
+    final key = World3D._shadowCasterKey(
+      this,
+      groupCastersHash,
+      world._passLights,
+    );
     if (!context.beginShadowPass(
       projection: projection,
       sceneBounds: any ? _bounds : null,

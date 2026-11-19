@@ -1,3 +1,4 @@
+import 'dart:collection' show UnmodifiableListView;
 import 'dart:math' as math;
 import 'dart:ui';
 
@@ -37,6 +38,8 @@ class World3D({
   bool depthPrepassEnabled = false,
 }) extends flame.World {
   final List<Light> _lights = [];
+  // Increases when a light joins or leaves [_lights], see [_passLights].
+  int _lightListRevision = 0;
   final List<ReflectionProbeVolume3D> _reflectionProbes = [];
 
   /// User-defined GPU [CustomRenderPass3D] hooks executed before or after the
@@ -55,10 +58,22 @@ class World3D({
   int _ownSceneVersion = 0;
   int _ownCastersVersion = 0;
 
+  // The changes of this world's own lights, which the worlds that borrow them
+  // ([lightsFrom]) add to their versions.
+  int _lightsVersion = 0;
+  int _lightsCastersVersion = 0;
+
   // Material.castsShadows is shared by every world that draws the material,
-  // so its changes are counted globally and added here.
-  int get _sceneVersion => _ownSceneVersion + Material.castsShadowsRevision;
-  int get _castersVersion => _ownCastersVersion + Material.castsShadowsRevision;
+  // so its changes are counted globally and added here, as are the changes of
+  // the lights this world borrows.
+  int get _sceneVersion =>
+      _ownSceneVersion +
+      Material.castsShadowsRevision +
+      (_lightsFrom?._lightsVersion ?? 0);
+  int get _castersVersion =>
+      _ownCastersVersion +
+      Material.castsShadowsRevision +
+      (_lightsFrom?._lightsCastersVersion ?? 0);
 
   /// Monotonically increasing counter that increases whenever the rendered
   /// output of this world may change: `Scene3DCacheMode.retained` layers
@@ -71,9 +86,10 @@ class World3D({
   /// `LodMeshComponent`, the instances of an `InstancedGroup3D`); when a
   /// field of a light source is assigned, a light is added or removed, or
   /// its `lightMask` changes; when an animation or active particles advance;
-  /// when a `Material.castsShadows` changes; and when a setting of this world
-  /// is assigned ([fog], [bloom], [postProcess], [hdrEnabled],
-  /// [depthPrepassEnabled], ...).
+  /// when a `Material.castsShadows` changes; when a setting of this world is
+  /// assigned ([fog], [bloom], [postProcess], [hdrEnabled],
+  /// [depthPrepassEnabled], ...); and when the lights it borrows change (see
+  /// [lightsFrom] and [lightsVersion]).
   ///
   /// The engine cannot see changes made in place: a field of a material, a
   /// field of [fog] or of a light's `ShadowSettings`, a vector of a light
@@ -104,6 +120,146 @@ class World3D({
   /// Marks this world's shadow casters as changed so a cached static shadow map
   /// ([ShadowSettings.cacheWhenStatic]) re-renders on the next pass.
   void markShadowsDirty() => markSceneDirty();
+
+  /// Monotonically increasing counter that increases whenever a light of
+  /// this world changes: a `LightComponent` is mounted or removed, moves
+  /// (also when one of its ancestors moves), gets another `lightMask`, or a
+  /// field of its source is assigned (or reported with
+  /// `LightSource.markChanged`).
+  ///
+  /// The worlds that borrow this world's lights ([lightsFrom]) add it to
+  /// their [sceneVersion], and add the part of it that can move shadows to
+  /// their [castersVersion], so their retained layers and cached shadow maps
+  /// follow the lights they borrow. Every change of [lightsVersion] also
+  /// changes this world's [sceneVersion].
+  int get lightsVersion => _lightsVersion;
+
+  /// Marks the lights of this world as changed: [lightsVersion] and
+  /// [sceneVersion] increase, and so does [castersVersion] unless [shadows]
+  /// is `false`, here and in the worlds that borrow the lights.
+  @internal
+  void markLightsDirty({bool shadows = true}) {
+    _lightsVersion++;
+    if (shadows) {
+      _lightsCastersVersion++;
+    }
+    markSceneDirty(shadows: shadows);
+  }
+
+  /// The world whose lights the passes of this world render with, before
+  /// its own lights, or `null` (the default) for its own lights only.
+  ///
+  /// Layers that show one scene, such as the `Scene3DComponent`s of a
+  /// `ShadowGroup`, can keep their lights in one world and let the others
+  /// borrow them, instead of holding a copy of every light per layer:
+  ///
+  /// ```dart
+  /// characters.world.lightsFrom = buildings.world;
+  /// ```
+  ///
+  /// - The passes of this world use the lights of the lender, in the
+  ///   lender's order, followed by the lights of this world. The positions
+  ///   and directions of the lights are those in the lender's world space.
+  /// - A borrowed light reaches a pass of this world when its `lightMask`
+  ///   shares a bit with the pass's camera mask (the `cameraMask` of the
+  ///   `Scene3DComponent`, or of the camera), as in its own world: give the
+  ///   layers different `cameraMask` bits to keep a light out of some of
+  ///   them.
+  /// - Every change of a lent light (see [lightsVersion]) changes the
+  ///   [sceneVersion] of this world, and of its [castersVersion] when it can
+  ///   move shadows: its retained layers render again, its cached static
+  ///   shadow maps follow, and a game whose `idleRenderMode` skips unchanged
+  ///   frames wakes up. The other changes of the lender do not.
+  /// - The lights are those the lender has registered, which a light does
+  ///   when it is mounted. While the lender is not mounted (not added to a
+  ///   game yet, or removed from it), this world renders with its own lights
+  ///   only, and with the lender's again once it is mounted. The link stays
+  ///   until [lightsFrom] is set to `null`.
+  ///
+  /// A world cannot borrow its own lights, nor those of a world that borrows
+  /// lights itself, and a world that lends its lights cannot borrow: these
+  /// throw. Assigning another lender increases [sceneVersion] and
+  /// [castersVersion].
+  World3D? get lightsFrom => _lightsFrom;
+  set lightsFrom(World3D? lender) {
+    if (identical(lender, _lightsFrom)) {
+      return;
+    }
+    if (lender != null) {
+      if (identical(lender, this)) {
+        throw ArgumentError.value(
+          lender,
+          'lightsFrom',
+          'A world cannot borrow its own lights',
+        );
+      }
+      if (lender._lightsFrom != null) {
+        throw ArgumentError.value(
+          lender,
+          'lightsFrom',
+          'This world borrows the lights of another world: borrow from that '
+              'one',
+        );
+      }
+      if (_borrowerCount > 0) {
+        throw StateError(
+          'A world that lends its lights to other worlds cannot borrow '
+          'lights itself.',
+        );
+      }
+    }
+    final sceneVersion = _sceneVersion;
+    final castersVersion = _castersVersion;
+    _lightsFrom?._borrowerCount--;
+    _lightsFrom = lender;
+    lender?._borrowerCount++;
+    // The versions keep increasing, whatever those of the old and the new
+    // lender.
+    _ownSceneVersion += sceneVersion + 1 - _sceneVersion;
+    _ownCastersVersion += castersVersion + 1 - _castersVersion;
+    Game.notifyVisualMutation();
+  }
+
+  World3D? _lightsFrom;
+  // The number of worlds that borrow this world's lights.
+  int _borrowerCount = 0;
+
+  /// The lights the passes of this world render with: those of [lightsFrom]
+  /// (see there), followed by the lights of this world.
+  ///
+  /// The list is a view that cannot be modified; it follows the lights as
+  /// they are mounted and removed.
+  List<Light> get lights => UnmodifiableListView(_passLights);
+
+  /// The lights the passes of this world render with, see [lights].
+  List<Light> get _passLights {
+    final lender = _lightsFrom;
+    if (lender == null || lender._lights.isEmpty) {
+      return _lights;
+    }
+    if (_lights.isEmpty) {
+      return lender._lights;
+    }
+    if (!identical(_mergedLender, lender) ||
+        _mergedLenderRevision != lender._lightListRevision ||
+        _mergedOwnRevision != _lightListRevision) {
+      _mergedLender = lender;
+      _mergedLenderRevision = lender._lightListRevision;
+      _mergedOwnRevision = _lightListRevision;
+      _mergedLights
+        ..clear()
+        ..addAll(lender._lights)
+        ..addAll(_lights);
+    }
+    return _mergedLights;
+  }
+
+  // The borrowed lights followed by the own ones, rebuilt when a light joins
+  // or leaves either list.
+  final List<Light> _mergedLights = [];
+  World3D? _mergedLender;
+  int _mergedLenderRevision = -1;
+  int _mergedOwnRevision = -1;
 
   /// Whether the half-resolution clip-depth + view-normal prepass renders
   /// every frame (soft particles, shoreline foam), see [renderDepthNormals].
@@ -340,14 +496,16 @@ class World3D({
   @internal
   void addLight(Light light) {
     _lights.add(light);
-    markSceneDirty();
+    _lightListRevision++;
+    markLightsDirty();
   }
 
   /// Unregister a [light] from this world.
   @internal
   void removeLight(Light light) {
     _lights.remove(light);
-    markSceneDirty();
+    _lightListRevision++;
+    markLightsDirty();
   }
 
   /// Register a local [ReflectionProbeVolume3D] with this world.
@@ -420,8 +578,9 @@ class World3D({
   /// Renders (or reuses) the shadow map / unified `ShadowAtlas3D` of this
   /// world, returning whether the upcoming main pass receives shadows.
   bool renderShadows(Canvas canvas, {RenderContext3D? overrideContext}) {
+    final lights = _passLights;
     final ctx = (overrideContext ?? context)
-      ..lights = _lights
+      ..lights = lights
       ..fog = _fog;
     final group = _shadowGroup;
     if (group != null && overrideContext == null) {
@@ -430,7 +589,7 @@ class World3D({
     if (!ctx.beginShadowPass(
       projection: _shadowProjection,
       sceneBounds: sceneBounds,
-      castersKey: _shadowCasterKey(this, _castersVersion, _lights),
+      castersKey: _shadowCasterKey(this, _castersVersion, lights),
     )) {
       return ctx.hasActiveShadows;
     }
@@ -523,7 +682,7 @@ class World3D({
   @internal
   void syncContextOptions(RenderContext3D ctx) {
     ctx
-      ..lights = _lights
+      ..lights = _passLights
       ..fog = _fog
       // Only the passes into the HDR scene target encode for it, see
       // `executeWorldRenderPipeline`.
@@ -889,7 +1048,7 @@ class World3D({
     try {
       return renderWithHost(resolvedDevice, resolvedContext, msaa: msaa, () {
         resolvedContext
-          ..lights = _lights
+          ..lights = _passLights
           ..fog = _fog
           ..setCamera(view, projection);
         syncContextOptions(resolvedContext);
@@ -943,7 +1102,7 @@ class World3D({
   ///
   /// For an unmounted world, whose lights are not registered (they register
   /// when mounted), the lights of its tree are gathered for the duration of
-  /// [body].
+  /// [body], and so are those of an unmounted [lightsFrom].
   @internal
   T renderWithHost<T>(
     GraphicsDevice device,
@@ -957,12 +1116,23 @@ class World3D({
     if (gatherLights) {
       _gatherLights(this);
     }
+    final lender = _lightsFrom;
+    final gatherLenderLights =
+        lender != null && !lender.isMounted && lender._lights.isEmpty;
+    if (gatherLenderLights) {
+      lender._gatherLights(lender);
+    }
     try {
       return body();
     } finally {
       _host = previousHost;
       if (gatherLights) {
         _lights.clear();
+        _lightListRevision++;
+      }
+      if (gatherLenderLights) {
+        lender._lights.clear();
+        lender._lightListRevision++;
       }
     }
   }
@@ -974,6 +1144,7 @@ class World3D({
         // which a mounted light refreshes in its update.
         child.worldTransformMatrix;
         _lights.add(child.light);
+        _lightListRevision++;
       }
       _gatherLights(child);
     }
@@ -1199,7 +1370,7 @@ class World3D({
     final renderSize = Size(size.x * scale, size.y * scale);
 
     final context = host.context
-      ..lights = _lights
+      ..lights = _passLights
       ..fog = _fog
       ..cameraMask = camera.cameraMask
       ..setCamera(camera.viewMatrix, camera.projectionMatrix);

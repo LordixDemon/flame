@@ -252,6 +252,56 @@ The mask selects lights per pass, like the limits above, not per object (see als
 decides in which passes they are drawn (see [Cameras](cameras.md)).
 
 
+## Lights shared by several worlds
+
+A game that shows one scene in several worlds, such as the `Scene3DComponent` layers of a 2D game
+whose worlds share a `ShadowGroup` (see [Embedding](embedding.md)), needs the same lights in each.
+Rather than holding a copy of every light in every world and updating all the copies, keep the
+lights in one world and let the others borrow them:
+
+```dart
+// The lights live in the buildings' world only.
+buildings.world.addAll([
+  LightComponent.hemisphere(skyColor: sky, groundColor: ground),
+  LightComponent.directional(
+    direction: sunDirection,
+    shadows: ShadowSettings(),
+  ),
+]);
+characters.world.lightsFrom = buildings.world;
+effects.world.lightsFrom = buildings.world;
+```
+
+The passes of a world with a `lightsFrom` render with the lender's lights, in the lender's order,
+followed by the world's own lights (`World3D.lights` lists them). The lights keep the positions and
+directions they have in the lender's world space, so the worlds must share one coordinate system,
+as the layers of one scene do.
+
+- A borrowed light reaches a pass when its `lightMask` shares a bit with the pass's camera mask, as
+  in its own world: give the layers different `cameraMask` bits to keep a light out of some of them
+  (see [Light masks](#light-masks)).
+- Every change of a lent light (mounted or removed, moved with its ancestors, a new `lightMask`, a
+  field of its source assigned or reported with `markChanged`) increases the lender's
+  `World3D.lightsVersion`, which the borrowing worlds add to their `sceneVersion` (and, for the
+  changes that can move a shadow, to their `castersVersion`). Their retained layers render again,
+  their static shadow maps follow the light, and an idle-throttled game wakes up; the other changes
+  of the lender leave the borrowers alone.
+- In a `ShadowGroup`, the worlds that borrow from one lender have the lights the group's shadow map
+  needs in the same order, whichever world renders the map first (see
+  [Shadows](shadows.md#one-shadow-map-for-several-layers)). Keep the lights that cast shadows in
+  the lender: a world's own lights come after the borrowed ones.
+- The borrowed lights are those the lender has registered, which a light does when it is mounted.
+  While the lender is not mounted (not yet added, or removed from the game), the borrowing world
+  renders with its own lights only, and with the lender's again when it is mounted. The link stays
+  until `lightsFrom` is set back to `null`. `World3D.renderToImage` of a world that is not mounted
+  gathers the lights of its lender's tree too.
+
+A world cannot borrow its own lights or those of a world that borrows lights itself, and a world
+that lends its lights cannot borrow: these throw. Borrowing costs nothing per frame: a world with
+lights of its own keeps one list of the borrowed and own lights, rebuilt when a light is mounted or
+removed in either world.
+
+
 ## Clustered light grid
 
 `LightClusterGrid3D` (in `package:flame_3d/world_scale.dart`) is a CPU helper, not a clustered

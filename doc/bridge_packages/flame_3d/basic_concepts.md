@@ -151,6 +151,11 @@ A world counts its changes in two numbers:
   `shadows`. A moving point light without shadows, collider or sound leaves a cached static shadow
   map alone.
 
+A world that borrows the lights of another (`World3D.lightsFrom`, see
+[Lighting](lighting.md#lights-shared-by-several-worlds)) counts their changes too: the lender
+counts the changes of its lights in a third number, `lightsVersion`, which the borrowing worlds add
+to their `sceneVersion`, the part of it that can move shadows to their `castersVersion`.
+
 Assigning a value equal to the current one is not a change: writing an unchanged position,
 rotation or scale (the transform's vectors notify only when their value changes), color or light
 field marks nothing, so a component whose transform is set to the same value every frame does not
