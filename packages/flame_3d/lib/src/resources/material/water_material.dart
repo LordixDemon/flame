@@ -6,12 +6,17 @@ import 'package:flame_3d/resources.dart';
 
 /// {@template water_material}
 /// Animated 4-wave Gerstner GPU water material with scrolling micro-ripples,
-/// shallow/deep color gradient, crest foam, Fresnel sky reflection, sun/point
-/// specular glints, directional PCF shadow reception, Grab-Pass underwater
-/// screen-space refraction, and [FogSettings].
+/// shallow/deep color gradient, crest foam, a Fresnel blend towards a flat sky
+/// color (the hemisphere light's sky, or the ambient light), directional,
+/// point and spot light glints, directional PCF shadow reception, Grab-Pass
+/// underwater screen-space refraction, and [FogSettings].
 ///
 /// Works in both `+Y`-up (`upAxis: Vector3(0, 1, 0)`) and `+Z`-up
-/// (`upAxis: Vector3(0, 0, 1)`) worlds. Advance [time] each frame to animate.
+/// (`upAxis: Vector3(0, 0, 1)`) worlds: the waves and the ripples are built
+/// around [upAxis]. Advance [time] each frame to animate.
+///
+/// The [renderState] follows [opacity]: alpha blended below `1`, opaque at
+/// `1` (both culling back faces), unless a render state was set by hand.
 /// {@endtemplate}
 class WaterMaterial({
   var Color shallowColor = const Color(0xFF38BDF8),
@@ -29,7 +34,7 @@ class WaterMaterial({
   var double fresnelPower = 3.2,
   var double specularStrength = 0.85,
   var double specularPower = 48.0,
-  var double opacity = 0.86,
+  double opacity = 0.86,
 
   /// Clip-depth thickness span (`> 0` generates shoreline intersection foam
   /// where opaque scene geometry meets the water surface when
@@ -61,10 +66,29 @@ class WaterMaterial({
         ),
       ) {
     castsShadows = false;
-    renderState = opacity < 1.0
-        ? RenderState.alphaBlend.copyWith(cullMode: CullMode.backFace)
-        : const RenderState(cullMode: CullMode.backFace);
+    renderState = _derivedState = _stateFor(opacity);
   }
+
+  /// The opacity of the water body, `0..1` (foam and grazing angles add to
+  /// it). Below `1` the water is alpha blended.
+  double get opacity => _opacity;
+  double _opacity = opacity;
+  set opacity(double value) {
+    _opacity = value;
+    if (identical(renderState, _derivedState)) {
+      renderState = _derivedState = _stateFor(value);
+    }
+  }
+
+  RenderState? _derivedState;
+
+  static RenderState _stateFor(double opacity) => opacity < 1.0
+      ? _translucentState
+      : const RenderState(cullMode: CullMode.backFace);
+
+  static final RenderState _translucentState = RenderState.alphaBlend.copyWith(
+    cullMode: CullMode.backFace,
+  );
 
   static const String _bundle =
       'packages/flame_3d/assets/shaders/water_material.shaderbundle';
@@ -77,6 +101,7 @@ class WaterMaterial({
   static final Vector4 _fragParams = Vector4.zero();
   static final Vector4 _fragParams2 = Vector4.zero();
   static final Vector4 _shoreVec = Vector4.zero();
+  static final Vector4 _upVec = Vector4.zero();
 
   @override
   void apply(RenderContext context) {
@@ -115,6 +140,10 @@ class WaterMaterial({
       ..setVector4(
         'WaterMaterial.shoreParams',
         _shoreVec..setValues(shoreFoamDepth, refractionStrength, 0, 0),
+      )
+      ..setVector4(
+        'WaterMaterial.upAxis',
+        _upVec..setValues(upAxis.x, upAxis.y, upAxis.z, 0),
       );
   }
 }

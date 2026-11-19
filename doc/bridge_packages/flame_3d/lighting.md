@@ -214,7 +214,7 @@ within the limits, see the [Limitations](#limitations).
 | --------------------- | ------- | ---------- | ----------- | ----- | ---- | ----------------- |
 | `SpatialMaterial`     | yes     | yes        | 4           | 8     | 4    | native only       |
 | `StylizedMaterial`    | yes     | own model  | 4           | 8     | 4    | no                |
-| `WaterMaterial`       | as sky  | as sky     | 4           | 8     | no   | no                |
+| `WaterMaterial`       | as sky  | as sky     | 4           | 8     | 4    | no                |
 | `BillboardMaterial3D` | yes     | yes        | 4           | 8     | 4    | no                |
 
 `UnlitMaterial`, `DecalMaterial`, `OutlineMaterial`, `SkyboxMaterial3D`, `ShadowCatcherMaterial`,
@@ -584,6 +584,5 @@ material's slots (see [Materials](materials.md#custom-shaders)):
 - Light probe grids are baked without occlusion, and on the GPU they drop the mixed terms of band 2
   of each probe's spherical harmonics (see [Light probe grids](#light-probe-grids)).
 - `StylizedMaterial` and `WaterMaterial` receive wrong shadows when the scene uses the multi-light
-  shadow atlas, and `WaterMaterial` ignores spot lights (see
-  [Materials](materials.md#limitations)).
+  shadow atlas (see [Materials](materials.md#limitations)).
 - Changing a light source's fields does not invalidate a retained `Scene3DComponent` image.

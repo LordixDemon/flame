@@ -1,9 +1,9 @@
 #version 460 core
 
 // Stylized + physically-inspired Gerstner water fragment shader with dual
-// scrolling micro-ripples, shallow/deep gradient, crest foam, Fresnel sky
-// reflection, sun/spot specular glints, directional PCF shadows, Grab-Pass
-// underwater refraction, and fog.
+// scrolling micro-ripples, shallow/deep gradient, crest foam, a Fresnel blend
+// towards the flat sky color, directional, point and spot light glints,
+// directional PCF shadows, Grab-Pass underwater refraction, and fog.
 
 in vec3 fragPosition;
 in vec3 fragNormal;
@@ -36,6 +36,8 @@ uniform WaterMaterial {
   vec4 params2;
   // x: shoreFoamDepth (clip-depth span), y: refractionStrength, zw: unused
   vec4 shoreParams;
+  // xyz: the world up axis of the rest surface (unit), w: unused
+  vec4 upAxis;
 } waterMat;
 
 uniform StylizedPass {
@@ -94,9 +96,8 @@ void main() {
              0.6 * sin(uv2.y * 6.28318 - 0.7);
 
   vec3 geomN = normalize(fragNormal);
-  vec3 up = length(scene.HemisphereLight_up) > 0.1
-      ? normalize(scene.HemisphereLight_up)
-      : vec3(0.0, 1.0, 0.0);
+  // The same tangent frame as the waves of water_material.vert.
+  vec3 up = normalize(waterMat.upAxis.xyz);
   vec3 ref = abs(up.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
   vec3 tAxis = normalize(cross(ref, up));
   vec3 bAxis = normalize(cross(up, tAxis));
@@ -155,6 +156,29 @@ void main() {
     float ndoth = max(dot(n, normalize(l + v)), 0.0);
     specLight += scene.Lights_colors[i].rgb *
       (pow(ndoth, waterMat.params.w) * waterMat.params2.y * e);
+  }
+
+  for (int i = 0; i < int(scene.SpotLights_numLights); i++) {
+    vec3 toL = scene.SpotLights_positions[i] - fragPosition;
+    float dist = max(length(toL), 0.001);
+    vec3 l = toL / dist;
+    vec4 spotDir = scene.SpotLights_directions[i];
+    vec4 cone = scene.SpotLights_cones[i];
+    float angular = clamp((dot(l, spotDir.xyz) - cone.x) * cone.y, 0.0, 1.0);
+    angular *= angular;
+    if (angular <= 0.0) {
+      continue;
+    }
+    float range = cone.z;
+    float atten = range > 0.0
+        ? pow(max(1.0 - dist / range, 0.0), 2.0)
+        : 1.0 / (dist * dist);
+    vec4 col = scene.SpotLights_colors[i];
+    float e = col.a * atten * angular;
+    directDiffuse += col.rgb * (e * max(dot(n, l), 0.0));
+    float ndoth = max(dot(n, normalize(l + v)), 0.0);
+    specLight += col.rgb *
+      (pow(ndoth, waterMat.params.w) * waterMat.params2.y * spotDir.w * e);
   }
 
   vec3 ndc = fragClipPos.xyz / max(fragClipPos.w, 1e-6);

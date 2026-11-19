@@ -786,11 +786,14 @@ water.time += dt;
 - The four waves travel in fixed directions, the smaller ones at `0.62`, `0.38` and `0.24` times
   the amplitude and `1.65`, `2.7` and `4.1` times the frequency. Waves are continuous across
   objects, since they depend on the world position only.
-- Light: the directional lights (diffuse wrapped as `0.35 + 0.65 n·l`, and glints) and the point
-  lights; spot lights are ignored. The sky color is the hemisphere light's sky color times its
+- Light: the directional lights (diffuse wrapped as `0.35 + 0.65 n·l`, and glints), the point
+  lights and the spot lights (diffuse `n·l` and glints, inside their cone and range, glints scaled
+  by the spot light's `specular`). The sky color is the hemisphere light's sky color times its
   intensity, or the ambient light without a hemisphere light: the water does not reflect the
   skybox or an environment probe. It receives the shadow of the sun that casts shadows on the
   single-light shadow path only, like `StylizedMaterial`.
+- Ripples perturb the normal in the plane perpendicular to `upAxis`, in the same frame as the
+  waves, so the water looks the same in `+Y`-up and `+Z`-up worlds.
 - Refraction: with `World3D.grabSceneColorEnabled`, the water shows the opaque scene below it,
   offset by the ripples (`refractionStrength`), and is written opaque. The grab pass and its cost
   are described in [Rendering](rendering.md#scene-color-grab-pass).
@@ -798,10 +801,9 @@ water.time += dt;
   and fades where the depth of the opaque scene behind it is within `shoreFoamDepth` (in clip-space
   depth, not world units) of its own, see
   [Post-Processing](post_processing.md#shoreline-foam) for the depth prepass.
-- `opacity` below `1` at construction draws the water blended (straight alpha, back faces culled)
-  after the opaque draws; `1` or more draws it opaque. The render state is chosen in the
-  constructor: changing `opacity` later changes the alpha but not the blending. Water never casts
-  shadows.
+- `opacity` below `1` draws the water blended (straight alpha, back faces culled) after the opaque
+  draws; `1` or more draws it opaque. Setting `opacity` updates the render state, unless you set
+  `renderState` yourself. Water never casts shadows.
 
 It does not run on the web: there is no WebGPU version of its shaders.
 
@@ -1326,9 +1328,7 @@ The texture sampler options, including anisotropy up to 16, work on the web.
   map but not to the lightmap, and there is no UV rotation.
 - `StylizedMaterial` is display-referred and clamped to `[0, 1]`; it has no textures besides its
   MatCaps, and no image-based lighting.
-- `WaterMaterial` ignores spot lights, reflects a flat sky color, and needs a subdivided mesh; its
-  ripples are tangent to the hemisphere light's `up` (`+Y` without a hemisphere light) rather than
-  to its own `upAxis`.
+- `WaterMaterial` reflects a flat sky color and needs a subdivided mesh.
 - `DecalBatch3D` is sorted among the translucent draws as if it were at the world origin, so it
   can be drawn in the wrong order against other translucent objects. Textured decals are
   multiplied by their alpha a second time, which darkens the soft edges of premultiplied images.
