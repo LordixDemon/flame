@@ -1,5 +1,4 @@
 import 'package:flame/effects.dart';
-import 'package:flame/src/effects/measurable_effect.dart';
 
 /// This controller can force execution of an effect at a predefined speed.
 ///

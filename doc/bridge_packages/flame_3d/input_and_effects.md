@@ -322,10 +322,25 @@ mesh.add(
 
 ### Controllers, sequences and springs
 
-Flame's duration-based controllers work: curves, `alternate`, `repeatCount` and `infinite`,
-delays, `SequenceEffect` and the spring controllers (`SpringEffectController`), whose overshoot
-carries through to additive effects. Speed-based controllers (`EffectController(speed: ...)`) do
-not: they need a `MeasurableEffect`, which no 3D effect is. A sequence of 3D effects:
+Flame's controllers work: curves, `alternate`, `repeatCount` and `infinite`, delays,
+`SequenceEffect` and the spring controllers (`SpringEffectController`), whose overshoot carries
+through to additive effects. Speed-based controllers (`EffectController(speed: ...)`) need a
+`MeasurableEffect`, which the move, rotate and scale effects are; the duration is the effect's
+measure divided by the speed, computed when the effect starts:
+
+| Effect                  | Measure                                                     |
+|-------------------------|-------------------------------------------------------------|
+| `MoveToEffect3D`        | Distance from the start to the destination.                 |
+| `MoveByEffect3D`        | Length of the offset.                                       |
+| `ArcMoveEffect3D`       | Length of the arc (the speed is the average along it).      |
+| `SplinePathEffect3D`    | Length of the curve (the speed is the average along it).    |
+| `RotateToEffect3D`      | Rotation angle in radians (radians per second).             |
+| `RotateAroundEffect3D`  | `radians`, as an absolute value.                            |
+| `ScaleToEffect3D`       | Length of the change of the scale vector.                   |
+
+`SquashStretchEffect3D` and the material effects have no measure; a speed-based controller on them
+fails with Flame's assertion. For example, `MoveToEffect3D(target, EffectController(speed: 2))`
+moves a piece at 2 units per second whatever the distance. A sequence of 3D effects:
 
 ```dart
 piece.add(
@@ -346,8 +361,8 @@ piece.add(
 
 Effects run in the update, on the CPU. The transform effects allocate nothing per step: they write
 the component's position, rotation or scale in place, which marks its transform and the world as
-changed. `ColorTintEffect3D` allocates one `Color` per step, and both material effects walk the
-component's ancestors on every step to find the world.
+changed. `ColorTintEffect3D` allocates one `Color` per step (`MeshComponent.color` takes an
+immutable `Color`); both material effects mark the world they are mounted in as changed directly.
 
 
 ## Fixed-step interpolation
@@ -355,12 +370,12 @@ component's ancestors on every step to find the world.
 When a game simulates at a fixed rate (`FlameGame.fixedTimeStep` with `HasFixedUpdate`), objects
 move in steps that do not match the display's frames and seem to stutter.
 `FixedTransformInterpolation3D` keeps the transform of the last two simulation steps and shows a
-blend of them at render time (`HasFixedUpdate` and `HasGameRef` come from
-`package:flame/components.dart`):
+blend of them between frames. With `HasFixedUpdate` (from `package:flame/components.dart`) it
+needs one call, `captureFixedState()` at the start of `fixedUpdate`:
 
 ```dart
 class Ball extends MeshComponent
-    with HasFixedUpdate, FixedTransformInterpolation3D, HasGameRef {
+    with HasFixedUpdate, FixedTransformInterpolation3D {
   Ball({required super.mesh});
 
   final Vector3 velocity = Vector3(2, 0, 0);
@@ -369,20 +384,20 @@ class Ball extends MeshComponent
   void fixedUpdate(double fixedDt) {
     captureFixedState(); // restores the simulated pose, keeps it
     position.addScaled(velocity, fixedDt);
-    commitFixedState(); // the new simulated pose
-  }
-
-  @override
-  void update(double dt) {
-    super.update(dt);
-    applyInterpolationAlpha(gameRef.renderInterpolationAlpha);
   }
 }
 ```
 
+The mixin's `update` then writes the blend for the game's `renderInterpolationAlpha` into the
+transform, every frame, while `autoInterpolate` is `true` (the default) and the game has a
+`fixedTimeStep`. When fixed steps ran in a frame but the component did not call
+`captureFixedState` (a paused time scale, ticks turned off, a body at rest that returns early),
+its simulated transform is shown instead, so it does not slide between two old states.
+
 - `captureFixedState` puts the simulated transform back if an interpolated one is shown, and
   keeps it as the previous step;
-- `commitFixedState` keeps the transform after the step as the current one;
+- `commitFixedState` keeps the transform after the step as the current one (the blend does this
+  itself for the transform the step left);
 - `applyInterpolationAlpha(alpha)` writes the blend of the two into `position`, `scale` (linear)
   and `rotation` (shortest-arc slerp), for `alpha` from `0` (previous) to `1` (current);
 - `restoreSimulatedState` puts the simulated transform back, for code that must read it between
@@ -390,12 +405,14 @@ class Ball extends MeshComponent
 - `teleportFixedState` makes both steps equal to the current transform, so a teleport or a spawn
   does not slide across the screen. It is called when the component mounts.
 
+A component without `HasFixedUpdate` is not blended by itself: whatever steps it calls
+`captureFixedState` before each step, `commitFixedState` after it and `applyInterpolationAlpha`
+with its own alpha, as for bodies of a `PhysicsWorld3D` stepped at a fixed rate (see
+[Smooth motion on fast displays](physics.md#smooth-motion-on-fast-displays)).
+
 Between a blend and the next `captureFixedState`, other code that reads the transform (raycasts,
-audio, input) sees the blended pose. Unlike Flame's 2D `FixedTransformInterpolation`, which the game
-captures before each fixed step, the 3D mixin does not run by itself: call its methods as above. It
-does not combine with effects on the same component: an effect that moves the object would be undone
-by the next blend. For bodies of a `PhysicsWorld3D` stepped at a fixed rate, see
-[Smooth motion on fast displays](physics.md#smooth-motion-on-fast-displays).
+audio, input) sees the blended pose. The mixin does not combine with effects on the same
+component: an effect that moves the object would be undone by the next blend.
 
 
 ## Limitations
@@ -410,7 +427,8 @@ by the next blend. For bodies of a `PhysicsWorld3D` stepped at a fixed rate, see
 - `PointerRouter3D` works with one camera or layer; for split screens with a `CameraStack3D`, pick
   with `CameraStack3D.raycastAt` (see `cameras.md`), which also honors `cameraMask` and
   visibility.
-- No 3D effect works with speed-based controllers; `SplinePathEffect3D` does not move at constant
-  speed; `SquashStretchEffect3D` is exact only for the principal axes.
-- `FixedTransformInterpolation3D` must be driven by hand and does not mix with effects on the same
-  component.
+- `SplinePathEffect3D` does not move at constant speed (a speed-based controller sets its average
+  speed); `SquashStretchEffect3D` is exact only for the principal axes and has no measure for a
+  speed-based controller.
+- `FixedTransformInterpolation3D` blends by itself only for `HasFixedUpdate` components in a game
+  with a `fixedTimeStep`, and does not mix with effects on the same component.

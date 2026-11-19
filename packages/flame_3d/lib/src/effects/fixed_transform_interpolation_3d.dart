@@ -1,3 +1,4 @@
+import 'package:flame/components.dart' show HasFixedUpdate;
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/src/effects/transform_effects_3d.dart'
@@ -7,6 +8,32 @@ import 'package:flame_3d/src/effects/transform_effects_3d.dart'
 /// interpolation (`position`, `scale`, and shortest-hemisphere `Quaternion`
 /// Slerp) for smooth high-refresh-rate (`90Hz` / `120Hz` / `144Hz`) rendering
 /// over fixed-rate physics.
+///
+/// With `FlameGame.fixedTimeStep` and [HasFixedUpdate], one call is needed:
+/// [captureFixedState] at the start of `fixedUpdate`. The mixin then blends
+/// the transform in [update] with the game's `renderInterpolationAlpha`
+/// (while [autoInterpolate] is `true`), and shows the simulated transform of
+/// a component whose fixed step was skipped in the last frame:
+///
+/// ```dart
+/// class Ball extends MeshComponent
+///     with HasFixedUpdate, FixedTransformInterpolation3D {
+///   Ball({required super.mesh});
+///
+///   final Vector3 velocity = Vector3(2, 0, 0);
+///
+///   @override
+///   void fixedUpdate(double fixedDt) {
+///     captureFixedState();
+///     position.addScaled(velocity, fixedDt);
+///   }
+/// }
+/// ```
+///
+/// When something else steps the simulation (for example a
+/// `PhysicsWorld3D` stepped by hand), call [captureFixedState] before each
+/// step, [commitFixedState] after it, and [applyInterpolationAlpha] with that
+/// stepper's alpha before rendering.
 mixin FixedTransformInterpolation3D on Component3D {
   final Vector3 _prevPosition = Vector3.zero();
   final Quaternion _prevRotation = Quaternion.identity();
@@ -18,6 +45,12 @@ mixin FixedTransformInterpolation3D on Component3D {
 
   bool _hasFixedState = false;
   bool _isInterpolated = false;
+  bool _capturedSinceApply = false;
+
+  /// Whether [update] applies `FlameGame.renderInterpolationAlpha` by itself
+  /// for a component with [HasFixedUpdate] in a game with a
+  /// `fixedTimeStep`.
+  bool autoInterpolate = true;
 
   /// Whether the component's live transform currently holds an interpolated
   /// render pose awaiting [restoreSimulatedState].
@@ -27,6 +60,28 @@ mixin FixedTransformInterpolation3D on Component3D {
   void onMount() {
     super.onMount();
     teleportFixedState();
+  }
+
+  @override
+  void update(double dt) {
+    super.update(dt);
+    if (!autoInterpolate || this is! HasFixedUpdate) {
+      return;
+    }
+    final game = findGame();
+    if (game == null || game.fixedTimeStep == null) {
+      return;
+    }
+    if (!_capturedSinceApply && game.lastFrameFixedSteps > 0) {
+      // Fixed steps ran this frame but this component's did not (a paused
+      // time scale, disabled ticks, nothing to simulate): show its simulated
+      // transform, and keep showing it, instead of sliding between two old
+      // states.
+      restoreSimulatedState();
+      teleportFixedState();
+      return;
+    }
+    applyInterpolationAlpha(game.renderInterpolationAlpha);
   }
 
   /// Snapshots the current simulated transform as the previous fixed-tick
@@ -44,6 +99,7 @@ mixin FixedTransformInterpolation3D on Component3D {
     _currRotation.setFrom(_prevRotation);
     _currScale.setFrom(scale);
     _hasFixedState = true;
+    _capturedSinceApply = true;
   }
 
   /// Records the newly simulated fixed-tick transform after stepping physics.
@@ -84,6 +140,7 @@ mixin FixedTransformInterpolation3D on Component3D {
     }
     final t = alpha.clamp(0.0, 1.0);
     _isInterpolated = true;
+    _capturedSinceApply = false;
 
     position.setValues(
       _prevPosition.x + (_currPosition.x - _prevPosition.x) * t,

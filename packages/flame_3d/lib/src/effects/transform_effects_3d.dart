@@ -7,12 +7,15 @@ import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/effects/effect_3d.dart';
 
 /// Translates a [Component3D] smoothly to `destination`.
+///
+/// Measurable: `EffectController(speed: ...)` moves it at that many units per
+/// second.
 class MoveToEffect3D(
   Vector3 destination,
   super.controller, {
   super.onComplete,
   super.key,
-}) extends Effect3D<Component3D> {
+}) extends Effect3D<Component3D> implements MeasurableEffect {
   final Vector3 _destination = destination.clone();
   final Vector3 _delta = Vector3.zero();
   final Vector3 _lastApplied = Vector3.zero();
@@ -44,15 +47,21 @@ class MoveToEffect3D(
     super.reset();
     _lastApplied.setZero();
   }
+
+  @override
+  double measure() => _delta.length;
 }
 
 /// Translates a [Component3D] by `offset` relative to its starting position.
+///
+/// Measurable: `EffectController(speed: ...)` moves it at that many units per
+/// second.
 class MoveByEffect3D(
   Vector3 offset,
   super.controller, {
   super.onComplete,
   super.key,
-}) extends Effect3D<Component3D> {
+}) extends Effect3D<Component3D> implements MeasurableEffect {
   final Vector3 _offset = offset.clone();
   final Vector3 _lastApplied = Vector3.zero();
 
@@ -80,10 +89,16 @@ class MoveByEffect3D(
     super.reset();
     _lastApplied.setZero();
   }
+
+  @override
+  double measure() => _offset.length;
 }
 
 /// Moves a [Component3D] to `destination` along a parabolic jump arc of peak
 /// height [arcHeight] (`4 * p * (1 - p) * arcHeight`) along `upAxis`.
+///
+/// Measurable by the length of the arc: `EffectController(speed: ...)` sets
+/// the average speed along it in units per second.
 class ArcMoveEffect3D(
   Vector3 destination,
   super.controller, {
@@ -91,7 +106,7 @@ class ArcMoveEffect3D(
   Vector3? upAxis,
   super.onComplete,
   super.key,
-}) extends Effect3D<Component3D> {
+}) extends Effect3D<Component3D> implements MeasurableEffect {
   final Vector3 _destination = destination.clone();
   final Vector3 _upAxis = _normalizedOrDefault(upAxis, Vector3(0, 1, 0));
   final Vector3 _chord = Vector3.zero();
@@ -126,10 +141,40 @@ class ArcMoveEffect3D(
     super.reset();
     _lastApplied.setZero();
   }
+
+  @override
+  double measure() {
+    // Length of the polyline through 32 points of the arc.
+    const segments = 32;
+    var length = 0.0;
+    var px = 0.0;
+    var py = 0.0;
+    var pz = 0.0;
+    for (var i = 1; i <= segments; i++) {
+      final p = i / segments;
+      final lift = 4.0 * p * (1.0 - p) * arcHeight;
+      final x = _chord.x * p + _upAxis.x * lift;
+      final y = _chord.y * p + _upAxis.y * lift;
+      final z = _chord.z * p + _upAxis.z * lift;
+      final dx = x - px;
+      final dy = y - py;
+      final dz = z - pz;
+      length += math.sqrt(dx * dx + dy * dy + dz * dz);
+      px = x;
+      py = y;
+      pz = z;
+    }
+    return length;
+  }
 }
 
 /// Moves a [Component3D] smoothly along a [CatmullRomSpline3D], optionally
 /// orienting its forward (`-Z`) axis to the curve tangent.
+///
+/// Progress maps linearly to the spline parameter, so the speed varies along
+/// the curve where its control points are unevenly spaced. Measurable by the
+/// length of the curve: `EffectController(speed: ...)` sets the average speed
+/// along it in units per second.
 class SplinePathEffect3D(
   final CatmullRomSpline3D spline,
   super.controller, {
@@ -137,7 +182,7 @@ class SplinePathEffect3D(
   Vector3? upAxis,
   super.onComplete,
   super.key,
-}) extends Effect3D<Component3D> {
+}) extends Effect3D<Component3D> implements MeasurableEffect {
   final Vector3 _upAxis = _normalizedOrDefault(upAxis, Vector3(0, 1, 0));
   final Vector3 _point = Vector3.zero();
   final Vector3 _tangent = Vector3.zero();
@@ -174,16 +219,33 @@ class SplinePathEffect3D(
       }
     }
   }
+
+  @override
+  double measure() {
+    // Length of the polyline through 16 samples per spline segment.
+    final samples = math.max(1, spline.segmentCount) * 16;
+    var length = 0.0;
+    spline.samplePoint(0.0, out: _tangent);
+    for (var i = 1; i <= samples; i++) {
+      spline.samplePoint(i / samples, out: _point);
+      length += _point.distanceTo(_tangent);
+      _tangent.setFrom(_point);
+    }
+    return length;
+  }
 }
 
 /// Rotates a [Component3D] to `targetRotation` using shortest-hemisphere
 /// spherical linear interpolation (Slerp).
+///
+/// Measurable by the rotation angle: `EffectController(speed: ...)` turns it
+/// at that many radians per second.
 class RotateToEffect3D(
   Quaternion targetRotation,
   super.controller, {
   super.onComplete,
   super.key,
-}) extends Effect3D<Component3D> {
+}) extends Effect3D<Component3D> implements MeasurableEffect {
   final Quaternion _targetRotation = targetRotation.normalized();
   final Quaternion _startRotation = Quaternion.identity();
 
@@ -199,10 +261,25 @@ class RotateToEffect3D(
   void apply(double progress) {
     slerpShortestInto(_startRotation, _targetRotation, progress, target);
   }
+
+  @override
+  double measure() {
+    final dot =
+        (_startRotation.x * _targetRotation.x +
+                _startRotation.y * _targetRotation.y +
+                _startRotation.z * _targetRotation.z +
+                _startRotation.w * _targetRotation.w)
+            .abs()
+            .clamp(0.0, 1.0);
+    return 2.0 * math.acos(dot);
+  }
 }
 
 /// Spins (and optionally orbits around `pivot`) a [Component3D] by [radians]
 /// around `axis`.
+///
+/// Measurable by the angle: `EffectController(speed: ...)` turns it at that
+/// many radians per second.
 class RotateAroundEffect3D({
   required Vector3 axis,
   required final double radians,
@@ -211,7 +288,7 @@ class RotateAroundEffect3D({
   final bool alignRotation = true,
   super.onComplete,
   super.key,
-}) extends Effect3D<Component3D> {
+}) extends Effect3D<Component3D> implements MeasurableEffect {
   this : super(controller);
 
   final Vector3 _unitAxis = _normalizedOrDefault(axis, Vector3(0, 1, 0));
@@ -271,15 +348,21 @@ class RotateAroundEffect3D({
       target.rotation.setValues(rx, ry, rz, rw);
     }
   }
+
+  @override
+  double measure() => radians.abs();
 }
 
 /// Scales a [Component3D] smoothly to `targetScale`.
+///
+/// Measurable by the change of the scale vector: `EffectController(speed:
+/// ...)` changes it by that much per second.
 class ScaleToEffect3D(
   Vector3 targetScale,
   super.controller, {
   super.onComplete,
   super.key,
-}) extends Effect3D<Component3D> {
+}) extends Effect3D<Component3D> implements MeasurableEffect {
   final Vector3 _targetScale = targetScale.clone();
   final Vector3 _delta = Vector3.zero();
   final Vector3 _lastApplied = Vector3.zero();
@@ -311,11 +394,20 @@ class ScaleToEffect3D(
     super.reset();
     _lastApplied.setZero();
   }
+
+  @override
+  double measure() => _delta.length;
 }
 
 /// Applies a volume-preserving squash-and-stretch impulse (`sUp * sSide^2 = 1`)
 /// along `upAxis` (`sUp = 1 + intensity * sin(pi * progress)`,
 /// `sSide = 1 / sqrt(sUp)`).
+///
+/// The component's scale is a vector along its local X, Y and Z axes, so the
+/// impulse is exact only when `upAxis` is one of them; for a slanted axis the
+/// per-axis factors are blended by the axis' components, which approximates
+/// the squash. It is not measurable (a speed-based controller cannot drive
+/// it).
 class SquashStretchEffect3D({
   required EffectController controller,
   final double intensity = 0.28,

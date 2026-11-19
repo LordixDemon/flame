@@ -125,6 +125,32 @@ void main() {
         game.update(0);
         expect(effect.controller.duration, 50);
       });
+
+      testWithFlameGame(
+        'custom effects implement MeasurableEffect from the public library',
+        (game) async {
+          final effect = _MeasuredEffect(
+            SpeedEffectController(LinearEffectController(0), speed: 4),
+          );
+          await game.ensureAdd(effect);
+          game.update(0);
+          expect(effect.controller.duration, 3);
+          game.update(1.5);
+          expect(effect.lastProgress, closeTo(0.5, 1e-12));
+        },
+      );
     });
   });
+}
+
+class _MeasuredEffect(super.controller)
+    extends Effect
+    implements MeasurableEffect {
+  double lastProgress = 0;
+
+  @override
+  void apply(double progress) => lastProgress = progress;
+
+  @override
+  double measure() => 12;
 }

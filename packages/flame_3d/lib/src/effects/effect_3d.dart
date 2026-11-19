@@ -1,5 +1,5 @@
 import 'package:flame/effects.dart';
-import 'package:flame_3d/camera.dart';
+import 'package:flame_3d/camera.dart' show World3D;
 import 'package:flame_3d/components.dart';
 import 'package:meta/meta.dart';
 
@@ -17,11 +17,6 @@ abstract class Effect3D<T extends Component3D>(
   /// non-transform per-instance properties such as `color` or `instanceData`.
   @protected
   void markWorldDirty({bool shadows = false}) {
-    for (final ancestor in target.ancestors()) {
-      if (ancestor is World3D) {
-        ancestor.markSceneDirty(shadows: shadows);
-        break;
-      }
-    }
+    target.worldOrNull?.markSceneDirty(shadows: shadows);
   }
 }

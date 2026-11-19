@@ -30,6 +30,7 @@ export 'src/effects/glow_effect.dart';
 export 'src/effects/hue_by_effect.dart';
 export 'src/effects/hue_effect.dart';
 export 'src/effects/hue_to_effect.dart';
+export 'src/effects/measurable_effect.dart';
 export 'src/effects/move_along_path_effect.dart';
 export 'src/effects/move_by_effect.dart';
 export 'src/effects/move_effect.dart';
