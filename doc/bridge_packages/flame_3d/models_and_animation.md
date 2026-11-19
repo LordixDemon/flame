@@ -222,10 +222,11 @@ node's mesh with the node's transform. Besides the usual `position`, `rotation`,
 hidden: false)` shows it again. `nodeTransformByName(name)` and `nodeTransform(index)` return a
 node's transform in the model's space for the current pose (evaluating it if needed).
 
-Components that share a `Model` share its meshes and surfaces. Each component has its own pose and
-skinning matrices, but morph target weights are written into the shared surfaces, so components
-sharing a model also share their morph state: the last component evaluated wins. Load the model once
-per character that needs independent morphs.
+Components that share a `Model` share its meshes and surfaces. Each component has its own pose,
+skinning matrices and morph weights: the first time morph weights reach a node, the component makes
+its own copy of that node's morphed surfaces (vertices and GPU buffer; indices, materials and the
+morph targets stay shared) and draws and ray casts that copy from then on. `nodeMesh(index)`
+returns the mesh a component draws for a node.
 
 
 ### Offscreen policy
@@ -303,8 +304,11 @@ face.setMorphWeights([1.0], nodeName: 'Eyes'); // only the surfaces of one node
 ```
 
 Morphing runs on the CPU and re-uploads the vertex buffer of each morphed surface, see
-[Geometry and Scene Queries](geometry.md#morph-targets) for the cost. Morph weights are shared by
-components that share a model (see above), and are not reset when an animation stops.
+[Geometry and Scene Queries](geometry.md#morph-targets) for the cost; it is skipped when a node's
+weights did not change. Each component morphs its own copy of the surfaces (see above), so
+components of one model animate their faces independently, at the memory cost of one vertex buffer
+per morphed surface and component. Weights are not reset when an animation stops. Removing the
+component releases the GPU buffers of its copies.
 
 
 ## Playing clips
@@ -768,7 +772,6 @@ the main isolate; `AsyncModelLoader3D` moves the geometry work to an isolate.
 
 - **Meshopt**: only through `ModelParser` and `SceneLoader3D`, decoded on the main isolate;
   `KHR_meshopt_compression` and its `COLOR` filter are not read.
-- **Shared morph state** between components that share a model.
 - **Crossfades** from a running crossfade or from a blend space start from a single clip and pop.
 - **Layers** override only; no additive layers.
 - **glTF**: no sparse accessors, no second UV set, no tangents, at most 4 joint influences per

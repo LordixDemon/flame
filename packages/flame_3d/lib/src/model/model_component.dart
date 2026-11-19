@@ -5,11 +5,13 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/game.dart' show NotifyingVector4;
 import 'package:flame_3d/graphics.dart';
+import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/model/animation_state.dart';
 import 'package:flame_3d/src/model/animation_state_machine_3d.dart';
 import 'package:flame_3d/src/model/blend_space_3d.dart';
 import 'package:flame_3d/src/model/model.dart';
 import 'package:flame_3d/src/model/model_animation.dart';
+import 'package:flame_3d/src/model/model_node.dart';
 import 'package:flame_3d/src/model/procedural_rigging_3d.dart';
 import 'package:flame_3d/src/model/root_motion_3d.dart';
 
@@ -94,6 +96,23 @@ class ModelComponent({
 
   final Matrix4 _invWorld = Matrix4.identity();
   final List<double> _morphScratch = [];
+
+  /// The nodes whose mesh has at least one surface with morph targets.
+  late final List<ModelNode> _morphNodes = [
+    for (final node in model.processingOrder)
+      if (node.mesh?.surfaces.any((s) => s.morphTargets.isNotEmpty) ?? false)
+        node,
+  ];
+
+  /// This component's own meshes for morphed nodes, by node index: the
+  /// surfaces with morph targets are copies (see
+  /// [Surface.copyWithOwnVertices]), the others are the model's. Created the
+  /// first time morph weights reach a node, so components that never morph
+  /// draw the model's surfaces.
+  final Map<int, Mesh> _ownMeshes = {};
+
+  /// The morph weights last applied to each node in [_ownMeshes].
+  final Map<int, List<double>> _appliedMorphWeights = {};
 
   void _forwardAnimationEvent(AnimationEvent3D event) {
     onAnimationEvent?.call(event);
@@ -187,23 +206,14 @@ class ModelComponent({
     if (!_animation.hasActiveEvaluation && _animation.layers.isEmpty) {
       return;
     }
-
-    for (final node in model.nodes.values) {
-      final mesh = node.mesh;
-      if (mesh == null) {
-        continue;
-      }
+    for (var i = 0; i < _morphNodes.length; i++) {
+      final node = _morphNodes[i];
       final targetCount = _animation.sampleNodeMorphWeights(
         node.nodeIndex,
         _morphScratch,
       );
-      if (targetCount <= 0) {
-        continue;
-      }
-      for (final surface in mesh.surfaces) {
-        if (surface.morphTargets.isNotEmpty) {
-          surface.applyMorphWeights(_morphScratch);
-        }
+      if (targetCount > 0) {
+        _applyMorphWeights(node, _morphScratch, targetCount);
       }
     }
   }
@@ -211,22 +221,90 @@ class ModelComponent({
   /// Applies [weights] directly to all morph-enabled surfaces of [nodeName]
   /// (or to every morph-enabled surface in the model when [nodeName] is
   /// `null`).
+  ///
+  /// The weights are this component's own: other components of the same
+  /// [model] keep theirs. The first call for a node gives this component its
+  /// own copy of the node's morphed surfaces (vertices and GPU buffer).
   void setMorphWeights(List<double> weights, {String? nodeName}) {
-    for (final node in model.nodes.values) {
+    for (var i = 0; i < _morphNodes.length; i++) {
+      final node = _morphNodes[i];
       if (nodeName != null && node.name != nodeName) {
         continue;
       }
-      final mesh = node.mesh;
-      if (mesh == null) {
-        continue;
+      _applyMorphWeights(node, weights, weights.length);
+    }
+    worldOrNull?.markSceneDirty(shadows: castsShadows);
+  }
+
+  void _applyMorphWeights(ModelNode node, List<double> weights, int count) {
+    final applied = _appliedMorphWeights[node.nodeIndex];
+    if (applied != null && applied.length == count) {
+      var same = true;
+      for (var k = 0; k < count; k++) {
+        if (applied[k] != weights[k]) {
+          same = false;
+          break;
+        }
       }
+      if (same) {
+        return;
+      }
+    }
+    final mesh = _ownMeshes[node.nodeIndex] ??= _copyMorphedSurfaces(
+      node.mesh!,
+    );
+    for (final surface in mesh.surfaces) {
+      if (surface.morphTargets.isNotEmpty) {
+        surface.applyMorphWeights(weights, targetCount: count);
+      }
+    }
+    mesh.updateBounds();
+    final store = applied != null && applied.length == count
+        ? applied
+        : (_appliedMorphWeights[node.nodeIndex] = List<double>.filled(
+            count,
+            0.0,
+          ));
+    for (var k = 0; k < count; k++) {
+      store[k] = weights[k];
+    }
+  }
+
+  static Mesh _copyMorphedSurfaces(Mesh shared) {
+    final mesh = Mesh();
+    for (final surface in shared.surfaces) {
+      mesh.addSurface(
+        surface.morphTargets.isEmpty ? surface : surface.copyWithOwnVertices(),
+      );
+    }
+    return mesh;
+  }
+
+  /// The mesh this component draws for [node]: its own copy when the node is
+  /// morphed, the model's otherwise.
+  Mesh? _meshOf(ModelNode node) => _ownMeshes[node.nodeIndex] ?? node.mesh;
+
+  /// The mesh this component draws for the node at [nodeIndex]: its own copy
+  /// of the node's mesh once morph weights reached the node (see
+  /// [setMorphWeights]), the model's mesh otherwise, or `null` when the node
+  /// has no mesh.
+  Mesh? nodeMesh(int nodeIndex) {
+    final node = model.nodes[nodeIndex];
+    return node == null ? null : _meshOf(node);
+  }
+
+  @override
+  void onRemove() {
+    // Release the GPU buffers of this component's own morphed surfaces; they
+    // are recreated if the component is added again.
+    for (final mesh in _ownMeshes.values) {
       for (final surface in mesh.surfaces) {
         if (surface.morphTargets.isNotEmpty) {
-          surface.applyMorphWeights(weights);
+          surface.dispose();
         }
       }
     }
-    worldOrNull?.markSceneDirty(shadows: castsShadows);
+    super.onRemove();
   }
 
   /// Creates and attaches a masked [AnimationLayer3D] affecting [boneNames]
@@ -281,7 +359,7 @@ class ModelComponent({
           continue;
         }
 
-        final mesh = node.node.mesh;
+        final mesh = _meshOf(node.node);
         if (mesh != null) {
           _nodeTransform
             ..setFrom(worldTransformMatrix)
@@ -313,7 +391,7 @@ class ModelComponent({
       if (_hiddenNodes.contains(node.node.nodeIndex)) {
         continue;
       }
-      final mesh = node.node.mesh;
+      final mesh = _meshOf(node.node);
       if (mesh == null) {
         continue;
       }

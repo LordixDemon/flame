@@ -300,7 +300,7 @@ void main() {
         expect(actor.nodeTransform(0)!.getTranslation().y, closeTo(1.5, 1e-4));
 
         // MorphWeightTrack3D at `t = 1.0`: weight `0.375` * `4.0` = `1.5`!
-        final headMesh = actor.model.nodes[0]!.mesh!;
+        final headMesh = actor.nodeMesh(0)!;
         expect(headMesh.surfaces.first.vertexData[0], closeTo(1.5, 1e-4));
 
         // 2. Advance past `1.5s` to `2.0s` -> switches shot to `camB` and fires

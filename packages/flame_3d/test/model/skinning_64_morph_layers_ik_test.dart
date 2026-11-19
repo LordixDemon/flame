@@ -321,8 +321,11 @@ void main() {
         final torsoPos = workspace.nodesByIndex[1]!.combinedTransform
             .getTranslation();
         expect(torsoPos.y, closeTo(2.0, 1e-5));
-        // Morph weight at t=0.5 is 0.4 * 0.5 = 0.2 -> x = 0.2 * 5 = 1.0!
-        expect(morphSurf.vertexData[0], closeTo(1.0, 1e-4));
+        // Morph weight at t=0.5 is 0.4 * 0.5 = 0.2 -> x = 0.2 * 5 = 1.0, on
+        // the component's own copy of the surface; the model's is untouched.
+        final drawn = comp.nodeMesh(1)!.surfaces.first;
+        expect(drawn.vertexData[0], closeTo(1.0, 1e-4));
+        expect(morphSurf.vertexData[0], 0.0);
       },
     );
 

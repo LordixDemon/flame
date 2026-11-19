@@ -329,8 +329,12 @@ void main() {
       // 50% North (0, 0, 4) + 50% East (4, 0, 0) => (2, 0, 2)!
       expect(pos.x, closeTo(2.0, 1e-4));
       expect(pos.z, closeTo(2.0, 1e-4));
-      // Morph weight: 0.5 * 1.0 + 0.5 * 0.5 = 0.75 => vertex x = 7.5!
-      expect(morphSurf.vertexData[0], closeTo(7.5, 1e-4));
+      // Morph weight: 0.5 * 1.0 + 0.5 * 0.5 = 0.75 => vertex x = 7.5, on the
+      // component's own copy of the surface.
+      expect(
+        comp.nodeMesh(0)!.surfaces.first.vertexData[0],
+        closeTo(7.5, 1e-4),
+      );
     });
   });
 

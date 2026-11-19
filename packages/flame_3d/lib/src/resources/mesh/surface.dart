@@ -504,9 +504,30 @@ class Surface extends Resource<GpuBuffer> {
     );
   }
 
+  /// Returns a surface that shares this surface's [indices], [layout],
+  /// [material], [topology], [jointMap] and [morphTargets], with its own copy
+  /// of the rest vertices (the vertices before any morph weights).
+  ///
+  /// Morph weights applied to the copy leave this surface unchanged, which is
+  /// how `ModelComponent`s sharing a model keep independent morph states. The
+  /// copy has its own GPU buffer and ray-casting BVH.
+  Surface copyWithOwnVertices() {
+    return Surface.fromBuffers(
+      vertices: Float32List.fromList(_baseVertexData ?? vertexData),
+      indices: _indices,
+      layout: _layout,
+      material: material,
+      jointMap: jointMap,
+      morphTargets: morphTargets,
+      topology: topology,
+    );
+  }
+
   /// Blends [morphTargets] using [weights] onto the rest vertices of this
   /// surface with zero heap allocations and uploads the morphed vertex buffer.
-  void applyMorphWeights(List<double> weights) {
+  ///
+  /// Only the first [targetCount] weights are used when given.
+  void applyMorphWeights(List<double> weights, {int? targetCount}) {
     if (morphTargets.isEmpty) {
       return;
     }
@@ -516,9 +537,12 @@ class Surface extends Resource<GpuBuffer> {
     final posOffset = _layout.offsetOf(VertexLayout.positionAttribute);
     final nrmOffset = _layout.offsetOf('vertexNormal');
     final stride = _layout.strideInFloats;
-    final targetCount = math.min(weights.length, morphTargets.length);
+    final count = math.min(
+      math.min(targetCount ?? weights.length, weights.length),
+      morphTargets.length,
+    );
 
-    for (var t = 0; t < targetCount; t++) {
+    for (var t = 0; t < count; t++) {
       final w = weights[t];
       if (w.abs() <= 1e-6) {
         continue;
