@@ -339,6 +339,17 @@ abstract class Component3D({
     if (!_visible) {
       return;
     }
+    // The pass mask is tested for every component, not only for the
+    // Object3Ds, so that a group's mask hides its subtree in every pass. The
+    // default mask passes every pass that draws anything.
+    if (cameraMask != 0xFFFFFFFF) {
+      final world = _cachedWorld ?? findWorld();
+      if (world != null &&
+          world.isRendering &&
+          (cameraMask & world.context.cameraMask) == 0) {
+        return;
+      }
+    }
     super.renderTree(canvas);
   }
 

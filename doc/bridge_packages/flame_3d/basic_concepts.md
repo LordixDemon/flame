@@ -198,16 +198,14 @@ Every component has a 32-bit `cameraMask` (default `0xFFFFFFFF`), and every rend
 of what renders it: the `cameraMask` of the `CameraComponent3D`, of the camera of a stack slot, of
 the `Scene3DComponent`, or the mask passed to `RenderTexture3D.renderWorld`.
 
-- An `Object3D` and its subtree are drawn only when `object.cameraMask & pass mask != 0`, in every
-  pass, shadow passes included.
+- A component and its subtree are drawn only when `component.cameraMask & pass mask != 0`, in every
+  pass, shadow passes included. This holds for a `Group3D` (or another `Component3D` that draws
+  nothing) as for an `Object3D`: a group's mask hides its whole subtree.
 - A light is used by a pass only when `light.lightMask & pass mask != 0`. `lightMask` selects the
   cameras that see a light, not the objects it lights.
 - `visible = false` hides a component and its subtree from every pass without unmounting it;
-  `isEffectivelyVisible` also checks the ancestors.
-
-Give masks to the `Object3D`s themselves: the `cameraMask` of a `Group3D` (or of another
-`Component3D` that does not draw) is only tested by the camera of a `FlameGame3D`, and is ignored
-in `Scene3DComponent` layers, camera stack slots and offscreen renders.
+  `isEffectivelyVisible` also checks the ancestors. A hidden `LightComponent` still lights the
+  scene: remove it, or set its `intensity` to `0`.
 
 ```dart
 // Seen by the main camera (bit 0) only, not by the minimap (bit 1).
