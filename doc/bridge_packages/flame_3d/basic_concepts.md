@@ -141,8 +141,11 @@ A world counts its changes in two numbers:
   material's `castsShadows` changes; a world setting (`fog`, `bloom`, `postProcess`,
   `hdrEnabled`, `renderScale`, `oitMode`, `grabSceneColorEnabled`, `renderDebugMode3D`,
   `lightProbeGrid`, `depthPrepassEnabled`, `prioritizeNearestLights`) is assigned a new value; an
-  animation advances a model's pose, a particle system or ribbon has live particles, an effect
-  runs, or a batch (instances, billboards, decals, text, foliage) changes;
+  animation advances a model's pose, a particle system or ribbon has live particles, particles are
+  spawned or removed outside the system's `update` (`burst`, `spawn`, `clear`, `reset`,
+  `prewarm`, at any point of the frame, also on a paused system), an effect runs, a batch
+  (instances, billboards, decals, strokes, foliage) changes, or a `Text3DComponent` gets another
+  text, look, `worldHeight` or `orientation`;
 - `castersVersion` increases with the subset of these changes that can move shadows: all of them
   except colors, `instanceData`, intensities and other light fields that move no shadow, the world
   settings, `lightMask`, showing or hiding a light, reflection probes, and the changes of

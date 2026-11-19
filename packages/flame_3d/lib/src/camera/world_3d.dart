@@ -85,7 +85,9 @@ class World3D({
   /// `instanceData` and `jointTransforms`, the same on `ModelComponent` and
   /// `LodMeshComponent`, the instances of an `InstancedGroup3D`); when a
   /// field of a light source is assigned, a light is added or removed, or
-  /// its `lightMask` changes; when an animation or active particles advance;
+  /// its `lightMask` changes; when an animation or active particles advance,
+  /// or particles are spawned or cleared (`ParticleSystem3D.burst`, `spawn`,
+  /// `clear`);
   /// when a `Material.castsShadows` changes; when a setting of this world is
   /// assigned ([fog], [bloom], [postProcess], [hdrEnabled],
   /// [depthPrepassEnabled], ...); and when the lights it borrows change (see

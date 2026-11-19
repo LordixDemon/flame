@@ -361,9 +361,14 @@ class ParticleSystem3D({
   void stop() => emitting = false;
 
   /// Removes every live particle.
+  ///
+  /// Like [burst], [spawn] and [prewarm], it marks the world as changed
+  /// (`World3D.sceneVersion`) when it changes what the system draws, from
+  /// any point of the frame, so that a retained `Scene3DComponent` shows the
+  /// change on the next frame.
   void clear() {
     if (particles.length > 0) {
-      Game.notifyVisualMutation();
+      _markDrawChanged();
     }
     particles.clear();
     _hasRawBounds = false;
@@ -404,7 +409,7 @@ class ParticleSystem3D({
     }
     _lastOrigin.setFrom(_origin);
     _publishBounds();
-    Game.notifyVisualMutation();
+    _markDrawChanged();
   }
 
   /// Spawns [count] particles (times [density]) at once with the spawn rules
@@ -451,7 +456,7 @@ class ParticleSystem3D({
     }
     if (spawned > 0) {
       _publishBounds();
-      Game.notifyVisualMutation();
+      _markDrawChanged();
     }
     return spawned;
   }
@@ -505,7 +510,7 @@ class ParticleSystem3D({
     b.attractorFlags[index] = 0;
     _spawned(index);
     _publishBounds();
-    Game.notifyVisualMutation();
+    _markDrawChanged();
     return true;
   }
 
@@ -529,12 +534,28 @@ class ParticleSystem3D({
     _lastOrigin.setFrom(_origin);
     _publishBounds();
     if (hadParticles || particles.length > 0) {
-      // Repaint even when the game only renders frames that change.
-      Game.notifyVisualMutation();
-      worldOrNull?.markSceneDirty(shadows: castsShadows && mesh != null);
+      _markDrawChanged();
     }
     if (removeOnFinish && isFinished) {
       removeFromParent();
+    }
+  }
+
+  /// Reports that what the system draws changed: its world's
+  /// `World3D.sceneVersion` increases (and its `World3D.castersVersion` for
+  /// mesh particles that cast shadows), so that a retained
+  /// `Scene3DComponent` renders it again, and a game that only renders
+  /// changed frames wakes up.
+  ///
+  /// [update] calls it once per frame while there are live particles, and
+  /// the calls that change the particles outside it ([burst], [spawn],
+  /// [clear], [prewarm]) once each.
+  void _markDrawChanged() {
+    final world = worldOrNull;
+    if (world != null) {
+      world.markSceneDirty(shadows: castsShadows && mesh != null);
+    } else {
+      Game.notifyVisualMutation();
     }
   }
 

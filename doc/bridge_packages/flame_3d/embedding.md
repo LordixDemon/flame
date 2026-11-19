@@ -255,7 +255,8 @@ The layer compares, on every frame:
 - the world's `sceneVersion`: components added, removed, moved, shown or hidden, drawing
   properties (`color`, `instanceData`, `jointTransforms`, `castsShadows`) and light source fields
   assigned, lights added, removed or moved, animations that advance, particle systems and ribbons
-  with live particles, running effects, batch changes, world settings assigned a new value, and
+  with live particles, particles spawned or cleared (`burst`, `spawn`, `clear`, from anywhere in
+  the frame), running effects, batch changes, world settings assigned a new value, and
   the changes of the lights it borrows with `World3D.lightsFrom` (see
   [Basic Concepts](basic_concepts.md#scene-versions-and-dirty-marking) for the full list);
 - the `castersVersion` of the world, or of its `ShadowGroup` (all the worlds of the group);

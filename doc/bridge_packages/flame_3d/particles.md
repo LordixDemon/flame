@@ -127,6 +127,16 @@ also restarts its timelines, and `prewarm` simulates some seconds at once, so th
 burning when it appears. `isFinished` tells when every emitter finished its timeline and no particle
 is left; with `removeOnFinish` the system then removes itself.
 
+A system marks its world as changed (see
+[Basic Concepts](basic_concepts.md#scene-versions-and-dirty-marking)) on every `update` with live
+particles, and once for each `burst`, `spawn`, `clear`, `reset` or `prewarm` that changes its
+particles, whenever it is called: from game logic later in the frame than the system's `update`,
+on a system that had no particles, or on a paused one. A retained `Scene3DComponent` then shows the
+change on the next frame (see [Embedding 3D in a 2D Game](embedding.md#retained-layer-caching)).
+Assigning the other fields of a paused system that has live particles (its curves, `sort`,
+`velocityStretch`) changes how they are drawn without marking anything: call `markDrawDirty()`
+after it.
+
 Particles collide with their ground plane only, not with meshes.
 
 

@@ -27,7 +27,7 @@ class Text3DComponent({
     fontSize: 28,
     fontWeight: ui.FontWeight.w700,
   ),
-  var double worldHeight = 0.55,
+  double worldHeight = 0.55,
   ui.Color? backgroundColor = const ui.Color(0xB30F172A),
   ui.Color? borderColor = const ui.Color(0xFF38BDF8),
   double cornerRadius = 10.0,
@@ -35,7 +35,7 @@ class Text3DComponent({
     horizontal: 14,
     vertical: 6,
   ),
-  var BillboardOrientation3D orientation = BillboardOrientation3D.spherical,
+  BillboardOrientation3D orientation = BillboardOrientation3D.spherical,
   Vector3? upAxis,
   super.position,
 }) extends Object3D {
@@ -105,8 +105,38 @@ class Text3DComponent({
     }
   }
 
+  double _worldHeight = worldHeight;
+
+  /// The height of the label in world units; its width follows the aspect
+  /// ratio of its texture.
+  double get worldHeight => _worldHeight;
+  set worldHeight(double value) {
+    if (value != _worldHeight) {
+      _worldHeight = value;
+      _changed();
+    }
+  }
+
+  BillboardOrientation3D _orientation = orientation;
+
+  /// How the label turns to face the camera.
+  BillboardOrientation3D get orientation => _orientation;
+  set orientation(BillboardOrientation3D value) {
+    if (value != _orientation) {
+      _orientation = value;
+      _changed();
+    }
+  }
+
   void _restyle() {
     _rebuildTexture();
+    _changed();
+  }
+
+  /// Reports a change of what the label draws: its bounds, and its world's
+  /// `World3D.sceneVersion`, so that a retained `Scene3DComponent` renders it
+  /// again.
+  void _changed() {
     markAabbDirty();
     worldOrNull?.markSceneDirty(shadows: false);
   }

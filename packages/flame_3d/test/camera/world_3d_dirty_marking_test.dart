@@ -6,6 +6,7 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/model.dart';
+import 'package:flame_3d/particles.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_test/flame_test.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -350,6 +351,62 @@ void main() {
 
       mesh.position.x = 4;
       expect(versions.take(), _sceneAndShadows);
+    });
+
+    testWithGame('particles spawned or cleared outside update', _game, (
+      game,
+    ) async {
+      final world = game.world as World3D;
+      final billboards = ParticleSystem3D(material: ParticleMaterial());
+      final meshes = ParticleSystem3D(mesh: CuboidMesh(size: Vector3.all(1)));
+      await world.ensureAddAll([billboards, meshes]);
+      final versions = _Versions(world);
+
+      // Nothing spawned, nothing to clear.
+      expect(billboards.burst(0), 0);
+      billboards.clear();
+      expect(versions.take(), _nothing);
+
+      // Billboards cast no shadows.
+      expect(billboards.burst(3), 3);
+      expect(versions.take(), _sceneOnly);
+      expect(billboards.spawn(position: Vector3.zero()), isTrue);
+      expect(versions.take(), _sceneOnly);
+      billboards.clear();
+      expect(versions.take(), _sceneOnly);
+      billboards.prewarm(0.1);
+      expect(versions.take(), _sceneOnly);
+
+      // Mesh particles that cast shadows move the casters too.
+      meshes.burst(2);
+      expect(versions.take(), _sceneAndShadows);
+      meshes.reset();
+      expect(versions.take(), _sceneAndShadows);
+      meshes.castsShadows = false;
+      versions.take();
+      meshes.spawn(position: Vector3.zero());
+      expect(versions.take(), _sceneOnly);
+    });
+
+    testWithGame('the size and orientation of a Text3DComponent', _game, (
+      game,
+    ) async {
+      final world = game.world as World3D;
+      final label = Text3DComponent(text: 'label');
+      await world.ensureAdd(label);
+      final versions = _Versions(world);
+      final height = label.aabb.max.y - label.aabb.min.y;
+
+      label.worldHeight = 1.1;
+      expect(versions.take(), _sceneOnly);
+      expect(label.aabb.max.y - label.aabb.min.y, closeTo(height * 2, 1e-5));
+      label.worldHeight = 1.1;
+      expect(versions.take(), _nothing);
+
+      label.orientation = BillboardOrientation3D.cylindrical;
+      expect(versions.take(), _sceneOnly);
+      label.orientation = BillboardOrientation3D.cylindrical;
+      expect(versions.take(), _nothing);
     });
   });
 
