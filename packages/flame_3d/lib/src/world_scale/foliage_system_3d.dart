@@ -56,9 +56,11 @@ class const _FoliageCellKey(
 ///
 /// Partitions instances into spatial grid cells for `O(visible_cells)` frustum
 /// and distance culling, applies per-blade smooth scale-down and deterministic
-/// distance density thinning (`0` visual popping), animates wind sway via
-/// `instanceData` and tip shear, and deforms blades interactively around
-/// [FoliageInteractor3D] spheres with smooth spring recovery.
+/// distance density thinning (`0` visual popping), animates wind sway as a
+/// CPU shear of each blade's matrix (`instanceData` carries the wind phase,
+/// strength, crush and tilt for custom shaders), and deforms blades
+/// interactively around [FoliageInteractor3D] spheres with smooth spring
+/// recovery.
 class FoliageSystem3D({
   Mesh? mesh,
   Material? material,
@@ -83,7 +85,10 @@ class FoliageSystem3D({
   var double windFrequency = 2.2,
   Vector2? windDirection,
 
-  /// Maximum tilt angle in radians when fully trampled (`crush == 1`).
+  /// Maximum lean of a fully trampled blade (`crush == 1`), applied as a
+  /// shear: the tip moves sideways by about `maxBendAngle` times the blade's
+  /// height (`1.05` leans it by roughly 45 degrees). Despite the name, it is
+  /// not an angle.
   var double maxBendAngle = 1.05,
 
   /// Exponential attack rate (`s^-1`) when an interactor steps onto blades.
@@ -247,6 +252,7 @@ class FoliageSystem3D({
     _crush[i] = 0;
     _cellsDirty = true;
     markAabbDirty();
+    worldOrNull?.markSceneDirty(shadows: castsShadows);
     return i;
   }
 
@@ -902,8 +908,11 @@ class FoliageSystem3D({
       for (var j = 0; j < list.length; j++) {
         final i = list[j];
         _cellBladeIndices[cursor++] = i;
+        // Wind and trampling shear the blade: its tip moves sideways by up
+        // to their sum times its height.
         final padXZ =
-            math.max(_scaleX[i], _scaleZ[i]) * maxHalfExtent + windStrength;
+            math.max(_scaleX[i], _scaleZ[i]) * maxHalfExtent +
+            (windStrength.abs() + maxBendAngle.abs()) * _scaleY[i] * meshTop;
         final topY = _posY[i] + _scaleY[i] * meshTop;
         minX = math.min(minX, _posX[i] - padXZ);
         maxX = math.max(maxX, _posX[i] + padXZ);

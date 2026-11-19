@@ -448,9 +448,10 @@ hero.position.setFrom(heroPosition);
   `windDirection` (horizontal, normalized). It is computed on the CPU as a shear of each blade's
   matrix, the base staying on the ground.
 - Trampling: `FoliageInteractor3D(position:, radius: 1.5, strength: 1)` spheres in world space,
-  listed in `interactors`. Blades inside bend away from the center by up to `maxBendAngle` (1.05
-  radians) and flatten by up to 65 %, at `trampleAttackRate` (28 per second), and spring back at
-  `trampleSpringRate` (6.5 per second). `bladeBendVector`, `bladeCrush` and `bladePosition` read
+  listed in `interactors`. Blades inside lean away from the center and flatten by up to 65 %, at
+  `trampleAttackRate` (28 per second), and spring back at `trampleSpringRate` (6.5 per second).
+  The lean is a shear, not a rotation: `maxBendAngle` (1.05) is how far the tip moves sideways per
+  unit of blade height (about 45 degrees with the default), despite its name. `bladeBendVector`, `bladeCrush` and `bladePosition` read
   the state of a blade.
 - Each instance's `instanceData` holds the wind phase, the wind strength, the crush and the tilt,
   for custom shaders.
@@ -587,10 +588,6 @@ the streamer: do it in `onChunkEvicted`.
   rebuild chunks that were already built. Its colors are per vertex; there is no texture
   splatting. Decals projected onto a terrain follow its full-resolution surface, so where a coarser
   chunk is drawn the terrain can hide them.
-- `FoliageSystem3D`: cell bounds leave room for wind but not for trampling, so a strongly bent
-  blade at the edge of a cell can be culled at the edge of the screen. `maxBendAngle` is applied
-  as a shear of the blade, not as an angle. `addBlade` does not mark the world dirty, so with
-  `windStrength: 0` a retained scene cache does not show new blades until something else changes.
 - `StaticMeshBatcher3D` merges only instances with the same instance data (and, for materials other
   than `SpatialMaterial` and `UnlitMaterial`, the same color): many distinct values mean many
   draws.
