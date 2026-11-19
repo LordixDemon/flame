@@ -191,6 +191,37 @@ void main() {
         caster.position.x = 0.8;
         await tester.pump(const Duration(milliseconds: 16));
         expect(layer.renderStats.shadowPasses, 1);
+
+        Future<int> shadowPixels() async {
+          final boundary =
+              key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+          final pixels = (await tester.runAsync(() async {
+            final image = await boundary.toImage();
+            final out = await readImage(image);
+            image.dispose();
+            return out;
+          }))!;
+          return pixels.count((r, g, b, a) => g < 110 && r < 110);
+        }
+
+        // The cached map follows what casts: turning castsShadows off (on
+        // the object, then on its material) renders it again, without the
+        // cube's shadow (the dark faces of the cube stay).
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(layer.renderStats.shadowPasses, 0);
+        final withShadow = await shadowPixels();
+        caster.castsShadows = false;
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(layer.renderStats.shadowPasses, 1);
+        final withoutShadow = await shadowPixels();
+        expect(withoutShadow, lessThan(withShadow - 50));
+        caster.castsShadows = true;
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(await shadowPixels(), withShadow);
+        caster.mesh.surfaces.first.material.castsShadows = false;
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(layer.renderStats.shadowPasses, 1);
+        expect(await shadowPixels(), withoutShadow);
       });
     }
 

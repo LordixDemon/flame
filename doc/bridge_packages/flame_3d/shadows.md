@@ -295,24 +295,30 @@ The map is reused when all of these match the frame that rendered it:
 `strength`, `color`, `softness` and the biases are not part of the key: they are applied by the
 receivers, and changing them shows on the next frame without rendering the map again.
 
-`castersVersion` increases when a component of the world is added, removed, moved, shown or hidden
-(lights excepted), when a `ModelComponent` that casts shadows poses its nodes, when an
-`InstancedGroup3D` or a `SkinnedCrowdBatch3D` that casts shadows changes, while a particle system
-with mesh particles has live particles, and when `World3D.markShadowsDirty()` (or
-`markSceneDirty()`) is called. Any `Component3D` of the world that moves counts, whether it casts
-shadows or not: a `Collider3D`, or an object with `castsShadows: false`, that moves every frame
-keeps the cache from ever being used.
+`castersVersion` increases when a component of the world is added, removed, shown or hidden; when
+it moves, if it is an `Object3D` that casts shadows, a component with 3D children, or a light whose
+source has `ShadowSettings` (a move of anything else, such as a `Collider3D` or an object with
+`castsShadows: false`, leaves the cached map alone); when `Object3D.castsShadows` or
+`Material.castsShadows` is set; when the `jointTransforms` of a caster (`MeshComponent`,
+`ModelComponent`, `LodMeshComponent`) are assigned; when a field of a light source that can move
+its shadows is set (a direction, a range or cone, the `shadows` settings; not a color or an
+intensity); when a `ModelComponent` that casts shadows poses its nodes, an `InstancedGroup3D` or a
+`SkinnedCrowdBatch3D` that casts shadows changes, or a particle system with mesh particles has live
+particles; and when `World3D.markShadowsDirty()` (or `markSceneDirty()`) is called. A color, the
+`instanceData` of a mesh or the color or intensity of a light change `World3D.sceneVersion` only.
 
-Some changes reach the shadow map without changing `castersVersion`; the cached map then shows the
-old shadows until the next change that does. Call `world.markShadowsDirty()` after:
+The engine cannot see changes made in place; the cached map then shows the old shadows until the
+next change it sees. Report them:
 
-- setting `Object3D.castsShadows` or `Material.castsShadows`;
-- updating the matrices of `MeshComponent.jointTransforms` in place (GPU skinning driven by your
-  own code; `ModelComponent` animations are counted);
-- changing what a custom `Object3D` draws (another mesh, another level of detail) without moving
-  it, or drawing from a component that is not an `Object3D`;
-- writing into the vertex buffers of a surface, or into an instance buffer given to
-  `RenderContext3D.drawInstances`.
+- joint matrices written into the list already given to `jointTransforms` (GPU skinning driven by
+  your own code; `ModelComponent` animations are counted): call `component.markDrawDirty()`;
+- a field of a light's `ShadowSettings`, or a vector of a light source, changed in place: call
+  `source.markChanged()` (`LightSource.markChanged`, `shadows: false` when the change cannot reach
+  the map);
+- what a custom `Object3D` draws (another mesh, another level of detail) changed without moving it,
+  writes into the vertex buffers of a surface or into an instance buffer given to
+  `RenderContext3D.drawInstances`, or draws from a component that is not an `Object3D`: call
+  `component.markDrawDirty()` or `world.markShadowsDirty()`.
 
 A renderer that calls `RenderContext3D.beginShadowPass` itself passes its own `castersKey`, an
 object that compares equal while its casters did not change; without one (`null`, the default) the
