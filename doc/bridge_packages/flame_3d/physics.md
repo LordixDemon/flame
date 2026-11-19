@@ -754,9 +754,9 @@ collision system. A grounded wheel pushes the chassis with a spring-damper force
 braking and sideways grip are applied as impulses at the contact, limited by
 `frictionSlip * suspension load`.
 
-- `fourWheel` places the wheels at `+-halfTrackWidth` (`0.85`) along X and `+-halfWheelbase`
-  (`1.25`) along Z, front wheels steering, all wheels driven unless `allWheelDrive: false`; it
-  assumes the car faces along local `+Z` or `-Z` (`forwardAxisLocal`).
+- `fourWheel` places the wheels at `+-halfWheelbase` (`1.25`) along `forwardAxisLocal` (default
+  local `+Z`) and `+-halfTrackWidth` (`0.85`) across it (along local `up x forward`, turned toward
+  `+X`), front wheels steering, all wheels driven unless `allWheelDrive: false`.
 - With `massNormalizedSuspension: true` (the default), `springStiffness` (`35`), the dampers,
   `engineForce` (`14` in `fourWheel`) and `maxBrakeForce` are per kilogram of chassis, so the same
   numbers suit a light and a heavy car: `engineForce` is then the acceleration in `m/s^2`.
@@ -765,7 +765,11 @@ braking and sideways grip are applied as impulses at the contact, limited by
 - `wheelStates` give each wheel's `isGrounded`, `suspensionLength`, `compression`, `contactPoint`,
   `contactNormal`, `wheelWorldPosition`, `steerAngleRad`, `rotationRad` (for spinning wheel meshes)
   and `skidInfo` (`1` = full grip). `groundedWheelCount` and `forwardSpeed` summarize them.
-- `WheelSpec3D.axleDirectionLocal` is stored but not used.
+- A wheel rolls along `forwardAxisLocal`, or, when its `WheelSpec3D` is given an
+  `axleDirectionLocal`, perpendicular to that axle (`axle x up`, reversed if it points away from
+  `forwardAxisLocal`).
+- The minimum tire load, which keeps a little grip on a wheel that barely touches, is a share of the
+  chassis weight under the world's gravity.
 
 
 ## Cloth and rope
@@ -1089,8 +1093,7 @@ and check for collection pauses with the profiler.
 - Every step allocates the narrowphase manifolds of touching pairs; an attached collision system
   is re-synchronized (a walk over its parent's subtree) every step, and every collision query
   walks it again.
-- Buoyancy is horizontal in Y. Vehicles ignore `axleDirectionLocal` and compute the minimum tire
-  load with a gravity of `9.81` whatever the world's gravity.
+- Buoyancy is horizontal in Y.
 - Cloth does not collide with itself, only with sphere and capsule colliders, and does not affect
   rigid bodies. Cloth and rope step with the frame time (capped at `1/30` s) unless created with
   `autoStep: false`.

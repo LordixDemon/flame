@@ -476,6 +476,7 @@ class PhysicsWorld3D({
           dt,
           bodies: _activeBodies,
           collisionSystem: colSys,
+          gravityMagnitude: gravity.length,
         );
       }
     }

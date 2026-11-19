@@ -382,10 +382,19 @@ class WheelSpec3D({
       (suspensionDirectionLocal?.clone() ?? Vector3(0.0, -1.0, 0.0))
         ..normalize();
 
-  /// Rightward wheel axle direction in chassis local space (`(1, 0, 0)` by
-  /// default).
+  /// Wheel axle direction in chassis local space (`(1, 0, 0)` when not
+  /// given).
+  ///
+  /// When given, the wheel rolls perpendicular to it: its unsteered forward
+  /// direction is `axle x up` (up being against [suspensionDirectionLocal]),
+  /// reversed when that points away from the vehicle's `forwardAxisLocal`.
+  /// When not given, the wheel rolls along the vehicle's `forwardAxisLocal`.
   final Vector3 axleDirectionLocal =
       (axleDirectionLocal?.clone() ?? Vector3(1.0, 0.0, 0.0))..normalize();
+
+  /// Whether [axleDirectionLocal] was given (and steers the rolling
+  /// direction).
+  final bool hasCustomAxle = axleDirectionLocal != null;
 }
 
 /// Per-wheel live telemetry updated every step by [RaycastVehicle3D].
@@ -462,8 +471,21 @@ class RaycastVehicle3D({
   }) {
     final fwd = (forwardAxisLocal?.clone() ?? Vector3(0.0, 0.0, 1.0))
       ..normalize();
-    final frontZ = fwd.z >= 0.0 ? halfWheelbase : -halfWheelbase;
-    final rearZ = -frontZ;
+    // Wheels sit along the forward axis and the side axis `up x forward`
+    // (local Y up), the side axis turned toward +X (or +Z).
+    final side = Vector3(0.0, 1.0, 0.0).cross(fwd);
+    if (side.length2 <= 1e-12) {
+      side.setValues(1.0, 0.0, 0.0);
+    }
+    side.normalize();
+    if (side.x < -1e-9 || (side.x.abs() <= 1e-9 && side.z < 0.0)) {
+      side.negate();
+    }
+    Vector3 corner(double along, double across) => Vector3(
+      fwd.x * along + side.x * across,
+      fwd.y * along + side.y * across + connectionHeight,
+      fwd.z * along + side.z * across,
+    );
     return RaycastVehicle3D(
       chassis: chassis,
       forwardAxisLocal: fwd,
@@ -473,11 +495,7 @@ class RaycastVehicle3D({
       wheels: [
         // Front-left
         WheelSpec3D(
-          connectionPointLocal: Vector3(
-            -halfTrackWidth,
-            connectionHeight,
-            frontZ,
-          ),
+          connectionPointLocal: corner(halfWheelbase, -halfTrackWidth),
           restLength: restLength,
           wheelRadius: wheelRadius,
           springStiffness: springStiffness,
@@ -487,11 +505,7 @@ class RaycastVehicle3D({
         ),
         // Front-right
         WheelSpec3D(
-          connectionPointLocal: Vector3(
-            halfTrackWidth,
-            connectionHeight,
-            frontZ,
-          ),
+          connectionPointLocal: corner(halfWheelbase, halfTrackWidth),
           restLength: restLength,
           wheelRadius: wheelRadius,
           springStiffness: springStiffness,
@@ -501,11 +515,7 @@ class RaycastVehicle3D({
         ),
         // Rear-left
         WheelSpec3D(
-          connectionPointLocal: Vector3(
-            -halfTrackWidth,
-            connectionHeight,
-            rearZ,
-          ),
+          connectionPointLocal: corner(-halfWheelbase, -halfTrackWidth),
           restLength: restLength,
           wheelRadius: wheelRadius,
           springStiffness: springStiffness,
@@ -513,11 +523,7 @@ class RaycastVehicle3D({
         ),
         // Rear-right
         WheelSpec3D(
-          connectionPointLocal: Vector3(
-            halfTrackWidth,
-            connectionHeight,
-            rearZ,
-          ),
+          connectionPointLocal: corner(-halfWheelbase, halfTrackWidth),
           restLength: restLength,
           wheelRadius: wheelRadius,
           springStiffness: springStiffness,
@@ -529,6 +535,11 @@ class RaycastVehicle3D({
 
   /// Immutable wheel configurations.
   final List<WheelSpec3D> wheels = List.unmodifiable(wheels);
+
+  late final int _driveCount = math.max(
+    1,
+    wheels.where((w) => w.isDrive).length,
+  );
 
   /// Live per-wheel suspension, contact, spin, and skid state.
   final List<WheelState3D> wheelStates = List.unmodifiable(
@@ -563,6 +574,7 @@ class RaycastVehicle3D({
   final Vector3 _vContact = Vector3.zero();
   final Vector3 _impScratch = Vector3.zero();
   final Vector3 _inertiaScratch = Vector3.zero();
+  final Vector3 _axleScratch = Vector3.zero();
 
   /// Number of wheels currently touching ground.
   int get groundedWheelCount {
@@ -583,10 +595,14 @@ class RaycastVehicle3D({
 
   /// Evaluates wheel raycasts and applies suspension, drive, brake, and lateral
   /// anti-slip impulses to [chassis] for timestep [dt].
+  ///
+  /// [gravityMagnitude] sets the minimum tire load (a share of the chassis
+  /// weight); a [PhysicsWorld3D] passes the length of its gravity.
   void stepVehicle(
     double dt, {
     required Iterable<RigidBody3D> bodies,
     CollisionSystem3D? collisionSystem,
+    double gravityMagnitude = 9.81,
   }) {
     if (dt <= 0.0 ||
         chassis.bodyType != BodyType3D.dynamic ||
@@ -691,10 +707,7 @@ class RaycastVehicle3D({
     }
 
     // Pass 2: Forward drive, braking, and lateral anti-slip impulses.
-    final driveCount = math.max(
-      1,
-      wheels.where((w) => w.isDrive).length,
-    );
+    final driveCount = _driveCount;
     for (var i = 0; i < wheels.length; i++) {
       final spec = wheels[i];
       final state = wheelStates[i];
@@ -708,6 +721,20 @@ class RaycastVehicle3D({
         ..negate()
         ..normalize();
       _rotateQuat(qChassis, forwardAxisLocal, _fwdWorld);
+      if (spec.hasCustomAxle) {
+        // Roll perpendicular to the wheel's own axle.
+        _rotateQuat(qChassis, spec.axleDirectionLocal, _axleScratch);
+        _axleScratch.crossInto(_upWorld, _steeredFwd);
+        if (_steeredFwd.length2 > 1e-12) {
+          _steeredFwd.normalize();
+          // Turned toward the vehicle's forward axis unless (nearly)
+          // perpendicular to it, where the sign would follow float noise.
+          if (_steeredFwd.dot(_fwdWorld) < -1e-3) {
+            _steeredFwd.negate();
+          }
+          _fwdWorld.setFrom(_steeredFwd);
+        }
+      }
 
       if (state.steerAngleRad.abs() > 1e-6) {
         _steerQuat.setAxisAngle(_upWorld, state.steerAngleRad);
@@ -785,7 +812,7 @@ class RaycastVehicle3D({
 
       final normalLoad = math.max(
         state.suspensionImpulse,
-        (chassis.mass * 9.81 / wheels.length) * dt * 0.5,
+        (chassis.mass * gravityMagnitude / wheels.length) * dt * 0.5,
       );
       final maxFriction = spec.frictionSlip * normalLoad;
       jLong = jLong.clamp(-maxFriction, maxFriction);
