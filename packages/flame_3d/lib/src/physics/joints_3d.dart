@@ -57,6 +57,8 @@ class DistanceJoint3D({
 
   final Vector3 _rA = Vector3.zero();
   final Vector3 _rB = Vector3.zero();
+  final Vector3 _wA = Vector3.zero();
+  final Vector3 _wB = Vector3.zero();
   final Vector3 _u = Vector3.zero();
   final Vector3 _scratch = Vector3.zero();
   double _effMass = 0.0;
@@ -66,12 +68,12 @@ class DistanceJoint3D({
 
   @override
   void prepare(double dt) {
-    _rotateQuat(bodyA.bodyRotation, localAnchorA, _rA);
-    _rotateQuat(bodyB.bodyRotation, localAnchorB, _rB);
+    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
 
-    final dx = (bodyB.bodyPosition.x + _rB.x) - (bodyA.bodyPosition.x + _rA.x);
-    final dy = (bodyB.bodyPosition.y + _rB.y) - (bodyA.bodyPosition.y + _rA.y);
-    final dz = (bodyB.bodyPosition.z + _rB.z) - (bodyA.bodyPosition.z + _rA.z);
+    final dx = _wB.x - _wA.x;
+    final dy = _wB.y - _wA.y;
+    final dz = _wB.z - _wA.z;
     final curLen = math.sqrt(dx * dx + dy * dy + dz * dz);
     if (curLen > 1e-7) {
       _u.setValues(dx / curLen, dy / curLen, dz / curLen);
@@ -126,11 +128,11 @@ class DistanceJoint3D({
     if (frequencyHz > 0.0) {
       return;
     }
-    _rotateQuat(bodyA.bodyRotation, localAnchorA, _rA);
-    _rotateQuat(bodyB.bodyRotation, localAnchorB, _rB);
-    final dx = (bodyB.bodyPosition.x + _rB.x) - (bodyA.bodyPosition.x + _rA.x);
-    final dy = (bodyB.bodyPosition.y + _rB.y) - (bodyA.bodyPosition.y + _rA.y);
-    final dz = (bodyB.bodyPosition.z + _rB.z) - (bodyA.bodyPosition.z + _rA.z);
+    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    final dx = _wB.x - _wA.x;
+    final dy = _wB.y - _wA.y;
+    final dz = _wB.z - _wA.z;
     final curLen = math.sqrt(dx * dx + dy * dy + dz * dz);
     if (curLen <= 1e-7) {
       return;
@@ -175,6 +177,8 @@ class BallSocketJoint3D({
 
   final Vector3 _rA = Vector3.zero();
   final Vector3 _rB = Vector3.zero();
+  final Vector3 _wA = Vector3.zero();
+  final Vector3 _wB = Vector3.zero();
   final Matrix3 _effMass3 = Matrix3.zero();
   final Vector3 _bias = Vector3.zero();
   final Vector3 _rhs = Vector3.zero();
@@ -183,20 +187,17 @@ class BallSocketJoint3D({
 
   @override
   void prepare(double dt) {
-    _rotateQuat(bodyA.bodyRotation, localAnchorA, _rA);
-    _rotateQuat(bodyB.bodyRotation, localAnchorB, _rB);
+    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
     _buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _effMass3);
 
     if (dt > 1e-9) {
       const beta = 0.2;
       final scale = beta / dt;
       _bias.setValues(
-        ((bodyB.bodyPosition.x + _rB.x) - (bodyA.bodyPosition.x + _rA.x)) *
-            scale,
-        ((bodyB.bodyPosition.y + _rB.y) - (bodyA.bodyPosition.y + _rA.y)) *
-            scale,
-        ((bodyB.bodyPosition.z + _rB.z) - (bodyA.bodyPosition.z + _rA.z)) *
-            scale,
+        (_wB.x - _wA.x) * scale,
+        (_wB.y - _wA.y) * scale,
+        (_wB.z - _wA.z) * scale,
       );
     } else {
       _bias.setZero();
@@ -222,11 +223,11 @@ class BallSocketJoint3D({
 
   @override
   void solvePosition() {
-    _rotateQuat(bodyA.bodyRotation, localAnchorA, _rA);
-    _rotateQuat(bodyB.bodyRotation, localAnchorB, _rB);
-    final ex = (bodyB.bodyPosition.x + _rB.x) - (bodyA.bodyPosition.x + _rA.x);
-    final ey = (bodyB.bodyPosition.y + _rB.y) - (bodyA.bodyPosition.y + _rA.y);
-    final ez = (bodyB.bodyPosition.z + _rB.z) - (bodyA.bodyPosition.z + _rA.z);
+    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    final ex = _wB.x - _wA.x;
+    final ey = _wB.y - _wA.y;
+    final ez = _wB.z - _wA.z;
     if (ex * ex + ey * ey + ez * ez <= 1e-9) {
       return;
     }
@@ -314,6 +315,8 @@ class HingeJoint3D({
 
   final Vector3 _rA = Vector3.zero();
   final Vector3 _rB = Vector3.zero();
+  final Vector3 _wA = Vector3.zero();
+  final Vector3 _wB = Vector3.zero();
   final Matrix3 _linearMass = Matrix3.zero();
   final Vector3 _linearBias = Vector3.zero();
 
@@ -352,22 +355,16 @@ class HingeJoint3D({
 
   @override
   void prepare(double dt) {
-    _rotateQuat(bodyA.bodyRotation, localAnchorA, _rA);
-    _rotateQuat(bodyB.bodyRotation, localAnchorB, _rB);
+    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
     _buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _linearMass);
 
     final invDt = dt > 1e-9 ? 1.0 / dt : 0.0;
     const betaLin = 0.2;
     _linearBias.setValues(
-      ((bodyB.bodyPosition.x + _rB.x) - (bodyA.bodyPosition.x + _rA.x)) *
-          betaLin *
-          invDt,
-      ((bodyB.bodyPosition.y + _rB.y) - (bodyA.bodyPosition.y + _rA.y)) *
-          betaLin *
-          invDt,
-      ((bodyB.bodyPosition.z + _rB.z) - (bodyA.bodyPosition.z + _rA.z)) *
-          betaLin *
-          invDt,
+      (_wB.x - _wA.x) * betaLin * invDt,
+      (_wB.y - _wA.y) * betaLin * invDt,
+      (_wB.z - _wA.z) * betaLin * invDt,
     );
 
     // Swing basis perpendicular to `a1`.
@@ -496,11 +493,11 @@ class HingeJoint3D({
   @override
   void solvePosition() {
     // 1. Anchor position drift correction.
-    _rotateQuat(bodyA.bodyRotation, localAnchorA, _rA);
-    _rotateQuat(bodyB.bodyRotation, localAnchorB, _rB);
-    final ex = (bodyB.bodyPosition.x + _rB.x) - (bodyA.bodyPosition.x + _rA.x);
-    final ey = (bodyB.bodyPosition.y + _rB.y) - (bodyA.bodyPosition.y + _rA.y);
-    final ez = (bodyB.bodyPosition.z + _rB.z) - (bodyA.bodyPosition.z + _rA.z);
+    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    final ex = _wB.x - _wA.x;
+    final ey = _wB.y - _wA.y;
+    final ez = _wB.z - _wA.z;
     if (ex * ex + ey * ey + ez * ez > 1e-9) {
       _buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _linearMass);
       _rhs.setValues(ex * 0.4, ey * 0.4, ez * 0.4);

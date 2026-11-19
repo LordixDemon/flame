@@ -678,9 +678,8 @@ For all joints:
   by the position passes. Long chains need more iterations (the tests use `12` velocity and `5` or
   `6` position iterations).
 - Two dynamic bodies joined by a joint wake up together, and fall asleep together.
-- `DistanceJoint3D`, `BallSocketJoint3D` and `HingeJoint3D` measure their lever arms from the body
-  origin instead of its center of mass, which only differs for bodies with an off-center center of
-  mass (compounds, hulls); the other joints use the center of mass.
+- Anchors are points of the body; lever arms are measured from its center of mass, so joints work
+  on compound and hull bodies whose center of mass is not at their origin.
 
 The ragdoll controller of the animation system builds on these joints, see
 [Models and Animation](models_and_animation.md).
@@ -1090,8 +1089,6 @@ and check for collection pauses with the profiler.
 - Every step allocates the narrowphase manifolds of touching pairs; an attached collision system
   is re-synchronized (a walk over its parent's subtree) every step, and every collision query
   walks it again.
-- `DistanceJoint3D`, `BallSocketJoint3D` and `HingeJoint3D` take lever arms from the body origin
-  rather than the center of mass.
 - Buoyancy is horizontal in Y. Vehicles ignore `axleDirectionLocal` and compute the minimum tire
   load with a gravity of `9.81` whatever the world's gravity.
 - Cloth does not collide with itself, only with sphere and capsule colliders, and does not affect
