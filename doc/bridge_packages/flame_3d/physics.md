@@ -48,7 +48,7 @@ same on Android, iOS, macOS, the web and in `flutter test` (with or without
 | `SphereShape3D`      | exact, 1 point                | exact                 |
 | `CapsuleShape3D`     | exact, 1 point                | exact                 |
 | `BoxShape3D`         | against a box: up to 4 points | exact                 |
-| `ConvexHullShape3D`  | GJK and EPA, 1 point          | from the bounding box |
+| `ConvexHullShape3D`  | GJK and EPA, 1 point          | exact, from the hull  |
 | `CompoundShape3D`    | per child, merged             | from the children     |
 | `HeightfieldShape3D` | per grid cell, merged         | none, for static use  |
 
@@ -65,22 +65,24 @@ separating axis test and clips the incident face against the reference face, whi
 manifold of up to four points: a box rests flat and comes to sleep. Every other pair that involves a
 hull goes through GJK and EPA and yields a single contact point per step; see the hull notes below.
 
-`ConvexHullShape3D` takes any point cloud; the hull is implicit (each support query scans all
-points, so keep hulls to a few dozen points). Its mass properties are taken from the bounding box
-of the points, not from the hull:
+`ConvexHullShape3D` takes any point cloud and builds the hull when it is created (a quickhull,
+roughly quadratic in the number of points, so keep hulls to a few hundred points). Coplanar
+triangles are merged into polygon faces, which `faceCount`, `faceNormal(i)` and
+`faceVertexIndices(i)` read (indices into `vertices`, counter-clockwise around the outward normal);
+points inside the hull are ignored. Its mass properties are those of the solid hull of uniform
+density:
 
-- the center of mass is the local origin, so center the vertices on the center of mass;
-- the volume is half the volume of the bounding box (a cube hull reports half its volume, a
-  regular tetrahedron 1.5 times its volume);
-- the inertia is that of a solid box filling the bounding box;
-- `inscribedSphereRadius` is the smallest half-extent of the bounding box, which is larger than the
-  real inradius of most polyhedra (an octahedron reports its circumradius). This radius is the
-  default sphere of continuous collision detection, see [Continuous collision
-  detection](#continuous-collision-detection).
+- `estimateLocalVolume()` is its exact volume;
+- `localCenterOfMass` is its centroid, around which a rigid body integrates, so the vertices need
+  not be centered;
+- `computeLocalInertiaTensor` is its full inertia tensor about that center, products of inertia
+  included (`computeLocalInertiaDiagonal` is its diagonal);
+- `inscribedSphereRadius` is the distance from the center of mass to the nearest face plane, the
+  default sphere of [continuous collision detection](#continuous-collision-detection).
 
-For the regular polyhedra used as dice (centered, in their usual orientation) the bounding box is a
-cube, so the inertia is isotropic and the result is fair, but the hull still rocks on its single
-contact point, see [Contact quality](#contact-quality).
+Fewer than four points, or points that all lie on one line or one plane, make a degenerate hull:
+it has no faces, still collides (with one contact point per step) and takes its mass properties
+from its bounding box.
 
 `CompoundShape3D` builds a concave shape from convex children, each with a `position`, a
 `rotation` and a `massWeight` (default `1`). The mass is split between children in proportion to
@@ -579,19 +581,9 @@ restitution and friction, and the rest of the step is swept again, up to three t
 
 - Only the inscribed sphere is protected. Rotation is not swept, so the corners of a long, fast
   spinning body can still cut into things; the discrete contacts of the next step push them out.
-- The default radius is the shape's `inscribedSphereRadius`. For hulls that is the smallest
-  half-extent of the bounding box, often larger than the hull: a face-down octahedron die with
-  CCD stopped its fall with its center 0.30 m above the floor instead of 0.17 m, bouncing off an
-  invisible sphere. Give hull bodies their true inradius:
-
-  ```dart
-  final d8 = RigidBody3D(
-    shape: ConvexHullShape3D(vertices: octahedronVertices), // r = 0.3
-    ccdEnabled: true,
-    ccdSweptSphereRadius: 0.3 / math.sqrt(3), // inradius
-  );
-  ```
-
+- The default radius is the shape's `inscribedSphereRadius`, for hulls the distance from the
+  center of mass to the nearest face: a face-down octahedron die falling at 15 m/s with CCD stops
+  on its face, its center 0.173 m (its inradius) above the floor.
 - Against colliders it only stops fast bodies, see
   [Rigid bodies and colliders](#rigid-bodies-and-colliders).
 - Cost: for each CCD body above the speed threshold, up to three sweeps per step, each testing the
@@ -689,7 +681,7 @@ body's local +Y toward the wave normal (`waveTorqueStrength`, `1.5`).
 
 - `fluidDensity` (default `2.5`) is a density in the units of the body masses: a body floats when
   `mass / volume` is below it. With real masses in kilograms, water is `1000`.
-- The volume is `shape.estimateLocalVolume()`, which for hulls is half the bounding box.
+- The volume is `shape.estimateLocalVolume()`, exact for every convex shape.
 - The water surface is horizontal in Y: `waterSurfaceHeight(x, z, time)` returns the height Y at
   world `(x, z)`, or `baseWaterLevel` (`0`) without a function. `bounds` (an `Aabb3`, `null` for an
   endless sea) limits the volume. The volume's own transform is not used.
@@ -848,7 +840,8 @@ Other dice are `ConvexHullShape3D`s. A 20-sided die thrown 1,500 times came up u
 (chi-square `21.0`, 19 degrees of freedom), but with the default thresholds none fell asleep: hull
 dice keep rocking, see [Contact quality](#contact-quality). With `sleepLinearThreshold: 0.15` and
 `sleepAngularThreshold: 0.6` they all slept, after 4.9 s on average; hull cubes need `0.2` and
-`0.8`. Leave CCD off on hull dice, or set their `ccdSweptSphereRadius` to the inradius.
+`0.8`.
+Continuous collision detection may stay on, as its default sphere is the hull's inradius.
 
 `throwDice3D` places, orients and launches a list of bodies from a seed:
 
@@ -1024,15 +1017,13 @@ profiler.
   report overlaps and never push anything apart.
 - Contacts that go through GJK and EPA (hulls, and hulls against boxes) have one point: hull bodies
   rock, do not fall asleep with the default thresholds, and rest 5 to 15 mm deep.
-- `ConvexHullShape3D` takes its center of mass (the local origin), volume, inertia and inscribed
-  radius from its bounding box.
 - Columns of more than four boxes collapse with the default iterations; columns of eight and ten
   boxes collapsed even with 20 to 30 velocity iterations.
 - Kinematic bodies pass through sleeping bodies without waking them. Sleeping is per body, without
   islands.
 - No gyroscopic term in the integration of rotations.
-- Continuous collision detection sweeps a sphere and ignores rotation; its default radius is too
-  large for most hulls; against colliders it only stops fast bodies.
+- Continuous collision detection sweeps a sphere and ignores rotation; against colliders it only
+  stops fast bodies.
 - Snapshots restore into the world they came from; nothing is guaranteed across platforms.
 - Every step allocates per contact and walks the subtree of the physics world; every collision
   query walks the subtree of the collision system.

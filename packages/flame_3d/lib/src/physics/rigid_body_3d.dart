@@ -568,19 +568,21 @@ class RigidBody3D({
     }
     _inverseMass = 1.0 / _mass;
 
-    if (_shape is CompoundShape3D) {
-      final tensor = _shape.computeLocalInertiaTensor(_mass);
-      final ts = tensor.storage;
-      final offDiag2 = ts[1] * ts[1] + ts[2] * ts[2] + ts[5] * ts[5];
-      if (offDiag2 > 1e-12 &&
-          _invertSymmetric3(tensor, _localInvInertiaTensor)) {
-        _hasOffDiagonalInertia = true;
-        final inv = _localInvInertiaTensor.storage;
-        _localInvInertia.setValues(inv[0], inv[4], inv[8]);
-        updateWorldInertia();
-        return;
-      }
+    // Shapes with products of inertia (compounds, asymmetric hulls) keep the
+    // full tensor.
+    final tensor = _shape.computeLocalInertiaTensor(_mass);
+    final ts = tensor.storage;
+    final offDiag2 = ts[1] * ts[1] + ts[2] * ts[2] + ts[5] * ts[5];
+    final diag2 = ts[0] * ts[0] + ts[4] * ts[4] + ts[8] * ts[8];
+    if (offDiag2 > 1e-12 * diag2 &&
+        _invertSymmetric3(tensor, _localInvInertiaTensor)) {
+      _hasOffDiagonalInertia = true;
+      final inv = _localInvInertiaTensor.storage;
+      _localInvInertia.setValues(inv[0], inv[4], inv[8]);
+      updateWorldInertia();
+      return;
     }
+
 
     _hasOffDiagonalInertia = false;
     final diag = _shape.computeLocalInertiaDiagonal(_mass);
