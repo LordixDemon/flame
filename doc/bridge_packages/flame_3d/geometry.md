@@ -394,6 +394,11 @@ rule), the `triangleIndex` and the barycentric coordinates `barycentricU` (weigh
 the ray's origin, `frontFace` only those facing away. Hits closer than `1e-7` are ignored, so a ray
 starting on a surface does not hit it.
 
+The BVH is built on first access, on the calling isolate. A hierarchy built elsewhere, for example
+by `AsyncModelLoader3D.buildSurfaceBvhsInIsolate` (see
+[Models and Animation](models_and_animation.md#loading-off-the-main-isolate)), is handed to the
+surface with `surface.adoptBvh(SurfaceBvh.fromPrepared(...))`.
+
 To cast against a surface placed in the world, use
 `RayHit3D.intersectSurface(owner:, surface:, modelMatrix:, worldRay:)` or
 `RayHit3D.intersectMesh(...)`: they bring the ray into the surface's space with the inverse of the

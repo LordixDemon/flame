@@ -181,11 +181,16 @@ data-less fallback of `EXT_meshopt_compression`). It decodes `EXT_meshopt_compre
 accessors like `ModelParser`, shares one material per glTF material (so primitives with the same
 material batch), and builds the same surfaces, skins, morph targets and animations.
 
-With `buildBvhs: true` (the default) every surface's ray-casting BVH is built when the model is
-materialized, on the main isolate. Pass `false` unless you ray cast against the model, and let the
-first ray build it. `buildSurfaceBvhsInIsolate(model)` builds BVHs on an isolate and returns them as
-`PreparedSurfaceBvh3D`s, but then builds each surface's own BVH again on the main isolate: it does
-not save main-thread work.
+With `buildBvhs: true` (the default) every surface's ray-casting BVH is built on a second
+background isolate before the model is returned; the vertex and index data are copied to it. Pass
+`false` when you do not ray cast against the model. `buildSurfaceBvhsInIsolate(model)` does the same
+for any model: each surface adopts the hierarchy built on the isolate (`Surface.adoptBvh`,
+`SurfaceBvh.fromPrepared`), and the payloads are also returned as `PreparedSurfaceBvh3D`s. A surface
+whose vertices change later (morph targets) drops its BVH, and the next ray rebuilds it on the main
+isolate.
+
+What stays on the main isolate: decoding images and creating textures and materials, creating the
+`Surface` objects from the transferred buffers, and the GPU uploads on first draw.
 
 `AssetScope3D` reference-counts models, meshes, surfaces and textures: `retain` increments,
 `release` decrements and, at zero, disposes the surfaces and the textures of their

@@ -166,6 +166,11 @@ abstract final class AsyncModelLoader3D() {
 
   /// Loads a `.glb` asset via `Flame.assets` and prepares all geometry,
   /// skinning, morph targets, and animations on a background isolate.
+  ///
+  /// With [buildBvhs] (the default) the ray-casting BVH of every surface is
+  /// built on a second background isolate before the model is returned (see
+  /// [buildSurfaceBvhsInIsolate]); pass `false` when the model is not ray
+  /// cast. Images are decoded and textures created on the main isolate.
   static Future<Model> loadGlbAssetAsync(
     String filePath, {
     bool buildBvhs = true,
@@ -195,10 +200,10 @@ abstract final class AsyncModelLoader3D() {
     final prepared = await Isolate.run(
       () => _prepareGlbInIsolate(inputTransfer, prefix),
     );
-    final model = await _materializePreparedGlb(
-      prepared,
-      buildBvhs: buildBvhs,
-    );
+    final model = await _materializePreparedGlb(prepared);
+    if (buildBvhs) {
+      await buildSurfaceBvhsInIsolate(model);
+    }
     scope?.retain(model);
     return model;
   }
@@ -216,7 +221,10 @@ abstract final class AsyncModelLoader3D() {
       final text = utf8.decode(inputTransfer.materialize().asUint8List());
       return _prepareObjInIsolate(text, mtlSources);
     });
-    final model = _materializePreparedObj(prepared, buildBvhs: buildBvhs);
+    final model = _materializePreparedObj(prepared);
+    if (buildBvhs) {
+      await buildSurfaceBvhsInIsolate(model);
+    }
     scope?.retain(model);
     return model;
   }
@@ -232,14 +240,22 @@ abstract final class AsyncModelLoader3D() {
     final prepared = await Isolate.run(
       () => _prepareObjInIsolate(objSource, mtlSources),
     );
-    final model = _materializePreparedObj(prepared, buildBvhs: buildBvhs);
+    final model = _materializePreparedObj(prepared);
+    if (buildBvhs) {
+      await buildSurfaceBvhsInIsolate(model);
+    }
     scope?.retain(model);
     return model;
   }
 
   /// Builds flat median-split triangle BVHs for every [Surface] in [model] on a
-  /// background isolate using [TransferableTypedData], warms `surface.bvh`, and
-  /// returns the prepared BVH payloads.
+  /// background isolate using [TransferableTypedData], hands each to its
+  /// surface ([Surface.adoptBvh], so `surface.bvh` is not rebuilt on the main
+  /// isolate), and returns the prepared BVH payloads.
+  ///
+  /// The vertex and index data are copied to the isolate. A surface whose
+  /// vertices change afterwards (morph targets) drops its BVH and builds the
+  /// next one on the main isolate when ray cast.
   static Future<List<PreparedSurfaceBvh3D>> buildSurfaceBvhsInIsolate(
     Model model, {
     int maxLeafTriangles = 4,
@@ -306,20 +322,31 @@ abstract final class AsyncModelLoader3D() {
     final results = <PreparedSurfaceBvh3D>[];
     for (var i = 0; i < rawOutputs.length; i++) {
       final r = rawOutputs[i];
-      // Warm cached `surface.bvh` on the owning Surface for raycast parity.
-      surfaces[r.surfaceIndex].bvh;
-      results.add(
-        PreparedSurfaceBvh3D(
-          surfaceIndex: r.surfaceIndex,
-          nodeCount: r.nodeCount,
-          triangleCount: r.triangleCount,
-          bounds: r.bounds.materialize().asFloat32List(),
-          leftOrFirst: r.leftOrFirst.materialize().asInt32List(),
-          rightChild: r.rightChild.materialize().asInt32List(),
-          counts: r.counts.materialize().asInt32List(),
-          triangles: r.triangles.materialize().asInt32List(),
+      final prepared = PreparedSurfaceBvh3D(
+        surfaceIndex: r.surfaceIndex,
+        nodeCount: r.nodeCount,
+        triangleCount: r.triangleCount,
+        bounds: r.bounds.materialize().asFloat32List(),
+        leftOrFirst: r.leftOrFirst.materialize().asInt32List(),
+        rightChild: r.rightChild.materialize().asInt32List(),
+        counts: r.counts.materialize().asInt32List(),
+        triangles: r.triangles.materialize().asInt32List(),
+      );
+      // The surface uses the hierarchy built on the isolate: no rebuild on
+      // the main isolate.
+      final surface = surfaces[r.surfaceIndex];
+      surface.adoptBvh(
+        SurfaceBvh.fromPrepared(
+          surface: surface,
+          nodeCount: prepared.nodeCount,
+          bounds: prepared.bounds,
+          leftOrFirst: prepared.leftOrFirst,
+          rightChild: prepared.rightChild,
+          counts: prepared.counts,
+          triangles: prepared.triangles,
         ),
       );
+      results.add(prepared);
     }
     return results;
   }
@@ -805,10 +832,7 @@ abstract final class AsyncModelLoader3D() {
     return _PreparedObj(preparedSurfaces);
   }
 
-  static Model _materializePreparedObj(
-    _PreparedObj prepared, {
-    required bool buildBvhs,
-  }) {
+  static Model _materializePreparedObj(_PreparedObj prepared) {
     final mesh = Mesh();
     for (final s in prepared.surfaces) {
       final verts = s.vertices.materialize().asFloat32List();
@@ -832,9 +856,6 @@ abstract final class AsyncModelLoader3D() {
         indices: indices,
         material: mat,
       );
-      if (buildBvhs) {
-        surface.bvh;
-      }
       mesh.addSurface(surface);
     }
     return Model.simple(mesh: mesh);
@@ -1605,10 +1626,7 @@ abstract final class AsyncModelLoader3D() {
     return tex;
   }
 
-  static Future<Model> _materializePreparedGlb(
-    _PreparedGlb prepared, {
-    required bool buildBvhs,
-  }) async {
+  static Future<Model> _materializePreparedGlb(_PreparedGlb prepared) async {
     final decodedImages = <ImageTexture>[];
     for (final imgTransfer in prepared.images) {
       final imgBytes = imgTransfer.materialize().asUint8List();
@@ -1705,9 +1723,6 @@ abstract final class AsyncModelLoader3D() {
         );
         if (pm.weights != null && pm.weights!.isNotEmpty) {
           surface.applyMorphWeights(pm.weights!);
-        }
-        if (buildBvhs) {
-          surface.bvh;
         }
         mesh.addSurface(surface);
       }

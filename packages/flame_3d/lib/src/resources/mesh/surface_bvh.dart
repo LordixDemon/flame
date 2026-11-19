@@ -225,6 +225,50 @@ class SurfaceBvh {
     );
   }
 
+  /// Wraps a hierarchy built elsewhere for [surface]'s current vertices, in
+  /// the layout [SurfaceBvh.build] produces: `6` floats of bounds per node
+  /// (`minX, minY, minZ, maxX, maxY, maxZ`), the left child or first triangle
+  /// slot per node, the right child per node, the triangle count per node
+  /// (`0` for inner nodes) and the triangle order. Used to adopt hierarchies
+  /// built on another isolate (see `Surface.adoptBvh`).
+  factory SurfaceBvh.fromPrepared({
+    required Surface surface,
+    required int nodeCount,
+    required Float32List bounds,
+    required Int32List leftOrFirst,
+    required Int32List rightChild,
+    required Int32List counts,
+    required Int32List triangles,
+  }) {
+    final triCount = surface.indices.length ~/ 3;
+    final posOffset = surface.layout.offsetOf(VertexLayout.positionAttribute);
+    if (posOffset == null || triCount == 0 || nodeCount == 0) {
+      return SurfaceBvh._empty(surface);
+    }
+    if (bounds.length < nodeCount * 6 ||
+        leftOrFirst.length < nodeCount ||
+        rightChild.length < nodeCount ||
+        counts.length < nodeCount ||
+        triangles.length != triCount) {
+      throw ArgumentError(
+        'Prepared BVH does not match the surface: $nodeCount nodes, '
+        '${triangles.length} triangles for a surface of $triCount',
+      );
+    }
+    return SurfaceBvh._(
+      surface: surface,
+      positionOffset: posOffset,
+      stride: surface.layout.strideInFloats,
+      nodeCount: nodeCount,
+      triangleCount: triCount,
+      bounds: bounds,
+      leftOrFirst: leftOrFirst,
+      rightChild: rightChild,
+      counts: counts,
+      triangles: triangles,
+    );
+  }
+
   SurfaceBvh._({
     required this.surface,
     required this._positionOffset,

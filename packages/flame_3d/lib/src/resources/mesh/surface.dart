@@ -175,6 +175,17 @@ class Surface extends Resource<GpuBuffer> {
   /// [updateVertices] mutates vertex positions.
   SurfaceBvh get bvh => _bvh ??= SurfaceBvh.build(this);
 
+  /// Uses [bvh], built elsewhere for this surface's current vertices (for
+  /// example on another isolate, see `SurfaceBvh.fromPrepared`), as [bvh].
+  /// Like any cached BVH it is dropped when [updateVertices] changes the
+  /// vertices.
+  void adoptBvh(SurfaceBvh bvh) {
+    if (!identical(bvh.surface, this)) {
+      throw ArgumentError.value(bvh, 'bvh', 'Was built for another surface');
+    }
+    _bvh = bvh;
+  }
+
   int? _resourceSizeInBytes;
 
   int get _sizeInBytes => verticesBytes + _align4(indicesBytes);
