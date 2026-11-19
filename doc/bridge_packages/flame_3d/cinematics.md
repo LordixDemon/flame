@@ -76,10 +76,11 @@ jittery target. `resetDampingState()` makes the next evaluation snap.
 On every `update` it:
 
 1. collects the candidates: the cameras given in `cameras` or `registerCamera`, then every
-   `VirtualCamera3D` found under its world (the `world` argument, else `camera.world`, else the
-   nearest `World3D` ancestor);
+   `VirtualCamera3D` mounted under its world (the `world` argument, else `camera.world`, else the
+   nearest `World3D` ancestor). Virtual cameras register with their world when mounted, so this
+   costs nothing per component of the world;
 2. picks the enabled candidate with `blendWeight > 0` and the highest `priority` (on a tie, the
-   first one found);
+   first one: the given cameras in order, then the mounted ones in the order they were mounted);
 3. when the winner changed, starts a blend from the camera's current output pose, over the winner's
    `blendDurationOverride` or the brain's `blendDuration` (default `0.5` s), eased by the winner's
    `blendCurveOverride` or the brain's `blendCurve` (default `Curves.easeInOut`). The very first
@@ -335,9 +336,6 @@ class CallbackTrack3D extends TimelineTrack3D {
 ## Limitations
 
 - `AnimationClipTrack3D` does not blend between overlapping spans: the later one wins.
-- The brain walks the whole tree of its world on every update to find the virtual cameras
-  (recursively, with a linear duplicate check per camera found). With 10,000 components that took
-  about 0.1 ms per update in a JIT test run; the cost grows with the size of the world.
 - There are no per-key easing curves besides `step`, `linear` and `cubicHermite`, no audio or
   property tracks other than the ones above, and a timeline cannot be saved or loaded.
 

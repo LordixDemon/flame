@@ -6,6 +6,7 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/src/parser/gltf/animation_interpolation.dart';
 import 'package:flutter/animation.dart' show Curve, Curves;
+import 'package:meta/meta.dart';
 
 /// A prioritized virtual camera shot node in 3D space evaluated by a
 /// [VirtualCameraBrain3D].
@@ -47,6 +48,37 @@ class VirtualCamera3D({
   final Vector3 _right = Vector3.zero();
   final Vector3 _camUp = Vector3.zero();
   final Matrix3 _rotMat = Matrix3.identity();
+
+  // The cameras mounted under each world, in the order they were mounted,
+  // so that a brain finds them without walking the world.
+  static final Expando<List<VirtualCamera3D>> _mountedByWorld = Expando();
+  World3D? _mountedWorld;
+
+  /// The [VirtualCamera3D]s mounted under [world], in the order they were
+  /// mounted.
+  @internal
+  static List<VirtualCamera3D> mountedIn(World3D world) =>
+      _mountedByWorld[world] ?? const [];
+
+  @override
+  void onMount() {
+    super.onMount();
+    final world = worldOrNull;
+    if (world != null) {
+      (_mountedByWorld[world] ??= []).add(this);
+      _mountedWorld = world;
+    }
+  }
+
+  @override
+  void onRemove() {
+    final world = _mountedWorld;
+    if (world != null) {
+      _mountedByWorld[world]?.remove(this);
+      _mountedWorld = null;
+    }
+    super.onRemove();
+  }
 
   /// Resets internal damping history so the next evaluation snaps immediately.
   void resetDampingState() {
@@ -381,16 +413,12 @@ class VirtualCameraBrain3D({
       }
     }
     if (rootWorld != null) {
-      void visit(Component c) {
-        if (c is VirtualCamera3D && !out.contains(c)) {
+      final registered = _registered;
+      for (final c in VirtualCamera3D.mountedIn(rootWorld)) {
+        if (registered.isEmpty || !registered.contains(c)) {
           out.add(c);
         }
-        for (final child in c.children) {
-          visit(child);
-        }
       }
-
-      visit(rootWorld);
     }
   }
 }

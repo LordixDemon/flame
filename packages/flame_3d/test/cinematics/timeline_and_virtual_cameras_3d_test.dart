@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flame/components.dart' as flame show Component;
 import 'package:flame/game.dart' show FlameGame;
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/cinematics.dart';
@@ -156,6 +157,66 @@ void main() {
         brain.update(0.05);
         expect(outputCam.position.x, greaterThan(1.0));
         expect(outputCam.position.x, lessThan(9.0));
+      },
+    );
+  });
+
+  group('VirtualCameraBrain3D discovery', () {
+    testWithGame(
+      'finds the cameras of its world without walking it',
+      () => FlameGame(world: World3D()),
+      (game) async {
+        final world = game.world;
+        final near = VirtualCamera3D(priority: 1);
+        final far = VirtualCamera3D(priority: 5, position: Vector3(0, 0, 9));
+        // Many components, and the cameras nested in them.
+        final groups = [
+          for (var i = 0; i < 200; i++)
+            Group3D(
+              children: [
+                for (var j = 0; j < 50; j++) Group3D(),
+              ],
+            ),
+        ];
+        groups[10].add(Group3D(children: [near]));
+        groups[150].add(far);
+        await world.ensureAddAll(groups);
+        await game.ready();
+        final output = CameraComponent3D(
+          viewport: FixedSizeViewport(100, 100),
+        );
+        final brain = VirtualCameraBrain3D(camera: output, world: world)
+          ..evaluate(0);
+        expect(brain.activeCamera, same(far));
+
+        // Removing a camera removes it from the candidates.
+        far.removeFromParent();
+        await game.ready();
+        brain.evaluate(0);
+        expect(brain.activeCamera, same(near));
+
+        // An evaluation costs far less than walking the world's 10,000
+        // components once, which it used to do.
+        void walk(flame.Component c) {
+          for (final child in c.children) {
+            walk(child);
+          }
+        }
+
+        final walkTime = Stopwatch()..start();
+        for (var i = 0; i < 20; i++) {
+          walk(world);
+        }
+        walkTime.stop();
+        final evaluateTime = Stopwatch()..start();
+        for (var i = 0; i < 20; i++) {
+          brain.evaluate(1 / 60);
+        }
+        evaluateTime.stop();
+        expect(
+          evaluateTime.elapsedMicroseconds,
+          lessThan(walkTime.elapsedMicroseconds / 4),
+        );
       },
     );
   });
