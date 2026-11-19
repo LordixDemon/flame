@@ -65,11 +65,15 @@
  - **FEAT**(flame_3d): `ShadowCatcherMaterial(nearestOnly: true)` darkens a pixel once where catchers overlap (`Material.depthPrepassGroup`); `LightComponent.point` takes `shadows`. ([88a4412e](https://github.com/LordixDemon/flame/commit/88a4412e7eb205988a7c62268dd2ce7b6ab7d9b5), [e74b7377](https://github.com/LordixDemon/flame/commit/e74b7377d5352486dfb0596a8efad1c09d35b160))
  - **BREAKING** **PERF**(flame_3d): The shadow pass stops allocating per frame; the values of a `ShadowAtlasTile3D` belong to the frame that filled it. ([130c6e04](https://github.com/LordixDemon/flame/commit/130c6e04ea1675bc6599bce361302b02ccd9c892))
  - **FIX**(flame_3d): `LodMeshComponent`, `ChunkedTerrain3D` and `FoliageSystem3D` choose their detail from the main camera in shadow passes (`RenderContext3D.viewerPosition`, `viewerViewProjection`). ([0b445979](https://github.com/LordixDemon/flame/commit/0b4459797d55e8a6b36c0a34d89dea7ccdd22438), [43120260](https://github.com/LordixDemon/flame/commit/4312026090e13f8033734adb9943f09b697b5512))
+ - **FIX**(flame_3d): A `ShadowGroup` fitted to the view fits its map (and cascades) once per frame to what all its layers show, instead of to whichever layer rendered first; layers report their view on cache hits too, and retained layers render again when `ShadowGroup.viewsVersion` changes. ([5c3d4412](https://github.com/LordixDemon/flame/commit/5c3d4412))
+
 
 ### Particles
 
  - **BREAKING** **FIX**(flame_3d): Billboard particles, stroke batches and ribbon trails stay out of shadow maps and the depth-normal prepass; `ParticleMaterial.castsShadows` is always `false`; `RenderStats.particles` counts a system once per frame. ([460c3f0c](https://github.com/LordixDemon/flame/commit/460c3f0cb0eb3da4887d97e651e6cafd39b51a48))
  - **FIX**(flame_3d): `RibbonTrail3D` follows its own position under a 3D parent. ([182099bb](https://github.com/LordixDemon/flame/commit/182099bb53f7555fb68f3a2dee00c83f171381e2))
+ - **FIX**(flame_3d): `ParticleSystem3D.burst`, `emit`, `spawn`, `clear`, `reset` and `prewarm` raise the scene version, so a retained layer shows a burst made after the system's update; `Text3DComponent.worldHeight` and `orientation` are notifying setters. ([cf72efff](https://github.com/LordixDemon/flame/commit/cf72efff))
+
 
 ### Models, geometry and animation
 
