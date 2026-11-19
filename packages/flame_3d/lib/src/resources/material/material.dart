@@ -153,7 +153,8 @@ abstract class Material({
   /// discards pixels (an alpha cutoff), returns a material whose vertex
   /// shader places the vertices the same way, reading the instance inputs,
   /// and whose fragment shader discards the same pixels and writes the
-  /// prepass's encoding (see `shaders/flame_3d/depth_normal_fragment.glsl`).
+  /// prepass's encoding (`encodeDepthNormal` of
+  /// `#include <flame_3d/depth_normal_encoding.glsl>`).
   /// The prepass draws only the surfaces of opaque materials that write
   /// depth; a material that has a depth-normal material is drawn with it
   /// even when [instancesHoldModelMatrices] is `false`.
