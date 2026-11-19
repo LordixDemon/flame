@@ -306,10 +306,10 @@ if (report.hasLeaks) {
   `unreferencedBytes`, `evictionCount` and `auditLeaks()` (resources still referenced) help find
   leaks.
 
-Only leases should release references. `release(key)` is public and decrements the count of
-whatever is cached under the key, so mixing it with leases, or releasing a lease acquired before
-`disposeAll()` after the key was acquired again, takes a reference that belongs to someone else;
-the resource can then be evicted while still in use (and is uploaded again at its next use).
+A lease releases the reference of the cache entry it was acquired from: a lease acquired before
+`disposeAll()` and released after the key was acquired again does nothing, instead of taking the
+new holder's reference. `release(key)` is deprecated: it decrements the count of whatever is cached
+under the key, a reference that may belong to someone else.
 
 
 ### Device loss
@@ -377,7 +377,7 @@ Loading glTF models and their materials and animations is described in
   tree in memory.
 - `Resource.dispose()` frees GPU memory only when the GPU object is garbage collected, and a
   disposed resource that is used again is uploaded again. Budgets and leak reports of
-  `GpuResourceManager3D` are estimates, and a stale lease can release a reference it does not own.
+  `GpuResourceManager3D` are estimates.
 - `AssetScope3D` does not track lightmap textures or the textures of `StylizedMaterial` and other
   materials, and miscounts assets changed between `retain` and `release`.
 - Device-loss recovery is manual and cannot rebuild resources that wrap existing GPU objects.

@@ -5,14 +5,19 @@ import 'package:flame_3d/resources.dart';
 
 /// Ref-counted handle to a GPU [Resource] managed by [GpuResourceManager3D].
 ///
-/// Calling [release] decrements the underlying entry's reference count once;
-/// subsequent calls on the same lease are safe no-ops.
+/// Calling [release] decrements the reference count of the cache entry the
+/// lease was acquired from, once; subsequent calls on the same lease are safe
+/// no-ops. A lease outlives its entry: when the entry was disposed since (by
+/// [GpuResourceManager3D.disposeAll] or an eviction), releasing the lease does
+/// nothing, even if a new entry was cached under the same [key] meanwhile.
 class ResourceLease3D<T extends Resource<dynamic>>._(
   this._manager,
+  this._entry,
   this.key,
   this.resource,
 ) {
   final GpuResourceManager3D _manager;
+  final _ResourceEntry _entry;
 
   /// Cache key under which [resource] is tracked.
   final String key;
@@ -31,7 +36,7 @@ class ResourceLease3D<T extends Resource<dynamic>>._(
       return;
     }
     _released = true;
-    _manager.release(key);
+    _manager._releaseEntry(_entry);
   }
 }
 
@@ -287,7 +292,7 @@ class GpuResourceManager3D({
       if (_estimatedTotalBytes > _maxVramBytes) {
         trimToBudget();
       }
-      return ResourceLease3D<T>._(this, key, res);
+      return ResourceLease3D<T>._(this, existing, key, res);
     }
 
     final created = create();
@@ -304,17 +309,34 @@ class GpuResourceManager3D({
     if (_estimatedTotalBytes > _maxVramBytes) {
       trimToBudget();
     }
-    return ResourceLease3D<T>._(this, key, created);
+    return ResourceLease3D<T>._(this, entry, key, created);
   }
 
   /// Decrements the reference count of [key] by `1`.
   ///
   /// When the reference count reaches `0`, the resource enters the LRU cache
   /// and becomes eligible for eviction (unless `pinned`).
+  ///
+  /// This releases a reference by key, whoever holds it; release the
+  /// [ResourceLease3D] returned by [acquire] instead, which releases its own
+  /// reference only.
+  @Deprecated(
+    'Release the ResourceLease3D returned by acquire: a release by key can '
+    'drop a reference another lease holds.',
+  )
   void release(String key) {
     final entry = _entries[key];
     if (entry == null) {
       throw StateError('Cannot release unknown GPU resource key "$key".');
+    }
+    _releaseEntry(entry);
+  }
+
+  void _releaseEntry(_ResourceEntry entry) {
+    final key = entry.key;
+    if (!identical(_entries[key], entry)) {
+      // The entry was disposed (and maybe replaced) since: nothing to do.
+      return;
     }
     if (entry.refCount <= 0) {
       throw StateError('GPU resource "$key" already has refCount 0.');
