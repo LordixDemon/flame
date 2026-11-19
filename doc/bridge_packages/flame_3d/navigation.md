@@ -83,8 +83,9 @@ The builder runs these steps, the first steps of the Recast pipeline:
 
 The result has no region partitioning, contour tracing or polygon simplification: it is a grid of
 `cellSize` squares, two triangles per cell. A 10 by 10 m floor at the default settings gives
-2,888 triangles; a 60 by 60 m one gives about 110,000. Path queries and memory grow with that
-count, see [Costs](#costs), so pick `cellSize` as coarse as the narrowest passage allows.
+2,888 triangles; a 60 by 60 m one gives about 110,000. Searches and memory grow with that count,
+see [Costs](#costs), so pick `cellSize` as coarse as the narrowest passage allows. Paths are
+straight on such grids all the same, see [Paths](#paths).
 
 The builder works with +Y up only. For a scene with another up axis, see
 [Scenes with Z up](#scenes-with-z-up).
@@ -173,12 +174,33 @@ There is no distance limit: a point far from the mesh still gets the closest pol
 polygons with A* and returns the path as a list of points, from the snapped start to the snapped
 goal. It returns an empty list when the goal cannot be reached.
 
-The search runs over the polygons' centroids, the cost of a step being the distance between
-centroids times the mean cost of the two polygons (see [Area costs](#area-costs)). The resulting
-corridor of polygons is then straightened with the funnel algorithm (string pulling): the path
-bends only at corners of the corridor. Where a straight leg crosses polygons at other heights (over
-a ridge, down a slope), points are inserted at the crossed edges so the path follows the surface
-instead of cutting through it.
+When the straight line from the start to the goal stays on the mesh, over polygons of the lowest
+cost, and the mesh has no off-mesh links, that line is the path and no search runs. Otherwise A*
+searches the polygons, the cost of a step being the distance between their centroids times the
+mean cost of the two polygons (see [Area costs](#area-costs)), and the corridor of polygons it
+finds is straightened with the funnel algorithm (string pulling):
+
+1. The corridor is first widened along lines of sight: from the start, the farthest corner of the
+   path that a straight walk over the mesh reaches becomes the next anchor, and the polygons along
+   that line replace the corridor's polygons up to it.
+2. A shortest path bends only at corners of the walkable area. Wherever the funnel's path still
+   bends at a vertex that has walkable polygons all around it (a staircase in the corridor, typical
+   of grids and terrains), the corridor is moved to the other side of that vertex, which shortens
+   the path, until no such bend remains.
+
+In both steps the corridor takes no blocked polygon and no polygon more expensive than those it
+replaces, so paths still go around the regions that the search avoided because of their cost.
+Waypoints the path goes straight through are left out. Where a straight leg crosses polygons at
+other heights (over a ridge, down a slope), points are inserted at the crossed edges so the path
+follows the surface instead of cutting through it.
+
+```dart
+// Across an empty 20 m floor from the builder: two points, 22.6 m.
+final straight = navMesh.findPath(Vector3(-8, 0, 8), Vector3(8, 0, -8));
+```
+
+The path is the shortest one through the sequence of open regions the search picked; around a
+group of obstacles, A* can pick a way that is not the shortest one, and the funnel keeps it.
 
 The other path queries:
 
@@ -191,24 +213,18 @@ The other path queries:
 The path goes through the corners of the mesh exactly, it is not offset by the character's
 radius: with a mesh from the builder the radius is already kept by the erosion step.
 
-```{note}
-The funnel only straightens a path inside the corridor A* picked, and on regular
-grids (the meshes of the builder, or a terrain) many corridors have the same
-cost. Across an empty 20 m floor built at the default settings, paths along the
-X or Z axis or along the +X+Z diagonal (the diagonal that splits each square)
-came out straight, oblique ones about 6% longer than a straight line, and the
-path from `(-8, 0, 8)` to `(8, 0, -8)`, across the split, bent like an L: 27.5 m
-instead of 22.6 m. Paths can also contain extra points that lie on a straight
-line. See [Limitations](#limitations).
-```
+The search state (scores, parents and the open list) is allocated once per mesh, for all its
+polygons, and reused by every query, so queries are not re-entrant: do not plan on the same mesh
+from two isolates at once.
 
 
 ### Surface height
 
 `sampleHeightAt(position)` returns the height of the mesh under a point, choosing the layer closest
 to the point's own height where floors overlap (a bridge over a road), or `null` outside the mesh.
-It tests every polygon, so its cost grows with the size of the mesh; avoid calling it for many
-objects every frame on a large mesh.
+It tests only the polygons whose bounds the vertical line through the point crosses, found through
+the bounding volume hierarchy, so it takes about a microsecond even on large meshes and can be
+called for many objects every frame.
 
 
 ## Area costs
@@ -229,10 +245,10 @@ final count = navMesh.setRegionCostInAabb(
 navMesh.setPolygonCost(hit.polyIndex, 0.5); // a road
 ```
 
-Costs must be positive. Set them through `setPolygonCost` or `setRegionCostInAabb` rather than by
-writing `polygonCosts` directly: the search scales its distance estimate by the lowest cost set
-through those methods, and a lower cost written directly makes it return paths that are not the
-cheapest. There are no area types or per-agent filters: all agents share the costs of a mesh.
+Costs must be positive. Set them through `setPolygonCost` or `setRegionCostInAabb`: the search
+scales its distance estimate by the lowest cost set through those methods. `polygonCosts` is a
+read-only view, and writing into it throws an `UnsupportedError`. There are no area types or
+per-agent filters: all agents share the costs of a mesh.
 
 
 ## Dynamic obstacles
@@ -300,17 +316,19 @@ for (final segment in navMesh.findSegmentedPath(from, to)) {
 }
 ```
 
-Each end snaps to its nearest unblocked polygon (with no distance limit) the next time a path is
-searched; a link whose ends snap to the same polygon is ignored. Taking a link costs the distance
+Each end snaps to its nearest unblocked polygon the next time a path is searched. `snapRadius`
+(default: no limit) is the farthest an end may be from that polygon; a link with an end farther
+away, or whose ends snap to the same polygon, is ignored. Taking a link costs the distance
 between its snapped ends times `costMultiplier` (default `1.0`), plus half the distances between
 the link ends and the centroids of the polygons they snap to, weighted by those polygons' costs.
 `bidirectional` (default `true`) allows both directions, and `linkTag` (default `'jump'`) is
 returned with the segment. `findPath` returns the same points as `findSegmentedPath`, joined into
 one list.
 
-The snapping is redone only when a link is added or removed or an obstacle is added, updated or
-removed. Turning `enabled` off takes effect at once, but turning it on again, or moving `start` or
-`end` in place, does not: remove the link and add it again after such a change.
+The snapping is redone at the next query whenever a link is added or removed, an obstacle is
+added, updated or removed, or a link's `enabled`, `start` or `end` changed (including in place,
+with `link.end.setValues(...)`). Each query compares the links with their state at the last
+snapping, which costs a few comparisons per link.
 
 While a mesh has links, A* runs without its distance estimate (as Dijkstra's algorithm), so that it
 never misses a shortcut through a link; searches on large meshes with links visit more polygons.
@@ -362,9 +380,10 @@ Each update, for every agent:
    moves.
 
 After moving, overlapping agents are pushed apart (two passes), and with a `navMesh` every agent
-is put at the height of the mesh under it, or snapped to the nearest point of the mesh when it
-left it. Agents more than 1.5 units apart along the up axis ignore each other, so crowds on two
-floors do not interact. `targetComponent`, when set, gets the agent's position (not its rotation).
+is put at the height of the mesh under it (`sampleHeightAt`, about a microsecond per agent), or
+snapped to the nearest point of the mesh when it left it. Agents more than 1.5 units apart along
+the up axis ignore each other, so crowds on two floors do not interact. `targetComponent`, when
+set, gets the agent's position (not its rotation).
 
 | `CrowdAgent3D` option  | Default | Meaning                                                  |
 |------------------------|---------|----------------------------------------------------------|
@@ -389,23 +408,24 @@ agent far off its path. Re-plan with `setDestination` when that matters.
 ## Costs
 
 The figures below were measured in a `flutter test` run (Dart JIT) on a desktop computer, on a
-60 by 60 m floor with 40 boxes; a release build is faster and a phone slower, so read them as
-orders of magnitude.
+60 by 60 m floor with 40 boxes and random start and goal points; a release build is faster and a
+phone slower, so read them as orders of magnitude.
 
 | `cellSize` | Triangles | Build  | `findPath` | `sampleHeightAt` | `findNearestPoly` |
 |------------|-----------|--------|------------|------------------|-------------------|
-| `0.5`      | 25,048    | 76 ms  | 2.6 ms     | 0.24 ms          | 4 µs              |
-| `0.25`     | 109,848   | 200 ms | 7.6 ms     | 0.6 ms           | 4 µs              |
+| `0.5`      | 25,022    | 103 ms | 1.2 ms     | 0.5 µs           | 1 µs              |
+| `0.25`     | 110,476   | 236 ms | 5.9 ms     | 0.6 µs           | 1 µs              |
 
-- A path query allocates its search state for the whole mesh, about 33 bytes per polygon
-  (110,000 polygons: about 3.6 MB per query), so spread many queries over frames.
+- `findPath` is mostly the A* search, which on these grids visits many polygons: a path with a
+  clear straight line takes a fraction of a millisecond (0.3 ms across the empty 60 m floor), one
+  around obstacles several milliseconds. Spread many queries over frames.
+- The search state is allocated on the first query, about 33 bytes per polygon (110,000 polygons:
+  about 3.6 MB), and reused afterwards.
 - The first query of a mesh also builds its bounding volume hierarchy (the first `findPath` above
   took 33 ms).
 - `CrowdSteering3D.update` scores 40 candidates against every other agent, which grows with the
-  square of the number of agents, and with a `navMesh` calls `sampleHeightAt` once per agent:
-  50 agents took 0.7 ms per update without a mesh and 32 ms with the 110,000-triangle mesh. With
-  a large mesh, leave `navMesh` unset and keep agents on the ground yourself, or use a mesh with
-  fewer polygons.
+  square of the number of agents: 50 agents took about 0.4 ms per update, with or without the
+  110,000-triangle mesh.
 
 
 ## Debugging
@@ -473,18 +493,14 @@ crowd steering on a converted mesh must use the same Y-up frame as the mesh.
 
 - The builder stops after erosion: there is no region partitioning, no contour tracing and no
   polygon simplification, so meshes are grids of small squares with many more polygons than a
-  Recast mesh of the same level, and path searches and `sampleHeightAt` cost accordingly.
-- On those grids, oblique paths are a few percent longer than a straight line on open ground, and
-  paths across the squares' diagonal can be about a quarter longer and bend once (see
-  [Paths](#paths)); there is no line-of-sight query to straighten them afterwards.
+  Recast mesh of the same level, and A* searches cost accordingly.
+- Paths are the shortest through the open regions A* picked, not always the shortest overall:
+  around a group of obstacles the search can pick a longer way round.
 - The builder is +Y up only, and floors must be wound counter-clockwise seen from above; floors
   with the other winding are silently dropped.
 - Obstacles block whole polygons and are not grown by the agent radius; nothing is carved or
   rebuilt.
-- Off-mesh links are snapped again only when links or obstacles are added, updated or removed,
-  and their ends snap with no distance limit.
 - Area costs are shared by all agents; there are no area types, flags or query filters.
-- `sampleHeightAt` tests every polygon; `CrowdSteering3D` calls it for every agent every update.
-- Path queries allocate search state for the whole mesh each time.
+- Queries on one mesh are not re-entrant (they share the mesh's search state).
 - `CrowdSteering3D` avoids other agents only, never re-plans, and is quadratic in the number of
   agents.

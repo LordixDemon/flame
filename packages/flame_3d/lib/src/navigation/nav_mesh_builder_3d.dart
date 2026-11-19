@@ -61,6 +61,13 @@ class NavMeshGeometrySource3D({
 /// heightfield, filters walkable top spans with `agentHeight` vertical
 /// headroom, erodes walkable cells within `agentRadius` of walls and impassable
 /// ledges (`|dh| > maxClimb`), and emits a portal-connected [NavMesh3D].
+///
+/// Only these first Recast stages are implemented: there are no regions,
+/// contours or polygon simplification, so the output has two triangles per
+/// walkable cell (about `2 * area / cellSize²` triangles). The up axis is
+/// `+Y`, and a triangle counts as floor only when it is wound
+/// counter-clockwise seen from above; clockwise floors are skipped like
+/// ceilings.
 abstract final class NavMeshBuilder3D._() {
   /// Builds a [NavMesh3D] by voxelizing [sources] with [config].
   static NavMesh3D fromGeometry(

@@ -14,11 +14,18 @@ class NavPolyHit3D({
 
 /// Directed shared edge portal from one walkable triangle into an adjacent
 /// walkable triangle.
+///
+/// [left] and [right] are the edge's end points as seen when leaving the
+/// owning polygon towards [targetPoly]; [leftVertex] and [rightVertex] are
+/// their indices in [NavMesh3D.vertices] (`-1` when the portal was not built
+/// from a mesh vertex list).
 class NavPortal3D({
   required final int targetPoly,
   required final Vector3 left,
   required final Vector3 right,
   required final double cost,
+  final int leftVertex = -1,
+  final int rightVertex = -1,
 });
 
 /// A single walkable triangle polygon inside a [NavMesh3D].
@@ -34,6 +41,15 @@ class NavPoly3D({
 
 /// Dynamic oriented box obstacle that blocks overlapping [NavMesh3D] polygons
 /// in `O(log P)` via the navmesh BVH without rebuilding static geometry.
+///
+/// An obstacle blocks **whole polygons**: every polygon the box touches is
+/// excluded from searches, nearest-polygon queries and height sampling. It
+/// does not cut the polygons along the box, and it does not grow the box by
+/// an agent radius. On a `NavMeshBuilder3D` mesh the blocked area is therefore
+/// the box rounded out to whole voxel cells (`cellSize`); on a coarse mesh
+/// (for example a floor of two triangles from `NavMesh3D.fromMesh`) a small
+/// box can block a large triangle. Grow [halfExtents] by the agent radius
+/// yourself when agents must keep clear of the box.
 class NavMeshObstacle3D({
   required Vector3 center,
   required Vector3 halfExtents,
@@ -97,6 +113,12 @@ class NavMeshObstacle3D({
 
 /// Traversal connection bridging two disconnected or elevated points on a
 /// [NavMesh3D] (such as a jump pad, gap leap, ladder, or teleporter).
+///
+/// Each end point is snapped to the nearest unblocked polygon when a path is
+/// planned; an end point farther than `snapRadius` from every such polygon
+/// leaves the link unconnected. Changes to [enabled], [start] and [end]
+/// (including in-place edits such as `link.end.setValues(...)`) are picked up
+/// by the next query.
 class OffMeshLink3D({
   required Vector3 start,
   required Vector3 end,
@@ -104,14 +126,38 @@ class OffMeshLink3D({
   final double costMultiplier = 1.0,
   final String linkTag = 'jump',
   var bool enabled = true,
+  final double snapRadius = double.infinity,
 }) {
-  this : assert(costMultiplier > 0, 'costMultiplier must be positive');
+  this
+    : assert(costMultiplier > 0, 'costMultiplier must be positive'),
+      assert(snapRadius > 0, 'snapRadius must be positive');
 
   /// World-space start endpoint of the link.
   final Vector3 start = start.clone();
 
   /// World-space end endpoint of the link.
   final Vector3 end = end.clone();
+
+  // The state the link had when its owning mesh last resolved it.
+  bool _resolvedEnabled = false;
+  final Vector3 _resolvedStart = Vector3.all(double.nan);
+  final Vector3 _resolvedEnd = Vector3.all(double.nan);
+
+  bool _changedSinceResolve() {
+    return enabled != _resolvedEnabled ||
+        start.x != _resolvedStart.x ||
+        start.y != _resolvedStart.y ||
+        start.z != _resolvedStart.z ||
+        end.x != _resolvedEnd.x ||
+        end.y != _resolvedEnd.y ||
+        end.z != _resolvedEnd.z;
+  }
+
+  void _markResolved() {
+    _resolvedEnabled = enabled;
+    _resolvedStart.setFrom(start);
+    _resolvedEnd.setFrom(end);
+  }
 }
 
 /// A contiguous surface walk leg or [OffMeshLink3D] traversal leg returned by
@@ -139,8 +185,11 @@ class NavPathSegment3D({
 /// 3D triangle navigation mesh built from any [Mesh] or Recast voxel
 /// `NavMeshBuilder3D`, featuring spatial vertex welding, portal adjacency,
 /// weighted polygon area costs, `O(log P)` dynamic [NavMeshObstacle3D]
-/// blocking, [OffMeshLink3D] connections, A* search, and 3D Simple Stupid
-/// Funnel string-pulling with elevation draping.
+/// blocking (of whole polygons), [OffMeshLink3D] connections, A* search, and
+/// 3D Simple Stupid Funnel string-pulling with elevation draping.
+///
+/// Queries are not re-entrant: the search state is kept on the mesh and
+/// reused by every query (it is allocated once, `O(P)`).
 class NavMesh3D._({
   required final List<Vector3> vertices,
   required final List<NavPoly3D> polygons,
@@ -157,8 +206,9 @@ class NavMesh3D._({
       ..normalize();
     _basisV.setFrom(this.upAxis.cross(_basisU)..normalize());
 
-    polygonCosts = Float32List(polygons.length)
+    _polygonCosts = Float32List(polygons.length)
       ..fillRange(0, polygons.length, 1.0);
+    polygonCosts = _polygonCosts.asUnmodifiableView();
     _polyObstacleRefCount = Int32List(polygons.length);
   }
 
@@ -371,6 +421,8 @@ class NavMesh3D._({
         final orient = _triArea2Up(opp, va, vb, up);
         final right = orient >= 0.0 ? va : vb;
         final left = orient >= 0.0 ? vb : va;
+        final rightIdx = orient >= 0.0 ? ea : eb;
+        final leftIdx = orient >= 0.0 ? eb : ea;
 
         for (var j = 0; j < owners.length; j++) {
           if (i == j) {
@@ -384,6 +436,8 @@ class NavMesh3D._({
               left: left,
               right: right,
               cost: centA.distanceTo(centB),
+              leftVertex: leftIdx,
+              rightVertex: rightIdx,
             ),
           );
         }
@@ -416,7 +470,12 @@ class NavMesh3D._({
 
   /// Per-polygon traversal cost multipliers (`1.0` default; higher values such
   /// as `3.5` represent slow mud/sand, respected by A* pathfinding).
+  ///
+  /// This is a read-only view: change costs with [setPolygonCost] or
+  /// [setRegionCostInAabb], which keep the search's distance estimate
+  /// admissible. Writing into the list throws an [UnsupportedError].
   late final Float32List polygonCosts;
+  late final Float32List _polygonCosts;
 
   late final Int32List _polyObstacleRefCount;
   int _blockedPolyCount = 0;
@@ -425,7 +484,30 @@ class NavMesh3D._({
   final Map<NavMeshObstacle3D, Int32List> _obstaclePolys = {};
   final List<OffMeshLink3D> _offMeshLinks = [];
   final List<_ResolvedOffMeshLink> _resolvedLinks = [];
+  // Indices into `_resolvedLinks` of the links leaving each polygon.
+  final Map<int, List<int>> _linksFromPoly = {};
   bool _linksDirty = false;
+
+  // Search state reused by every A* query (`O(P)` once, not per query). An
+  // entry is valid for the running search only when its stamp equals
+  // `_searchStamp`.
+  Float64List? _gScore;
+  Int32List? _cameFrom;
+  Int32List? _cameViaLink;
+  Int32List? _openStamp;
+  Int32List? _closedStamp;
+  _MinPolyHeap? _heap;
+  int _searchStamp = 0;
+
+  // Scratch of the corridor string pulling.
+  final List<Vector3> _portalLeft = [];
+  final List<Vector3> _portalRight = [];
+  final List<int> _portalLeftVertex = [];
+  final List<int> _portalRightVertex = [];
+  final List<Vector3> _cornerPoints = [];
+  final List<int> _cornerPortal = [];
+  final List<int> _cornerVertex = [];
+  final List<int> _cornerSide = [];
 
   final Vector3 _basisU = Vector3.zero();
   final Vector3 _basisV = Vector3.zero();
@@ -448,14 +530,14 @@ class NavMesh3D._({
   /// Sets the traversal cost multiplier of [polyIndex] (`> 0`).
   void setPolygonCost(int polyIndex, double cost) {
     assert(cost > 0, 'polygon cost must be positive');
-    polygonCosts[polyIndex] = cost;
+    _polygonCosts[polyIndex] = cost;
     if (cost < _minPolygonCost) {
       _minPolygonCost = cost;
     }
   }
 
   /// Returns the traversal cost multiplier of [polyIndex].
-  double getPolygonCost(int polyIndex) => polygonCosts[polyIndex];
+  double getPolygonCost(int polyIndex) => _polygonCosts[polyIndex];
 
   /// Sets the traversal [cost] (`> 0`) of all walkable polygons intersecting
   /// [bounds] in `O(log P)` via the navmesh BVH, returning the number of
@@ -477,7 +559,7 @@ class NavMesh3D._({
         vertices[poly.v2],
         bounds,
       )) {
-        polygonCosts[pIdx] = cost;
+        _polygonCosts[pIdx] = cost;
         updated++;
       }
     }
@@ -609,10 +691,22 @@ class NavMesh3D._({
 
   void _ensureLinksResolved() {
     if (!_linksDirty) {
-      return;
+      for (var i = 0; i < _offMeshLinks.length; i++) {
+        if (_offMeshLinks[i]._changedSinceResolve()) {
+          _linksDirty = true;
+          break;
+        }
+      }
+      if (!_linksDirty) {
+        return;
+      }
     }
     _linksDirty = false;
     _resolvedLinks.clear();
+    _linksFromPoly.clear();
+    for (var i = 0; i < _offMeshLinks.length; i++) {
+      _offMeshLinks[i]._markResolved();
+    }
     if (polygons.isEmpty || _offMeshLinks.isEmpty) {
       return;
     }
@@ -627,9 +721,13 @@ class NavMesh3D._({
       if (sHit == null || eHit == null || sHit.polyIndex == eHit.polyIndex) {
         continue;
       }
+      final snap2 = link.snapRadius * link.snapRadius;
+      if (sHit.distanceSquared > snap2 || eHit.distanceSquared > snap2) {
+        continue;
+      }
       final baseDist = math.max(1e-3, sHit.point.distanceTo(eHit.point));
       final cost = baseDist * link.costMultiplier;
-      _resolvedLinks.add(
+      _addResolvedLink(
         _ResolvedOffMeshLink(
           link: link,
           fromPoly: sHit.polyIndex,
@@ -640,7 +738,7 @@ class NavMesh3D._({
         ),
       );
       if (link.bidirectional) {
-        _resolvedLinks.add(
+        _addResolvedLink(
           _ResolvedOffMeshLink(
             link: link,
             fromPoly: eHit.polyIndex,
@@ -652,6 +750,11 @@ class NavMesh3D._({
         );
       }
     }
+  }
+
+  void _addResolvedLink(_ResolvedOffMeshLink resolved) {
+    (_linksFromPoly[resolved.fromPoly] ??= <int>[]).add(_resolvedLinks.length);
+    _resolvedLinks.add(resolved);
   }
 
   /// Clamps an arbitrary 3D [point] onto the closest unblocked walkable
@@ -675,6 +778,10 @@ class NavMesh3D._({
   /// horizontal projection of [pos], picking the layer closest in elevation to
   /// [pos] on multi-level bridges/overpasses, or `null` if [pos] lies outside
   /// all unblocked walkable polygons horizontally.
+  ///
+  /// Only the polygons whose bounds the vertical line through [pos] crosses
+  /// are tested (through the navmesh BVH), so a query costs `O(log P)` plus
+  /// the number of layers at that point.
   double? sampleHeightAt(Vector3 pos) {
     if (polygons.isEmpty) {
       return null;
@@ -686,7 +793,10 @@ class NavMesh3D._({
     double? bestElevation;
     var bestVerticalDiff = double.infinity;
 
-    for (var i = 0; i < polygons.length; i++) {
+    final candidates = _bvhCandidatesScratch..clear();
+    _bvh.queryLine(pos, upAxis, candidates);
+    for (var k = 0; k < candidates.length; k++) {
+      final i = candidates[k];
       if (_polyObstacleRefCount[i] > 0) {
         continue;
       }
@@ -765,13 +875,33 @@ class NavMesh3D._({
       return [NavPathSegment3D(waypoints: pts)];
     }
 
-    final search = _astarSearch(sHit.polyIndex, gHit.polyIndex, gHit.point);
-    if (search == null) {
-      return const [];
+    _ensureLinksResolved();
+    List<int>? polySeq;
+    List<int>? edgeLinkIndices;
+    if (_resolvedLinks.isEmpty) {
+      // Straight line of cheapest polygons from start to goal: nothing can be
+      // shorter, so the search is skipped.
+      final direct = <int>[];
+      if (_raycastWalk(
+        sHit.polyIndex,
+        sHit.point,
+        gHit.point,
+        gHit.polyIndex,
+        _minPolygonCost + 1e-9,
+        direct,
+      )) {
+        polySeq = direct;
+        edgeLinkIndices = List<int>.filled(direct.length - 1, -1);
+      }
     }
-
-    final polySeq = search.polySequence;
-    final edgeLinkIndices = search.edgeLinkIndices;
+    if (polySeq == null || edgeLinkIndices == null) {
+      final search = _astarSearch(sHit.polyIndex, gHit.polyIndex, gHit.point);
+      if (search == null) {
+        return const [];
+      }
+      polySeq = search.polySequence;
+      edgeLinkIndices = search.edgeLinkIndices;
+    }
 
     final segments = <NavPathSegment3D>[];
     var subStartIdx = 0;
@@ -824,10 +954,23 @@ class NavMesh3D._({
     return segments;
   }
 
-  /// Finds the smooth shortest 3D path between [start] and [goal] by clamping
-  /// both endpoints onto the navmesh, running cost-aware A* over portals and
+  /// Finds a short 3D path between [start] and [goal] by clamping both
+  /// endpoints onto the navmesh, running cost-aware A* over portals and
   /// [OffMeshLink3D]s, and string-pulling surface legs via the **3D Simple
   /// Stupid Funnel** algorithm with portal-edge elevation draping.
+  ///
+  /// When the straight line from start to goal stays on polygons of the
+  /// lowest cost (and no off-mesh link is registered), it is returned
+  /// directly without a search. Otherwise the funnel runs over the A*
+  /// corridor widened along lines of sight and around every bend at a vertex
+  /// that is not on the boundary of the walkable area, so paths over open
+  /// ground are straight and bend only at real corners: of walls, of blocked
+  /// polygons, and of more expensive regions that the search avoided. The
+  /// result is the shortest path through the chosen sequence of open regions;
+  /// it can still be longer than the true shortest path when A* chose a
+  /// different way around an obstacle. Waypoints the path goes straight
+  /// through are left out; extra waypoints are inserted where the path
+  /// crosses a portal at a different elevation (ramps, steps).
   List<Vector3> findPath(Vector3 start, Vector3 goal) {
     final segments = findSegmentedPath(start, goal);
     if (segments.isEmpty) {
@@ -863,12 +1006,427 @@ class NavMesh3D._({
       return [startPt.clone(), goalPt.clone()];
     }
 
-    final portalsLeft = <Vector3>[startPt];
-    final portalsRight = <Vector3>[startPt];
+    final polys = corridor.sublist(fromIdx, toIdx + 1);
+    if (!_tightenCorridor(polys, startPt, goalPt)) {
+      return const [];
+    }
 
-    for (var i = fromIdx; i < toIdx; i++) {
-      final curr = polygons[corridor[i]];
-      final nextIdx = corridor[i + 1];
+    final cornerPoints = _cornerPoints;
+    final cornerPortals = _cornerPortal;
+    final smoothWaypoints = <Vector3>[cornerPoints.first.clone()];
+    for (var s = 0; s < cornerPoints.length - 1; s++) {
+      final wpA = cornerPoints[s];
+      final wpB = cornerPoints[s + 1];
+      final pStart = math.min(cornerPortals[s], cornerPortals[s + 1]);
+      final pEnd = math.max(cornerPortals[s], cornerPortals[s + 1]);
+      _drapeSegmentAcrossPortals(
+        wpA,
+        wpB,
+        pStart,
+        pEnd,
+        _portalLeft,
+        _portalRight,
+        smoothWaypoints,
+      );
+      smoothWaypoints.add(wpB.clone());
+    }
+    return smoothWaypoints;
+  }
+
+  /// String-pulls [polys] from [startPt] to [goalPt], widening the corridor
+  /// until the path is taut, and leaves the result in the corner scratch
+  /// lists. Returns `false` when consecutive polygons do not share a portal.
+  ///
+  /// The funnel gives the shortest path inside the corridor that A* chose,
+  /// but on a fine mesh (a voxel grid, a terrain) many corridors tie and the
+  /// chosen one is often a staircase, so the path bends at vertices that are
+  /// not obstacles. A shortest path only bends at vertices on the boundary of
+  /// the walkable area. So every bend at a vertex whose polygon fan is
+  /// complete is removed by moving the corridor to the other side of that
+  /// vertex (which strictly shortens the path), until no such bend remains.
+  /// Polygons more expensive than the ones they replace, blocked polygons and
+  /// polygons already in the corridor are never added.
+  bool _tightenCorridor(List<int> polys, Vector3 startPt, Vector3 goalPt) {
+    if (!_buildCorridorPortals(polys, startPt, goalPt)) {
+      return false;
+    }
+    _stringPull();
+    if (_cornerPoints.length > 2 && _shortcutByVisibility(polys, goalPt)) {
+      if (!_buildCorridorPortals(polys, startPt, goalPt)) {
+        return false;
+      }
+      _stringPull();
+    }
+    var length = _cornerPathLength();
+    final maxRounds = 32 + polys.length;
+    Set<int>? members;
+    for (var round = 0; round < maxRounds; round++) {
+      final previous = List<int>.of(polys);
+      if (!_widenAtFreeCorners(polys, members ??= polys.toSet())) {
+        return true;
+      }
+      if (!_buildCorridorPortals(polys, startPt, goalPt)) {
+        polys
+          ..clear()
+          ..addAll(previous);
+        break;
+      }
+      _stringPull();
+      final next = _cornerPathLength();
+      if (next >= length - 1e-9) {
+        polys
+          ..clear()
+          ..addAll(previous);
+        break;
+      }
+      length = next;
+    }
+    // Restore the corner lists of the corridor that was kept.
+    _buildCorridorPortals(polys, startPt, goalPt);
+    _stringPull();
+    return true;
+  }
+
+  /// Replaces stretches of [polys] by the polygons along straight lines of
+  /// sight: from the start, the farthest corner of the current path that a
+  /// straight walk over the mesh reaches (through polygons no more expensive
+  /// than the stretch it replaces) becomes the next anchor, and so on. Uses
+  /// the corner lists of the current corridor. Returns whether [polys]
+  /// changed.
+  bool _shortcutByVisibility(List<int> polys, Vector3 goalPt) {
+    final cornerCount = _cornerPoints.length;
+    final last = cornerCount - 1;
+    final oldIndex = <int, int>{};
+    for (var i = 0; i < polys.length; i++) {
+      oldIndex[polys[i]] = i;
+    }
+    final targets = List<Vector3>.filled(cornerCount, goalPt);
+    final targetIdx = List<int>.filled(cornerCount, polys.length - 1);
+    for (var j = 1; j < last; j++) {
+      // A point just inside the polygon the path enters at corner `j`.
+      final idx = _cornerPortal[j].clamp(0, polys.length - 1);
+      final corner = _cornerPoints[j];
+      final centroid = polygons[polys[idx]].centroid;
+      targets[j] = Vector3.copy(corner)..addScaled(centroid - corner, 0.01);
+      targetIdx[j] = idx;
+    }
+
+    final result = <int>[polys[0]];
+    final inResult = <int>{polys[0]};
+    final walk = <int>[];
+    var anchor = _cornerPoints[0];
+    var anchorIdx = 0;
+    var k = 0;
+    var changed = false;
+    while (k < last) {
+      var advanced = false;
+      for (var j = last; j >= k + 2; j--) {
+        final xIdx = targetIdx[j];
+        if (xIdx <= anchorIdx) {
+          continue;
+        }
+        var maxCost = 0.0;
+        for (var i = anchorIdx; i <= xIdx; i++) {
+          maxCost = math.max(maxCost, _polygonCosts[polys[i]]);
+        }
+        walk.clear();
+        if (!_raycastWalk(
+          polys[anchorIdx],
+          anchor,
+          targets[j],
+          polys[xIdx],
+          maxCost + 1e-9,
+          walk,
+        )) {
+          continue;
+        }
+        var clash = false;
+        for (var i = 1; i < walk.length && !clash; i++) {
+          final q = walk[i];
+          final o = oldIndex[q];
+          clash = inResult.contains(q) || (o != null && o > xIdx);
+        }
+        if (clash) {
+          continue;
+        }
+        for (var i = 1; i < walk.length; i++) {
+          result.add(walk[i]);
+          inResult.add(walk[i]);
+        }
+        anchor = targets[j];
+        anchorIdx = xIdx;
+        k = j;
+        advanced = true;
+        changed = true;
+        break;
+      }
+      if (advanced) {
+        continue;
+      }
+      // No line of sight beyond the next corner: keep the corridor up to it.
+      final next = k + 1;
+      final xIdx = math.max(anchorIdx, targetIdx[next]);
+      for (var i = anchorIdx + 1; i <= xIdx; i++) {
+        if (!inResult.add(polys[i])) {
+          return false;
+        }
+        result.add(polys[i]);
+      }
+      anchor = targets[next];
+      anchorIdx = xIdx;
+      k = next;
+    }
+    if (!changed) {
+      return false;
+    }
+    for (var i = anchorIdx + 1; i < polys.length; i++) {
+      if (!inResult.add(polys[i])) {
+        return false;
+      }
+      result.add(polys[i]);
+    }
+    polys
+      ..clear()
+      ..addAll(result);
+    return true;
+  }
+
+  /// Walks the mesh from [fromPoly] along the straight horizontal line from
+  /// [from] to [to] through shared edges, appending each polygon to [out].
+  /// Succeeds when it reaches [targetPoly] containing [to]; fails at the
+  /// boundary of the walkable area, at a blocked polygon, or at a polygon
+  /// costing more than [maxCost].
+  bool _raycastWalk(
+    int fromPoly,
+    Vector3 from,
+    Vector3 to,
+    int targetPoly,
+    double maxCost,
+    List<int> out,
+  ) {
+    final su = from.dot(_basisU);
+    final sv = from.dot(_basisV);
+    final du = to.dot(_basisU) - su;
+    final dv = to.dot(_basisV) - sv;
+    var cur = fromPoly;
+    var prev = -1;
+    for (var step = 0; step <= polygons.length; step++) {
+      if (_polyObstacleRefCount[cur] > 0 || _polygonCosts[cur] > maxCost) {
+        return false;
+      }
+      out.add(cur);
+      if (cur == targetPoly) {
+        return true;
+      }
+      final poly = polygons[cur];
+      final a = vertices[poly.v0];
+      final b = vertices[poly.v1];
+      final c = vertices[poly.v2];
+      final orient = _triArea2Horiz(a, b, c) >= 0.0 ? 1.0 : -1.0;
+      var tExit = double.infinity;
+      var exitA = -1;
+      var exitB = -1;
+      for (var e = 0; e < 3; e++) {
+        final ia = e == 0 ? poly.v0 : (e == 1 ? poly.v1 : poly.v2);
+        final ib = e == 0 ? poly.v1 : (e == 1 ? poly.v2 : poly.v0);
+        final pa = vertices[ia];
+        final pb = vertices[ib];
+        final au = pa.dot(_basisU);
+        final av = pa.dot(_basisV);
+        final eu = pb.dot(_basisU) - au;
+        final ev = pb.dot(_basisV) - av;
+        // Outward normal of the edge in the horizontal plane.
+        final nu = orient * ev;
+        final nv = -orient * eu;
+        final denom = nu * du + nv * dv;
+        if (denom <= 1e-14) {
+          continue;
+        }
+        final t = (nu * (au - su) + nv * (av - sv)) / denom;
+        if (t < tExit) {
+          tExit = t;
+          exitA = ia;
+          exitB = ib;
+        }
+      }
+      if (exitA < 0) {
+        return false;
+      }
+      var next = -1;
+      var matches = 0;
+      for (final portal in poly.portals) {
+        final l = portal.leftVertex;
+        final r = portal.rightVertex;
+        if ((l == exitA && r == exitB) || (l == exitB && r == exitA)) {
+          next = portal.targetPoly;
+          matches++;
+        }
+      }
+      if (tExit >= 1.0 - 1e-9) {
+        // The line ends in this polygon (or on its edge): only an end point
+        // on the edge shared with the target counts.
+        if (matches == 1 && next == targetPoly && tExit <= 1.0 + 1e-6) {
+          if (_polyObstacleRefCount[next] > 0 ||
+              _polygonCosts[next] > maxCost) {
+            return false;
+          }
+          out.add(next);
+          return true;
+        }
+        return false;
+      }
+      if (matches != 1 || next == prev) {
+        return false;
+      }
+      prev = cur;
+      cur = next;
+    }
+    return false;
+  }
+
+  /// Moves the corridor to the other side of every bend vertex that has a
+  /// free polygon fan, from the goal end back, skipping bends whose polygons
+  /// overlap a change made earlier in the same pass. Returns whether
+  /// anything changed.
+  bool _widenAtFreeCorners(List<int> polys, Set<int> members) {
+    final n = polys.length - 1; // portals are indices 1..n
+    var limit = polys.length;
+    var changed = false;
+    for (var k = _cornerPoints.length - 2; k >= 1; k--) {
+      final v = _cornerVertex[k];
+      if (v < 0) {
+        continue;
+      }
+      final sideVerts = _cornerSide[k] > 0
+          ? _portalLeftVertex
+          : _portalRightVertex;
+      final p = _cornerPortal[k];
+      if (p < 1 || p > n || sideVerts[p] != v) {
+        continue;
+      }
+      var a = p;
+      while (a - 1 >= 1 && sideVerts[a - 1] == v) {
+        a--;
+      }
+      var b = p;
+      while (b + 1 <= n && sideVerts[b + 1] == v) {
+        b++;
+      }
+      final arcStart = a - 1;
+      final arcEnd = b;
+      if (arcEnd >= limit || arcStart < 0) {
+        continue;
+      }
+      final replacement = _fanComplement(
+        v,
+        polys[arcStart],
+        polys[arcStart + 1],
+        polys[arcEnd],
+      );
+      if (replacement == null) {
+        continue;
+      }
+      var maxCost = 0.0;
+      for (var i = arcStart; i <= arcEnd; i++) {
+        maxCost = math.max(maxCost, _polygonCosts[polys[i]]);
+      }
+      var accepted = true;
+      for (var i = 0; i < replacement.length && accepted; i++) {
+        final q = replacement[i];
+        if (members.contains(q) || _polygonCosts[q] > maxCost + 1e-9) {
+          accepted = false;
+        }
+      }
+      if (!accepted) {
+        continue;
+      }
+      for (var i = arcStart + 1; i < arcEnd; i++) {
+        members.remove(polys[i]);
+      }
+      members.addAll(replacement);
+      polys.replaceRange(arcStart + 1, arcEnd, replacement);
+      limit = arcStart;
+      changed = true;
+    }
+    return changed;
+  }
+
+  /// Walks around vertex [v] from [startPoly], away from [oldNext] (the
+  /// polygon the corridor currently enters next), until [endPoly] is reached,
+  /// returning the polygons strictly between them, or `null` when the walk
+  /// meets the boundary of the walkable area (a missing, ambiguous or
+  /// blocked neighbour), so that [v] is a real corner.
+  List<int>? _fanComplement(int v, int startPoly, int oldNext, int endPoly) {
+    final out = <int>[];
+    var prev = oldNext;
+    var cur = startPoly;
+    for (var step = 0; step < 64; step++) {
+      final poly = polygons[cur];
+      final prevPoly = polygons[prev];
+      // The vertex of `cur` shared with `prev` (besides `v`) marks the edge
+      // the walk came across; it leaves through the edge to the other one.
+      var exitVertex = -1;
+      var sharedCount = 0;
+      for (var c = 0; c < 3; c++) {
+        final w = c == 0 ? poly.v0 : (c == 1 ? poly.v1 : poly.v2);
+        if (w == v) {
+          continue;
+        }
+        if (w == prevPoly.v0 || w == prevPoly.v1 || w == prevPoly.v2) {
+          sharedCount++;
+        } else {
+          exitVertex = w;
+        }
+      }
+      if (sharedCount != 1 || exitVertex < 0) {
+        return null;
+      }
+      var next = -1;
+      var matches = 0;
+      for (final portal in poly.portals) {
+        final l = portal.leftVertex;
+        final r = portal.rightVertex;
+        if ((l == v && r == exitVertex) || (l == exitVertex && r == v)) {
+          next = portal.targetPoly;
+          matches++;
+        }
+      }
+      if (matches != 1 || _polyObstacleRefCount[next] > 0) {
+        return null;
+      }
+      if (next == endPoly) {
+        return out;
+      }
+      if (next == startPoly || next == oldNext) {
+        return null;
+      }
+      out.add(next);
+      prev = cur;
+      cur = next;
+    }
+    return null;
+  }
+
+  bool _buildCorridorPortals(
+    List<int> polys,
+    Vector3 startPt,
+    Vector3 goalPt,
+  ) {
+    _portalLeft
+      ..clear()
+      ..add(startPt);
+    _portalRight
+      ..clear()
+      ..add(startPt);
+    _portalLeftVertex
+      ..clear()
+      ..add(-1);
+    _portalRightVertex
+      ..clear()
+      ..add(-1);
+    for (var i = 0; i < polys.length - 1; i++) {
+      final curr = polygons[polys[i]];
+      final nextIdx = polys[i + 1];
       NavPortal3D? portal;
       for (var p = 0; p < curr.portals.length; p++) {
         if (curr.portals[p].targetPoly == nextIdx) {
@@ -877,16 +1435,42 @@ class NavMesh3D._({
         }
       }
       if (portal == null) {
-        return const [];
+        return false;
       }
-      portalsLeft.add(portal.left);
-      portalsRight.add(portal.right);
+      _portalLeft.add(portal.left);
+      _portalRight.add(portal.right);
+      _portalLeftVertex.add(portal.leftVertex);
+      _portalRightVertex.add(portal.rightVertex);
     }
-    portalsLeft.add(goalPt);
-    portalsRight.add(goalPt);
+    _portalLeft.add(goalPt);
+    _portalRight.add(goalPt);
+    _portalLeftVertex.add(-1);
+    _portalRightVertex.add(-1);
+    return true;
+  }
 
-    final cornerPoints = <Vector3>[startPt.clone()];
-    final cornerPortalIndices = <int>[0];
+  /// Simple Stupid Funnel over the portal scratch lists. Fills the corner
+  /// lists with the path's corners, each with its portal index, the mesh
+  /// vertex it sits on (`-1` for the end points) and its side (`1` left, `-1`
+  /// right, `0` end point), and drops corners the path passes straight
+  /// through.
+  void _stringPull() {
+    final portalsLeft = _portalLeft;
+    final portalsRight = _portalRight;
+    final startPt = portalsLeft.first;
+    final goalPt = portalsLeft.last;
+    final cornerPoints = _cornerPoints
+      ..clear()
+      ..add(startPt);
+    final cornerPortals = _cornerPortal
+      ..clear()
+      ..add(0);
+    final cornerVertices = _cornerVertex
+      ..clear()
+      ..add(-1);
+    final cornerSides = _cornerSide
+      ..clear()
+      ..add(0);
 
     var apex = startPt;
     var portalLeft = startPt;
@@ -906,8 +1490,10 @@ class NavMesh3D._({
           rightIndex = i;
         } else {
           if (_horizDist2(cornerPoints.last, portalLeft) > 1e-10) {
-            cornerPoints.add(portalLeft.clone());
-            cornerPortalIndices.add(leftIndex);
+            cornerPoints.add(portalLeft);
+            cornerPortals.add(leftIndex);
+            cornerVertices.add(_portalLeftVertex[leftIndex]);
+            cornerSides.add(1);
           }
           apex = portalLeft;
           apexIndex = leftIndex;
@@ -927,8 +1513,10 @@ class NavMesh3D._({
           leftIndex = i;
         } else {
           if (_horizDist2(cornerPoints.last, portalRight) > 1e-10) {
-            cornerPoints.add(portalRight.clone());
-            cornerPortalIndices.add(rightIndex);
+            cornerPoints.add(portalRight);
+            cornerPortals.add(rightIndex);
+            cornerVertices.add(_portalRightVertex[rightIndex]);
+            cornerSides.add(-1);
           }
           apex = portalRight;
           apexIndex = rightIndex;
@@ -942,40 +1530,60 @@ class NavMesh3D._({
       }
     }
 
-    if (cornerPoints.last.distanceToSquared(goalPt) > 1e-10) {
-      cornerPoints.add(goalPt.clone());
-      cornerPortalIndices.add(portalsLeft.length - 1);
-    } else {
-      cornerPoints[cornerPoints.length - 1] = goalPt.clone();
-      cornerPortalIndices[cornerPortalIndices.length - 1] =
-          portalsLeft.length - 1;
+    final goalIndex = portalsLeft.length - 1;
+    if (cornerPoints.length > 1 &&
+        cornerPoints.last.distanceToSquared(goalPt) <= 1e-10) {
+      cornerPoints.removeLast();
+      cornerPortals.removeLast();
+      cornerVertices.removeLast();
+      cornerSides.removeLast();
     }
-
-    final smoothWaypoints = <Vector3>[cornerPoints.first];
-    for (var s = 0; s < cornerPoints.length - 1; s++) {
-      final wpA = cornerPoints[s];
-      final wpB = cornerPoints[s + 1];
-      final pStart = math.min(
-        cornerPortalIndices[s],
-        cornerPortalIndices[s + 1],
-      );
-      final pEnd = math.max(
-        cornerPortalIndices[s],
-        cornerPortalIndices[s + 1],
-      );
-      _drapeSegmentAcrossPortals(
-        wpA,
-        wpB,
-        pStart,
-        pEnd,
-        portalsLeft,
-        portalsRight,
-        smoothWaypoints,
-      );
-      smoothWaypoints.add(wpB);
+    if (cornerPoints.length == 1 &&
+        startPt.distanceToSquared(goalPt) <= 1e-10) {
+      cornerPortals[0] = goalIndex;
+      return;
     }
+    cornerPoints.add(goalPt);
+    cornerPortals.add(goalIndex);
+    cornerVertices.add(-1);
+    cornerSides.add(0);
 
-    return smoothWaypoints;
+    // Drop corners the path goes straight through (the funnel reports a
+    // corner wherever a portal end point is exactly on the current line).
+    var kept = 1;
+    for (var k = 1; k < cornerPoints.length - 1; k++) {
+      final a = cornerPoints[kept - 1];
+      final b = cornerPoints[k];
+      final c = cornerPoints[k + 1];
+      final ab = math.sqrt(_horizDist2(a, b));
+      final bc = math.sqrt(_horizDist2(b, c));
+      final cross = _triArea2Horiz(a, b, c).abs();
+      if (ab <= 1e-9 || bc <= 1e-9 || cross <= 1e-6 * ab * bc) {
+        continue;
+      }
+      cornerPoints[kept] = b;
+      cornerPortals[kept] = cornerPortals[k];
+      cornerVertices[kept] = cornerVertices[k];
+      cornerSides[kept] = cornerSides[k];
+      kept++;
+    }
+    final last = cornerPoints.length - 1;
+    cornerPoints[kept] = cornerPoints[last];
+    cornerPortals[kept] = cornerPortals[last];
+    cornerVertices[kept] = cornerVertices[last];
+    cornerSides[kept] = cornerSides[last];
+    cornerPoints.length = kept + 1;
+    cornerPortals.length = kept + 1;
+    cornerVertices.length = kept + 1;
+    cornerSides.length = kept + 1;
+  }
+
+  double _cornerPathLength() {
+    var sum = 0.0;
+    for (var i = 0; i < _cornerPoints.length - 1; i++) {
+      sum += math.sqrt(_horizDist2(_cornerPoints[i], _cornerPoints[i + 1]));
+    }
+    return sum;
   }
 
   void _drapeSegmentAcrossPortals(
@@ -1078,17 +1686,28 @@ class NavMesh3D._({
     _ensureLinksResolved();
 
     final n = polygons.length;
-    final gScore = Float64List(n)..fillRange(0, n, double.infinity);
-    final cameFrom = Int32List(n)..fillRange(0, n, -1);
-    final cameViaLink = Int32List(n)..fillRange(0, n, -1);
-    final closed = Uint8List(n);
-    final heap = _MinPolyHeap(n);
+    final gScore = _gScore ??= Float64List(n);
+    final cameFrom = _cameFrom ??= Int32List(n);
+    final cameViaLink = _cameViaLink ??= Int32List(n);
+    final openStamp = _openStamp ??= Int32List(n);
+    final closedStamp = _closedStamp ??= Int32List(n);
+    final heap = _heap ??= _MinPolyHeap(n);
+    if (_searchStamp >= 0x3FFFFFFF) {
+      openStamp.fillRange(0, n, 0);
+      closedStamp.fillRange(0, n, 0);
+      _searchStamp = 0;
+    }
+    final stamp = ++_searchStamp;
+    heap.clear();
 
     // Admissible heuristic scaled by `_minPolygonCost` (zeroed when off-mesh
     // links exist so teleport/jump shortcuts are never pruned sub-optimally!).
     final hScale = _resolvedLinks.isEmpty ? _minPolygonCost : 0.0;
 
     gScore[startPoly] = 0.0;
+    cameFrom[startPoly] = -1;
+    cameViaLink[startPoly] = -1;
+    openStamp[startPoly] = stamp;
     heap.push(
       startPoly,
       polygons[startPoly].centroid.distanceTo(goalPoint) * hScale,
@@ -1097,6 +1716,7 @@ class NavMesh3D._({
     while (!heap.isEmpty) {
       final current = heap.pop();
       if (current == goalPoly) {
+        heap.clear();
         final revPolys = <int>[];
         final revLinks = <int>[];
         var curr = goalPoly;
@@ -1113,25 +1733,26 @@ class NavMesh3D._({
           edgeLinkIndices: revLinks.reversed.toList(growable: false),
         );
       }
-      if (closed[current] != 0) {
+      if (closedStamp[current] == stamp) {
         continue;
       }
-      closed[current] = 1;
+      closedStamp[current] = stamp;
 
       final portals = polygons[current].portals;
       final curG = gScore[current];
-      final curCost = polygonCosts[current];
+      final curCost = _polygonCosts[current];
 
       // 1. Shared-edge surface portals.
       for (var i = 0; i < portals.length; i++) {
         final portal = portals[i];
         final next = portal.targetPoly;
-        if (closed[next] != 0 || _polyObstacleRefCount[next] > 0) {
+        if (closedStamp[next] == stamp || _polyObstacleRefCount[next] > 0) {
           continue;
         }
-        final areaWeight = 0.5 * (curCost + polygonCosts[next]);
+        final areaWeight = 0.5 * (curCost + _polygonCosts[next]);
         final tentativeG = curG + portal.cost * areaWeight;
-        if (tentativeG < gScore[next]) {
+        if (openStamp[next] != stamp || tentativeG < gScore[next]) {
+          openStamp[next] = stamp;
           gScore[next] = tentativeG;
           cameFrom[next] = current;
           cameViaLink[next] = -1;
@@ -1143,22 +1764,22 @@ class NavMesh3D._({
       }
 
       // 2. Outgoing OffMeshLink3D connections originating on `current`.
-      if (_resolvedLinks.isNotEmpty) {
-        for (var l = 0; l < _resolvedLinks.length; l++) {
+      final outgoing = _linksFromPoly[current];
+      if (outgoing != null) {
+        for (var k = 0; k < outgoing.length; k++) {
+          final l = outgoing[k];
           final rl = _resolvedLinks[l];
-          if (rl.fromPoly != current || !rl.link.enabled) {
-            continue;
-          }
           final next = rl.toPoly;
-          if (closed[next] != 0 || _polyObstacleRefCount[next] > 0) {
+          if (closedStamp[next] == stamp || _polyObstacleRefCount[next] > 0) {
             continue;
           }
           final approach =
               polygons[current].centroid.distanceTo(rl.entryPoint) * curCost +
               polygons[next].centroid.distanceTo(rl.exitPoint) *
-                  polygonCosts[next];
+                  _polygonCosts[next];
           final tentativeG = curG + rl.cost + approach * 0.5;
-          if (tentativeG < gScore[next]) {
+          if (openStamp[next] != stamp || tentativeG < gScore[next]) {
+            openStamp[next] = stamp;
             gScore[next] = tentativeG;
             cameFrom[next] = current;
             cameViaLink[next] = l;
@@ -1170,6 +1791,7 @@ class NavMesh3D._({
         }
       }
     }
+    heap.clear();
     return null;
   }
 
@@ -1311,6 +1933,14 @@ class _MinPolyHeap(int maxPolys) {
   int _size = 0;
 
   bool get isEmpty => _size == 0;
+
+  /// Empties the heap, resetting the positions of the polygons still in it.
+  void clear() {
+    for (var i = 0; i < _size; i++) {
+      _heapPos[_nodes[i]] = -1;
+    }
+    _size = 0;
+  }
 
   void push(int poly, double f) {
     final idx = _size++;
@@ -1565,6 +2195,75 @@ class _NavPolyBvh._({
           bounds[nb + 1] > qMaxY ||
           bounds[nb + 5] < qMinZ ||
           bounds[nb + 2] > qMaxZ) {
+        continue;
+      }
+      final cnt = counts[node];
+      if (cnt > 0) {
+        final start = leftOrFirst[node];
+        for (var i = start; i < start + cnt; i++) {
+          outPolyIndices.add(polyIndices[i]);
+        }
+      } else {
+        _push(sp++, rightChild[node]);
+        _push(sp++, leftOrFirst[node]);
+      }
+    }
+  }
+
+  /// Collects the polygons whose bounds the infinite line through [origin]
+  /// along [direction] crosses.
+  void queryLine(Vector3 origin, Vector3 direction, List<int> outPolyIndices) {
+    if (nodeCount == 0) {
+      return;
+    }
+    const pad = 1e-4;
+    final ox = origin.x;
+    final oy = origin.y;
+    final oz = origin.z;
+    final dx = direction.x;
+    final dy = direction.y;
+    final dz = direction.z;
+    final invX = dx.abs() > 1e-12 ? 1.0 / dx : 0.0;
+    final invY = dy.abs() > 1e-12 ? 1.0 / dy : 0.0;
+    final invZ = dz.abs() > 1e-12 ? 1.0 / dz : 0.0;
+
+    var sp = 0;
+    _push(sp++, 0);
+    while (sp > 0) {
+      final node = _stack[--sp];
+      final nb = node * 6;
+      var tMin = double.negativeInfinity;
+      var tMax = double.infinity;
+      var hit = true;
+      for (var axis = 0; axis < 3 && hit; axis++) {
+        final o = axis == 0 ? ox : (axis == 1 ? oy : oz);
+        final inv = axis == 0 ? invX : (axis == 1 ? invY : invZ);
+        final lo = bounds[nb + axis] - pad;
+        final hi = bounds[nb + 3 + axis] + pad;
+        if (inv == 0.0) {
+          if (o < lo || o > hi) {
+            hit = false;
+          }
+          continue;
+        }
+        var t1 = (lo - o) * inv;
+        var t2 = (hi - o) * inv;
+        if (t1 > t2) {
+          final tmp = t1;
+          t1 = t2;
+          t2 = tmp;
+        }
+        if (t1 > tMin) {
+          tMin = t1;
+        }
+        if (t2 < tMax) {
+          tMax = t2;
+        }
+        if (tMin > tMax) {
+          hit = false;
+        }
+      }
+      if (!hit) {
         continue;
       }
       final cnt = counts[node];
