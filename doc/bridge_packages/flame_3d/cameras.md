@@ -214,6 +214,11 @@ Each `CameraViewportSlot3D` has:
 `CameraStack3D.splitHorizontal`, `splitVertical` and `quad` build the usual layouts.
 `renderOffscreen` renders the whole stack into an `Image` that the caller disposes.
 
+`render` keeps a render target per slot from frame to frame, created again only when the slot's
+pixel size, `msaa` or clear color changes, and sorts the slots in place by `priority` (which may
+change at any time) without allocating. `renderOffscreen` renders into new targets, since its
+picture is rasterized later.
+
 To find what is under a pointer, `pickSlotAndRay(screenPoint, canvasSize)` returns the topmost
 enabled slot whose rectangle contains the point (or `null`), with the point in the slot's viewport
 coordinates and the world ray of the slot's camera. `raycastAt` goes on and raycasts that ray into
@@ -409,9 +414,6 @@ any rig that sets the camera every frame: add it after the rig, or give it a hig
 
 - The 3D camera ignores the viewfinder: zooming, rotating or moving the viewfinder transforms the
   rendered image as a 2D picture.
-- `CameraStack3D` renders each slot with `World3D.renderToImage`, which creates a new render target
-  for every slot on every frame instead of reusing pooled ones, and it sorts its slots into new
-  lists on every `render` and `pickSlotAndRay` call.
 - `CameraClearMode3D.depthOnly` and `CameraClearMode3D.none` produce the same result; there is no
   depth buffer shared between slots.
 - `ThirdPersonCamera` damping is not stable for `followDamping * dt > 2`.

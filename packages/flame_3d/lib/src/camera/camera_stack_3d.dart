@@ -23,6 +23,10 @@ enum CameraClearMode3D() {
 
   /// Preserves underlying color on the canvas, compositing the slot's pass
   /// directly on top of previous slots.
+  ///
+  /// The same as [depthOnly]: every slot renders into an image of its own,
+  /// with a depth buffer of its own, so no depth is kept from the slots
+  /// drawn before it.
   none,
 }
 
@@ -194,7 +198,6 @@ class CameraStack3D({
   }
 
   final List<_IndexedSlot> _entries = [];
-  List<CameraViewportSlot3D>? _sortedCache;
   int _nextOrder = 0;
   int _lastRenderedSlotCount = 0;
 
@@ -217,25 +220,35 @@ class CameraStack3D({
   /// Slots ordered from lowest [CameraViewportSlot3D.priority] to highest
   /// (stable insertion order for ties).
   List<CameraViewportSlot3D> get slots {
-    return UnmodifiableListView(_ensureSorted());
+    _ensureSorted();
+    return UnmodifiableListView([for (final entry in _entries) entry.slot]);
   }
 
-  List<CameraViewportSlot3D> _ensureSorted() {
-    // Re-sort whenever priorities may have changed dynamically.
-    final sorted = List<_IndexedSlot>.of(_entries)
-      ..sort((a, b) {
-        final cmp = a.slot.priority.compareTo(b.slot.priority);
-        return cmp != 0 ? cmp : a.order.compareTo(b.order);
-      });
-    final list = [for (final item in sorted) item.slot];
-    _sortedCache = list;
-    return _sortedCache!;
+  /// Sorts [_entries] by priority, then insertion order, in place: priorities
+  /// may change at any time, and an insertion sort of an already sorted list
+  /// costs one comparison per slot and allocates nothing.
+  void _ensureSorted() {
+    final entries = _entries;
+    for (var i = 1; i < entries.length; i++) {
+      final entry = entries[i];
+      var j = i - 1;
+      while (j >= 0 && _after(entries[j], entry)) {
+        entries[j + 1] = entries[j];
+        j--;
+      }
+      entries[j + 1] = entry;
+    }
+  }
+
+  static bool _after(_IndexedSlot a, _IndexedSlot b) {
+    final pa = a.slot.priority;
+    final pb = b.slot.priority;
+    return pa > pb || (pa == pb && a.order > b.order);
   }
 
   /// Appends [slot] to this stack.
   void addSlot(CameraViewportSlot3D slot) {
     _entries.add(_IndexedSlot(slot, _nextOrder++));
-    _sortedCache = null;
   }
 
   /// Removes [slot] from this stack, returning `true` if it was present.
@@ -245,14 +258,12 @@ class CameraStack3D({
       return false;
     }
     _entries.removeAt(idx);
-    _sortedCache = null;
     return true;
   }
 
   /// Removes all slots from this stack.
   void clear() {
     _entries.clear();
-    _sortedCache = null;
   }
 
   /// Advances unmounted cameras in this stack by [dt].
@@ -292,9 +303,9 @@ class CameraStack3D({
     if (canvasSize.width <= 0 || canvasSize.height <= 0) {
       return null;
     }
-    final ordered = _ensureSorted();
-    for (var i = ordered.length - 1; i >= 0; i--) {
-      final slot = ordered[i];
+    _ensureSorted();
+    for (var i = _entries.length - 1; i >= 0; i--) {
+      final slot = _entries[i].slot;
       if (!slot.enabled) {
         continue;
       }
@@ -357,6 +368,10 @@ class CameraStack3D({
   /// onto [canvas] within [canvasSize].
   ///
   /// Returns the number of slots rendered.
+  ///
+  /// Each slot renders into a render target the stack keeps for it from
+  /// frame to frame (created again when its size or format changes), and
+  /// the image is drawn on [canvas] in the same frame.
   int render(
     Canvas canvas,
     Size canvasSize, {
@@ -366,13 +381,35 @@ class CameraStack3D({
     bool manageDeviceFrame = false,
     double pixelRatio = 1.0,
     Msaa msaa = Msaa.off,
+  }) => _render(
+    canvas,
+    canvasSize,
+    defaultWorld: defaultWorld,
+    device: device,
+    context: context,
+    manageDeviceFrame: manageDeviceFrame,
+    pixelRatio: pixelRatio,
+    msaa: msaa,
+    keepTargets: true,
+  );
+
+  int _render(
+    Canvas canvas,
+    Size canvasSize, {
+    required World3D? defaultWorld,
+    required GraphicsDevice? device,
+    required RenderContext3D? context,
+    required bool manageDeviceFrame,
+    required double pixelRatio,
+    required Msaa msaa,
+    required bool keepTargets,
   }) {
     _lastRenderedSlotCount = 0;
     if (canvasSize.width <= 0 || canvasSize.height <= 0 || _entries.isEmpty) {
       return 0;
     }
 
-    final ordered = _ensureSorted();
+    _ensureSorted();
     final resolvedDevice = device;
     var resolvedContext = context;
     var openedDevice = false;
@@ -389,7 +426,8 @@ class CameraStack3D({
 
     try {
       var rendered = 0;
-      for (final slot in ordered) {
+      for (final entry in _entries) {
+        final slot = entry.slot;
         if (!slot.enabled) {
           continue;
         }
@@ -441,7 +479,7 @@ class CameraStack3D({
         activeContext.cameraMask = slot.camera.cameraMask;
         Image? image;
         try {
-          image = slotWorld.renderToImage(
+          image = slotWorld.renderToImageInto(
             passSize,
             view: slot.camera.viewMatrix,
             projection: slot.camera.projectionMatrix,
@@ -449,6 +487,15 @@ class CameraStack3D({
             clearValue: gpuClear,
             device: activeDevice,
             context: activeContext,
+            target: keepTargets
+                ? entry.targetFor(
+                    activeDevice,
+                    slotWorld,
+                    passSize,
+                    gpuClear,
+                    msaa,
+                  )
+                : null,
           );
         } finally {
           activeContext.cameraMask = prevMask;
@@ -540,7 +587,9 @@ class CameraStack3D({
     if (pixelRatio != 1.0) {
       canvas.scale(pixelRatio, pixelRatio);
     }
-    render(
+    // The picture is rasterized later: its slot images get render targets
+    // of their own, so that no later render overwrites them before.
+    _render(
       canvas,
       canvasSize,
       defaultWorld: defaultWorld,
@@ -549,6 +598,7 @@ class CameraStack3D({
       manageDeviceFrame: manageDeviceFrame,
       pixelRatio: pixelRatio,
       msaa: msaa,
+      keepTargets: false,
     );
     final picture = recorder.endRecording();
     final wPx = math.max(1, (canvasSize.width * pixelRatio).round());
@@ -578,4 +628,48 @@ class _IndexedSlot(this.slot, this.order) {
 
   /// The version of the slot's camera at the last [CameraStack3D.update].
   int cameraVersion = -1;
+
+  GpuRenderTarget? _target;
+  GpuBackend? _targetBackend;
+  int _targetWidth = 0;
+  int _targetHeight = 0;
+  int _targetSamples = 0;
+  int _targetClear = 0;
+
+  /// The render target the slot renders into, as `World3D.renderToImage`
+  /// would create it for these arguments, kept while they do not change.
+  GpuRenderTarget targetFor(
+    GraphicsDevice device,
+    World3D world,
+    Size size,
+    Color clearValue,
+    Msaa msaa,
+  ) {
+    final width = math.max(1, size.width.round());
+    final height = math.max(1, size.height.round());
+    final usePost = world.needsPostCompositePass(device);
+    final clear = usePost ? 0 : clearValue.toARGB32();
+    final samples = usePost ? 1 : msaa.sampleCount;
+    final backend = device.backend;
+    final target = _target;
+    if (target != null &&
+        identical(backend, _targetBackend) &&
+        width == _targetWidth &&
+        height == _targetHeight &&
+        samples == _targetSamples &&
+        clear == _targetClear) {
+      return target;
+    }
+    _targetBackend = backend;
+    _targetWidth = width;
+    _targetHeight = height;
+    _targetSamples = samples;
+    _targetClear = clear;
+    return _target = backend.createRenderTarget(
+      width: width,
+      height: height,
+      clearValue: Color(clear),
+      msaaSampleCount: samples,
+    );
+  }
 }
