@@ -436,6 +436,39 @@ void main() {
     int shadowPixels(Pixels pixels) =>
         pixels.count((r, g, b, a) => r < 0x70 && g < 0x70 && b < 0x70);
 
+    testGpuEngine('draws x-ray lines over everything', () async {
+      for (final materialFirst in [false, true]) {
+        // The order in which materials are created decides the order of
+        // opaque draws: the line must win either way.
+        final early = materialFirst
+            ? opaqueUnlit(const Color(0xFFFF0000))
+            : null;
+        final debug = DebugRenderer3D(xray: true)
+          ..drawLine(
+            Vector3(-1, 0, -6),
+            Vector3(1, 0, -6),
+            thickness: 0.3,
+          );
+        final occluder = quad(early ?? opaqueUnlit(const Color(0xFFFF0000)));
+        final frame = await renderFrame(
+          draw: (context) {
+            context.drawSurface(
+              occluder,
+              transform: Matrix4.translationValues(0, 0, -4),
+            );
+            debug.draw(context);
+          },
+        );
+        // The quad is red around the line, the line blue over it.
+        expect(frame.pixels.at(32, 20), (255, 0, 0, 255));
+        expect(
+          frame.pixels.at(32, 32),
+          (0x38, 0xBD, 0xF8, 255),
+          reason: 'material created first: $materialFirst',
+        );
+      }
+    });
+
     testGpu('does not change the sun shadows it is added to', (tester) async {
       final plain = await renderShadowScene(tester);
       final shadowed = shadowPixels(plain);

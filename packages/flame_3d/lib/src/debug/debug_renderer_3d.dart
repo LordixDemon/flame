@@ -29,7 +29,15 @@ class DebugRenderer3D({
   var bool showObjectBounds = true,
   var bool showSkeletons = true,
   var bool showLightVolumes = true,
+
+  /// Whether the lines show through geometry. They are then drawn without
+  /// a depth test after every opaque draw, as the nearest of the
+  /// translucent draws, so nothing covers them. With
+  /// `OitMode3D.weightedBlended` they are blended with the other
+  /// translucent draws instead.
   var bool xray = false,
+
+  /// The thickness of the lines, in world units.
   var double lineThickness = 0.022,
   super.cameraMask,
 }) extends Object3D {
@@ -58,13 +66,17 @@ class DebugRenderer3D({
   /// Number of 3D line segments submitted in the last rendered pass.
   int get lastSegmentCount => _lastFlushedSegments;
 
+  // X-ray lines are drawn with the translucent draws, which come after all
+  // opaque draws, and sorted as the nearest of them (see [draw]), so that
+  // nothing drawn later covers them.
+  static const RenderState _xrayState = RenderState(
+    depthTest: false,
+    depthWrite: false,
+    translucent: true,
+  );
+
   void _syncRenderState() {
-    _material.renderState = xray
-        ? const RenderState(
-            depthTest: false,
-            depthWrite: false,
-          )
-        : RenderState.opaque;
+    _material.renderState = xray ? _xrayState : RenderState.opaque;
   }
 
   @override
@@ -447,6 +459,8 @@ class DebugRenderer3D({
         ),
         count: _queuedSegments,
         material: _material,
+        // With x-ray, sorted at the eye: the last translucent draw.
+        center: xray ? context.cameraPosition : null,
       );
     }
     _queuedSegments = savedCustomCount;

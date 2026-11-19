@@ -48,8 +48,10 @@ every update, as above, or the list grows every frame.
 Each segment is a thin box `lineThickness` world units thick (`0.022`, or the `thickness` of the
 call), so lines get thinner on screen with distance. All segments are drawn with an
 `UnlitMaterial` in one instanced draw call. `xray: true` turns the depth test off so that lines
-show through geometry; `enabled: false` hides everything; `lastSegmentCount` tells how many
-segments the last pass drew.
+show through geometry: they are then drawn after every opaque draw, as the nearest of the
+translucent draws, so nothing drawn later covers them (with `OitMode3D.weightedBlended` they are
+blended with the other translucent draws instead). `enabled: false` hides everything;
+`lastSegmentCount` tells how many segments the last pass drew.
 
 
 ### Costs and limitations
@@ -63,10 +65,6 @@ segments the last pass drew.
   (`test/gpu/debug_and_ui_3d_gpu_test.dart` compares the pixels of a shadowed scene with and
   without it). While it is in a world, a `Scene3DComponent` renders its whole visible area instead
   of only the part the scene's bounds cover, so that lines outside the scene still show.
-- With `xray`, the lines are still drawn among the opaque draws, ordered by pipeline and material:
-  objects whose material comes later in that order draw over the lines anyway. In a check, a quad
-  in front of an x-ray line covered it when the quad's material was created after the renderer,
-  and did not when it was created before.
 - It does not draw the bounds of a `SceneSpatialIndex3D`: draw them with `drawAabb` if you need
   them.
 
