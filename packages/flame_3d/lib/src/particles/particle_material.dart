@@ -66,11 +66,15 @@ enum ParticleSprite() {
 /// Soft particles fade where a particle meets opaque geometry: see
 /// [softDepthFade], which needs the depth-normal prepass.
 ///
-/// Billboards cast no shadows and are not drawn into the depth-normal
-/// prepass, whatever the [renderState] ([castsShadows] is always `false`):
-/// those passes draw every instance with a model matrix, and the instances
-/// of billboards are not model matrices. Use mesh particles
-/// ([ParticleSystem3D.mesh]) for particles that cast shadows.
+/// Billboards cast no shadows, whatever the [renderState] ([castsShadows] is
+/// always `false`): shadow passes draw every instance with a model matrix,
+/// and the instances of billboards are not model matrices. Use mesh
+/// particles ([ParticleSystem3D.mesh]) for particles that cast shadows.
+/// Opaque billboards (an opaque [renderState] that writes depth, usually
+/// with an [alphaCutoff]) are drawn into the depth-normal prepass through
+/// [depthNormalMaterial], cut out as in the main pass, so SSAO, depth of
+/// field and soft particles see them, unless they fade themselves
+/// ([softDepthFade] above `0`).
 ///
 /// Not available on the web yet: there are no WebGPU shaders for it.
 /// {@endtemplate}
@@ -185,6 +189,18 @@ class ParticleMaterial({
       (state.blend == BlendState.alpha ||
           state.blend == BlendState.premultipliedAlpha);
 
+  /// Draws the opaque particles of this material in the depth-normal
+  /// prepass, placed and cut out as in the main pass: `null` for a
+  /// translucent [renderState] or one that writes no depth (the prepass
+  /// draws neither), and for soft particles ([softDepthFade] above `0`),
+  /// which would fade against their own depth.
+  @override
+  Material? get depthNormalMaterial =>
+      renderState.translucent || !renderState.depthWrite || softDepthFade > 0
+      ? null
+      : (_depthNormalMaterial ??= _ParticleDepthNormalMaterial(this));
+  _ParticleDepthNormalMaterial? _depthNormalMaterial;
+
   /// Always `false`: billboards cannot be drawn into shadow maps, whose
   /// shaders read every instance as a model matrix. Setting it to `true`
   /// fails an assertion.
@@ -208,7 +224,7 @@ class ParticleMaterial({
 
   @override
   void apply(RenderContext context) {
-    _writeBillboard(context as RenderContext3D);
+    _writeBillboard(context as RenderContext3D, vertexShader);
     final blend = renderState.blend;
     final premultiplied =
         blend == BlendState.premultipliedAlpha || blend == BlendState.additive;
@@ -235,7 +251,9 @@ class ParticleMaterial({
       );
   }
 
-  void _writeBillboard(RenderContext3D context) {
+  /// Writes the `ParticleBillboard` block of [vertexShader] for the camera
+  /// of [context].
+  void _writeBillboard(RenderContext3D context, Shader vertexShader) {
     final view = context.view.storage;
     final m = context.viewProjection.storage;
     // The camera's axes, from the rows of the view matrix, turned so that
@@ -316,6 +334,56 @@ class ParticleMaterial({
           flipbookRows.toDouble(),
           math.max(frames, 1).toDouble(),
           frameBlending ? 1 : 0,
+        ),
+      );
+  }
+}
+
+/// Draws the opaque particles of [_source] in the depth-normal prepass.
+class _ParticleDepthNormalMaterial(final ParticleMaterial _source)
+    extends Material {
+  this
+    : super(
+        vertexShader: VertexShader.fromAsset(
+          _bundle,
+          slots: [RenderContext3D.cameraMatricesBlock, 'ParticleBillboard'],
+        ),
+        fragmentShader: FragmentShader.fromAsset(
+          _bundle,
+          slots: ['particleTexture', 'ParticleLook'],
+        ),
+      );
+
+  static const String _bundle =
+      'packages/flame_3d/assets/shaders/particle_depth_normal.shaderbundle';
+
+  @override
+  bool get instancesHoldModelMatrices => false;
+
+  @override
+  void apply(RenderContext context) {
+    final source = _source;
+    source._writeBillboard(context as RenderContext3D, vertexShader);
+    final value = source._value;
+    fragmentShader
+      ..setTexture('particleTexture', source.texture)
+      ..setColor('ParticleLook.color', source.color)
+      ..setVector4(
+        'ParticleLook.shape',
+        value..setValues(
+          source.sprite.index.toDouble(),
+          source.softness,
+          source.lumpiness,
+          0,
+        ),
+      )
+      ..setVector4(
+        'ParticleLook.options',
+        value..setValues(
+          source.alphaCutoff,
+          source.frameBlending ? 1 : 0,
+          0,
+          0,
         ),
       );
   }

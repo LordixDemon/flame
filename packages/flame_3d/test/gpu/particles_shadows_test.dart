@@ -162,28 +162,42 @@ void main() {
       expect(frame.stats.particles, 1);
     });
 
-    testGpuEngine('billboards stay out of the depth-normal prepass', () async {
-      final device = GraphicsDevice();
-      final context = RenderContext3D(device);
-      final systems = [
-        for (final state in [RenderState.opaque, RenderState.additive])
-          ParticleSystem3D(
-            capacity: 4,
-            material: ParticleMaterial(alphaCutoff: 0.5, renderState: state),
-          )..spawn(position: Vector3(0, 0, -4), size: 0.4),
-      ];
-      device.begin();
-      context.setCamera(defaultView, defaultProjection);
-      expect(context.beginDepthNormalPass(_size, _size), isTrue);
-      final before = device.stats.drawCalls;
-      for (final system in systems) {
-        system.draw(context);
-      }
-      context.endDepthNormalPass();
-      final prepassDraws = device.stats.drawCalls - before;
-      device.end();
-      expect(prepassDraws, 0);
-      expect(device.lastFrameStats.particles, 0);
-    });
+    testGpuEngine(
+      'only opaque billboards reach the depth-normal prepass',
+      () async {
+        final device = GraphicsDevice();
+        final context = RenderContext3D(device);
+        // The opaque ones are drawn with their material's depth-normal
+        // material, see particles_depth_normal_test.dart; translucent ones and
+        // soft opaque ones are not drawn.
+        final systems = [
+          for (final (state, fade) in [
+            (RenderState.opaque, 0.0),
+            (RenderState.additive, 0.0),
+            (RenderState.opaque, 0.2),
+          ])
+            ParticleSystem3D(
+              capacity: 4,
+              material: ParticleMaterial(
+                alphaCutoff: 0.5,
+                renderState: state,
+                softDepthFade: fade,
+              ),
+            )..spawn(position: Vector3(0, 0, -4), size: 0.4),
+        ];
+        device.begin();
+        context.setCamera(defaultView, defaultProjection);
+        expect(context.beginDepthNormalPass(_size, _size), isTrue);
+        final before = device.stats.drawCalls;
+        for (final system in systems) {
+          system.draw(context);
+        }
+        context.endDepthNormalPass();
+        final prepassDraws = device.stats.drawCalls - before;
+        device.end();
+        expect(prepassDraws, 1);
+        expect(device.lastFrameStats.particles, 0);
+      },
+    );
   });
 }

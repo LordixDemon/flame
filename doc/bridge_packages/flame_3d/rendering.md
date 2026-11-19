@@ -433,7 +433,7 @@ Without `--src` and `--out`, the tool builds the current package's `shaders/` in
 `flame_3d` builds its own bundles).
 
 `--with-web-gpu` also builds `.wgslbundle` files for the WebGPU backend, through the `naga` CLI
-(`cargo install naga-cli`). Only 8 of the package's 28 shaders have a web bundle (`spatial_material`
+(`cargo install naga-cli`). Only 8 of the package's 29 shaders have a web bundle (`spatial_material`
 in its non-PBR variant, `unlit_material`, `skybox_material`, `billboard_material`,
 `decal_material`, `outline_material`, `outline_material_skinned` and `ribbon_material`): on the web,
 anything that needs another shader (water, the depth-normal prepass, order-independent

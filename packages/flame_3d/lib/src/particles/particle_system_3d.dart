@@ -1193,17 +1193,19 @@ class ParticleSystem3D({
     final material = this.material;
     final shadowPass = context.isShadowPass;
     final prepass = context.isDepthNormalPass;
-    // Billboards are never drawn into shadow maps nor into the depth-normal
-    // prepass: those passes read each instance as a model matrix, which the
-    // instances of billboards are not. Mesh particles are, when a material
-    // of their mesh casts shadows (or, for the prepass, is opaque).
-    if ((shadowPass || prepass) && material != null) {
+    // Billboards are never drawn into shadow maps, which read each instance
+    // as a model matrix, which the instances of billboards are not; opaque
+    // ones are drawn into the depth-normal prepass by the depth-normal
+    // material of their material. Mesh particles are drawn into both, when a
+    // material of their mesh casts shadows (or, for the prepass, is opaque).
+    if (material != null &&
+        (shadowPass || (prepass && material.depthNormalMaterial == null))) {
       return;
     }
     if (shadowPass && !_castsShadows) {
       return;
     }
-    if (prepass && !_hasOpaqueSurface) {
+    if (prepass && material == null && !_hasOpaqueSurface) {
       return;
     }
     RenderProfile.lap(RenderPhase.recording);

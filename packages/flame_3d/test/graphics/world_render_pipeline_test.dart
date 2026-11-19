@@ -107,10 +107,15 @@ void main() {
       final device = GraphicsDevice(backend: backend);
       final context = RenderContext3D(device)
         ..setCamera(Matrix4.identity(), Matrix4.identity());
-      final particles = ParticleSystem3D(
-        capacity: 2,
-        material: ParticleMaterial(renderState: RenderState.opaque),
-      )..spawn(position: Vector3.zero(), size: 1);
+      // An opaque particle material without a depth-normal material: soft
+      // particles stay out of the prepass.
+      final material = ParticleMaterial(
+        renderState: RenderState.opaque,
+        softDepthFade: 0.1,
+      );
+      expect(material.depthNormalMaterial, isNull);
+      final particles = ParticleSystem3D(capacity: 2, material: material)
+        ..spawn(position: Vector3.zero(), size: 1);
       final instances = Float32List(VertexLayout.instanceStrideInFloats);
       Matrix4.identity().copyIntoArray(instances);
       final cube = CuboidMesh(
@@ -130,6 +135,25 @@ void main() {
       device.end();
 
       // The cube, not the particle billboard.
+      expect(backend.countCommands('drawIndexed'), 1);
+    });
+
+    test('draws them with the depth-normal material of their material', () {
+      final backend = FakeGpuBackend(textureTargets: true);
+      final device = GraphicsDevice(backend: backend);
+      final context = RenderContext3D(device)
+        ..setCamera(Matrix4.identity(), Matrix4.identity());
+      final material = ParticleMaterial(renderState: RenderState.opaque);
+      expect(material.depthNormalMaterial, isNotNull);
+      final particles = ParticleSystem3D(capacity: 2, material: material)
+        ..spawn(position: Vector3.zero(), size: 1);
+
+      device.begin();
+      expect(context.beginDepthNormalPass(64, 64), isTrue);
+      particles.draw(context);
+      context.endDepthNormalPass();
+      device.end();
+
       expect(backend.countCommands('drawIndexed'), 1);
     });
   });

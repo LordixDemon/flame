@@ -290,11 +290,17 @@ their meshes.
 Billboards cast no shadows, whatever their `renderState`: the shadow pass draws every instance with
 a model matrix, and the instance data of a billboard is not one. `ParticleMaterial.castsShadows` is
 always `false` (setting it to `true` fails an assertion), and a system of billboards skips the
-shadow pass, sorting nothing. For the same reason billboard particles are not drawn into the
-depth-normal prepass, even cut-out ones (an opaque `renderState`), so SSAO and depth of field do not
-see them; mesh particles with an opaque material are drawn into it. (The opaque sprites of a
-`BillboardBatch3D` are, through a depth-normal material of their own, see
-[Post-Processing](post_processing.md#depth-normal-prepass).)
+shadow pass, sorting nothing.
+
+Cut-out billboards (an opaque `renderState`, which writes depth, usually with an `alphaCutoff`) are
+drawn into the depth-normal prepass by `ParticleMaterial.depthNormalMaterial`, placed as in the main
+pass and cut out at the same `alphaCutoff`, so SSAO, depth of field and the soft particles in front
+of them see their shape, as the opaque sprites of a `BillboardBatch3D` are (see
+[Post-Processing](post_processing.md#depth-normal-prepass)); mesh particles with an opaque material
+are drawn into it with their meshes. Translucent billboards are not, so a soft particle never reads
+its own depth. An opaque billboard with a `softDepthFade` above `0` is left out of the prepass too,
+since it would fade against itself. The prepass draws the system once more, at the cost of a second
+instanced draw.
 
 A system with mesh particles counts as a moving caster on every frame it has live particles, so it
 keeps `ShadowSettings.cacheWhenStatic` from reusing the shadow map. The system writes its instance
@@ -506,7 +512,6 @@ tests, not on an OpenGL ES device.
 - Particles collide with their ground plane only, not with meshes.
 - The fade of soft particles is given in normalized depth rather than in scene units, so under a
   perspective camera it spans more units far away than near (see [Soft particles](#soft-particles)).
-- Billboard particles cast no shadows and are not in the depth-normal prepass, cut-out ones
-  included; mesh particles cast and are in it.
+- Billboard particles cast no shadows, cut-out ones included; mesh particles cast.
 - Ribbons do not widen at sharp turns.
 - `ParticleMaterial` and `RibbonMaterial3D` are not available on the web.
