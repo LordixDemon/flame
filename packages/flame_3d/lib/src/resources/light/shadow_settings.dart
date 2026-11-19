@@ -9,10 +9,14 @@ import 'package:flame_3d/resources.dart';
 /// part of the scene the map covers, how shadows look, and the biases that keep
 /// surfaces from shadowing themselves.
 ///
-/// Supports up to `4` Cascaded Shadow Maps (`cascades: 1..4`) on
-/// [DirectionalLight] with smooth cascade boundary blending, simultaneous
-/// perspective shadows on up to `2` [SpotLight]s, and omnidirectional
-/// Dual-Paraboloid (`+Z`/`-Z`) shadows on [PointLight].
+/// A [DirectionalLight] can split its map into up to `4` cascades
+/// ([cascades]), sharper near the camera, that blend into each other. Up to
+/// `2` [SpotLight]s cast perspective shadows, and one [PointLight] casts
+/// shadows all around it (two paraboloid hemispheres). A lone light with one
+/// map renders it on its own; cascades, a point light and several
+/// shadow-casting lights share the tiles of one atlas. Every built-in
+/// receiver, and every shader that includes `flame_3d/shadows.glsl`, reads
+/// both.
 /// {@endtemplate}
 class ShadowSettings({
   /// The width and height of the shadow map (or base tile), in texels: more is
@@ -69,16 +73,23 @@ class ShadowSettings({
   /// geometry have not changed since the previous shadow map was rendered.
   var bool cacheWhenStatic = false,
 
-  /// Number of directional shadow cascades (`1`..`4`).
+  /// Number of directional shadow cascades (`1`..`4`). The last cascade
+  /// covers what a single map would; each other cascade covers a part of it
+  /// (see [cascadeSplits]) with a map of the same resolution, so it is
+  /// sharper.
   int cascades = 1,
 
-  /// Fraction `(0..1)` of `maxDistance` (or scene span) covered by Cascade `0`
-  /// when [cascades] is `2` (or used as the initial split ratio for `3..4`
-  /// cascades when [cascadeSplits] is `null`).
+  /// The fraction `(0..1)` of the distance covered by cascade `0`, from
+  /// which the splits of the others derive when [cascadeSplits] is `null`.
   var double cascadeSplitRatio = 0.28,
 
-  /// Optional explicit monotonically increasing split fractions in `(0..1]` for
-  /// `cascades >= 2` (e.g. `[0.12, 0.32, 0.62, 1.0]` for 4 cascades).
+  /// Explicit increasing fractions in `(0..1]`, one per cascade (e.g.
+  /// `[0.12, 0.32, 0.62, 1.0]` for 4 cascades): with a perspective camera
+  /// and [ShadowFit.view], cascade `c` covers what the camera sees up to that
+  /// fraction of [maxDistance] (or, without one, of the farthest point of the
+  /// receiving region); otherwise that fraction of the receiving region,
+  /// around its center. The last cascade always covers it all, so its split
+  /// may be left out: the list holds [cascades] values, or one fewer.
   var List<double>? cascadeSplits,
 
   /// Fraction `[0..0.35]` of each cascade's UV border across which adjacent
@@ -90,6 +101,27 @@ class ShadowSettings({
     this.resolution = resolution;
     this.softness = softness;
     this.cascades = cascades;
+    final splits = cascadeSplits;
+    if (splits != null) {
+      if (splits.length != cascades && splits.length != cascades - 1) {
+        throw ArgumentError.value(
+          splits,
+          'cascadeSplits',
+          'Must have one split per cascade ($cascades), or one per cascade '
+              'but the last',
+        );
+      }
+      for (var i = 0; i < splits.length; i++) {
+        final split = splits[i];
+        if (!(split > 0 && split <= 1) || (i > 0 && split <= splits[i - 1])) {
+          throw ArgumentError.value(
+            splits,
+            'cascadeSplits',
+            'Must increase within (0, 1]',
+          );
+        }
+      }
+    }
   }
 
   /// The width and height of the shadow map, in texels, from 16 to 8192.

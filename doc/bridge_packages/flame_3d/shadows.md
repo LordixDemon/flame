@@ -11,30 +11,19 @@ Three kinds of light cast shadows when they are given `ShadowSettings`:
 - up to two `SpotLight`s, each with a perspective map;
 - the first `PointLight` with settings, with a dual-paraboloid map.
 
-How a frame renders them, and which materials see them, depends on which of these lights cast
-shadows in the pass:
+How a frame renders them depends on which of these lights cast shadows in the pass:
 
-| Lights with `ShadowSettings`     | Path       | Materials that receive the shadows      |
-| -------------------------------- | ---------- | --------------------------------------- |
-| One sun, `cascades: 1`           | Single map | All receivers                           |
-| One sun, `cascades: 2`           | Two maps   | All receivers                           |
-| One spot light and nothing else  | Single map | All receivers except `WaterMaterial`    |
-| One sun, `cascades: 3` or `4`    | Atlas      | `SpatialMaterial` only                  |
-| A point light                    | Atlas      | `SpatialMaterial` only                  |
-| Two or more of these lights      | Atlas      | `SpatialMaterial` only                  |
+| Lights with `ShadowSettings`         | Path       |
+| ------------------------------------ | ---------- |
+| One sun, `cascades: 1`               | Single map |
+| One spot light and nothing else      | Single map |
+| One sun, `cascades: 2` to `4`        | Atlas      |
+| A point light                        | Atlas      |
+| Two or more of these lights          | Atlas      |
 
-"All receivers" are `StylizedMaterial`, `SpatialMaterial`, `ShadowCatcherMaterial`, `WaterMaterial`
-and custom shaders that include `flame_3d/shadows.glsl`.
-
-```{warning}
-On the atlas path, every receiver but `SpatialMaterial` reads the atlas as
-if it were a single map: its sun shadows are missing or in the wrong place,
-and it gets no spot or point light shadows. A scene that uses
-`StylizedMaterial`, `ShadowCatcherMaterial` or `WaterMaterial` must keep to
-the first three rows of the table: one sun with one or two cascades, or one
-spot light alone. Adding a second shadow-casting light (even a spot light
-that lights nothing on screen) switches the whole frame to the atlas.
-```
+Every receiver reads both paths: `StylizedMaterial`, `SpatialMaterial`, `ShadowCatcherMaterial`,
+`WaterMaterial` (the sun and point lights; it has no spot lights) and custom shaders that include
+`flame_3d/shadows.glsl`.
 
 
 ## Casting shadows
@@ -100,7 +89,7 @@ cartoon look tints shadows rather than blackening them.
 Custom shaders receive shadows by including `flame_3d/shadows.glsl` and listing its `Shadows`
 block and `shadowMap` sampler (`RenderContext3D.shadowsBlock` and
 `RenderContext3D.shadowMapSampler`) in their material's slots; the render context fills them once
-per pass:
+per pass, for the single map and the atlas alike:
 
 ```glsl
 #include <flame_3d/shadows.glsl>
@@ -111,18 +100,32 @@ for (int i = 0; i < int(directionalLights.numLights); i++) {
   vec3 shadow = castsShadows(i) ? shadowFactor(visibility) : vec3(1.0);
   // ... multiply the light of sun i by shadow
 }
+for (int i = 0; i < int(spotLights.numLights); i++) {
+  vec3 shadow = spotShadowFactor(i, fragPosition, normal);
+  // ... multiply the light of spot light i by shadow
+}
+for (int i = 0; i < int(lights.numLights); i++) {
+  vec3 shadow = pointShadowFactor(i, fragPosition, normal);
+  // ... multiply the light of point light i by shadow
+}
 ```
 
-Without shadows, `shadowVisibility` returns `1`. `spotCastsShadows(i)` tells whether spot light `i`
-is the one that casts the shadow of the pass, when it is a lone spot light. The chunk handles the
-single map and the two cascades; it does not read the atlas (the `ShadowAtlas` block,
-`RenderContext3D.shadowAtlasBlock`), so a custom shader has the problem of the warning above. A
-material can tell the atlas apart with `RenderContext3D.hasShadowAtlas` in its `apply`.
+Without shadows, `shadowVisibility` returns `1`, and `spotShadowFactor` and `pointShadowFactor`
+return white for lights that cast none. `shadowCascadeVisibility` also gives the cascade it used,
+`spotCastsShadows(i)` and `pointCastsShadows(i)` tell whether a light casts shadows in the pass, and
+`shadowOcclusion` gives the largest `strength × (1 - visibility)` of all the lights that cast
+shadows (what `ShadowCatcherMaterial` shows). `shadowAtlasActive()` tells the atlas apart, as
+`RenderContext3D.hasShadowAtlas` does in a material's `apply`.
 
 A shader that holds the values of the `Shadows` block in a block of its own, to bind fewer blocks
 per draw (see [Rendering](rendering.md#shaders)), defines `FLAME_SHADOWS(member)` to the expression
 that reads the member of `Shadows` named `member` before including the chunk, which then declares
-no `Shadows` block; `StylizedMaterial` does so.
+no `Shadows` block; `StylizedMaterial` and `WaterMaterial` do so, with every member of the block,
+the atlas ones included. A shader that defines `FLAME_SHADOWS_SINGLE_MAP` first gets a block
+without the atlas members and receives no shadows on frames that use the atlas (the WebGPU build of
+`SpatialMaterial`, which has no atlas, does so). The `ShadowAtlas` block
+(`RenderContext3D.shadowAtlasBlock`) is still filled for shaders that declare it, but no built-in
+shader does any more.
 
 
 ## The shadow map
@@ -163,7 +166,7 @@ shadow pass writes the depth into a color texture instead, through its own shade
   8-bit texel, which every GPU renders into.
 
 `ShadowMapEncoding.auto` (the default) picks the first where it can. Both take 4 bytes per texel and
-give the same shadows, on every path: the single map, the two cascades and the atlas. The texture is
+give the same shadows, on both paths: the single map and the atlas. The texture is
 sampled with nearest filtering, and the receivers filter the comparisons themselves.
 
 
@@ -217,8 +220,9 @@ layer.world.addAll([
 
 The catcher needs a position and a normal on its vertices, as the standard layout and the layout of
 `StylizedMaterial` have. It is translucent, writes no depth and casts no shadows; the 3D objects
-drawn in front of it hide it as they hide the ground. It shows the sun's shadow with one or two
-cascades, and the shadow of a lone spot light; it shows nothing correct on the atlas path. The
+drawn in front of it hide it as they hide the ground. It shows the shadows of every light that casts
+them, on both paths: where several fall on it, the darkest (`color` alpha times the largest
+`strength × (1 - visibility)`), without the reach or the cone of the spot and point lights. The
 `shadows` scenario of the example shows 3D buildings casting tinted shadows onto a 2D board under a
 sun that circles around it. `ShadowCatcherMaterial` is not available on the web: creating one there
 throws an `UnsupportedError`.
@@ -255,10 +259,9 @@ those of the world that renders first:
 A ground of `ShadowCatcherMaterial` belongs in the lowest layer of the group, below the objects of
 every layer.
 
-A group supports the single map only: one sun with `cascades: 1`, or a lone spot light. With
-`cascades: 2` the group never renders the second cascade nor the texture the receivers sample, and
-the whole ground shows as shadowed; on the atlas path it renders the first tile only, so the other
-cascades, spot lights and point lights cast nothing.
+A group supports the single map only: one sun with `cascades: 1`, or a lone spot light. On the atlas
+path (two or more cascades, a point light, several lights) it renders the first tile only, so the
+other cascades, spot lights and point lights cast nothing.
 
 
 ## Static shadows
@@ -276,7 +279,7 @@ LightComponent.directional(
 ```
 
 The cache is used on the single-map path only (one sun with `cascades: 1`, or a lone spot light).
-Two cascades and the atlas ignore `cacheWhenStatic` and render every frame.
+The atlas ignores `cacheWhenStatic` and renders every frame.
 
 The map is reused when all of these match the frame that rendered it:
 
@@ -319,7 +322,7 @@ The cached map is kept per render context and per `DirectionalShadowProjection`:
 (`World3D.shadowProjection`) and one for each `ShadowGroup` (`ShadowGroup.projection`), each
 `resolution² × 4` bytes (4 MiB at the default 1024) besides the maps of the frame. It is created
 outside the device's pool of render targets, and released the next time the world renders a single
-map or two cascades without the cache.
+map without the cache.
 
 With `ShadowFit.view`, every move of the camera refits the map and renders it again: the cache only
 helps a still camera. With `ShadowFit.scene`, the map depends on the bounds of the scene alone, and
@@ -331,71 +334,47 @@ the cache holds while the camera pans.
 A single map spreads its texels over everything it covers. Seen by a perspective camera, the ground
 near the camera gets few texels per pixel, and its shadows look blocky, while far away the map is
 finer than needed. Cascades split the region into maps of decreasing sharpness: `cascades` takes 1
-(the default) to 4.
+(the default) to 4. Two to four cascades are tiles of the [shadow atlas](#the-shadow-atlas), each
+of the same size, and every receiver reads them.
 
 ```dart
 LightComponent.directional(
   direction: Vector3(-0.4, -1, -0.3),
-  shadows: ShadowSettings(cascades: 2, maxDistance: 40),
+  shadows: ShadowSettings(cascades: 3, maxDistance: 40),
 );
 ```
 
-Two cascades and three or four take different code paths, with different features.
+- The last cascade is fitted exactly like a single map: `fit`, `bounds` and `maxDistance` apply.
+- With a perspective camera and `ShadowFit.view`, cascade `c` covers the view from the camera up
+  to `splits[c]` of the farthest distance that receives shadows: `maxDistance`, or without one the
+  farthest corner of the region (`bounds`, or the bounds of the scene) along the camera's
+  direction. Each cascade starts at the camera, so the nearer ones are inside the farther ones.
+- With an orthographic camera or `ShadowFit.scene`, cascade `c` covers the middle of the region
+  scaled by `splits[c]` about its center.
+- A cascade that sees nothing, or is not sharper than the next one, is dropped (no tile, no
+  traversal): a near cascade of a perspective camera that looks down on a scene from far away, for
+  instance, or one of an orthographic camera that sees a small part of a large region.
 
+The splits are `cascadeSplits` (one increasing value in `(0, 1]` per cascade, or per cascade but the
+last, which always covers it all; another length, or values that do not increase, throw an
+`ArgumentError`, and a `StateError` in the shadow pass when the list was changed afterwards),
+otherwise derived from `cascadeSplitRatio`:
 
-### Two cascades
-
-With `cascades: 2`, and no other light that casts shadows, the frame renders two maps of
-`resolution` texels, one after the other, then copies them side by side into a texture of
-`2 * resolution` by `resolution` texels that the receivers sample. Every receiver gets them.
-
-- The far cascade is fitted exactly like a single map: `fit`, `bounds` and `maxDistance` apply.
-- With a perspective camera, the near cascade covers the view from the camera up to
-  `maxDistance * cascadeSplitRatio` (`40` units when `maxDistance` is `null`; the ratio, `0.28` by
-  default, is clamped to `0.08` to `0.85`), whatever the `fit`.
-- With an orthographic camera, or when that part of the view sees no receivers, the near cascade
-  covers the middle of the region (`bounds`, or the bounds of the scene), scaled by the ratio about
-  its center: a fixed part of the world that does not follow the camera.
-
-A receiver uses the near cascade where it falls within the inner 94 % of it, and the far one
-elsewhere; there is no blending between them, so the seam can show where the two differ.
-`cascadeSplits` and `cascadeBlendRange` are not read on this path.
-
-The cost: three render passes (the two cascades, counted in `RenderStats.shadowPasses`, and the
-copy), two traversals of the components, and `4 × resolution² × 4` bytes of textures (16 MiB at
-1024).
-
-
-### Three and four cascades
-
-With `cascades: 3` or `4` the cascades are tiles of the [shadow atlas](#the-shadow-atlas), which
-only `SpatialMaterial` reads.
-
-The splits are fractions of the distance the cascades cover: `cascadeSplits` when it holds exactly
-`cascades` increasing values ending with `1` (a list of another length is ignored without a
-warning), otherwise derived from `cascadeSplitRatio`:
-
-- 3 cascades: `r`, `r + 0.45 * (1 - r)` and `1`, with `r` the ratio clamped to `0.06` to `0.5`:
-  `0.28`, `0.604` and `1` by default;
+- 2 cascades: `r` and `1`, with `r` the ratio clamped to `0.06` to `0.5`: `0.28` by default;
+- 3 cascades: `r`, `r + 0.45 * (1 - r)` and `1`: `0.28`, `0.604` and `1` by default;
 - 4 cascades: `0.154`, `0.354`, `0.677` and `1` by default (the first is `0.55 * r`, clamped to
   `0.06` to `0.25`).
-
-With a perspective camera and `ShadowFit.view`, cascade `c` covers the view from the camera up to
-`maxDistance * splits[c]` (`48` units when `maxDistance` is `null`). Each cascade starts at the
-camera, so the nearer ones are inside the farther ones. With an orthographic camera or
-`ShadowFit.scene`, cascade `c` covers the middle of the region scaled by `splits[c]` about its
-center.
 
 A receiver uses the first cascade that holds it (keeping a margin of 2 % of its width, except for
 the last one), and within `cascadeBlendRange` (a fraction of the cascade's width, `0.1` by default,
 clamped to `0.35`) of the cascade's edge it cross-fades to the next one, which samples the map twice
 as many times there. `RenderDebugMode3D.cascadeSplits` tints `SpatialMaterial` surfaces by the
-cascade they use (on the atlas only).
+cascade they use.
 
 
 ## The shadow atlas
 
-The frame renders the atlas instead of a single map when a sun has three or four cascades, when a
+The frame renders the atlas instead of a single map when a sun has two to four cascades, when a
 point light casts shadows, or when more than one light casts shadows (a sun and a spot light, two
 spot lights). All its maps are tiles of one texture of 2048 by 2048 texels, rendered in one render
 pass: each tile sets the viewport and the scissor to its rectangle, and the components are traversed
@@ -410,7 +389,7 @@ once more for each tile.
   and one spot light, half of it is unused.
 - The encoding is that of the sun's settings (or of the first light's), and so are the `softness`,
   `color` and `strength` of the sun's cascades. Each spot light and the point light use their own
-  `color`, `strength` and `depthBias`.
+  `color`, `strength`, `depthBias` and `softness`.
 
 `RenderContext3D.hasShadowAtlas` tells whether the current pass receives the atlas, and
 `RenderContext3D.shadowAtlas` holds the tiles of the last one (`ShadowAtlas3D.tiles`, with their
@@ -440,12 +419,12 @@ The light renders through a perspective projection that covers its cone: a field
 `bounds`, `maxDistance`, `stabilize` and `cascades` do not apply.
 
 A spot light that is the only light casting shadows uses the single map at its `resolution`, with
-its `depthBias`, `normalBias` and `softness`, and is received by `StylizedMaterial`,
-`SpatialMaterial` and `ShadowCatcherMaterial`, and cached with `cacheWhenStatic`. The biases are in
+its `depthBias`, `normalBias` and `softness`, and is cached with `cacheWhenStatic`. The biases are in
 texels of the map at about a third of the range, so they are coarse near the light. Two spot lights,
-or a spot light and a sun or a point light, use the atlas, where only `SpatialMaterial` receives
-them; there, each spot light's tile is filtered over 16 samples and pushed along the normal by 1.2
-texels, whatever its `softness` and `normalBias`.
+or a spot light and a sun or a point light, use the atlas; there, each spot light's tile is filtered
+with its `softness` and pushed along the normal by 1.2 texels, whatever its `normalBias`. Every
+receiver but `WaterMaterial` (which has no spot lights) receives them on both paths. The map stores
+the depth of every pixel of the casters, so large triangles do not shadow themselves.
 
 Only the first two spot lights with settings among the first four lit spot lights of the pass cast
 shadows. With more than four spot lights, the lights are picked by their distance to the camera,
@@ -475,9 +454,8 @@ The light renders two tiles of the atlas, one for each half of the space around 
 z axis (a dual-paraboloid map): each vertex of a caster is projected onto a paraboloid, and the
 depth is the distance to the light divided by `range` (24 units when `range` is `null`). Only the
 first point light with settings, among the first eight point lights of the pass, casts shadows, and
-only `SpatialMaterial` receives them. The receivers push their point by 0.03 units along the
-normal, use a depth bias of `depthBias * 0.004` of the range, and filter over a radius of
-`softness` clamped to 2.
+every receiver receives them. The receivers push their point by 0.03 units along the normal, use a
+depth bias of `depthBias * 0.004` of the range, and filter over a radius of `softness` clamped to 2.
 
 The projection is applied to the vertices only, and the triangles between them are rasterized as
 straight: large triangles close to the light cast a distorted shadow, so tessellate casters that
@@ -512,18 +490,12 @@ void renderShadows(
     }
     context.endShadowPass();
   }
-  // The far cascade of `cascades: 2`.
-  if (context.needsShadowCascade1) {
-    context.beginShadowCascade1();
-    recordCasters(context);
-    context.endShadowCascade1();
-  }
 }
 ```
 
 `RenderContext3D.isShadowPass` is `true` while casters are recorded. Leaving out the tile loop
-leaves the other tiles of the atlas empty, and leaving out the second cascade leaves the texture the
-receivers sample unrendered.
+leaves the other tiles of the atlas empty (lit). `needsShadowCascade1`, `beginShadowCascade1` and
+`endShadowCascade1` are deprecated and do nothing: two cascades are atlas tiles.
 
 
 ## Costs
@@ -532,7 +504,6 @@ receivers sample unrendered.
 | ------------------ | ------------- | ----------------------- | --------------------------------- |
 | Single map         | 1             | 1                       | `resolution² × 4` B (4 MiB)       |
 | Single map, cached | 0             | 0                       | the cached map, kept              |
-| Two cascades       | 3             | 2                       | `4 × resolution² × 4` B (16 MiB)  |
 | Atlas              | 1             | 1 per tile, up to 8     | `2048² × 4` B (16 MiB)            |
 
 The sizes in parentheses are for the default `resolution` of 1024. Each map also has a depth
@@ -546,15 +517,14 @@ with the same size.
   recorded, and particle systems that cast none skip the shadow pass altogether.
 - The receivers sample a map `(2 * softness + 2)²` times per fragment, where the shadow can show:
   not outside of the map, and, for `StylizedMaterial`, not where the surface faces away from the
-  sun and has no highlights. On the atlas, `SpatialMaterial` samples the sun's cascades in the same
-  way (twice within the blend band), each shadowed spot light 16 times, and the point light up to
-  36 times.
+  sun and has no highlights. On the atlas, the receivers sample the sun's cascades in the same way
+  (twice within the blend band), each shadowed spot light and the point light with their own
+  `softness` (the point light's clamped to 2).
 - The CPU fits the projections every frame, cached or not, and the atlas path allocates small
   objects for its tiles every frame.
 
 `RenderStats.shadowPasses` and `RenderStats.shadowDrawCalls` count the shadow passes and their draw
-calls, which are also counted in `renderPasses` and `drawCalls` (the copy of the two cascades counts
-as a render pass, not a shadow pass). The layers of a `ShadowGroup` that reuse its map count no
+calls, which are also counted in `renderPasses` and `drawCalls`. The layers of a `ShadowGroup` that reuse its map count no
 shadow pass. In a headless test, a hundred cubes sharing a mesh on a ground in a `Scene3DComponent`
 render with 2 draw calls in 1 pass without shadows, and 4 draw calls in 2 passes with them (2 of
 them in the shadow pass).
@@ -563,11 +533,11 @@ them in the shadow pass).
 ## Measuring and debugging
 
 - `RenderStats` (in `FlameGame3D.renderStats` and `Scene3DComponent.renderStats`) shows the passes
-  above: `shadowPasses` is 1 for a single map and for the atlas, 2 for two cascades, and 0 on a
-  cached frame or in a layer that reuses its group's map.
+  above: `shadowPasses` is 1 for a single map and for the atlas, and 0 on a cached frame or in a
+  layer that reuses its group's map.
 - `RenderContext3D.hasActiveShadows` and `hasShadowAtlas` tell what the current pass receives, and
   `shadowMapVersion` changes every time a map is rendered.
-- `RenderDebugMode3D.cascadeSplits` colors `SpatialMaterial` surfaces by cascade, on the atlas.
+- `RenderDebugMode3D.cascadeSplits` colors `SpatialMaterial` surfaces by cascade.
 - A whole ground in shadow means a map that was never rendered (see
   [Rendering the shadow pass yourself](#rendering-the-shadow-pass-yourself)); shadows that stay
   where an object was mean a cached map (see [Static shadows](#static-shadows)).
@@ -576,8 +546,8 @@ them in the shadow pass).
 ## Platform support
 
 - iOS and macOS (Metal), Android with Vulkan: shadows render into 32-bit float maps.
-- Android with OpenGL ES: shadows render into packed RGBA8 maps. Packing was checked on every path
-  (single map, two cascades, atlas) by forcing `ShadowMapEncoding.rgba8` on the backend of the
+- Android with OpenGL ES: shadows render into packed RGBA8 maps. Packing was checked on both paths
+  (single map, atlas) by forcing `ShadowMapEncoding.rgba8` on the backend of the
   headless tests, not on an OpenGL ES device; the placement of the atlas tiles there is not covered
   by a test.
 - The web: no shadows. The shadow caster shaders have no WebGPU build, so a light with shadow
@@ -589,18 +559,13 @@ them in the shadow pass).
 
 These are the parts of shadows that are not finished at this point:
 
-- Only `SpatialMaterial`, on native backends, reads the atlas. `StylizedMaterial`,
-  `ShadowCatcherMaterial`, `WaterMaterial` and custom shaders that include `flame_3d/shadows.glsl`
-  show missing or misplaced sun shadows on the atlas path, and never show point-light shadows, nor
-  spot-light shadows unless a single spot light casts alone.
-- `WaterMaterial` receives the sun's shadow only.
-- A `ShadowGroup` supports the single map only: with two cascades its receivers show everything as
-  shadowed, and on the atlas only the first tile is rendered.
-- `cacheWhenStatic` is ignored with two cascades and on the atlas, and its key does not see changes
-  that do not change `World3D.castersVersion` (see [Static shadows](#static-shadows)).
-- Two cascades do not blend at their seam, and do not read `cascadeSplits` nor
-  `cascadeBlendRange`; with an orthographic camera the near cascade is fixed in the middle of the
-  scene. `cascadeSplits` of the wrong length is ignored without a warning.
+- `WaterMaterial` has no spot lights, so it receives the shadows of the sun and of the point light
+  only.
+- A `ShadowGroup` supports the single map only: on the atlas only the first tile is rendered.
+- `cacheWhenStatic` is ignored on the atlas, and its key does not see changes that do not change
+  `World3D.castersVersion` (see [Static shadows](#static-shadows)).
+- With an orthographic camera, or `ShadowFit.scene`, the inner cascades are fixed in the middle of
+  the region and do not follow the camera.
 - The atlas is always 2048 by 2048 texels, with tiles of at most 1024, and its tiles are traversed
   and rendered every frame.
 - Point-light tiles are culled with the frustum of the previous tile, so casters outside it (or
@@ -612,7 +577,7 @@ These are the parts of shadows that are not finished at this point:
   intensity comes before the one that casts, the shadow is applied to another light (see
   [Selection beyond the limits](lighting.md#selection-beyond-the-limits)).
 - Spot-light shadows ignore `fit`, `bounds`, `maxDistance` and `stabilize`, and on the atlas their
-  `softness` and `normalBias`.
+  `normalBias`.
 - In a shadow pass, `RenderContext3D.cameraPosition` is the position of the light's view, which
   for a sun is the world origin (for the tiles of a point light, it is left over from the tile
   before them, or from the main camera). Components that pick their level of detail should use

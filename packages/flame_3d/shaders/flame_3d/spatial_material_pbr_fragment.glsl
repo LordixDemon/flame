@@ -73,27 +73,6 @@ uniform PassOptions {
   vec4 gridRes;
 } passOptions;
 
-uniform ShadowAtlas {
-  mat4 csmViewProj[4];
-  vec4 csmUvRect[4];
-  // x: texelWorldSize, y: splitRatio, z: blendRange, w: active
-  vec4 csmMeta[4];
-  mat4 spotViewProj[2];
-  vec4 spotUvRect[2];
-  // x: spotLightIndex, y: texelWorldSize, z: depthBias, w: strength
-  vec4 spotMeta[2];
-  vec4 spotColor[2];
-  // xyz: point light world pos, w: invRange (1 / range)
-  vec4 pointPosRange;
-  vec4 pointFrontUvRect;
-  vec4 pointBackUvRect;
-  // x: pointLightIndex (-1 inactive), y: depthBias, z: softness, w: strength
-  vec4 pointMeta;
-  vec4 pointColor;
-  // x: atlasActive, y: cascadeCount, z: dirLightIndex, w: spotShadowCount
-  vec4 header;
-} shadowAtlas;
-
 #include <flame_3d/lights.glsl>
 
 uniform Camera {
@@ -250,171 +229,6 @@ vec3 sampleProbeGrid3D(vec3 worldPos, vec3 n) {
     minus.z * sampleProbeGridBand(5.0, uvw);
   return max(e, vec3(0.0)) *
     (passOptions.gridInvSpan.w * passOptions.gridBoundsMin.w);
-}
-
-float sampleAtlasTilePcf(
-  vec2 tileUv,
-  vec4 tileRect,
-  float depth,
-  int radius
-) {
-  vec2 mapSize = FLAME_SHADOWS(map).xy;
-  vec2 invMap = FLAME_SHADOWS(map).zw;
-  vec2 atlasUv = tileRect.xy + tileUv * tileRect.zw;
-  vec2 minUv = tileRect.xy + invMap * 0.5;
-  vec2 maxUv = tileRect.xy + tileRect.zw - invMap * 0.5;
-
-  vec2 texelPos = atlasUv * mapSize - 0.5;
-  vec2 base = floor(texelPos);
-  vec2 f = texelPos - base;
-  float lit = 0.0;
-  for (int y = -radius; y <= radius + 1; y++) {
-    float wy = y == -radius ? 1.0 - f.y : (y == radius + 1 ? f.y : 1.0);
-    for (int x = -radius; x <= radius + 1; x++) {
-      float wx = x == -radius ? 1.0 - f.x : (x == radius + 1 ? f.x : 1.0);
-      vec2 sUv = clamp(
-        (base + vec2(float(x), float(y)) + 0.5) * invMap,
-        minUv,
-        maxUv
-      );
-      float stored = dot(texture(shadowMap, sUv), FLAME_SHADOWS(decode));
-      lit += wx * wy * step(depth, stored);
-    }
-  }
-  float side = float(2 * radius + 1);
-  return lit / (side * side);
-}
-
-float evaluateAtlasDirectionalCsm(
-  vec3 worldPos,
-  vec3 normal,
-  out int outCascadeIdx
-) {
-  outCascadeIdx = -1;
-  int count = int(shadowAtlas.header.y);
-  if (count <= 0) {
-    return 1.0;
-  }
-  int radius = int(FLAME_SHADOWS(bias).w);
-  vec3 l = FLAME_SHADOWS(toLight).xyz;
-  float cosine = clamp(dot(normal, l), 0.0, 1.0);
-  float sine = sqrt(1.0 - cosine * cosine);
-  float reach = FLAME_SHADOWS(bias).z + 1.4142 * float(radius + 1);
-
-  for (int c = 0; c < 4; c++) {
-    if (c >= count) {
-      break;
-    }
-    float texel = shadowAtlas.csmMeta[c].x;
-    vec3 biasedPos = worldPos +
-      normal * (texel * reach * sine) +
-      l * (texel * FLAME_SHADOWS(bias).y);
-    vec4 clip = shadowAtlas.csmViewProj[c] * vec4(biasedPos, 1.0);
-    vec3 ndc = clip.xyz / max(clip.w, 1e-6);
-    vec2 uv = vec2(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y);
-    float margin = c < count - 1 ? 0.02 : 0.0;
-    if (uv.x >= margin && uv.x <= 1.0 - margin &&
-        uv.y >= margin && uv.y <= 1.0 - margin &&
-        ndc.z >= 0.0 && ndc.z <= 1.0) {
-      outCascadeIdx = c;
-      float vis0 = sampleAtlasTilePcf(
-        uv,
-        shadowAtlas.csmUvRect[c],
-        ndc.z,
-        radius
-      );
-      float blendBand = shadowAtlas.csmMeta[c].z;
-      if (blendBand > 1e-3 && c + 1 < count) {
-        float edgeDist = min(
-          min(uv.x - margin, (1.0 - margin) - uv.x),
-          min(uv.y - margin, (1.0 - margin) - uv.y)
-        );
-        if (edgeDist < blendBand) {
-          float nextTexel = shadowAtlas.csmMeta[c + 1].x;
-          vec3 nextPos = worldPos +
-            normal * (nextTexel * reach * sine) +
-            l * (nextTexel * FLAME_SHADOWS(bias).y);
-          vec4 nextClip = shadowAtlas.csmViewProj[c + 1] * vec4(nextPos, 1.0);
-          vec3 nextNdc = nextClip.xyz / max(nextClip.w, 1e-6);
-          vec2 nextUv = vec2(0.5 + 0.5 * nextNdc.x, 0.5 - 0.5 * nextNdc.y);
-          if (nextUv.x >= 0.0 && nextUv.x <= 1.0 &&
-              nextUv.y >= 0.0 && nextUv.y <= 1.0 &&
-              nextNdc.z >= 0.0 && nextNdc.z <= 1.0) {
-            float vis1 = sampleAtlasTilePcf(
-              nextUv,
-              shadowAtlas.csmUvRect[c + 1],
-              nextNdc.z,
-              radius
-            );
-            float t = 1.0 - clamp(edgeDist / blendBand, 0.0, 1.0);
-            return mix(vis0, vis1, t);
-          }
-        }
-      }
-      return vis0;
-    }
-  }
-  return 1.0;
-}
-
-vec3 evaluateAtlasSpotShadow(int spotLightIndex, vec3 worldPos, vec3 normal) {
-  int spotCount = int(shadowAtlas.header.w);
-  for (int s = 0; s < 2; s++) {
-    if (s >= spotCount) {
-      break;
-    }
-    if (abs(shadowAtlas.spotMeta[s].x - float(spotLightIndex)) < 0.25) {
-      float texel = shadowAtlas.spotMeta[s].y;
-      float dBias = shadowAtlas.spotMeta[s].z;
-      vec3 toSpot = normalize(spotLights.positions[spotLightIndex] - worldPos);
-      vec3 bPos = worldPos + normal * (texel * 1.2) + toSpot * (texel * dBias);
-      vec4 clip = shadowAtlas.spotViewProj[s] * vec4(bPos, 1.0);
-      if (clip.w <= 0.0) {
-        return vec3(1.0);
-      }
-      vec3 ndc = clip.xyz / clip.w;
-      vec2 uv = vec2(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y);
-      if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 ||
-          ndc.z < 0.0 || ndc.z > 1.0) {
-        return vec3(1.0);
-      }
-      float vis = sampleAtlasTilePcf(uv, shadowAtlas.spotUvRect[s], ndc.z, 1);
-      return mix(
-        vec3(1.0),
-        shadowAtlas.spotColor[s].rgb,
-        shadowAtlas.spotMeta[s].w * (1.0 - vis)
-      );
-    }
-  }
-  return vec3(1.0);
-}
-
-vec3 evaluateAtlasPointShadow(int pointLightIndex, vec3 worldPos, vec3 normal) {
-  if (shadowAtlas.pointMeta.x < -0.5 ||
-      abs(shadowAtlas.pointMeta.x - float(pointLightIndex)) > 0.25) {
-    return vec3(1.0);
-  }
-  vec3 fromLight = worldPos + normal * 0.03 - shadowAtlas.pointPosRange.xyz;
-  float dist = length(fromLight);
-  float invRange = shadowAtlas.pointPosRange.w;
-  float linearDepth = dist * invRange - shadowAtlas.pointMeta.y * 0.004;
-  if (linearDepth >= 1.0 || dist <= 1e-4) {
-    return vec3(1.0);
-  }
-  vec3 dir = fromLight / dist;
-  vec4 rect = dir.z >= 0.0
-      ? shadowAtlas.pointFrontUvRect
-      : shadowAtlas.pointBackUvRect;
-  float hz = abs(dir.z);
-  vec2 p = (dir.xy / (hz + 1.0)) * 0.96;
-  vec2 tileUv = vec2(0.5 + 0.5 * p.x, 0.5 - 0.5 * p.y);
-  int radius = int(clamp(shadowAtlas.pointMeta.z, 0.0, 2.0));
-  float vis = sampleAtlasTilePcf(tileUv, rect, clamp(linearDepth, 0.0, 1.0), radius);
-  return mix(
-    vec3(1.0),
-    shadowAtlas.pointColor.rgb,
-    shadowAtlas.pointMeta.w * (1.0 - vis)
-  );
 }
 
 vec3 processLightPbr(
@@ -720,7 +534,6 @@ void main() {
   }
 
   vec3 lo = vec3(0.0);
-  bool atlasActive = shadowAtlas.header.x > 0.5;
   int cascadeIndexUsed = -1;
 
   for (int i = 0; i < int(lights.numLights); i++) {
@@ -735,9 +548,7 @@ void main() {
     } else {
       attenuation = intensity / (distance * distance);
     }
-    vec3 ptShadow = atlasActive
-        ? evaluateAtlasPointShadow(i, fragPosition, geomNormal)
-        : vec3(1.0);
+    vec3 ptShadow = pointShadowFactor(i, fragPosition, geomNormal);
     lo += processLightPbr(
       normalize(lightDirVec),
       lights.colors[i].rgb * attenuation * ptShadow,
@@ -756,32 +567,21 @@ void main() {
   }
 
   vec3 sunShadow = vec3(1.0);
-  if (atlasActive) {
-    int dirIdx = int(shadowAtlas.header.z);
-    if (dirIdx >= 0 && dirIdx < int(directionalLights.numLights) &&
-        dot(geomNormal, directionalLights.directions[dirIdx].xyz) > -0.05) {
-      float vis = evaluateAtlasDirectionalCsm(
-        fragPosition,
-        geomNormal,
-        cascadeIndexUsed
-      );
-      sunShadow = shadowFactor(vis);
-    }
-  } else {
-    int shadowed = int(FLAME_SHADOWS(toLight).w);
-    if (shadowed >= 0 && shadowed < int(directionalLights.numLights) &&
-        dot(geomNormal, directionalLights.directions[shadowed].xyz) > -0.05) {
-      sunShadow = shadowFactor(shadowVisibility(fragPosition, geomNormal));
-    }
+  int shadowed = int(FLAME_SHADOWS(toLight).w);
+  if (shadowed >= 0 && shadowed < int(directionalLights.numLights) &&
+      dot(geomNormal, directionalLights.directions[shadowed].xyz) > -0.05) {
+    float vis = shadowCascadeVisibility(
+      fragPosition,
+      geomNormal,
+      cascadeIndexUsed
+    );
+    sunShadow = shadowFactor(vis);
   }
 
   for (int i = 0; i < int(directionalLights.numLights); i++) {
     vec4 direction = directionalLights.directions[i];
     vec4 lightColor = directionalLights.colors[i];
-    bool isShadowDir = atlasActive
-        ? (abs(float(i) - shadowAtlas.header.z) < 0.25)
-        : castsShadows(i);
-    vec3 shadow = isShadowDir ? sunShadow : vec3(1.0);
+    vec3 shadow = castsShadows(i) ? sunShadow : vec3(1.0);
     lo += processLightPbr(
       direction.xyz,
       lightColor.rgb * lightColor.a * shadow,
@@ -818,11 +618,7 @@ void main() {
         attenuation = 1.0 / (dist * dist);
       }
       vec4 spotColor = spotLights.colors[i];
-      vec3 spotSh = atlasActive
-          ? evaluateAtlasSpotShadow(i, fragPosition, geomNormal)
-          : (spotCastsShadows(i)
-                ? shadowFactor(shadowVisibility(fragPosition, geomNormal))
-                : vec3(1.0));
+      vec3 spotSh = spotShadowFactor(i, fragPosition, geomNormal);
       lo += processLightPbr(
         l,
         spotColor.rgb * (spotColor.a * attenuation * angular) * spotSh,

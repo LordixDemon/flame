@@ -41,7 +41,7 @@ class ShadowAtlasTile3D({
   final Color color = const Color(0xFF000000),
 }) {
   /// Normalized atlas UV rectangle `(offsetU, offsetV, scaleU, scaleV)`.
-  Vector4 get uvRect => Vector4(
+  late final Vector4 uvRect = Vector4(
     x / atlasWidth,
     y / atlasHeight,
     width / atlasWidth,

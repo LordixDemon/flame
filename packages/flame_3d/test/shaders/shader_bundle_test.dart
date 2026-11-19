@@ -105,12 +105,40 @@ void main() {
   }
 }
 
-/// Inlines the `#include`s of [source] from the package's `shaders/`.
+/// Inlines the `#include`s of [source] from the package's `shaders/`, and
+/// keeps the lines that its `#ifdef`, `#ifndef` and `#else` select for the
+/// names it `#define`s.
 String _resolve(String source) {
-  return source.replaceAllMapped(
+  final inlined = source.replaceAllMapped(
     RegExp(r'^#include <([^>]+)>$', multiLine: true),
     (match) => File('shaders/${match[1]}').readAsStringSync(),
   );
+  final defined = <String>{};
+  // Whether each enclosing conditional keeps its lines.
+  final keeping = <bool>[];
+  final kept = StringBuffer();
+  for (final line in inlined.split('\n')) {
+    final directive = RegExp(
+      r'^\s*#\s*(define|ifdef|ifndef|else|endif)\b\s*(\w*)',
+    ).firstMatch(line);
+    final active = !keeping.contains(false);
+    switch (directive?[1]) {
+      case 'ifdef':
+        keeping.add(defined.contains(directive![2]));
+      case 'ifndef':
+        keeping.add(!defined.contains(directive![2]));
+      case 'else':
+        keeping.add(!keeping.removeLast());
+      case 'endif':
+        keeping.removeLast();
+      case 'define' when active:
+        defined.add(directive![2]!);
+        kept.writeln(line);
+      case _ when active:
+        kept.writeln(line);
+    }
+  }
+  return kept.toString();
 }
 
 Map<String, List<String>> _uniformBlocks(String glsl) {

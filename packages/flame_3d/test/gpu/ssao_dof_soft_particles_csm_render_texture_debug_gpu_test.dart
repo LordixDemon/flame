@@ -203,7 +203,8 @@ void main() {
         _countNonBackdrop(csmPx, const Color(0xFF0B101B)),
         greaterThan(500),
       );
-      expect(csmLayer.renderStats.shadowPasses, 2);
+      // Both cascades are tiles of one atlas pass.
+      expect(csmLayer.renderStats.shadowPasses, 1);
 
       // Part B: Perspective `SpotLight(shadows: ShadowSettings(...))`.
       final spotWorld = World3D();

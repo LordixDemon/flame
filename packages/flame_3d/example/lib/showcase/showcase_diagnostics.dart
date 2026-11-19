@@ -1371,10 +1371,11 @@ class ShowcaseDiagnostics() {
       final probe = rig.v3.skyDomeProbe;
       final skyIrr = probe.evaluateIrradiance(Vector3(0, 0, 1));
       final gndIrr = probe.evaluateIrradiance(Vector3(0, 0, -1));
-      final dynCsmOk =
-          dynCsmPasses == 2 || (dynCsmPasses == 1 && dynAtlasTiles == 3);
+      // Cascades and a second shadow-casting light are tiles of one atlas
+      // pass; a cached static atlas takes no pass at all.
+      final dynCsmOk = dynCsmPasses == 1 && dynAtlasTiles >= 2;
       final csmSpotIblOk =
-          statCsmPasses == 2 &&
+          statCsmPasses <= 1 &&
           dynCsmOk &&
           spotShPasses == 1 &&
           spotShadowActive &&

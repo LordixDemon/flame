@@ -174,7 +174,6 @@ class SpatialMaterial({
     RenderContext3D.shadowMapSampler,
     'Material',
     RenderContext3D.passOptionsBlock,
-    RenderContext3D.shadowAtlasBlock,
     RenderContext3D.ambientLightBlock,
     RenderContext3D.lightsBlock,
     RenderContext3D.directionalLightsBlock,

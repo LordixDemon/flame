@@ -591,7 +591,26 @@ class RenderContext3D(super.device) extends RenderContext {
   /// Active `ShadowAtlas3D` tile packer of this context.
   ShadowAtlas3D get shadowAtlas => _shadows.atlas;
 
-  /// Starts the shadow pass of the scene whose [lights] are set.
+  /// Starts the shadow pass of the scene whose [lights] are set, with the
+  /// camera of the main pass set: returns whether draws are to be recorded.
+  ///
+  /// The draws of every caster are recorded once per view of the lights:
+  ///
+  /// ```dart
+  /// if (context.beginShadowPass(projection: p, sceneBounds: bounds)) {
+  ///   recordCasters();
+  ///   while (context.advanceShadowAtlasTile()) {
+  ///     recordCasters();
+  ///   }
+  ///   context.endShadowPass();
+  /// }
+  /// ```
+  ///
+  /// A lone light (a directional light with one cascade, or a spot light)
+  /// has one map; cascades, a point light and several lights share the tiles
+  /// of the [shadowAtlas], each tile a view of its own. When it returns
+  /// `false`, the main pass still receives shadows if [hasActiveShadows]
+  /// (a map kept by [ShadowSettings.cacheWhenStatic]).
   bool beginShadowPass({
     required DirectionalShadowProjection projection,
     required Aabb3? sceneBounds,
@@ -611,18 +630,18 @@ class RenderContext3D(super.device) extends RenderContext {
   /// and restores the main camera.
   void endShadowPass() => _shadows.end();
 
-  /// Whether a second cascade pass is queued for a 2-cascade shadow atlas.
-  bool get needsShadowCascade1 => _shadows.needsCascade1;
+  /// Always `false`: two cascades are tiles of the [shadowAtlas], recorded
+  /// through [advanceShadowAtlasTile].
+  @Deprecated('Two cascades are atlas tiles; use advanceShadowAtlasTile')
+  bool get needsShadowCascade1 => false;
 
-  /// Begins recording shadow casters for the far cascade of a 2-cascade atlas.
-  void beginShadowCascade1() {
-    _shadowViewerPosition.setFrom(_cameraPosition);
-    _shadowViewerViewProjection.setFrom(_viewProjectionMatrix);
-    _shadows.beginCascade1();
-  }
+  /// Does nothing: two cascades are tiles of the [shadowAtlas].
+  @Deprecated('Two cascades are atlas tiles; use advanceShadowAtlasTile')
+  void beginShadowCascade1() {}
 
-  /// Flushes the far cascade and packs both cascades into the shadow atlas.
-  void endShadowCascade1() => _shadows.endCascade1();
+  /// Does nothing: two cascades are tiles of the [shadowAtlas].
+  @Deprecated('Two cascades are atlas tiles; use advanceShadowAtlasTile')
+  void endShadowCascade1() {}
 
   /// Whether the draws being recorded belong to the half-res depth-normal
   /// prepass.

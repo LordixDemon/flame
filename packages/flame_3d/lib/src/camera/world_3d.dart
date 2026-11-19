@@ -442,14 +442,6 @@ class World3D({
     } finally {
       ctx.endShadowPass();
     }
-    if (ctx.needsShadowCascade1) {
-      ctx.beginShadowCascade1();
-      try {
-        _recordCasters(canvas);
-      } finally {
-        ctx.endShadowCascade1();
-      }
-    }
     return true;
   }
 

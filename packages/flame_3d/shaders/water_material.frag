@@ -51,6 +51,19 @@ uniform StylizedPass {
   vec4 Shadows_bias;
   vec4 Shadows_decode;
   vec4 Shadows_cascadeParams;
+  vec4 Shadows_atlas;
+  mat4 Shadows_atlasCascadeViewProjections[4];
+  vec4 Shadows_atlasCascadeRects[4];
+  vec4 Shadows_atlasCascadeParams[4];
+  mat4 Shadows_atlasSpotViewProjections[2];
+  vec4 Shadows_atlasSpotRects[2];
+  vec4 Shadows_atlasSpotParams[2];
+  vec4 Shadows_atlasSpotPositions[2];
+  vec4 Shadows_atlasSpotColors[2];
+  vec4 Shadows_atlasPointPosition;
+  vec4 Shadows_atlasPointRects[2];
+  vec4 Shadows_atlasPointParams;
+  vec4 Shadows_atlasPointColor;
   vec4 Fog_color;
   vec4 Fog_params;
   vec4 Fog_height;
@@ -152,10 +165,12 @@ void main() {
         ? pow(max(1.0 - dist / range, 0.0), 2.0)
         : 1.0 / (dist * dist);
     float e = scene.Lights_intensities[i].x * atten;
-    directDiffuse += scene.Lights_colors[i].rgb * (e * max(dot(n, l), 0.0));
+    vec3 pointSh = pointShadowFactor(i, fragPosition, geomN);
+    directDiffuse += scene.Lights_colors[i].rgb *
+      (e * max(dot(n, l), 0.0)) * pointSh;
     float ndoth = max(dot(n, normalize(l + v)), 0.0);
     specLight += scene.Lights_colors[i].rgb *
-      (pow(ndoth, waterMat.params.w) * waterMat.params2.y * e);
+      (pow(ndoth, waterMat.params.w) * waterMat.params2.y * e) * pointSh;
   }
 
   for (int i = 0; i < int(scene.SpotLights_numLights); i++) {

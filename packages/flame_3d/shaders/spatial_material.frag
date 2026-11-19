@@ -48,6 +48,8 @@ uniform Camera {
   vec3 position;
 } camera;
 
+// The web has no shadow atlas: this shader only reads the single map.
+#define FLAME_SHADOWS_SINGLE_MAP
 #include <flame_3d/shadows.glsl>
 #include <flame_3d/fog.glsl>
 #include <flame_3d/dither.glsl>

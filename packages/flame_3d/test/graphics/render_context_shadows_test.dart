@@ -77,6 +77,9 @@ void main() {
     if (shadows) {
       expect(context.isShadowPass, isTrue);
       draw();
+      while (context.advanceShadowAtlasTile()) {
+        draw();
+      }
       context.endShadowPass();
     }
     expect(context.isShadowPass, isFalse);
@@ -438,6 +441,29 @@ void main() {
       expect(context.shadowMapVersion, version);
     });
 
+    test('binds the atlas again to a later pass', () {
+      final material = _Receiver();
+      final surface = triangle(material);
+      final settings = ShadowSettings(
+        resolution: 128,
+        cascades: 2,
+        cascadeSplits: [0.8, 1],
+      );
+      frame([sun(shadows: settings)], () {
+        context.drawSurface(
+          surface,
+          transform: Matrix4.translationValues(0, 0, -10),
+        );
+      });
+      expect(shadowsMember(material, 'atlas', 4).toList(), [1, 2, 0, -1]);
+      final version = context.shadowMapVersion;
+
+      expect(mainPass(surface, version: version), isTrue);
+      expect(context.hasShadowAtlas, isTrue);
+      expect(shadowsMember(material, 'atlas', 4).toList(), [1, 2, 0, -1]);
+      expect(shadowsMember(material, 'toLight', 4)[3], 0);
+    });
+
     test('fails once another shadow map was rendered', () {
       final material = _Receiver();
       final surface = triangle(material);
@@ -493,6 +519,88 @@ void main() {
       expect(material.castsShadows, isFalse);
       material.castsShadows = null;
       expect(material.castsShadows, isTrue);
+    });
+  });
+
+  group('Cascades', () {
+    /// The floats of element [index] of the array [member] of the Shadows
+    /// block bound last.
+    Float32List element(Material material, String member, int index, int n) {
+      final all = shadowsMember(material, member, (index + 1) * n);
+      return Float32List.sublistView(all, index * n);
+    }
+
+    List<double> cascade0(ShadowSettings settings) {
+      final material = _Receiver();
+      final surface = triangle(material);
+      frame([sun(shadows: settings)], () {
+        context.drawSurface(
+          surface,
+          transform: Matrix4.translationValues(0, 0, -10),
+        );
+      });
+      expect(shadowsMember(material, 'atlas', 4)[1], 2);
+      expect(
+        element(material, 'atlasCascadeParams', 0, 4)[1],
+        closeTo(settings.cascadeBlendRange, 1e-6),
+      );
+      return element(material, 'atlasCascadeViewProjections', 0, 16).toList();
+    }
+
+    test('two cascades read cascadeSplits and cascadeBlendRange', () {
+      final near = cascade0(
+        ShadowSettings(
+          cascades: 2,
+          cascadeSplits: [0.75, 1],
+          cascadeBlendRange: 0.25,
+        ),
+      );
+      final far = cascade0(
+        ShadowSettings(
+          cascades: 2,
+          cascadeSplits: [0.9, 1],
+          cascadeBlendRange: 0.05,
+        ),
+      );
+      expect(near, isNot(orderedEquals(far)));
+    });
+
+    test('cascadeSplits must have one increasing split per cascade', () {
+      expect(
+        () => ShadowSettings(cascades: 2, cascadeSplits: [0.2, 0.5, 1]),
+        throwsArgumentError,
+      );
+      // The split of the last cascade, which covers it all, may be left out.
+      expect(ShadowSettings(cascades: 3, cascadeSplits: [0.2, 0.5]), isNotNull);
+      expect(
+        () => ShadowSettings(cascades: 2, cascadeSplits: [0.6, 0.5]),
+        throwsArgumentError,
+      );
+      expect(
+        () => ShadowSettings(cascades: 2, cascadeSplits: [0, 1]),
+        throwsArgumentError,
+      );
+      expect(
+        ShadowSettings(cascades: 3, cascadeSplits: [0.2, 0.5, 1]),
+        isNotNull,
+      );
+      // A list changed afterwards is checked when the pass reads it.
+      final settings = ShadowSettings(cascades: 2)..cascades = 4;
+      settings.cascadeSplits = [0.5, 1];
+      device.begin();
+      context
+        ..lights = [sun(shadows: settings)]
+        ..setCamera(
+          Matrix4.identity(),
+          Matrix4.identity()..setAsPerspective(60, 1, 0.1, 100),
+        );
+      expect(
+        () => context.beginShadowPass(
+          projection: projection,
+          sceneBounds: bounds,
+        ),
+        throwsStateError,
+      );
     });
   });
 
