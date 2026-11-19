@@ -1,35 +1,44 @@
-# flame_3d example & showcase testbed
+# flame_3d example
 
-Interactive examples and an all-in-one 20-lab engine showcase for `package:flame_3d`:
-
-- **`showcase`** (`ShowcaseGame` / `ShowcaseView` — press `T` or run `setup showcase` in the
-  console):
-  - **20 feature labs (`ShowcasePreset`)** exercising retained `Scene3DComponent` layers,
-    `ShadowSettings.cacheWhenStatic`, Float16 HDR (`hdrEnabled`), `ColorLut3D`, `RenderDebugMode3D`,
-    split-sum `BrdfLut3D`, box-projected `ReflectionProbeVolume3D`, 3D `LightProbeGrid3D`, PBR
-    `SpatialMaterial` (Clearcoat, Transmission/IOR, `Surface.computeTangents`, `anisotropic16x`,
-    `Ktx2TextureLoader` BC1), unified `ShadowAtlas3D` (`4`-CSM + `SpotLight` + Dual-Paraboloid
-    `PointLight` shadows), Weighted Blended OIT (`OitMode3D.weightedBlended`), Grab-Pass refraction,
-    `StencilState`, `RenderGraph3D`, `LightClusterGrid3D` (`128+` lights), Hi-Z `OcclusionCuller3D`
-    and `PortalOcclusionGraph3D`, `StaticMeshBatcher3D`, 64-bit `FloatingOriginController3D`, CDLOD
-    `ChunkedTerrain3D` with `10,000+` `FoliageSystem3D` & `VolumeDecalBatch3D`, `DynamicAabbTree3D`,
-    `120 m/s` CCD `RigidBody3D`, `CompoundShape3D` & `HeightfieldShape3D`, 6-DOF joints,
-    `BuoyancyVolume3D`, `RaycastVehicle3D`, `XpbdCloth3D` / `XpbdRope3D`, Recast `NavMeshBuilder3D`,
-    `NavMeshObstacle3D` & `OffMeshLink3D`, CRC32 `PhysicsSnapshot3D` rollback,
-    `AnimationStateMachine3D` HFSM, `AnimationRetargeter3D`, `FabrikIkConstraint3D`,
-    `FootPlacementIk3D`, `RagdollController3D`, `PrefabRegistry3D` + `'F3DS'` `SceneSerializer3D`,
-    `GpuResourceManager3D`, `CameraStack3D`, `Timeline3D` + `VirtualCameraBrain3D`,
-    `MsdfTextBatch3D`, `WidgetSurface3D`, `MeshoptDecoder3D` + `WorldChunkStreamer3D`,
-    `SpatialAudioMixer3D`, `TransformGizmo3D` + `SceneInspector3D`, and a **64-check** automated
-    **Self-Test** (`ShowcaseDiagnostics`).
-- **`boxes`**, **`colors`**, **`culling`**, **`models`**, **`particles`**, **`houses`** (`H`), and
-  **`shadows`**.
+A Flutter app (`flame_3d_example`) with scenarios for the features of `package:flame_3d`. It ships
+without platform folders: create the ones you need in this directory with
+`flutter create --platforms=macos .` (or `android`, `ios`), then switch Flutter GPU on as described
+in the package's [Getting Started](../../../doc/bridge_packages/flame_3d/getting_started.md).
 
 
-## Headless GPU verification
+## Scenarios
 
-From `packages/flame_3d/example`:
+The app starts on `boxes`. The backquote key opens a console where `setup <name>` switches
+scenario; `H` opens `houses` and `T` the showcase directly, `R` resets the camera, `M` switches its
+mode and `O` toggles 4x MSAA.
+
+- `boxes`, `colors`, `culling`, `models`, `particles`: small scenes for one feature each.
+- `houses`: an ordinary 2D game whose houses are one `Scene3DComponent` layer between a 2D grid
+  and 2D labels, under a 2D camera that pans and zooms; a tap picks a house with a 3D ray.
+- `shadows`: 3D buildings casting tinted shadows onto a 2D board through a `ShadowCatcherMaterial`,
+  under a sun that circles around it.
+- `showcase` (`ShowcaseGame`, `ShowcaseView`): one scene with 20 feature labs (`ShowcasePreset`),
+  from materials, lights and shadows to physics, navigation, animation, 3D UI and the inspector,
+  and switches for most rendering options.
+- `camera_lab` (`PureCameraLabGame`): a pure 3D game with 10 camera setups (`PureCameraMode`),
+  among them the orbit, spring arm and dolly rigs, split screen, and a `VirtualCameraBrain3D` with a
+  `Timeline3D`.
+
+The labs show what each feature looks like and what it costs in the scene; the platform support
+and the limits of each feature are on its documentation page.
+
+
+## Self-test
+
+The showcase's Self-Test button runs `ShowcaseDiagnostics.runAllChecks`: 64 checks that switch
+through all 20 labs. They are smoke checks: most assert counters and state (draw calls above a
+threshold, objects mounted, a body that moved), two read pixels. The pixel-exact checks of the
+rendering are the package's own GPU tests. The same checks run headless, from this directory:
 
 ```sh
 flutter test --enable-impeller --enable-flutter-gpu
 ```
+
+Without the flags the test skips. See
+[Debugging, Profiling and Testing](../../../doc/bridge_packages/flame_3d/debugging_and_testing.md)
+for what each check covers.
