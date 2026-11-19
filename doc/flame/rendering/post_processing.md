@@ -299,6 +299,35 @@ post process yourself:
 This system makes it easy to add creative and useful visual effects to your Flame game.
 
 
+### The raster scale of offscreen pictures
+
+On screen, components draw on a canvas in logical pixels: Flutter applies the device pixel ratio
+after the picture is recorded, so `canvas.getTransform()` does not include it. `rasterizeSubtree`
+scales the canvas of its picture by `pixelRatio` instead, and the components of the subtree see that
+scale in the transform: the canvas units are already the pixels of the image. A component that
+renders an image of its own at the resolution of the pixels it covers (a 3D layer, for example)
+needs to know which of the two it draws on, and reads `RasterScale` (from
+`package:flame/rendering.dart`):
+
+```dart
+@override
+void render(Canvas canvas) {
+  // Pixels per canvas unit: the canvas transform alone in an offscreen
+  // picture, times the device pixel ratio on screen.
+  final pixelRatio = RasterScale.isActive ? 1.0 : devicePixelRatio;
+  // ...
+}
+```
+
+`RasterScale.current` is the scale of the innermost offscreen picture, in its pixels per logical
+pixel, or `null` on screen. `rasterizeSubtree` and `rasterizePass` push it while the subtree
+renders, and so do the offscreen world of a camera whose `effectiveWorldRenderScale` is not `1`,
+`CameraComponent.renderToImageSync` (with `renderToImage` and `RenderTextureComponent`) and the
+tiles of `renderHighResImageSync`. A post process of your own that records `renderSubtree` into a
+picture of its own and scales its canvas pushes the scale with `RasterScale.push` and pops it with
+`RasterScale.pop` (in a `finally`) around the call.
+
+
 ## Advanced Example: Crystal Ball
 
 For a more advanced use case of post processing, check out the

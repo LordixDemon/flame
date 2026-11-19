@@ -28,6 +28,7 @@ import 'package:flame/src/experimental/geometry/shapes/rounded_rectangle.dart';
 import 'package:flame/src/experimental/geometry/shapes/shape.dart';
 import 'package:flame/src/game/flame_game.dart';
 import 'package:flame/src/game/telemetry_canvas.dart';
+import 'package:flame/src/rendering/raster_scale.dart';
 import 'package:meta/meta.dart';
 
 /// Sub-pixel camera translation stabilization modes for [CameraComponent].
@@ -793,7 +794,12 @@ class CameraComponent({
       ),
     )..scale(surfW / vSize.x, surfH / vSize.y);
 
-    _renderWorld(innerCanvas);
+    RasterScale.push(surfW / vSize.x);
+    try {
+      _renderWorld(innerCanvas);
+    } finally {
+      RasterScale.pop();
+    }
     final picture = recorder.endRecording();
     ui.Image? image;
     try {
@@ -1725,6 +1731,40 @@ class CameraComponent({
       canvas.drawRect(logicalBounds, ui.Paint()..color = backgroundColor);
     }
 
+    RasterScale.push(outW / baseW);
+    try {
+      _recordViewContent(
+        canvas,
+        baseW,
+        baseH,
+        includePostProcess: includePostProcess,
+        includeBackdrop: includeBackdrop,
+        includeViewport: includeViewport,
+        passes: passes,
+      );
+    } finally {
+      RasterScale.pop();
+    }
+
+    return (
+      picture: recorder.endRecording(),
+      width: outW,
+      height: outH,
+    );
+  }
+
+  /// Records the backdrop, the world (through the post process when
+  /// [includePostProcess]) and the viewport onto [canvas], of [baseW] by
+  /// [baseH] logical pixels, see [_recordViewToPicture].
+  void _recordViewContent(
+    ui.Canvas canvas,
+    double baseW,
+    double baseH, {
+    required bool includePostProcess,
+    required bool includeBackdrop,
+    required bool includeViewport,
+    required List<RenderPass>? passes,
+  }) {
     if ((world?.isMounted ?? false) &&
         currentCameras.length < maxCamerasDepth) {
       if (includeBackdrop) {
@@ -1759,12 +1799,6 @@ class CameraComponent({
         viewport.renderTree(canvas);
       }
     }
-
-    return (
-      picture: recorder.endRecording(),
-      width: outW,
-      height: outH,
-    );
   }
 
   /// Renders this camera's current view into an offscreen [ui.Image]
@@ -1902,19 +1936,24 @@ class CameraComponent({
 
           if ((world?.isMounted ?? false) &&
               currentCameras.length < maxCamerasDepth) {
-            if (includeBackdrop) {
-              backdrop.renderTree(tileCanvas);
-            }
-            currentCameras.add(this);
+            RasterScale.push(tileRenW / logW);
             try {
-              tileCanvas.save();
-              _renderWorld(tileCanvas);
-              tileCanvas.restore();
+              if (includeBackdrop) {
+                backdrop.renderTree(tileCanvas);
+              }
+              currentCameras.add(this);
+              try {
+                tileCanvas.save();
+                _renderWorld(tileCanvas);
+                tileCanvas.restore();
+              } finally {
+                currentCameras.removeLast();
+              }
+              if (includeViewport) {
+                viewport.renderTree(tileCanvas);
+              }
             } finally {
-              currentCameras.removeLast();
-            }
-            if (includeViewport) {
-              viewport.renderTree(tileCanvas);
+              RasterScale.pop();
             }
           }
 

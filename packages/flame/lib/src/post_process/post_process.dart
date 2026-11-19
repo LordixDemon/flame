@@ -8,6 +8,7 @@ import 'package:flame/src/camera/render_pass.dart';
 import 'package:flame/src/camera/world.dart';
 import 'package:flame/src/components/core/component.dart';
 import 'package:flame/src/game/telemetry_canvas.dart';
+import 'package:flame/src/rendering/raster_scale.dart';
 import 'package:flutter/foundation.dart';
 import 'package:vector_math/vector_math.dart';
 
@@ -251,6 +252,9 @@ abstract class PostProcess({double? pixelRatio}) {
   ///
   /// This method will set the context of the post process, so that
   /// components can know they are being rendered within a post process.
+  ///
+  /// While the subtree renders, [RasterScale.current] is [pixelRatio]: the
+  /// canvas the components draw on is in the pixels of the image.
   @nonVirtual
   @protected
   ui.Image rasterizeSubtree() {
@@ -259,9 +263,11 @@ abstract class PostProcess({double? pixelRatio}) {
       ..scale(pixelRatio);
 
     _rasterizeDepth++;
+    RasterScale.push(pixelRatio);
     try {
       renderSubtree(innerCanvas);
     } finally {
+      RasterScale.pop();
       _rasterizeDepth--;
     }
 
@@ -281,7 +287,8 @@ abstract class PostProcess({double? pixelRatio}) {
   /// `pixelRatio * resolutionScale` (clamped so dimensions stay `>= 1x1`),
   /// optionally tagging [currentPassTag] with [passTag] and pushing
   /// [cameraRenderPass] onto `CameraComponent.currentRenderPass` for the
-  /// duration of the pass.
+  /// duration of the pass. While the subtree renders, [RasterScale.current]
+  /// is that scale.
   @nonVirtual
   @protected
   ui.Image rasterizePass({
@@ -311,9 +318,11 @@ abstract class PostProcess({double? pixelRatio}) {
         innerCanvas.scale(effectiveScale, effectiveScale);
       }
       _rasterizeDepth++;
+      RasterScale.push(effectiveScale);
       try {
         renderSubtree(innerCanvas);
       } finally {
+        RasterScale.pop();
         _rasterizeDepth--;
       }
       final picture = recorder.endRecording();
