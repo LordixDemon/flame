@@ -233,6 +233,32 @@ void main() {
       expectColor(pixels, (255, 0, 0, 255));
     });
 
+    testGpuEngine('hides a label behind opaque geometry', () async {
+      final label = Text3DComponent(
+        text: '',
+        backgroundColor: const Color(0xFF00FF00),
+        borderColor: null,
+        cornerRadius: 0,
+        position: Vector3(0, 0, -5),
+        worldHeight: 1,
+      );
+      // A red wall in front of the label's left half.
+      final wall = quad(opaqueUnlit(const Color(0xFFFF0000)), halfSize: 0.4);
+      final frame = await renderFrame(
+        draw: (context) {
+          context.drawSurface(
+            wall,
+            transform: Matrix4.translationValues(-0.4, 0, -4),
+          );
+          label.draw(context);
+        },
+      );
+      final (lx, ly) = pixelAt(-0.15, 0);
+      final (rx, ry) = pixelAt(0.15, 0);
+      expect(frame.pixels.at(lx, ly), (255, 0, 0, 255));
+      expect(frame.pixels.at(rx, ry), (0, 255, 0, 255));
+    });
+
     testGpuEngine(
       'draws a translucent label background at its alpha',
       () async {

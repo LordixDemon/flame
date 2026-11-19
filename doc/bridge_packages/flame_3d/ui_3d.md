@@ -408,8 +408,9 @@ class Badge extends SurfaceControl2D {
 Opaque cutout draws write depth and are sorted with the other opaque draws, so they intersect the
 scene correctly and need no sorting among themselves. Translucent draws come after all opaque
 draws and are sorted back to front by the center of each component's bounds; one component is
-never split, so two translucent labels that overlap in depth can sort the wrong way. Every
-component here is skipped in the shadow pass and draws once per main pass.
+never split, so two translucent labels that overlap in depth can sort the wrong way. They are
+depth tested: `debug_and_ui_3d_gpu_test.dart` checks that a wall hides the half of a label behind
+it. Every component here is skipped in the shadow pass and draws once per main pass.
 
 The depth-normal prepass (`World3D.depthPrepassEnabled`, used by SSAO, depth of field, soft
 particles and shoreline foam, see [Post-Processing](post_processing.md)) holds opaque billboards
