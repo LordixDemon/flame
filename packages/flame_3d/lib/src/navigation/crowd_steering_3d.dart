@@ -68,9 +68,14 @@ class CrowdAgent3D({
 }
 
 /// Multi-agent 3D crowd steering solver combining waypoint path following,
-/// Reciprocal Velocity-Obstacle (RVO) predictive collision avoidance with
-/// right-hand symmetry breaking, separation, and optional [NavMesh3D] surface
-/// clamping.
+/// sampled-velocity Reciprocal Velocity-Obstacle (RVO) avoidance of the other
+/// agents with right-hand symmetry breaking, separation, and optional
+/// [NavMesh3D] surface clamping.
+///
+/// Agents avoid each other, not walls: they stay on the mesh only by
+/// following their paths, and [navMesh] (when set) moves them onto the
+/// walkable surface after each step, through [NavMesh3D.sampleHeightAt]
+/// (`O(log P)` per agent).
 class CrowdSteering3D({
   List<CrowdAgent3D>? agents,
   this.navMesh,
@@ -108,11 +113,18 @@ class CrowdSteering3D({
     }
 
     final up = upAxis;
-    final basisU = up.x.abs() < 0.9
-        ? (Vector3(1.0, 0.0, 0.0)..addScaled(up, -up.x))
-        : (Vector3(0.0, 1.0, 0.0)..addScaled(up, -up.y));
-    basisU.normalize();
-    final basisV = up.cross(basisU)..normalize();
+    final basisU = _basisU;
+    if (up.x.abs() < 0.9) {
+      basisU.setValues(1.0, 0.0, 0.0);
+    } else {
+      basisU.setValues(0.0, 1.0, 0.0);
+    }
+    basisU
+      ..addScaled(up, -basisU.dot(up))
+      ..normalize();
+    final basisV = _basisV;
+    up.crossInto(basisU, basisV);
+    basisV.normalize();
 
     // 1. Compute RVO-avoiding horizontal velocity + path vertical tracking for
     // each agent simultaneously before integrating positions.
@@ -178,13 +190,16 @@ class CrowdSteering3D({
         for (var j = i + 1; j < agents.length; j++) {
           final b = agents[j];
           // Only separate agents on the same elevation layer (`|dUp| < 1.5`).
-          final dUp = (b.position - a.position).dot(up);
+          final relX = b.position.x - a.position.x;
+          final relY = b.position.y - a.position.y;
+          final relZ = b.position.z - a.position.z;
+          final dUp = relX * up.x + relY * up.y + relZ * up.z;
           if (dUp.abs() > 1.5) {
             continue;
           }
-          final diffX = b.position.x - a.position.x - up.x * dUp;
-          final diffY = b.position.y - a.position.y - up.y * dUp;
-          final diffZ = b.position.z - a.position.z - up.z * dUp;
+          final diffX = relX - up.x * dUp;
+          final diffY = relY - up.y * dUp;
+          final diffZ = relZ - up.z * dUp;
           final dist2 = diffX * diffX + diffY * diffY + diffZ * diffZ;
           final minSep = a.radius + b.radius;
           if (dist2 < minSep * minSep) {
@@ -436,6 +451,8 @@ class CrowdSteering3D({
 
   static final Vector3 _prefVel = Vector3.zero();
   static final Vector2 _chosenUV = Vector2.zero();
+  static final Vector3 _basisU = Vector3.zero();
+  static final Vector3 _basisV = Vector3.zero();
 
   static const List<double> _speedScales = [1.0, 0.75, 0.45, 0.0];
   static const List<double> _candidateAngles = [
