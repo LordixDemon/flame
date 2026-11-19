@@ -1067,15 +1067,16 @@ final index = marks.addFlatDecal(
 marks.setDecal(index, color: const Color(0x80FFFFFF));
 ```
 
-| Parameter     | Default             | Meaning                                                   |
-| ------------- | ------------------- | --------------------------------------------------------- |
-| `texture`     | none                | atlas; without one, a procedural disc or ring             |
-| `albedoColor` | white               | times each decal's color                                  |
-| `depthBias`   | `0.0005`            | clip-space push towards the camera                        |
-| `softness`    | `0.15`              | feather of the disc edge, also a round vignette on images |
-| `innerRadius` | `0` (filled disc)   | inner radius of a ring, `0..1`                            |
-| `alphaCutoff` | `0.001`             | fragments below are discarded                             |
-| `renderState` | premultiplied blend | constructor parameter                                     |
+| Parameter              | Default           | Meaning                                            |
+| ---------------------- | ----------------- | -------------------------------------------------- |
+| `texture`              | none              | atlas; without one, a procedural disc or ring      |
+| `albedoColor`          | white             | times each decal's color                           |
+| `depthBias`            | `0.0005`          | clip-space push towards the camera                 |
+| `softness`             | `0.15`            | disc edge feather, also a round vignette on images |
+| `innerRadius`          | `0` (filled disc) | inner radius of a ring, `0..1`                     |
+| `alphaCutoff`          | `0.001`           | fragments below are discarded                      |
+| `renderState`          | premultiplied     | constructor parameter (premultiplied alpha blend)  |
+| `premultipliedTexture` | `false`           | the texture holds premultiplied colors             |
 
 Set `softness: 0` for textured decals: with the default, every texture is cut to a feathered disc.
 A decal is a flat quad, not a projection: it does not wrap over uneven ground, and `depthBias`
@@ -1083,6 +1084,27 @@ must be large enough for the distance and depth precision of the camera. Decals 
 fogged, never cast shadows, do not batch with other batches, and are not available on the web
 (creating a `DecalMaterial` throws an `UnsupportedError`). For decals projected onto terrain, see
 `VolumeDecalBatch3D` in [Large Worlds](world_scale.md).
+
+
+### Atlases of premultiplied images
+
+By default a decal takes its texture as straight colors and multiplies them by their alpha. The
+images Flutter decodes, and atlases built by drawing them into a picture, hold premultiplied
+colors: their translucent texels, and the texels that filtering and mipmaps blend between an opaque
+and a transparent one, are then darkened a second time (a half transparent red texel,
+`(128, 0, 0, 128)`, draws as `(64, 0, 0, 128)`). Set `premultipliedTexture: true` for such a
+texture: the texel is scaled as a whole by the edge softness and the tint's alpha, then tinted by
+its color, and keeps its color.
+
+```dart
+final marks = DecalBatch3D(
+  material: DecalMaterial(
+    texture: atlas, // built by drawing images into a picture
+    premultipliedTexture: true,
+    softness: 0,
+  ),
+);
+```
 
 
 ## Skybox

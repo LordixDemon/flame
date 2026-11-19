@@ -32,6 +32,17 @@ class DecalMaterial({
 
   /// Render state (defaults to premultiplied alpha without depth writes).
   RenderState renderState = RenderState.premultipliedAlphaBlend,
+
+  /// Whether [texture] holds premultiplied colors, as the images Flutter
+  /// decodes and atlases built by drawing them do.
+  ///
+  /// With `false` (the default) the texels are taken as straight colors and
+  /// multiplied by their alpha. With `true` they are taken as premultiplied
+  /// and scaled as a whole by the edge softness and the tint's alpha, then
+  /// tinted, so the filtered and mipmapped texels of a premultiplied atlas
+  /// keep their colors instead of darkening at translucent edges. It has no
+  /// effect on the procedural disc and ring (no [texture]).
+  var bool premultipliedTexture = false,
 }) extends Material {
   /// {@macro decal_material}
   this
@@ -67,7 +78,7 @@ class DecalMaterial({
       innerRadius,
       tex == null ? 1.0 : 0.0,
     );
-    _cutoff.setValues(alphaCutoff, 0, 0, 0);
+    _cutoff.setValues(alphaCutoff, premultipliedTexture ? 1.0 : 0.0, 0, 0);
     vertexShader
       ..setColor('Decal.albedoColor', albedoColor)
       ..setVector4('Decal.params', _params)

@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flame_3d/components.dart';
@@ -37,6 +38,64 @@ void main() {
       expect(r, greaterThan(200), reason: 'the square is in front');
       // Blended over the blue decals, drawn first.
       expect(b, inInclusiveRange(100, 160));
+    });
+
+    group('premultipliedTexture', () {
+      // A texel of half transparent red, premultiplied: (128, 0, 0, 128),
+      // what filtering a premultiplied atlas between an opaque red texel and
+      // a transparent one gives.
+      final texture = Texture(
+        ByteData.sublistView(Uint8List.fromList([128, 0, 0, 128])),
+        width: 1,
+        height: 1,
+      );
+
+      Future<(int, int, int, int)> center(
+        DecalMaterial material, {
+        Color color = const Color(0xFFFFFFFF),
+      }) async {
+        final decals = DecalBatch3D(material: material)
+          ..addFlatDecal(
+            center: Vector3(0, 0, -5),
+            width: 1.2,
+            height: 1.2,
+            normal: Vector3(0, 0, 1),
+            color: color,
+          );
+        final frame = await renderFrame(draw: decals.draw);
+        final (x, y) = pixelAt(0, 0);
+        return frame.pixels.at(x, y);
+      }
+
+      testGpuEngine('off, texels are straight colors as before', () async {
+        final (r, _, _, a) = await center(DecalMaterial(texture: texture));
+        // Multiplied by their alpha once more.
+        expect(r, closeTo(64, 1));
+        expect(a, closeTo(128, 1));
+      });
+
+      testGpuEngine('on, premultiplied texels keep their colors', () async {
+        final material = DecalMaterial(
+          texture: texture,
+          premultipliedTexture: true,
+        );
+        expect(await center(material), (128, 0, 0, 128));
+        // A tint's alpha scales the whole texel.
+        final (r, g, b, a) = await center(
+          material,
+          color: const Color(0x80FFFFFF),
+        );
+        expect(r, closeTo(64, 1));
+        expect((g, b), (0, 0));
+        expect(a, closeTo(64, 1));
+        // A tint's color multiplies it.
+        final (tr, _, _, ta) = await center(
+          material,
+          color: const Color(0xFF808080),
+        );
+        expect(tr, closeTo(64, 1));
+        expect(ta, 128);
+      });
     });
   });
 }

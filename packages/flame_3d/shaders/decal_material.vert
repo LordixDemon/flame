@@ -18,7 +18,7 @@ uniform Decal {
   vec4 albedoColor;
   // x: clip depth bias, y: radial softness, z: inner ring radius, w: 1 when using procedural disc/ring.
   vec4 params;
-  // x: alphaCutoff.
+  // x: alphaCutoff, y: 1 when the texture holds premultiplied colors.
   vec4 cutoff;
 } decal;
 
