@@ -405,6 +405,13 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
       GpuPixelFormat.etc2Rgba8 => gpu.PixelFormat.etc2RGBA8UNormInt,
       GpuPixelFormat.astc4x4 => gpu.PixelFormat.astc4x4LDR,
       GpuPixelFormat.astc8x8 => gpu.PixelFormat.astc8x8LDR,
+      GpuPixelFormat.bc1RgbaSrgb => gpu.PixelFormat.bc1RGBAUNormIntSRGB,
+      GpuPixelFormat.bc3RgbaSrgb => gpu.PixelFormat.bc3RGBAUNormIntSRGB,
+      GpuPixelFormat.bc7RgbaSrgb => gpu.PixelFormat.bc7RGBAUNormIntSRGB,
+      GpuPixelFormat.etc2Rgb8Srgb => gpu.PixelFormat.etc2RGB8UNormIntSRGB,
+      GpuPixelFormat.etc2Rgba8Srgb => gpu.PixelFormat.etc2RGBA8UNormIntSRGB,
+      GpuPixelFormat.astc4x4Srgb => gpu.PixelFormat.astc4x4LDRSRGB,
+      GpuPixelFormat.astc8x8Srgb => gpu.PixelFormat.astc8x8LDRSRGB,
     };
   }
 

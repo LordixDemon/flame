@@ -517,6 +517,13 @@ String _pixelFormat(GpuPixelFormat format) => switch (format) {
   GpuPixelFormat.etc2Rgba8 => 'etc2-rgba8unorm',
   GpuPixelFormat.astc4x4 => 'astc-4x4-unorm',
   GpuPixelFormat.astc8x8 => 'astc-8x8-unorm',
+  GpuPixelFormat.bc1RgbaSrgb => 'bc1-rgba-unorm-srgb',
+  GpuPixelFormat.bc3RgbaSrgb => 'bc3-rgba-unorm-srgb',
+  GpuPixelFormat.bc7RgbaSrgb => 'bc7-rgba-unorm-srgb',
+  GpuPixelFormat.etc2Rgb8Srgb => 'etc2-rgb8unorm-srgb',
+  GpuPixelFormat.etc2Rgba8Srgb => 'etc2-rgba8unorm-srgb',
+  GpuPixelFormat.astc4x4Srgb => 'astc-4x4-unorm-srgb',
+  GpuPixelFormat.astc8x8Srgb => 'astc-8x8-unorm-srgb',
 };
 
 String _cullMode(CullMode mode) => switch (mode) {

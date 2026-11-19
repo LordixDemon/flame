@@ -97,19 +97,19 @@ abstract final class Ktx2TextureLoader() {
       vkFormatBc1RgbUnormBlock ||
       vkFormatBc1RgbaUnormBlock => (GpuPixelFormat.bc1Rgba, false),
       vkFormatBc1RgbSrgbBlock ||
-      vkFormatBc1RgbaSrgbBlock => (GpuPixelFormat.bc1Rgba, true),
+      vkFormatBc1RgbaSrgbBlock => (GpuPixelFormat.bc1RgbaSrgb, true),
       vkFormatBc3UnormBlock => (GpuPixelFormat.bc3Rgba, false),
-      vkFormatBc3SrgbBlock => (GpuPixelFormat.bc3Rgba, true),
+      vkFormatBc3SrgbBlock => (GpuPixelFormat.bc3RgbaSrgb, true),
       vkFormatBc7UnormBlock => (GpuPixelFormat.bc7Rgba, false),
-      vkFormatBc7SrgbBlock => (GpuPixelFormat.bc7Rgba, true),
+      vkFormatBc7SrgbBlock => (GpuPixelFormat.bc7RgbaSrgb, true),
       vkFormatEtc2R8G8B8UnormBlock => (GpuPixelFormat.etc2Rgb8, false),
-      vkFormatEtc2R8G8B8SrgbBlock => (GpuPixelFormat.etc2Rgb8, true),
+      vkFormatEtc2R8G8B8SrgbBlock => (GpuPixelFormat.etc2Rgb8Srgb, true),
       vkFormatEtc2R8G8B8A8UnormBlock => (GpuPixelFormat.etc2Rgba8, false),
-      vkFormatEtc2R8G8B8A8SrgbBlock => (GpuPixelFormat.etc2Rgba8, true),
+      vkFormatEtc2R8G8B8A8SrgbBlock => (GpuPixelFormat.etc2Rgba8Srgb, true),
       vkFormatAstc4x4UnormBlock => (GpuPixelFormat.astc4x4, false),
-      vkFormatAstc4x4SrgbBlock => (GpuPixelFormat.astc4x4, true),
+      vkFormatAstc4x4SrgbBlock => (GpuPixelFormat.astc4x4Srgb, true),
       vkFormatAstc8x8UnormBlock => (GpuPixelFormat.astc8x8, false),
-      vkFormatAstc8x8SrgbBlock => (GpuPixelFormat.astc8x8, true),
+      vkFormatAstc8x8SrgbBlock => (GpuPixelFormat.astc8x8Srgb, true),
       _ => throw FormatException('Unsupported KTX2 vkFormat: $vkFormat'),
     };
   }
@@ -566,12 +566,12 @@ abstract final class Ktx2TextureLoader() {
         return out;
       }(),
       GpuPixelFormat.rgbaFloat16 => _decodeHalfFloatToRgba8(payload),
-      GpuPixelFormat.bc1Rgba => decodeBc1ToRgba8(
+      GpuPixelFormat.bc1Rgba || GpuPixelFormat.bc1RgbaSrgb => decodeBc1ToRgba8(
         payload,
         mip.width,
         mip.height,
       ),
-      GpuPixelFormat.bc3Rgba => decodeBc3ToRgba8(
+      GpuPixelFormat.bc3Rgba || GpuPixelFormat.bc3RgbaSrgb => decodeBc3ToRgba8(
         payload,
         mip.width,
         mip.height,

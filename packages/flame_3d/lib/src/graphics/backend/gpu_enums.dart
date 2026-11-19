@@ -58,15 +58,47 @@ enum GpuPixelFormat() {
   astc4x4,
 
   /// ASTC LDR compressed RGBA, 8x8 texel blocks, 16 bytes per block.
-  astc8x8;
+  astc8x8,
+
+  /// [bc1Rgba] with sRGB-encoded colors (decoded to linear on sample).
+  bc1RgbaSrgb,
+
+  /// [bc3Rgba] with sRGB-encoded colors (decoded to linear on sample).
+  bc3RgbaSrgb,
+
+  /// [bc7Rgba] with sRGB-encoded colors (decoded to linear on sample).
+  bc7RgbaSrgb,
+
+  /// [etc2Rgb8] with sRGB-encoded colors (decoded to linear on sample).
+  etc2Rgb8Srgb,
+
+  /// [etc2Rgba8] with sRGB-encoded colors (decoded to linear on sample).
+  etc2Rgba8Srgb,
+
+  /// [astc4x4] with sRGB-encoded colors (decoded to linear on sample).
+  astc4x4Srgb,
+
+  /// [astc8x8] with sRGB-encoded colors (decoded to linear on sample).
+  astc8x8Srgb;
 
   /// Whether this format stores block-compressed texels.
   bool get isCompressed => blockWidth > 1 || blockHeight > 1;
 
   /// Width of one compression block in texels (`1` for uncompressed formats).
   int get blockWidth => switch (this) {
-    astc8x8 => 8,
-    bc1Rgba || bc3Rgba || bc7Rgba || etc2Rgb8 || etc2Rgba8 || astc4x4 => 4,
+    astc8x8 || astc8x8Srgb => 8,
+    bc1Rgba ||
+    bc3Rgba ||
+    bc7Rgba ||
+    etc2Rgb8 ||
+    etc2Rgba8 ||
+    astc4x4 ||
+    bc1RgbaSrgb ||
+    bc3RgbaSrgb ||
+    bc7RgbaSrgb ||
+    etc2Rgb8Srgb ||
+    etc2Rgba8Srgb ||
+    astc4x4Srgb => 4,
     _ => 1,
   };
 
@@ -81,8 +113,18 @@ enum GpuPixelFormat() {
     bgra8888Srgb ||
     r32Float ||
     depthStencil => 4,
-    rgbaFloat16 || bc1Rgba || etc2Rgb8 => 8,
-    rgbaFloat32 || bc3Rgba || bc7Rgba || etc2Rgba8 || astc4x4 || astc8x8 => 16,
+    rgbaFloat16 || bc1Rgba || etc2Rgb8 || bc1RgbaSrgb || etc2Rgb8Srgb => 8,
+    rgbaFloat32 ||
+    bc3Rgba ||
+    bc7Rgba ||
+    etc2Rgba8 ||
+    astc4x4 ||
+    astc8x8 ||
+    bc3RgbaSrgb ||
+    bc7RgbaSrgb ||
+    etc2Rgba8Srgb ||
+    astc4x4Srgb ||
+    astc8x8Srgb => 16,
   };
 }
 

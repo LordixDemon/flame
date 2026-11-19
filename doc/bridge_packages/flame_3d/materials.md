@@ -1158,8 +1158,10 @@ whose GPU format is an sRGB one, which the GPU decodes to linear when sampling. 
 
 - `Texture(..., colorSpace: TextureColorSpace.srgb)` with `rgba8888` or `bgra8888` pixels, when
   the device supports the sRGB format;
-- KTX2 files in an uncompressed sRGB format, and compressed sRGB files that are decoded on the CPU
-  (see below).
+- KTX2 files in an sRGB format, compressed or not, whether uploaded as they are or decoded on the
+  CPU (see below);
+- the reflection texture of an `EnvironmentProbe3D` made from an sRGB panorama (see
+  [Lighting](lighting.md#environment-probes)).
 
 `ImageTexture`, `Images.loadTexture`, glTF textures and `Color` values (`albedoColor`, vertex and
 instance colors) are not decoded. `SpatialMaterial` encodes its output with a gamma of 2.2 when
@@ -1188,10 +1190,11 @@ returns a texture that is uploaded on first use:
   compresses on the CPU), and `parse` reads the header and levels without uploading.
 
 Which compressed formats a device supports depends on its GPU (BC on desktop GPUs, ETC2 and ASTC on
-most phones); `GpuBackend.instance.supportsPixelFormat` tells. Compressed sRGB files uploaded as
-blocks are sampled without sRGB decoding, while the same files decoded on the CPU are decoded: a
-file looks darker on a device that lacks its format than on one that has it, see the
-[Limitations](#limitations).
+most phones); `GpuBackend.instance.supportsPixelFormat` tells. sRGB files keep their color space on
+both paths: their blocks are uploaded in the sRGB variant of their format
+(`GpuPixelFormat.bc1RgbaSrgb`, `bc3RgbaSrgb`, `bc7RgbaSrgb`, `etc2Rgb8Srgb`, `etc2Rgba8Srgb`,
+`astc4x4Srgb`, `astc8x8Srgb`), and decoded files go to an `rgba8888Srgb` texture, so a file looks
+the same on every device.
 
 
 ### Color lookup tables
@@ -1334,6 +1337,5 @@ The texture sampler options, including anisotropy up to 16, work on the web.
   from Flutter images are premultiplied, which darkens their soft edges.
 - `UnlitMaterial`'s dartdoc says its translucent draws are never batched; consecutive translucent
   draws of one surface are batched, like every material's.
-- KTX2: no supercompression, no CPU decoder for BC7, ETC2 and ASTC, and sRGB compressed blocks are
-  sampled without decoding when uploaded directly but decoded on the CPU path.
+- KTX2: no supercompression, and no CPU decoder for BC7, ETC2, ASTC and RGBA32F.
 - `ImageTexture` has no color space option: images cannot be sampled as sRGB.
