@@ -5,7 +5,9 @@ import 'package:flame/components.dart' show RectangleComponent, World;
 import 'package:flame/game.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/debug.dart';
+import 'package:flame_3d/extensions.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/ui3d.dart';
 import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter/widgets.dart' show GlobalKey, RepaintBoundary;
 import 'package:flutter_test/flutter_test.dart';
@@ -69,8 +71,161 @@ Future<Pixels> _renderLayer(WidgetTester tester, Scene3DComponent layer) async {
   }))!;
 }
 
+/// The columns of [pixels] that hold a drawn (not clear) pixel, as
+/// `(first, last)`, or `null` when nothing is drawn.
+(int, int)? _drawnColumns(Pixels pixels) {
+  int? first;
+  int? last;
+  for (var x = 0; x < pixels.width; x++) {
+    for (var y = 0; y < pixels.height; y++) {
+      if (!pixels.isClear(x, y)) {
+        first ??= x;
+        last = x;
+        break;
+      }
+    }
+  }
+  return first == null ? null : (first, last!);
+}
+
+/// A view from [eye] looking at the point (0, 0, -5), y up.
+Matrix4 _viewFrom(Vector3 eye) =>
+    Matrix4.identity()
+      ..setAsViewMatrix(eye, Vector3(0, 0, -5), Vector3(0, 1, 0));
+
 void main() {
   setUpGpu();
+
+  group('BillboardBatch3D', () {
+    BillboardBatch3D redBatch() =>
+        BillboardBatch3D(
+          material: BillboardMaterial3D(albedoColor: const Color(0xFFFF0000)),
+        )..addBillboard(
+          position: Vector3.zero(),
+          width: 0.25,
+          height: 0.25,
+          orientation: BillboardOrientation3D.spherical,
+          anchorY: 0,
+          unlit: 1,
+        );
+
+    bool isRed(Pixels pixels, double x, double y) {
+      final (px, py) = pixelAt(x, y);
+      final (r, g, b, a) = pixels.at(px, py);
+      return r > 200 && g < 50 && b < 50 && a == 255;
+    }
+
+    testGpuEngine('places its billboards with its transform', () async {
+      final batch = redBatch()..position.setValues(0.5, 0, -5);
+      var frame = await renderFrame(draw: batch.draw);
+      expect(isRed(frame.pixels, 0.5, 0), isTrue);
+      expect(frame.pixels.isClear(32, 32), isTrue);
+      // The bounds used for culling are where it is drawn.
+      expect(batch.aabb.containsVector3(Vector3(0.5, 0, -5)), isTrue);
+
+      // Scaling the batch scales the sizes: a quarter wide at scale 1, half
+      // at scale 2.
+      expect(isRed(frame.pixels, 0.7, 0), isFalse);
+      batch.scale.setValues(2, 2, 2);
+      frame = await renderFrame(draw: batch.draw);
+      expect(isRed(frame.pixels, 0.7, 0), isTrue);
+      expect(isRed(frame.pixels, 0.5, 0.2), isTrue);
+    });
+
+    testGpuEngine('anchors and rolls sprites as rigid quads', () async {
+      final batch =
+          BillboardBatch3D(
+              material: BillboardMaterial3D(
+                albedoColor: const Color(0xFFFF0000),
+              ),
+            )
+            ..position.setValues(0, 0, -5)
+            // A wide sprite turned a quarter turn becomes tall.
+            ..addBillboard(
+              position: Vector3.zero(),
+              width: 0.5,
+              height: 0.1,
+              orientation: BillboardOrientation3D.spherical,
+              anchorY: 0,
+              rollRadians: math.pi / 2,
+              unlit: 1,
+            )
+            // A sprite whose left edge is at its position.
+            ..addBillboard(
+              position: Vector3(0.4, -0.6, 0),
+              width: 0.3,
+              height: 0.1,
+              orientation: BillboardOrientation3D.spherical,
+              anchorY: 0,
+              anchorX: -0.5,
+              unlit: 1,
+            );
+      final frame = await renderFrame(draw: batch.draw);
+      expect(isRed(frame.pixels, 0, 0.2), isTrue);
+      expect(isRed(frame.pixels, 0, -0.2), isTrue);
+      expect(isRed(frame.pixels, 0.2, 0), isFalse);
+      expect(isRed(frame.pixels, 0.65, -0.6), isTrue);
+      expect(isRed(frame.pixels, 0.3, -0.6), isFalse);
+    });
+  });
+
+  group('MsdfTextBatch3D', () {
+    testGpuEngine(
+      'keeps camera-facing text as wide seen from any side',
+      () async {
+        for (final mode in [
+          TextBillboardMode3D.spherical,
+          TextBillboardMode3D.cylindrical,
+        ]) {
+          final text = MsdfTextBatch3D()
+            ..addText(
+              'HELLO WORLD',
+              position: Vector3(0, 0, -5),
+              fontSize: 0.12,
+              mode: mode,
+              align: TextAlign3D.center,
+            );
+          final widths = <int>[];
+          for (final eye in [
+            Vector3.zero(), // in front
+            Vector3(5, 0, -5), // on the right side
+            Vector3(-3.5, 0, -8.5), // behind, on the left
+          ]) {
+            final frame = await renderFrame(
+              draw: text.draw,
+              view: _viewFrom(eye),
+            );
+            final (first, last) = _drawnColumns(frame.pixels)!;
+            // Centered on the string's position.
+            expect((first + last) / 2, closeTo(31.5, 1.5), reason: '$eye');
+            widths.add(last - first);
+          }
+          // About 11 glyphs of 0.62 * 0.12 units: 26 pixels.
+          expect(widths.first, greaterThan(20), reason: '$mode');
+          for (final width in widths) {
+            expect(width, closeTo(widths.first, 1), reason: '$mode');
+          }
+        }
+      },
+    );
+
+    testGpuEngine('follows the transform of the batch', () async {
+      final text = MsdfTextBatch3D()
+        ..addText(
+          'MOVE',
+          position: Vector3.zero(),
+          fontSize: 0.12,
+          align: TextAlign3D.center,
+        )
+        ..position.setValues(0.5, 0, -5);
+      for (final x in [0.5, -0.5]) {
+        text.position.x = x;
+        final frame = await renderFrame(draw: text.draw);
+        final (first, last) = _drawnColumns(frame.pixels)!;
+        expect((first + last) / 2, closeTo((x + 1) * 32, 1.5), reason: '$x');
+      }
+    });
+  });
 
   group('DebugRenderer3D', () {
     /// A shadow catcher ground, a red cube floating above it and a sun

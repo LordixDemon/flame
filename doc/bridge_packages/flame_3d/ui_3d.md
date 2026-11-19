@@ -31,7 +31,7 @@ final trees = BillboardBatch3D(
 );
 for (final p in positions) {
   trees.addBillboard(
-    position: p, // world space
+    position: p, // in the batch's space
     width: 1.2,
     height: 2,
     uvRect: const Rect.fromLTWH(0, 0, 0.25, 1),
@@ -52,23 +52,31 @@ trees.addBillboard(
 `addBillboard` returns the slot index; `setBillboard(index, ...)` rewrites a slot with the same
 parameters, `clear()` empties the batch, `length` counts the slots.
 
-| Parameter         | Default       | Meaning                                              |
-| ----------------- | ------------- | ---------------------------------------------------- |
-| `position`        | required      | world-space anchor point                             |
-| `width`, `height` | required      | size in world units                                  |
-| `orientation`     | `cylindrical` | turn about `upAxis`, or `spherical`: face the camera |
-| `upAxis`          | `(0, 1, 0)`   | upright axis of cylindrical sprites                  |
-| `anchorY`         | `-0.5`        | pivot: `-0.5` bottom edge at `position`, `0` centre  |
-| `tiltRadians`     | `0`           | leans a cylindrical sprite back (HD-2D standee)      |
-| `rollRadians`     | `0`           | rotation in the sprite's plane                       |
-| `uvRect`          | whole texture | normalized atlas rectangle                           |
-| `color`           | white         | tint multiplied with the texture                     |
-| `emissiveBoost`   | `0`           | brightens: color times `1 + emissiveBoost`           |
-| `unlit`           | `0`           | `0..1`, removes the lighting of this sprite          |
-| `fade`            | `0`           | `0..1`, scales the alpha down                        |
+| Parameter         | Default       | Meaning                                                |
+| ----------------- | ------------- | ------------------------------------------------------ |
+| `position`        | required      | pivot point, in the batch's local space                |
+| `width`, `height` | required      | size in world units                                    |
+| `orientation`     | `cylindrical` | turn about `upAxis`, or `spherical`: face the camera   |
+| `upAxis`          | `(0, 1, 0)`   | upright axis of cylindrical sprites                    |
+| `anchorY`         | `-0.5`        | vertical pivot: `-0.5` bottom edge at `position`       |
+| `anchorX`         | `0`           | horizontal pivot: `-0.5` left edge at `position`       |
+| `tiltRadians`     | `0`           | leans a cylindrical sprite back (HD-2D standee)        |
+| `rollRadians`     | `0`           | turns the sprite about its pivot, in the sprite plane  |
+| `uvRect`          | whole texture | normalized atlas rectangle                             |
+| `color`           | white         | tint multiplied with the texture                       |
+| `emissiveBoost`   | `0`           | brightens: color times `1 + emissiveBoost`             |
+| `unlit`           | `0`           | `0..1`, removes the lighting of this sprite            |
+| `fade`            | `0`           | `0..1`, scales the alpha down                          |
 
 A `spherical` sprite faces the camera's image plane; a `cylindrical` one stays upright along
-`upAxis` and only turns about it, which suits trees, characters and signs.
+`upAxis` and only turns about it, which suits trees, characters and signs. The anchors are in
+sprite sizes and apply along the sprite's own right and up directions, so values beyond `±0.5`
+move the sprite away from `position` in the camera plane (`MsdfTextBatch3D` places the glyphs of
+a string this way); the roll turns the sprite as a rigid quad about that pivot.
+
+The batch's transform, and its parents', place the sprites: `position` is transformed, `upAxis`
+turned, and the sizes scaled by the largest axis scale of the transform (each sprite still faces
+the camera on its own). `test/gpu/debug_and_ui_3d_gpu_test.dart` draws a moved and scaled batch.
 
 
 ### The material
@@ -93,16 +101,15 @@ Fog applies to billboards.
 
 One batch is one instanced draw call per pass, whatever the number of sprites; it is skipped in
 shadow passes. The instance data (96 bytes per sprite) is uploaded with the pass. The bounds used
-for culling are recomputed when a slot changes. `addBillboard` and `setBillboard` allocate a
-`Vector3` when `upAxis` is not passed: pass a shared one when updating many sprites every frame.
+for culling are recomputed when a slot changes. A batch whose transform is not the identity keeps
+a second copy of the instance data placed in world space, rebuilt (one pass over the sprites) when
+a slot or the transform changes.
 
 
 ### Billboard limitations
 
-- Positions are world positions. The batch's own `position`, `rotation` and `scale`, and those of
-  its parents, are ignored when drawing, but they are applied to the bounds used for frustum
-  culling: a batch that is moved, or added under a moved parent, draws in the wrong place or is
-  culled while visible. Keep batches at the origin with an identity transform.
+- A non-uniform scale scales the sprite sizes by its largest axis: a sprite has no fixed axis to
+  stretch along. The bounds are grown to match.
 - Opaque billboards are missing from the depth-normal prepass, see
   [Depth and sorting](#depth-and-sorting).
 - Sprites inside one batch are not sorted against each other; a translucent batch is sorted
@@ -211,12 +218,14 @@ text shimmers. `alphaCutoff` must stay above `0`; at `0` every glyph draws as a 
 
 `addText` options:
 
-- `position`, in the batch's local space for `fixed` text (see the limitations for the other modes);
+- `position`, in the batch's local space: the batch's transform and its parents' place the text;
 - `fontSize` (`0.5`): world units per em, which is also the glyph height;
 - `color` (white);
-- `mode`: `spherical` (default) or `cylindrical` glyphs face the camera, `fixed` lays the text on a
-  plane turned by `rotation`. For the camera-facing modes `rotation` turns the direction the glyphs
-  are lined up along and adds a roll and a tilt to each glyph;
+- `mode`: `spherical` (default) or `cylindrical` strings face the camera, `fixed` lays the text on a
+  plane turned by `rotation`. Camera-facing strings are laid out in the camera plane (for
+  `cylindrical`, along the horizontal side of the upright cylinder), so a string keeps its width
+  seen from any side; `rotation` adds a roll of the whole string about `position` (and a tilt for
+  `cylindrical`);
 - `align` (`left`), `letterSpacing` (ems, `0`) and `lineHeight` (ems, `1.2`); `\n` starts a new
   line.
 
@@ -232,21 +241,15 @@ bounds query). Camera-facing glyphs go into one internal `BillboardBatch3D` (opa
 fixed glyphs are merged into one mesh drawn with a `SpatialMaterial`. A batch therefore costs one
 instanced draw call, or two when it holds both kinds, whatever the number of strings. The test
 `msdf_text_and_widget_surface_3d_test.dart` checks that 150 two-line strings (more than 1,200
-glyphs) make a single draw call. A rebuild allocates growable lists and a new mesh for the fixed
+glyphs) make a single draw call, and `debug_and_ui_3d_gpu_test.dart` renders a camera-facing
+string from the front, the side and behind and checks that it keeps its width and its place, also
+after the batch moves. A rebuild allocates growable lists and a new mesh for the fixed
 text; strings that change every frame rebuild the whole batch every frame, so keep frequently
 changing strings in a batch of their own.
 
 
 ### Font text limitations
 
-- Camera-facing text is laid out along a fixed direction, the world `X` axis (or `X` turned by
-  `rotation`): each glyph faces the camera on its own, but the glyph positions do not. Seen along
-  that axis a string collapses onto itself; in a check, `HELLO WORLD` covered 72 pixels from the
-  front and 6 pixels from the side. Camera-facing strings read well only when the camera looks
-  roughly along the world `Z` axis; use `fixed` text for labels seen from all around.
-- The camera-facing glyph positions are converted to world space when the batch is rebuilt.
-  Moving the batch or its parents afterwards does not move them (fixed text does follow). Call
-  `setText` with the same text to force a rebuild after moving the batch.
 - Fixed text is lit like a `SpatialMaterial` surface with the material's default `metallic` of
   `0.8`: it renders much darker than its color (white text reached 121 of 255 where the
   camera-facing text reached 255 under the same lights) and changes with the lighting.

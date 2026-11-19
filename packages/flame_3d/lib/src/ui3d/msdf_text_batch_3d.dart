@@ -513,7 +513,7 @@ class MsdfTextBatch3D({
     _fixedMaterial.alphaCutoff = alphaCutoff;
 
     if (!_billboardBatch.isEmpty) {
-      _billboardBatch.draw(context);
+      _billboardBatch.drawTransformed(context, worldTransformMatrix);
     }
     final fixedSurf = _fixedSurface;
     if (fixedSurf != null && _fixedGlyphCount > 0) {
@@ -565,14 +565,11 @@ class MsdfTextBatch3D({
     final fixedVerts = <double>[];
     final fixedIndices = <int>[];
     final strideFloats = VertexLayout.standard.strideInFloats;
-    final hasBatchTransform = !worldTransformMatrix.isIdentity();
-    final batchWorld = worldTransformMatrix;
 
     final rightVec = Vector3.zero();
     final upVec = Vector3.zero();
     final normalVec = Vector3.zero();
     final glyphCenter = Vector3.zero();
-    final glyphWorldCenter = Vector3.zero();
 
     for (var eIdx = 0; eIdx < _entries.length; eIdx++) {
       final entry = _entries[eIdx];
@@ -690,31 +687,27 @@ class MsdfTextBatch3D({
                 _glyphQuadCount++;
               }
             } else {
-              // For spherical/cylindrical billboards, offset horizontally along
-              // local X (or rotated X when `entry.rotation` is provided) in
-              // screen/billboard plane via roll or world center. For multi-char
-              // camera-facing strings, offsetting along world X/right keeps
-              // static world placement, OR even better: check!
-              // Place each glyph quad along the string's horizontal `rightVec`
-              // and vertical line offset `upVec`.
-              glyphCenter
-                ..setFrom(entry.position)
-                ..addScaled(rightVec, localOffsetX)
-                ..addScaled(upVec, localOffsetY);
-              expandBounds(glyphCenter.x, glyphCenter.y, glyphCenter.z, size);
+              // Camera-facing glyphs all sit at the string's position and are
+              // moved to their place in the string by their anchors, which
+              // the shader applies along the camera's (or the cylinder's)
+              // right and up: the string keeps its width seen from any side,
+              // and a roll turns it as a whole around its position.
+              final anchorX = -localOffsetX / gw;
+              final anchorY = -localOffsetY / gh;
+              final rx = (anchorX.abs() + 0.5) * gw;
+              final ry = (anchorY.abs() + 0.5) * gh;
+              final p = entry.position;
+              expandBounds(p.x, p.y, p.z, math.sqrt(rx * rx + ry * ry));
 
-              glyphWorldCenter.setFrom(glyphCenter);
-              if (hasBatchTransform) {
-                batchWorld.transform3(glyphWorldCenter);
-              }
               _billboardBatch.addBillboard(
-                position: glyphWorldCenter,
+                position: p,
                 width: gw,
                 height: gh,
                 orientation: entry.mode == TextBillboardMode3D.cylindrical
                     ? BillboardOrientation3D.cylindrical
                     : BillboardOrientation3D.spherical,
-                anchorY: 0.0,
+                anchorY: anchorY,
+                anchorX: anchorX,
                 tiltRadians: tiltRad,
                 rollRadians: rollRad,
                 uvRect: m.uvRect,
