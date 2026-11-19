@@ -382,7 +382,8 @@ The pipeline is the same; what differs is the image it runs on.
 - OpenGL ES: no float targets, so HDR and bloom run in 8 bits and values above `1` clip (see
   [HDR](#hdr)); the prepass uses screen-space derivatives (`dFdx`, `dFdy`).
 - Web: none of it. The bloom, composite and depth-normal shaders have no WebGPU bundle, so enabling
-  any of these effects makes the first frame throw a `StateError`.
+  any of these effects (or HDR) makes the first frame throw an `UnsupportedError` that names the
+  missing shader.
 
 
 ## Limitations

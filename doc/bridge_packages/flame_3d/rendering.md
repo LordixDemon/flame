@@ -417,8 +417,8 @@ directory as an asset: `GpuBackend.initialize()` loads every `.shaderbundle` the
 in its non-PBR variant, `unlit_material`, `skybox_material`, `billboard_material`,
 `decal_material`, `outline_material`, `outline_material_skinned` and `ribbon_material`): on the web,
 anything that needs another shader (`StylizedMaterial`, particles, water, shadows, the depth-normal
-prepass, order-independent transparency, bloom and post-processing) throws a `StateError` when it
-first draws.
+prepass, order-independent transparency, bloom, HDR, post-processing, `keepContents` texture
+passes) throws an `UnsupportedError` naming the shader when it first draws.
 
 
 ## Custom render passes and `RenderGraph3D`
@@ -648,10 +648,9 @@ order-independent transparency, so measure those in your own scene.
 - Web (WebGPU): the main pass, render states and stencil; MSAA renders with 4 samples. Wireframe
   is ignored, `SpatialMaterial` draws with its non-PBR shader (no transmission, so the grab pass
   has no use there), and the features that need a shader without a web bundle throw (see
-  [Building shader bundles](#building-shader-bundles)). The backend also creates a bind group for
-  every draw call, which costs CPU time per draw that the native backends do not have. Strip
-  topologies are drawn indexed without the strip index format WebGPU requires for that, so expect
-  a validation error with them.
+  [Building shader bundles](#building-shader-bundles)). Texture targets have one sample. The
+  backend also creates a bind group for every draw call, which costs CPU time per draw that the
+  native backends do not have.
 
 
 ## Limitations

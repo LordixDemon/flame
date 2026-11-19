@@ -330,6 +330,7 @@ extension type GPUFragmentState._(JSObject _) implements JSObject {
 extension type GPUPrimitiveState._(JSObject _) implements JSObject {
   external factory GPUPrimitiveState({
     String topology,
+    String stripIndexFormat,
     String cullMode,
     String frontFace,
   });

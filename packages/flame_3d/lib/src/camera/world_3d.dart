@@ -193,7 +193,9 @@ class World3D({
   ///
   /// Backends without floating-point render targets (OpenGL ES) render into
   /// an 8-bit target instead: the picture is the same, but colors above 1
-  /// clip before bloom and tone mapping.
+  /// clip before bloom and tone mapping. On the web the composite shaders
+  /// have no WebGPU build: the first frame throws an [UnsupportedError], as
+  /// with [bloom], [postProcess], [oitMode] and [depthPrepassEnabled].
   bool get hdrEnabled => _hdrEnabled;
   bool _hdrEnabled = hdrEnabled;
   set hdrEnabled(bool value) {
@@ -206,6 +208,12 @@ class World3D({
 
   /// Order-independent transparency mode (`OitMode3D.none` or
   /// `OitMode3D.weightedBlended`).
+  ///
+  /// With `OitMode3D.weightedBlended`, alpha-blended translucent draws are
+  /// drawn with their own materials into an accumulation and a revealage
+  /// target and composited as a weighted average, whatever their order;
+  /// other translucent draws are sorted. Backends without floating-point
+  /// render targets (OpenGL ES) sort all translucent draws instead.
   OitMode3D get oitMode => _oitMode;
   OitMode3D _oitMode = oitMode;
   set oitMode(OitMode3D value) {

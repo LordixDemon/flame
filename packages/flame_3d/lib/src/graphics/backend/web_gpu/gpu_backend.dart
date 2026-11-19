@@ -197,6 +197,18 @@ base class GpuBackend._(
     final unprefixed = _wgslBundleKey(_withoutPackagePrefix(assetName));
     final bundle = _bundles[key] ?? _bundles[unprefixed];
     if (bundle == null) {
+      if (assetName.startsWith(_packagePrefix)) {
+        // A shader of this package without a WebGPU build: the feature using
+        // it (shadows, bloom and post-processing, HDR, the depth-normal
+        // prepass, order-independent transparency, ...) is not available on
+        // the web yet.
+        throw UnsupportedError(
+          'The flame_3d shader "${_withoutPackagePrefix(assetName)}" has no '
+          'WebGPU build: the feature that draws with it is not available on '
+          'the web yet. See the platform support sections of the flame_3d '
+          'rendering and post-processing documentation.',
+        );
+      }
       throw StateError(
         'No web shader bundle found for "$assetName" (expected asset "$key"). '
         'Generate it with `dart run flame_3d:build_shaders --with-web-gpu` '
@@ -349,6 +361,27 @@ base class GpuBackend._(
   @override
   base.GpuFrame beginFrame() => _frame;
 
+  GPUPrimitiveState _primitiveState(int state) {
+    final topology = _topology(_StateKey.topology(state));
+    final cullMode = _cullMode(_StateKey.cullMode(state));
+    final frontFace = _StateKey.windingOrder(state) == WindingOrder.clockwise
+        ? 'cw'
+        : 'ccw';
+    final stripIndexFormat = _StateKey.stripIndexFormat(state);
+    return stripIndexFormat == null
+        ? GPUPrimitiveState(
+            topology: topology,
+            cullMode: cullMode,
+            frontFace: frontFace,
+          )
+        : GPUPrimitiveState(
+            topology: topology,
+            stripIndexFormat: stripIndexFormat,
+            cullMode: cullMode,
+            frontFace: frontFace,
+          );
+  }
+
   /// Resolves (and caches) the concrete [GPURenderPipeline] for [pipeline]
   /// under the given render state, color format, sample count and stencil.
   GPURenderPipeline _resolvePipeline(
@@ -387,13 +420,7 @@ base class GpuBackend._(
               entryPoint: 'main',
               targets: [_colorTarget(_StateKey.blend(state), targetFormat)],
             ),
-            primitive: GPUPrimitiveState(
-              topology: _topology(_StateKey.topology(state)),
-              cullMode: _cullMode(_StateKey.cullMode(state)),
-              frontFace: _StateKey.windingOrder(state) == WindingOrder.clockwise
-                  ? 'cw'
-                  : 'ccw',
-            ),
+            primitive: _primitiveState(state),
             depthStencil: GPUDepthStencilState(
               format: _depthFormat,
               depthWriteEnabled: _StateKey.depthWrite(state),
@@ -409,6 +436,8 @@ base class GpuBackend._(
       },
     );
   }
+
+  static const String _packagePrefix = 'packages/flame_3d/';
 
   static String _withoutPackagePrefix(String assetName) {
     if (!assetName.startsWith('packages/')) {
@@ -603,13 +632,29 @@ abstract final class _StateKey() {
     required CullMode cullMode,
     required WindingOrder windingOrder,
     required PrimitiveTopology topology,
+    bool uint32Indices = false,
   }) {
     return blend.index |
         depthCompare.index << 4 |
         (depthWrite ? 1 : 0) << 8 |
         cullMode.index << 9 |
         windingOrder.index << 12 |
-        topology.index << 13;
+        topology.index << 13 |
+        // Only strip pipelines depend on the index format.
+        (uint32Indices && isStrip(topology) ? 1 : 0) << 16;
+  }
+
+  static bool isStrip(PrimitiveTopology topology) =>
+      topology == PrimitiveTopology.triangleStrip ||
+      topology == PrimitiveTopology.lineStrip;
+
+  /// The `stripIndexFormat` of a strip pipeline, which WebGPU requires for
+  /// indexed strip draws, or `null` for other topologies.
+  static String? stripIndexFormat(int key) {
+    if (!isStrip(topology(key))) {
+      return null;
+    }
+    return (key >> 16) & 1 == 1 ? 'uint32' : 'uint16';
   }
 
   static BlendState blend(int key) => BlendState.values[key & 0xF];
@@ -931,6 +976,9 @@ class _WebGpuRenderPass(
   PrimitiveTopology _topology = PrimitiveTopology.triangles;
   StencilState? _stencil;
   bool _stateChanged = true;
+  // Whether the bound index buffer holds 32-bit indices: indexed strip
+  // topologies need the index format in their pipeline.
+  bool _uint32Indices = false;
 
   final Map<int, (GPUBuffer buffer, int offset, int size)> _uniforms = {};
   final Map<int, GPUTextureView> _textures = {};
@@ -1036,6 +1084,13 @@ class _WebGpuRenderPass(
       offsetInBytes,
       lengthInBytes,
     );
+    final uint32 = indexType == GpuIndexType.uint32;
+    if (uint32 != _uint32Indices) {
+      _uint32Indices = uint32;
+      if (_StateKey.isStrip(_topology)) {
+        _stateChanged = true;
+      }
+    }
   }
 
   @override
@@ -1099,6 +1154,7 @@ class _WebGpuRenderPass(
           cullMode: _cullMode,
           windingOrder: _windingOrder,
           topology: _topology,
+          uint32Indices: _uint32Indices,
         ),
         _targetFormat,
         _sampleCount,
