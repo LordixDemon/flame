@@ -515,10 +515,10 @@ void renderShadows(
 }
 ```
 
-`RenderContext3D.isShadowPass` is `true` while casters are recorded; `view`, `projection`,
-`frustum` and `cameraPosition` are then the light's (for a point light's tile, a box around the half
-of its reach the tile covers), and `viewerPosition` stays the main camera's. Leaving out the tile
-loop leaves the other tiles of the atlas empty (lit). `needsShadowCascade1`, `beginShadowCascade1` and
+`RenderContext3D.isShadowPass` is `true` while casters are recorded; `view`, `projection`, `frustum`
+and `cameraPosition` are then the light's (for a point light's tile, a box around the half of its
+reach the tile covers), and `viewerPosition` stays the main camera's. Leaving out the tile loop
+leaves the other tiles of the atlas empty (lit). `needsShadowCascade1`, `beginShadowCascade1` and
 `endShadowCascade1` are deprecated and do nothing: two cascades are atlas tiles.
 
 
@@ -586,8 +586,8 @@ passes with them (2 of them in the shadow pass).
 
 These are the parts of shadows that are not finished at this point:
 
-- The key of `cacheWhenStatic` does not see changes that do not change `World3D.castersVersion`
-  (see [Static shadows](#static-shadows)).
+- The key of `cacheWhenStatic` does not see changes made in place until they are reported (see
+  [Static shadows](#static-shadows)).
 - With an orthographic camera, or `ShadowFit.scene`, the inner cascades are fixed in the middle of
   the region and do not follow the camera.
 - Every tile of the atlas traverses the scene again (eight traversals at most), unless the atlas
@@ -606,11 +606,10 @@ These are the parts of shadows that are not finished at this point:
   `ChunkedTerrain3D`, `FoliageSystem3D` and `LodMeshComponent` (when it has no `shadowMesh` and
   `lowestLodInShadowPass` is off) cast from the detail the camera of the frame selects (see
   [Large Worlds](world_scale.md#frustum-culling-and-bounds)).
-- The sun's map is fitted to `World3D.sceneBounds`, the union of the bounds of every component of
-  the world, whether it casts shadows or not. A component with huge bounds spreads the map over
-  them until the shadows vanish: a `DebugRenderer3D`, whose bounds reach ±100000 units, removes
-  the sun's shadows from its world (see
-  [Debugging, Profiling and Testing](debugging_and_testing.md#costs-and-limitations)). Keep such
-  components out of worlds whose sun casts shadows.
+- The sun's map is fitted to `World3D.sceneBounds`, the union of the bounds of the components of
+  the world, whether they cast shadows or not. A component with huge bounds spreads the map over
+  them until the shadows vanish, unless its `Component3D.includeInSceneBounds` is `false`, which
+  leaves it out of the scene bounds (only for direct children of the world; `DebugRenderer3D`,
+  whose bounds reach ±100000 units, sets it). Set it on such components.
 - Shadows are not available on the web.
 - `UnlitMaterial` receives no shadows.
