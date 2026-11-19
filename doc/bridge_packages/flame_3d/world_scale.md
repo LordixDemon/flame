@@ -400,6 +400,9 @@ final up = terrain.sampleNormal(12.5, -40);
 - `material` defaults to `SpatialMaterial(metallic: 0.05, roughness: 0.88)`.
 - `sampleHeight`, `sampleNormal` and `sampleBiomeWeights` take terrain-local coordinates and
   interpolate the full-resolution grid. `raycast` tests the full-resolution chunks along the ray.
+- Editing: `heights` can be changed in place; then call `markHeightsChanged()`, which drops the
+  chunks built so far and recomputes the elevation range, the bounds and the quadtree
+  (`maxHeight` and `skirtDepth` keep their values). Project decals on it again.
 
 Cost: one draw call per visible chunk. Each pass walks the quadtree with a frustum test per visited
 node. A chunk's surface is built the first time it is selected, inside the draw (117 vertices and
@@ -583,10 +586,9 @@ the streamer: do it in `onChunkEvicted`.
 
 ## Limitations
 
-- `ChunkedTerrain3D` has no geomorphing (levels pop), builds chunks inside the draw on first use,
-  and never frees built chunks before removal. Changing `heights` after construction does not
-  rebuild chunks that were already built. Its colors are per vertex; there is no texture
-  splatting. Decals projected onto a terrain follow its full-resolution surface, so where a coarser
+- `ChunkedTerrain3D` has no geomorphing (levels pop), builds chunks inside the draw on first use
+  (allocating while it does), and never frees built chunks before removal or
+  `markHeightsChanged()`. Its colors are per vertex; there is no texture splatting. Decals projected onto a terrain follow its full-resolution surface, so where a coarser
   chunk is drawn the terrain can hide them.
 - `StaticMeshBatcher3D` merges only instances with the same instance data (and, for materials other
   than `SpatialMaterial` and `UnlitMaterial`, the same color): many distinct values mean many

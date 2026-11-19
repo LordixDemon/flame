@@ -172,14 +172,17 @@ class _TerrainQuadNode3D({
   }
 }
 
-/// Quadtree Continuous Distance-Dependent Level-of-Detail (**CDLOD**) heightmap
-/// terrain [Object3D].
+/// Quadtree level-of-detail heightmap terrain [Object3D].
 ///
-/// Selects visible quadtree chunks per frame using camera distance and frustum
-/// culling (`step = 1` nearby, `step = 2, 4, 8` in the distance), seals
-/// inter-LOD T-junction borders with vertical perimeter skirts (`0` cracks),
-/// bakes smooth 4-biome (`sand -> grass -> rock -> snow`) vertex splatting, and
-/// provides `O(1)` bilinear [sampleHeight] and [sampleNormal] queries.
+/// Selects visible quadtree chunks per pass using the distance to the viewer
+/// (`RenderContext3D.viewerPosition`, the main camera also in shadow passes)
+/// and frustum culling (`step = 1` nearby, `step = 2, 4, 8` in the
+/// distance). Levels switch at once, without geomorphing. Cracks between
+/// chunks of different levels are hidden by vertical perimeter skirts
+/// [skirtDepth] deep. Bakes smooth 4-biome (`sand -> grass -> rock -> snow`)
+/// vertex colors and provides `O(1)` bilinear [sampleHeight] and
+/// [sampleNormal] queries. Call [markHeightsChanged] after editing
+/// [heights].
 class ChunkedTerrain3D({
   required Float32List heights,
 
@@ -241,10 +244,22 @@ class ChunkedTerrain3D({
         'lodLevels must be in 1..8',
       ),
       assert(leafChunkQuads >= 1, 'leafChunkQuads must be at least 1') {
+    _computeElevationRange();
+    this.maxHeight = (maxHeight != null && maxHeight > 0)
+        ? maxHeight
+        : math.max(1.0, _maxElevation - _minElevation);
+    this.skirtDepth = (skirtDepth != null && skirtDepth > 0)
+        ? skirtDepth
+        : math.max(0.5, this.maxHeight * 0.35);
+    _updateLocalAabb();
+    _buildQuadtree();
+  }
+
+  void _computeElevationRange() {
     var minH = double.infinity;
     var maxH = double.negativeInfinity;
-    for (var i = 0; i < this.heights.length; i++) {
-      final h = this.heights[i];
+    for (var i = 0; i < heights.length; i++) {
+      final h = heights[i];
       if (h < minH) {
         minH = h;
       }
@@ -258,17 +273,13 @@ class ChunkedTerrain3D({
     }
     _minElevation = minH;
     _maxElevation = maxH;
-    this.maxHeight = (maxHeight != null && maxHeight > 0)
-        ? maxHeight
-        : math.max(1.0, maxH - minH);
-    this.skirtDepth = (skirtDepth != null && skirtDepth > 0)
-        ? skirtDepth
-        : math.max(0.5, this.maxHeight * 0.35);
+  }
 
+  void _updateLocalAabb() {
     _localAabb
       ..min.setValues(
         -worldWidth * 0.5,
-        _minElevation - this.skirtDepth,
+        _minElevation - skirtDepth,
         -worldDepth * 0.5,
       )
       ..max.setValues(
@@ -276,8 +287,24 @@ class ChunkedTerrain3D({
         _maxElevation,
         worldDepth * 0.5,
       );
+  }
 
+  /// Rebuilds the terrain after [heights] were edited in place: drops every
+  /// chunk surface built so far (chunks are built again as they are drawn)
+  /// and recomputes the elevation range, the bounds and the quadtree.
+  /// [maxHeight] and [skirtDepth] keep their values. Decals projected onto
+  /// the terrain must be projected again.
+  void markHeightsChanged() {
+    for (var i = 0; i < _roots.length; i++) {
+      _roots[i].dispose();
+    }
+    _roots.clear();
+    _selectedNodes.clear();
+    _computeElevationRange();
+    _updateLocalAabb();
     _buildQuadtree();
+    markAabbDirty();
+    worldOrNull?.markSceneDirty(shadows: castsShadows);
   }
 
   /// Elevation sample grid (`gridColumns * gridRows`).
