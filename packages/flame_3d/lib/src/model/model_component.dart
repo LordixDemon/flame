@@ -433,20 +433,47 @@ class ModelComponent({
     final animChanged = sm != null
         ? sm.update(dt, targetState: _animation)
         : _animation.update(dt);
-    final hasModifiers = boneModifiers.any((m) => m.weight > 0.0);
+    var hasModifiers = false;
+    for (var i = 0; i < boneModifiers.length; i++) {
+      if (boneModifiers[i].weight > 0.0) {
+        hasModifiers = true;
+        break;
+      }
+    }
 
     if (extractor != null) {
       if (animChanged) {
         extractor.extractStep(model, _animation, worldTransformMatrix);
         if (extractor.applyToComponentTransform) {
-          position.add(extractor.deltaPositionWorld);
+          // The deltas are in the model's space: `position` and `rotation`
+          // are in the parent's, so the step goes through this component's
+          // own rotation and scale (right under any parent transform), and
+          // the turn applies about the model's up axis.
+          _rootMotionStep
+            ..setFrom(extractor.deltaPositionLocal)
+            ..multiply(scale);
+          rotation.rotate(_rootMotionStep);
+          position.add(_rootMotionStep);
           if (extractor.deltaYawRad.abs() > 1e-9) {
             final up = extractor.horizontalPlane == RootMotionPlane3D.xz
                 ? _upY
                 : _upZ;
             _yawDeltaQ.setAxisAngle(up, extractor.deltaYawRad);
+            final x = rotation.x;
+            final y = rotation.y;
+            final z = rotation.z;
+            final w = rotation.w;
+            final ox = _yawDeltaQ.x;
+            final oy = _yawDeltaQ.y;
+            final oz = _yawDeltaQ.z;
+            final ow = _yawDeltaQ.w;
             rotation
-              ..setFrom(_yawDeltaQ * rotation)
+              ..setValues(
+                w * ox + x * ow + y * oz - z * oy,
+                w * oy + y * ow + z * ox - x * oz,
+                w * oz + z * ow + x * oy - y * ox,
+                w * ow - x * ox - y * oy - z * oz,
+              )
               ..normalize();
           }
         }
@@ -647,4 +674,5 @@ class ModelComponent({
   static final Vector3 _upY = Vector3(0, 1, 0);
   static final Vector3 _upZ = Vector3(0, 0, 1);
   static final Quaternion _yawDeltaQ = Quaternion.identity();
+  static final Vector3 _rootMotionStep = Vector3.zero();
 }

@@ -569,8 +569,9 @@ choose which translation axes are removed from the visible pose; the root's rota
 removed, so applying `deltaYawRad` to the component as well turns the character twice for clips that
 turn.
 
-`applyToComponentTransform` adds the world-space delta to `position`, which is only right when the
-component's parent does not rotate or scale it.
+`applyToComponentTransform` moves `position` by the model-space delta through the component's own
+rotation and scale, and turns `rotation` by `deltaYawRad` about the model's up axis, so the
+character walks where the clip walks whatever transform the component's parents have.
 
 
 ## Procedural bone modifiers
@@ -799,4 +800,5 @@ the main isolate; `AsyncModelLoader3D` moves the geometry work to an isolate.
 - **Ray casts** hit skinned surfaces in their rest pose (see
   [Geometry and Scene Queries](geometry.md#limitations)).
 - **Foot placement** assumes world `+y` up; **retargeting** measures the hip height along `+y`.
-- **Root motion** does not remove the root's rotation from the pose.
+- **Root motion** does not remove the root's rotation from the pose, so applying the yaw to the
+  component turns turning clips twice.
