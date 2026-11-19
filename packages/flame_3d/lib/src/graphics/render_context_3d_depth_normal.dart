@@ -53,6 +53,7 @@ class _DepthNormalPass(final RenderContext3D _context) {
       _height,
       GpuPixelFormat.rgba8888,
       clearValue: const Color(0xFFFF8080),
+      role: _DepthNormalPass,
     );
     if (!identical(target, _target)) {
       _target = target;

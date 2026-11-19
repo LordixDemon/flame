@@ -141,13 +141,18 @@ enum BlendState() {
   /// object fades as one piece instead of showing its own hidden parts.
   depthOnly,
 
-  /// Weighted Blended OIT accumulation (`color = src + dst`,
-  /// `alpha = srcAlpha + dstAlpha`).
+  /// Order-independent transparency accumulation of premultiplied colors
+  /// (`color = src + dst`, `alpha = srcAlpha + dstAlpha`).
   wboitAccum,
 
-  /// Weighted Blended OIT revealage product (`color = dst * (1 - src)`,
-  /// `alpha = dstAlpha * (1 - srcAlpha)`).
+  /// Order-independent transparency revealage product
+  /// (`color = dst * (1 - srcAlpha)`, `alpha = dstAlpha * (1 - srcAlpha)`).
   wboitReveal,
+
+  /// Order-independent transparency accumulation of straight (not
+  /// premultiplied) colors (`color = src * srcAlpha + dst`,
+  /// `alpha = srcAlpha + dstAlpha`).
+  wboitAccumStraight,
 }
 
 /// A comparison between an incoming value and a stored one, used for the

@@ -575,8 +575,15 @@ GPUColorTargetState _colorTarget(BlendState blend, String format) {
     BlendState.wboitReveal => GPUColorTargetState(
       format: format,
       blend: GPUBlendState(
-        color: component('zero', 'one-minus-src'),
+        color: component('zero', 'one-minus-src-alpha'),
         alpha: component('zero', 'one-minus-src-alpha'),
+      ),
+    ),
+    BlendState.wboitAccumStraight => GPUColorTargetState(
+      format: format,
+      blend: GPUBlendState(
+        color: component('src-alpha', 'one'),
+        alpha: component('one', 'one'),
       ),
     ),
   };

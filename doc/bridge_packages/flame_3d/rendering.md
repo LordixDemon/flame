@@ -186,7 +186,7 @@ final rock = LodMeshComponent(
 A material declares how it is drawn with its `renderState`, a `RenderState`:
 
 - `blend`: `BlendState.opaque`, `alpha` (straight alpha), `premultipliedAlpha`, `additive` or
-  `depthOnly` (no color written). Two more blend modes exist for the internal use of the
+  `depthOnly` (no color written). Three more blend modes exist for the internal use of the
   [order-independent transparency](#order-independent-transparency) passes.
 - `depthTest` and `depthCompare` (a `CompareFunction`, `less` by default), and `depthWrite`.
 - `cullMode` (`CullMode.none` by default, `backFace` or `frontFace`).
@@ -276,8 +276,9 @@ A mask must be drawn before the draws that test it. The example makes the mask o
 creation order of the materials (see
 [Draws are recorded, then sorted](#draws-are-recorded-then-sorted)).
 The stencil does not survive from one pass to the next: a mask drawn in the main pass does not
-affect the shadow passes or the grab pass, and the translucent draws of
-[order-independent transparency](#order-independent-transparency) ignore their stencil state.
+affect the shadow passes or the grab pass. The passes of
+[order-independent transparency](#order-independent-transparency) draw the opaque draws again,
+depth only but with their stencil state, so an opaque mask still masks the translucent draws.
 
 
 ### Wireframe and primitive topology
@@ -409,7 +410,7 @@ package in your dependency graph. Add `watch` to rebuild when a source changes. 
 directory as an asset: `GpuBackend.initialize()` loads every `.shaderbundle` the app declares.
 
 `--with-web-gpu` also builds `.wgslbundle` files for the WebGPU backend, through the `naga` CLI
-(`cargo install naga-cli`). Only 8 of the package's 28 shaders have a web bundle (`spatial_material`
+(`cargo install naga-cli`). Only 8 of the package's 27 shaders have a web bundle (`spatial_material`
 in its non-PBR variant, `unlit_material`, `skybox_material`, `billboard_material`,
 `decal_material`, `outline_material`, `outline_material_skinned` and `ribbon_material`): on the web,
 anything that needs another shader (`StylizedMaterial`, particles, water, shadows, the depth-normal
@@ -456,8 +457,9 @@ final world = World3D(
 
 A pass draws with the device directly: `beginTexturePass`, `bindPipeline`, `setRenderState`,
 `bindSurface`, `drawSurface`, `endTexturePass`. Texture targets from `GraphicsDevice.textureTarget`
-are shared by every pass of the frame that asks for the same size, format and clear color, and are
-released 30 frames after their last use; give a target a clear color of its own, or create one with
+are shared by every pass of the frame that asks for the same size, format, clear color and `role`,
+and are released 30 frames after their last use; give a target a `role` of its own (any object with
+value equality, such as a value of your own enum), or create one with
 `device.backend.createTextureTarget`, when it must not be shared.
 
 `RenderGraph3D` is a separate tool for passes you schedule yourself: you declare transient textures
@@ -495,29 +497,32 @@ rebuilt at every new screen size keeps the targets of every size it saw).
 
 ## Order-independent transparency
 
-`World3D(oitMode: OitMode3D.weightedBlended)` draws the translucent draws of a frame with weighted
-blended order-independent transparency instead of sorting them, so intersecting translucent
-surfaces blend the same whatever their order. It only runs in frames that have translucent draws
-and on backends with texture targets. A frame then renders:
+`World3D(oitMode: OitMode3D.weightedBlended)` blends the alpha-blended translucent draws of a frame
+(`BlendState.alpha` and `BlendState.premultipliedAlpha`) without sorting them, so intersecting
+translucent surfaces blend the same whatever their order. It runs in frames that have translucent
+draws, on backends with float texture targets (Metal, Vulkan); elsewhere (OpenGL ES) the
+translucent draws are sorted as usual. A frame then renders:
 
-1. the opaque draws into a full-size target of the scene's format;
-2. an accumulation pass into a full-size `rgbaFloat16` target (`rgba8888` where float targets are
-   not supported): the opaque draws again, depth only, then every translucent draw;
-3. a coverage pass into a full-size `rgba8888` target: the opaque draws depth only and the
-   translucent draws once more;
-4. a composite of the three into the output (or into one more target, when post-processing
-   follows).
+1. the opaque draws into a full-size target of the scene's format, cleared to the clear color;
+2. an accumulation pass into a full-size `rgbaFloat16` target: the opaque draws again, depth only,
+   then every alpha-blended translucent draw, adding up its premultiplied color and its alpha;
+3. a revealage pass into a full-size `rgba8888` target: the opaque draws depth only and the
+   translucent draws once more, multiplying `1 - alpha`;
+4. into the output (or into one more target, when post-processing follows): the composite of the
+   three, then the other translucent draws (additive, depth-only), sorted back to front and depth
+   tested against the opaque draws, drawn once more depth only.
 
-The opaque geometry is drawn three times, the translucent geometry twice, each translucent draw
-with a draw call of its own. Translucent draws are not drawn with their material: one built-in
-shader draws them with the base color and texture of a `SpatialMaterial` or `UnlitMaterial`, the
-shallow color and opacity of a `WaterMaterial`, or a 50% white for any other material, without
-lighting, specular, fog or skinning, faded by `instanceData.w`. Surfaces without both
-`vertexTexCoord` and `vertexColor` attributes (particle billboards, `StylizedMaterial` surfaces
-built with `buildSurface`) are not drawn at all. The mode is meant for flat, unlit glass and
-overlays; for lit translucent objects, keep the sorted path, with
-[single-piece translucency](#single-piece-translucency) or dithered fades. See
-[Limitations](#limitations) for the cases it renders wrongly.
+Every translucent draw is drawn with its own material, in both passes: lighting, fog, skinning,
+particles and every vertex layout look as they do when sorted. The composite lays the average color
+of the translucent layers over the opaque image, with the coverage of all of them: a weighted
+blended transparency whose weight is constant. One layer comes out exactly as when sorted;
+where layers overlap, they mix by their alphas instead of the nearest one dominating, which suits
+glass and overlays better than stacks of nearly opaque surfaces. As the order does not matter, the
+translucent draws are batched as opaque draws are.
+
+The opaque geometry is drawn three times (four with additive draws), the translucent geometry
+twice. [Single-piece translucency](#single-piece-translucency) does not apply: an object's hidden
+surfaces blend too.
 
 
 ## Scene-color grab pass
@@ -569,7 +574,8 @@ pass begins and never written back to memory.
 
 Passes whose image later passes sample (shadow maps, the depth-normal prepass, the scene target of
 post-processing) render into texture targets (`GraphicsDevice.textureTarget`), created once for
-each size, format and clear color and kept while they are used.
+each size, format, clear color and role and kept while they are used. Each pass of a frame that
+samples another one has a role of its own, so no pass samples the texture it renders into.
 
 MSAA (`Game3D.msaa()`, `Scene3DComponent.msaa`) applies to the main pass only when it renders
 straight into the output image: with post-processing, HDR, an `afterScene` custom pass or
@@ -625,9 +631,9 @@ order-independent transparency, so measure those in your own scene.
 ## Platform support
 
 - Metal (iOS, macOS) and Vulkan (Android): everything on this page.
-- OpenGL ES (Android devices without Vulkan): no float texture targets, so HDR and the
-  accumulation target of order-independent transparency fall back to 8 bits per channel without a
-  warning; no wireframe; some devices have no offscreen MSAA.
+- OpenGL ES (Android devices without Vulkan): no float texture targets, so HDR falls back to
+  8 bits per channel (colors above `1` clip) and order-independent transparency to sorted
+  translucency; no wireframe; some devices have no offscreen MSAA.
 - Web (WebGPU): the main pass, render states and stencil; MSAA renders with 4 samples. Wireframe
   is ignored, `SpatialMaterial` draws with its non-PBR shader (no transmission, so the grab pass
   has no use there), and the features that need a shader without a web bundle throw (see
@@ -639,13 +645,6 @@ order-independent transparency, so measure those in your own scene.
 
 ## Limitations
 
-- Order-independent transparency renders wrongly in these cases: with `hdrEnabled` (and a
-  transparent clear color, the default of `Scene3DComponent` and `FlameGame3D`), the composite pass
-  renders into the accumulation target it samples, and translucent surfaces come out black or
-  disappear; the opaque target is always cleared to transparent with a blue of 4/255, so the clear
-  color of a `CameraStack3D` slot or of `renderToImage` is lost, and that blue is added to the 2D
-  art behind a `Scene3DComponent`; on OpenGL ES the 8-bit accumulation target clamps the weights.
-  See [Order-independent transparency](#order-independent-transparency) for what it does not draw.
 - `drawInstances` draws never flip their winding for mirroring transforms: an `InstancedGroup3D`
   whose world transform (or an instance's transform) has an odd number of negative scales culls
   its front faces with `CullMode.backFace`. Mirror the mesh instead, or use `CullMode.none`.
@@ -657,10 +656,6 @@ order-independent transparency, so measure those in your own scene.
   near a threshold can change level every frame.
 - `Line3D.generate` draws a line that points straight down (`end` directly below `start`) upwards
   from `start`.
-- When the scene clear color is not fully transparent (a `CameraStack3D` slot's `clearColor`, a
-  `renderToImage` clear value), the grab pass and the post-processing scene target are the same
-  texture target, so refractive materials sample the texture the main pass renders into. The
-  result is undefined.
 - An `afterScene` custom pass cannot draw over the scene: beginning a pass on `sceneTarget` clears
   it. It can only read it.
 - The stencil buffer is per pass and not stored: it cannot carry a mask from one pass to another.

@@ -383,9 +383,7 @@ The pipeline is the same; what differs is the image it runs on.
 
 ## Limitations
 
-- HDR falls back to 8 bits on OpenGL ES (see [HDR](#hdr)). Combined with order-independent
-  transparency, it makes translucent surfaces black or invisible (see
-  [Rendering](rendering.md#order-independent-transparency)).
+- HDR falls back to 8 bits on OpenGL ES, where colors above `1` clip (see [HDR](#hdr)).
 - Under a perspective camera, the depth of a triangle that reaches behind the camera is wrong over
   the whole triangle in the depth-normal texture (it reads as `0`, the nearest depth), and large
   triangles in front of the camera get an approximate depth: the prepass interpolates the

@@ -1,15 +1,28 @@
 part of 'render_context_3d.dart';
 
-/// Scene Color Grab-Pass and McGuire & Bavoil Weighted Blended OIT
+/// Scene Color Grab-Pass and order-independent transparency
 /// (`OitMode3D.weightedBlended`) passes for [RenderContext3D].
+///
+/// Order-independent transparency draws every alpha-blended translucent draw
+/// with its own material twice: into an accumulation target, adding up the
+/// premultiplied colors and the alphas (`sum(C * a)`, `sum(a)`), and into a
+/// revealage target, multiplying `1 - a` (`prod(1 - a)`). The composite then
+/// lays the average color `sum(C * a) / sum(a)` over the opaque image with a
+/// coverage of `1 - prod(1 - a)`: a weighted average (McGuire and Bavoil's
+/// weighted blended transparency with a constant weight), exact for one layer
+/// and independent of the order of the draws. Translucent draws with another
+/// blend (additive, depth-only) are drawn after the composite, sorted.
 class _OitAndGrabPass(final RenderContext3D _context) {
   bool grabActive = false;
   Texture? grabTexture;
   int grabWidth = 1;
   int grabHeight = 1;
 
-  static const String _wboitAccumBundle =
-      'packages/flame_3d/assets/shaders/wboit_accum.shaderbundle';
+  /// The values of `RenderContext3D._oitPass`.
+  static const int noPass = 0;
+  static const int accumulationPass = 1;
+  static const int revealagePass = 2;
+
   static const String _wboitCompositeBundle =
       'packages/flame_3d/assets/shaders/wboit_composite.shaderbundle';
 
@@ -26,24 +39,43 @@ class _OitAndGrabPass(final RenderContext3D _context) {
     ]),
   );
 
-  late final Shader _wboitVert = VertexShader.fromAsset(
-    _wboitAccumBundle,
-    slots: [RenderContext3D.cameraMatricesBlock],
-  );
-  late final Shader _wboitFrag = FragmentShader.fromAsset(
-    _wboitAccumBundle,
-    slots: const ['albedoTexture', 'WboitMaterial'],
-  );
-
   late final Shader _compVert = VertexShader.fromAsset(_wboitCompositeBundle);
   late final Shader _compFrag = FragmentShader.fromAsset(
     _wboitCompositeBundle,
     slots: const ['opaqueTexture', 'accumTexture', 'revealTexture'],
   );
 
-  final Map<VertexLayout, DevicePipeline?> _wboitPipelines = Map.identity();
-  final Vector4 _wboitBaseColor = Vector4.zero();
-  final Vector4 _wboitParams = Vector4.zero();
+  // The textures of the targets last composited, rebuilt when they change.
+  final List<GpuTextureTarget?> _compositeTargets = List.filled(3, null);
+  final List<Texture> _compositeTextures = List.filled(3, Texture.standard);
+
+  static final Map<RenderState, RenderState> _accumulationStates = {};
+  static final Map<RenderState, RenderState> _revealageStates = {};
+
+  /// Whether translucent draws with [state] are accumulated by the
+  /// order-independent passes (alpha blended), rather than drawn sorted after
+  /// the composite.
+  static bool accumulates(RenderState state) {
+    return state.translucent &&
+        (state.blend == BlendState.alpha ||
+            state.blend == BlendState.premultipliedAlpha);
+  }
+
+  /// The render state a draw of [state] is submitted with in [pass].
+  static RenderState stateFor(RenderState state, int pass) {
+    if (pass == revealagePass) {
+      return _revealageStates[state] ??= state.copyWith(
+        blend: BlendState.wboitReveal,
+        depthWrite: false,
+      );
+    }
+    return _accumulationStates[state] ??= state.copyWith(
+      blend: state.blend == BlendState.alpha
+          ? BlendState.wboitAccumStraight
+          : BlendState.wboitAccum,
+      depthWrite: false,
+    );
+  }
 
   void setGrabTarget(GpuTextureTarget? target) {
     if (target == null) {
@@ -54,33 +86,27 @@ class _OitAndGrabPass(final RenderContext3D _context) {
     grabActive = true;
     grabWidth = target.width;
     grabHeight = target.height;
-    grabTexture = Texture(
-      null,
-      width: target.width,
-      height: target.height,
-      sampler: TextureSampler.linear,
-      gpuTexture: target.texture,
-    );
+    final texture = grabTexture;
+    if (texture == null || !identical(texture.gpuTexture, target.texture)) {
+      grabTexture = Texture(
+        null,
+        width: target.width,
+        height: target.height,
+        sampler: TextureSampler.linear,
+        gpuTexture: target.texture,
+      );
+    }
   }
 
   void clearGrab() {
     grabActive = false;
   }
 
-  /// Submits all currently recorded translucent draws in Weighted Blended OIT
-  /// mode (`revealPass == false` -> accumulation pass, `revealPass == true` ->
-  /// revealage product pass), after writing opaque caster depths so opaque
-  /// surfaces occlude translucent fragments accurately.
-  void flushWboitSubpass({
-    required bool revealPass,
-    required bool releaseAfter,
-  }) {
+  /// Draws the opaque draws that write depth into the open pass, depth only,
+  /// so that they hide the translucent fragments behind them.
+  void _drawOpaqueDepth() {
     final context = _context;
-    final device = context.device;
     final count = context._count;
-
-    // 1. Write opaque geometry depths into this pass's depth attachment so
-    //    translucent fragments behind opaque walls are rejected by `less`.
     var opaqueCount = 0;
     for (var i = 0; i < count; i++) {
       final mat = context._materials[i]!;
@@ -98,161 +124,110 @@ class _OitAndGrabPass(final RenderContext3D _context) {
     context._depthPrepassOverride = true;
     context._submitBatches(context._opaque, opaqueCount);
     context._depthPrepassOverride = false;
+  }
 
-    // 2. Submit every translucent draw in recording order (order-independent!).
-    final blendState = revealPass
-        ? const RenderState(
-            blend: BlendState.wboitReveal,
-            depthWrite: false,
-          )
-        : const RenderState(
-            blend: BlendState.wboitAccum,
-            depthWrite: false,
-          );
+  /// Submits the recorded alpha-blended translucent draws with their own
+  /// materials into the accumulation (`revealPass == false`) or revealage
+  /// (`revealPass == true`) target of the open pass, after the depths of the
+  /// opaque draws.
+  void flushWboitSubpass({
+    required bool revealPass,
+    required bool releaseAfter,
+  }) {
+    final context = _context;
+    final count = context._count;
 
-    var cameraBoundEpoch = -1;
+    _drawOpaqueDepth();
+
+    // The draws are summed (or multiplied), so their order does not matter:
+    // they are grouped to batch as opaque draws are.
+    final order = context._translucent;
+    var oitCount = 0;
     for (var i = 0; i < count; i++) {
-      final mat = context._materials[i]!;
-      if (!mat.renderState.translucent) {
-        continue;
+      final material = context._materials[i]!;
+      if (accumulates(material.renderState)) {
+        order[oitCount++] = i;
+        context._groupKeys[i] =
+            context._pipelines[i]!.id * 8589934592.0 +
+            material.id * 2.0 +
+            context._mirrored[i];
+        context._surfaceKeys[i] =
+            context._surfaces[i]!.id * 2 + (context._joints[i] == null ? 0 : 1);
+        context._sortDepths[i] = context._depths[i];
       }
-      final surface = context._surfaces[i]!;
-      final pipeline = _wboitPipelineFor(surface.layout);
-      if (pipeline == null) {
-        continue;
-      }
-
-      device.bindPipeline(pipeline);
-      if (device.bindingEpoch != cameraBoundEpoch) {
-        cameraBoundEpoch = device.bindingEpoch;
-        context._bindSlots(_wboitVert, RenderContext3D._passScope);
-      }
-
-      final state = blendState.copyWith(
-        cullMode: mat.renderState.cullMode,
-        depthTest: mat.renderState.depthTest,
-      );
-      device
-        ..setRenderState(state)
-        ..setFrontFace(
-          (context._mirrored[i] == 1) == context._isMirrored
-              ? WindingOrder.counterClockwise
-              : WindingOrder.clockwise,
-        );
-
-      final (col, tex, uScale, vScale) = _extractTranslucentAppearance(mat);
-      _wboitBaseColor.setValues(col.r, col.g, col.b, col.a);
-      _wboitParams.setValues(revealPass ? 1.0 : 0.0, uScale, vScale, 0.0);
-      _wboitFrag
-        ..setTexture('albedoTexture', tex)
-        ..setVector4('WboitMaterial.baseColor', _wboitBaseColor)
-        ..setVector4('WboitMaterial.params', _wboitParams);
-
-      device
-        ..bindTexture(_wboitFrag.slot('albedoTexture'), tex)
-        ..bindUniformBlock(_wboitFrag.block('WboitMaterial'))
-        ..bindSurface(surface);
-
-      final external = context._external[i];
-      if (external != null) {
-        final instCount = context._externalCounts[i];
-        device
-          ..bindInstances(external, instCount)
-          ..drawSurface(surface, instanceCount: instCount);
-      } else {
-        context._translucent[0] = i;
-        device
-          ..bindInstancesOf(context._instances, context._translucent, 0, 1)
-          ..drawSurface(surface);
-      }
+    }
+    context._sort(order, oitCount);
+    context._boundMaterial = null;
+    context._bindingEpoch = -1;
+    context._oitPass = revealPass ? revealagePass : accumulationPass;
+    try {
+      context._submitBatches(order, oitCount);
+    } finally {
+      context._oitPass = noPass;
     }
 
     if (releaseAfter) {
-      context
-        .._releaseDraws(count)
-        .._boundMaterial = null
-        .._jointTransforms = null
-        .._lastDrawCount = count
-        .._count = 0
-        .._nextPrepassGroupId = 1
-        .._activePrepassGroup = 0
-        .._prepassGroupNesting = 0;
+      _release();
     }
   }
 
-  DevicePipeline? _wboitPipelineFor(VertexLayout layout) {
-    if (_wboitPipelines.containsKey(layout)) {
-      return _wboitPipelines[layout];
-    }
-    if (layout.attribute(VertexLayout.positionAttribute)?.components != 3 ||
-        layout.attribute('vertexTexCoord')?.components != 2 ||
-        layout.attribute('vertexColor')?.components != 4) {
-      return _wboitPipelines[layout] = null;
-    }
-    _wboitVert.resource;
-    _wboitFrag.resource;
-    return _wboitPipelines[layout] = _context.device.pipelineFor(
-      _wboitVert,
-      _wboitFrag,
-      layout,
-    );
+  void _release() {
+    final context = _context;
+    final count = context._count;
+    context
+      .._releaseDraws(count)
+      .._boundMaterial = null
+      .._jointTransforms = null
+      .._lastDrawCount = count
+      .._count = 0
+      .._nextPrepassGroupId = 1
+      .._activePrepassGroup = 0
+      .._prepassGroupNesting = 0;
   }
 
-  static (Color, Texture, double, double) _extractTranslucentAppearance(
-    Material mat,
-  ) {
-    if (mat is SpatialMaterial) {
-      return (
-        mat.albedoColor,
-        mat.albedoTexture,
-        mat.uvScale.x,
-        mat.uvScale.y,
+  Texture _textureOf(int index, GpuTextureTarget target) {
+    if (!identical(_compositeTargets[index], target)) {
+      _compositeTargets[index] = target;
+      _compositeTextures[index] = Texture(
+        null,
+        width: target.width,
+        height: target.height,
+        sampler: TextureSampler.linear,
+        gpuTexture: target.texture,
       );
     }
-    if (mat is UnlitMaterial) {
-      return (mat.albedoColor, mat.albedoTexture, 1.0, 1.0);
-    }
-    if (mat is WaterMaterial) {
-      final c = mat.shallowColor;
-      return (
-        Color.from(alpha: mat.opacity, red: c.r, green: c.g, blue: c.b),
-        Texture.standard,
-        1.0,
-        1.0,
-      );
-    }
-    return (const Color(0x80FFFFFF), Texture.standard, 1.0, 1.0);
+    return _compositeTextures[index];
   }
 
-  /// Draws the full-screen WBOIT composition quad into the currently open pass.
+  /// Draws the composite of [opaqueTarget], [accumTarget] and [revealTarget]
+  /// into the open pass, then the recorded translucent draws that are not
+  /// accumulated (additive and other blends), sorted back to front and
+  /// depth tested against the opaque draws (drawn again, depth only), and
+  /// releases the recorded draws.
   void drawCompositeQuad({
     required GpuTextureTarget opaqueTarget,
     required GpuTextureTarget accumTarget,
     required GpuTextureTarget revealTarget,
   }) {
-    final device = _context.device;
-    final opaqueTex = Texture(
-      null,
-      width: opaqueTarget.width,
-      height: opaqueTarget.height,
-      sampler: TextureSampler.linear,
-      gpuTexture: opaqueTarget.texture,
-    );
-    final accumTex = Texture(
-      null,
-      width: accumTarget.width,
-      height: accumTarget.height,
-      sampler: TextureSampler.linear,
-      gpuTexture: accumTarget.texture,
-    );
-    final revealTex = Texture(
-      null,
-      width: revealTarget.width,
-      height: revealTarget.height,
-      sampler: TextureSampler.linear,
-      gpuTexture: revealTarget.texture,
-    );
+    final context = _context;
+    final device = context.device;
+    final count = context._count;
 
+    final order = context._translucent;
+    var sortedCount = 0;
+    for (var i = 0; i < count; i++) {
+      final state = context._materials[i]!.renderState;
+      if (state.translucent && !accumulates(state)) {
+        order[sortedCount++] = i;
+        context._groupKeys[i] = 0;
+        context._surfaceKeys[i] = 0;
+        context._sortDepths[i] = -context._depths[i];
+      }
+    }
+
+    final opaqueTex = _textureOf(0, opaqueTarget);
+    final accumTex = _textureOf(1, accumTarget);
+    final revealTex = _textureOf(2, revealTarget);
     _compVert.resource;
     _compFrag
       ..resource
@@ -267,15 +242,27 @@ class _OitAndGrabPass(final RenderContext3D _context) {
     );
     device
       ..bindPipeline(pipeline)
-      ..setRenderState(
-        const RenderState(depthTest: false, depthWrite: false),
-      )
+      ..setRenderState(_compositeState)
       ..bindTexture(_compFrag.slot('opaqueTexture'), opaqueTex)
       ..bindTexture(_compFrag.slot('accumTexture'), accumTex)
       ..bindTexture(_compFrag.slot('revealTexture'), revealTex)
       ..bindSurface(_fullscreenQuad)
       ..drawSurface(_fullscreenQuad);
+
+    if (sortedCount > 0) {
+      _drawOpaqueDepth();
+      context._sort(order, sortedCount);
+      context._boundMaterial = null;
+      context._bindingEpoch = -1;
+      context._submitTranslucentBatches(order, sortedCount);
+    }
+    _release();
   }
+
+  static const RenderState _compositeState = RenderState(
+    depthTest: false,
+    depthWrite: false,
+  );
 
   static final Vector4 _scratchSceneColor = Vector4.zero();
 

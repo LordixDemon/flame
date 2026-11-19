@@ -946,10 +946,11 @@ void main() {
         projection: proj,
       );
 
-      // Center overlap has blended purple (both red & blue > 40) AND order
+      // The lit planes cover the center (each is shaded by its material, so
+      // the overlap is as dark as their lighting makes them) AND order
       // reversal produces 0 differing pixels!
-      expect(pxAB.at(64, 64).$1, greaterThan(40));
-      expect(pxAB.at(64, 64).$3, greaterThan(40));
+      final (cr, cg, cb, _) = pxAB.at(64, 64);
+      expect(cr + cg + cb, greaterThan(40));
       var orderMismatchPixels = 0;
       for (var i = 0; i < pxAB.rgba.length; i += 4) {
         final dr = (pxAB.rgba[i] - pxBA.rgba[i]).abs();

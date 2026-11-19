@@ -592,9 +592,12 @@ class World3D({
     final runGrab =
         supportsTexTargets &&
         (_grabSceneColorEnabled || renderContext.hasRefractiveDraws);
+    // The accumulation target needs floats: without them (OpenGL ES) the
+    // translucent draws are sorted instead.
     final runWboit =
         supportsTexTargets &&
         _oitMode == OitMode3D.weightedBlended &&
+        device.backend.supportsPixelFormat(GpuPixelFormat.rgbaFloat16) &&
         renderContext.hasTranslucentDraws;
 
     // 1. Optional Scene Color Grab-Pass for screen-space water & IOR glass
@@ -604,12 +607,8 @@ class World3D({
         width,
         height,
         sceneFormat,
-        clearValue: Color.from(
-          alpha: clearValue.a,
-          red: clearValue.r,
-          green: clearValue.g,
-          blue: clearValue.b,
-        ),
+        clearValue: clearValue,
+        role: _SceneTarget.grab,
       );
       device.beginTexturePass(grabTarget, frontFace: renderContext.frontFace);
       renderContext.flushOpaquePreview();
@@ -617,27 +616,25 @@ class World3D({
       renderContext.setActiveSceneColorTarget(grabTarget);
     }
 
-    // 2. Weighted Blended OIT path (`OitMode3D.weightedBlended`).
+    // 2. Order-independent transparency (`OitMode3D.weightedBlended`).
     if (runWboit) {
       final opaqueTarget = device.textureTarget(
         width,
         height,
         sceneFormat,
-        clearValue: const Color(0x00000004),
+        clearValue: clearValue,
+        role: _SceneTarget.oitOpaque,
       );
       device.beginTexturePass(opaqueTarget, frontFace: renderContext.frontFace);
       renderContext.flushOpaquePreview();
       device.endTexturePass();
 
-      final accumFmt =
-          device.backend.supportsPixelFormat(GpuPixelFormat.rgbaFloat16)
-          ? GpuPixelFormat.rgbaFloat16
-          : GpuPixelFormat.rgba8888;
       final accumTarget = device.textureTarget(
         width,
         height,
-        accumFmt,
+        GpuPixelFormat.rgbaFloat16,
         clearValue: const Color(0x00000000),
+        role: _SceneTarget.oitAccumulation,
       );
       device.beginTexturePass(accumTarget, frontFace: renderContext.frontFace);
       renderContext.flushWboitSubpass(revealPass: false, releaseAfter: false);
@@ -647,9 +644,10 @@ class World3D({
         width,
         height,
         GpuPixelFormat.rgba8888,
+        role: _SceneTarget.oitRevealage,
       );
       device.beginTexturePass(revealTarget, frontFace: renderContext.frontFace);
-      renderContext.flushWboitSubpass(revealPass: true, releaseAfter: true);
+      renderContext.flushWboitSubpass(revealPass: true, releaseAfter: false);
       device.endTexturePass();
 
       if (usePost) {
@@ -658,8 +656,12 @@ class World3D({
           height,
           sceneFormat,
           clearValue: clearValue,
+          role: _SceneTarget.scene,
         );
-        device.beginTexturePass(wboitSceneTarget);
+        device.beginTexturePass(
+          wboitSceneTarget,
+          frontFace: renderContext.frontFace,
+        );
         renderContext.drawWboitComposite(
           opaqueTarget: opaqueTarget,
           accumTarget: accumTarget,
@@ -686,9 +688,15 @@ class World3D({
       }
 
       if (ownedOutputTarget != null) {
-        device.beginOwnedPass(ownedOutputTarget);
+        device.beginOwnedPass(
+          ownedOutputTarget,
+          frontFace: renderContext.frontFace,
+        );
       } else {
-        device.beginPass(Size(width.toDouble(), height.toDouble()));
+        device.beginPass(
+          Size(width.toDouble(), height.toDouble()),
+          frontFace: renderContext.frontFace,
+        );
       }
       renderContext.drawWboitComposite(
         opaqueTarget: opaqueTarget,
@@ -702,16 +710,12 @@ class World3D({
     // 3. Standard opaque + sorted translucent path (with optional HDR / Bloom /
     //    PostProcess / ColorLut3D / Debug composite).
     if (usePost) {
-      // Ensure `texTarget` uses a distinct clearValue key from `grabTarget`
-      // when `runGrab` is active so they never alias the same GpuTextureTarget!
-      final mainClear = runGrab && clearValue.toARGB32() == 0
-          ? const Color(0x00000001)
-          : clearValue;
       final texTarget = device.textureTarget(
         width,
         height,
         sceneFormat,
-        clearValue: mainClear,
+        clearValue: clearValue,
+        role: _SceneTarget.scene,
       );
       device.beginTexturePass(texTarget, frontFace: renderContext.frontFace);
       renderContext.flush();
@@ -1222,4 +1226,23 @@ class _SnapshotHost(this.device, this.context, final Msaa _msaa)
 
   @override
   double get pixelRatio => 1.0;
+}
+
+/// The texture targets of the passes of one frame of a [World3D], so that
+/// no two of them share a target (see [GraphicsDevice.textureTarget]).
+enum _SceneTarget() {
+  /// The scene before the post-processing composite.
+  scene,
+
+  /// The opaque scene sampled by refractive materials.
+  grab,
+
+  /// The opaque draws of order-independent transparency.
+  oitOpaque,
+
+  /// The accumulated colors of order-independent transparency.
+  oitAccumulation,
+
+  /// The revealage of order-independent transparency.
+  oitRevealage,
 }

@@ -92,13 +92,7 @@ class BloomPass(final GraphicsDevice _device) {
   }) {
     final fullWidth = sceneTarget.width;
     final fullHeight = sceneTarget.height;
-    final sceneTexture = Texture(
-      null,
-      width: fullWidth,
-      height: fullHeight,
-      sampler: TextureSampler.linear,
-      gpuTexture: sceneTarget.texture,
-    );
+    final sceneTexture = _textureOf(0, sceneTarget);
 
     Texture bloomReadTex = Texture.empty;
     final runBloom =
@@ -120,29 +114,19 @@ class BloomPass(final GraphicsDevice _device) {
         halfWidth,
         halfHeight,
         bloomFormat,
-        clearValue: const Color(0x00000002),
+        clearValue: const Color(0x00000000),
+        role: _BloomTarget.ping,
       );
       final pong = _device.textureTarget(
         halfWidth,
         halfHeight,
         bloomFormat,
-        clearValue: const Color(0x00000003),
+        clearValue: const Color(0x00000000),
+        role: _BloomTarget.pong,
       );
 
-      final pingTex = Texture(
-        null,
-        width: halfWidth,
-        height: halfHeight,
-        sampler: TextureSampler.linear,
-        gpuTexture: ping.texture,
-      );
-      final pongTex = Texture(
-        null,
-        width: halfWidth,
-        height: halfHeight,
-        sampler: TextureSampler.linear,
-        gpuTexture: pong.texture,
-      );
+      final pingTex = _textureOf(1, ping);
+      final pongTex = _textureOf(2, pong);
 
       final threshold = math.max(0.0, bloom.threshold);
       final knee = threshold * bloom.softKnee.clamp(0.0, 1.0) + 1e-4;
@@ -247,6 +231,24 @@ class BloomPass(final GraphicsDevice _device) {
     return _device.endPass();
   }
 
+  // The textures of the targets last used, rebuilt when a target changes.
+  final List<GpuTextureTarget?> _targets = List.filled(3, null);
+  final List<Texture> _textures = List.filled(3, Texture.standard);
+
+  Texture _textureOf(int index, GpuTextureTarget target) {
+    if (!identical(_targets[index], target)) {
+      _targets[index] = target;
+      _textures[index] = Texture(
+        null,
+        width: target.width,
+        height: target.height,
+        sampler: TextureSampler.linear,
+        gpuTexture: target.texture,
+      );
+    }
+    return _textures[index];
+  }
+
   void _drawQuad(Shader vert, Shader frag) {
     vert.resource;
     frag.resource;
@@ -266,4 +268,10 @@ class BloomPass(final GraphicsDevice _device) {
       ..bindSurface(_fullscreenQuad)
       ..drawSurface(_fullscreenQuad);
   }
+}
+
+/// The two half-size targets the bloom blur alternates between.
+enum _BloomTarget() {
+  ping,
+  pong,
 }

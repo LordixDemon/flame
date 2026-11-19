@@ -206,7 +206,7 @@ class GraphicsDevice({
       total += perTarget * entry.value.length;
     }
     for (final key in _textureTargets.keys) {
-      final (w, h, fmt, _) = key;
+      final (w, h, fmt, _, _) = key;
       total += w * h * (fmt.bytesPerBlock + 4);
     }
     return total;
@@ -260,14 +260,23 @@ class GraphicsDevice({
   }
 
   /// The render target of [width]x[height] pixels that renders into a
-  /// texture of [format] for later passes to sample.
+  /// texture of [format] for later passes to sample, cleared to [clearValue]
+  /// at the start of each pass.
+  ///
+  /// Every call with the same size, format, clear value and [role] returns
+  /// the same target, created on first use and released
+  /// [targetRetainFrames] frames after its last use. Give targets that are
+  /// used in the same frame for different purposes different [role]s (any
+  /// object with value equality, such as an enum value or a string), so that
+  /// a pass never samples the texture it renders into.
   GpuTextureTarget textureTarget(
     int width,
     int height,
     GpuPixelFormat format, {
     Color clearValue = const Color(0xFFFFFFFF),
+    Object? role,
   }) {
-    final key = (width, height, format, clearValue);
+    final key = (width, height, format, clearValue, role);
     final target = _textureTargets[key] ??= backend.createTextureTarget(
       width: width,
       height: height,
@@ -279,8 +288,9 @@ class GraphicsDevice({
   }
 
   final _textureTargets =
-      <(int, int, GpuPixelFormat, Color), GpuTextureTarget>{};
-  final _textureTargetsLastUsed = <(int, int, GpuPixelFormat, Color), int>{};
+      <(int, int, GpuPixelFormat, Color, Object?), GpuTextureTarget>{};
+  final _textureTargetsLastUsed =
+      <(int, int, GpuPixelFormat, Color, Object?), int>{};
 
   /// Marks [target] as used in the current frame so [targetRetainFrames] does
   /// not evict a cached texture target (such as a static shadow map).

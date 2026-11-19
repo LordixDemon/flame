@@ -975,23 +975,25 @@ class RenderContext3D(super.device) extends RenderContext {
     }
     final baseState = material.renderState;
     var effectiveState = _depthPrepassOverride
-        ? RenderState(
+        ? _depthOnlyStates[baseState] ??= RenderState(
             blend: BlendState.depthOnly,
             depthTest: baseState.depthTest,
             cullMode: baseState.cullMode,
             stencil: baseState.stencil,
           )
         : (baseState.depthPrepass
-              ? baseState.copyWith(
+              ? _prepassShadedStates[baseState] ??= baseState.copyWith(
                   depthCompare: CompareFunction.lessEqual,
                   depthWrite: false,
                 )
               : baseState);
     if (!_depthPrepassOverride) {
+      if (_oitPass != _OitAndGrabPass.noPass) {
+        effectiveState = _OitAndGrabPass.stateFor(effectiveState, _oitPass);
+      }
       if (renderDebugMode == RenderDebugMode3D.wireframe) {
-        effectiveState = effectiveState.copyWith(
-          polygonMode: PolygonFillMode.wireframe,
-        );
+        effectiveState = _wireframeStates[effectiveState] ??= effectiveState
+            .copyWith(polygonMode: PolygonFillMode.wireframe);
       } else if (renderDebugMode == RenderDebugMode3D.overdraw) {
         effectiveState = const RenderState(
           blend: BlendState.additive,
@@ -1061,6 +1063,15 @@ class RenderContext3D(super.device) extends RenderContext {
 
   Material? _boundMaterial;
   int _bindingEpoch = -1;
+
+  // The order-independent transparency pass draws are submitted for, see
+  // `_OitAndGrabPass`.
+  int _oitPass = _OitAndGrabPass.noPass;
+
+  // The render states derived from material render states, created once.
+  final Map<RenderState, RenderState> _depthOnlyStates = {};
+  final Map<RenderState, RenderState> _prepassShadedStates = {};
+  final Map<RenderState, RenderState> _wireframeStates = {};
 
   void _applyMaterial(Material material, Shader vertexShader) {
     RenderProfile.lap(RenderPhase.binding);

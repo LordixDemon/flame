@@ -725,6 +725,7 @@ class _FlutterGpuRenderPass(
         BlendState.depthOnly => _keepTarget,
         BlendState.wboitAccum => _wboitAccum,
         BlendState.wboitReveal => _wboitReveal,
+        BlendState.wboitAccumStraight => _wboitAccumStraight,
       });
   }
 
@@ -986,9 +987,16 @@ class _FlutterGpuRenderPass(
     destinationAlphaBlendFactor: gpu.BlendFactor.one,
   );
 
+  static final _wboitAccumStraight = gpu.ColorBlendEquation(
+    sourceColorBlendFactor: gpu.BlendFactor.sourceAlpha,
+    destinationColorBlendFactor: gpu.BlendFactor.one,
+    sourceAlphaBlendFactor: gpu.BlendFactor.one,
+    destinationAlphaBlendFactor: gpu.BlendFactor.one,
+  );
+
   static final _wboitReveal = gpu.ColorBlendEquation(
     sourceColorBlendFactor: gpu.BlendFactor.zero,
-    destinationColorBlendFactor: gpu.BlendFactor.oneMinusSourceColor,
+    destinationColorBlendFactor: gpu.BlendFactor.oneMinusSourceAlpha,
     sourceAlphaBlendFactor: gpu.BlendFactor.zero,
     destinationAlphaBlendFactor: gpu.BlendFactor.oneMinusSourceAlpha,
   );
