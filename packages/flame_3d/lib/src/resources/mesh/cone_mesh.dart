@@ -88,25 +88,42 @@ class ConeMesh({
     const centerV = 0.75;
     const tipV = 0.25;
 
-    // Tip
-    vertices.add(
-      Vertex(position: Vector3(0, height, 0), texCoord: Vector2(0.5, tipV)),
-    );
+    // Normals of the slanted side: (cos(theta) * height, radius,
+    // sin(theta) * height), normalized.
+    final slant = sqrt(height * height + radius * radius);
+    final ny = slant > 0 ? radius / slant : 1.0;
+    final nh = slant > 0 ? height / slant : 0.0;
 
-    // Side triangulation
-    for (var i = 0; i < segments; i++) {
+    // Ring: segments + 1 vertices, the last repeating the first with u = 1
+    // so the texture does not wrap back across the last segment.
+    for (var i = 0; i <= segments; i++) {
       final theta = tau * i / segments;
-      final x = radius * cos(theta);
-      final z = radius * sin(theta);
-      final u = i / segments;
       vertices.add(
-        Vertex(position: Vector3(x, 0, z), texCoord: Vector2(u, centerV)),
+        Vertex(
+          position: Vector3(radius * cos(theta), 0, radius * sin(theta)),
+          texCoord: Vector2(i / segments, centerV),
+          normal: Vector3(cos(theta) * nh, ny, sin(theta) * nh),
+        ),
+      );
+    }
+
+    // One tip per segment, with the side normal halfway around it, so the
+    // shading of each slice reaches the tip instead of a normal pointing up.
+    for (var i = 0; i < segments; i++) {
+      final theta = tau * (i + 0.5) / segments;
+      vertices.add(
+        Vertex(
+          position: Vector3(0, height, 0),
+          texCoord: Vector2((i + 0.5) / segments, tipV),
+          normal: Vector3(cos(theta) * nh, ny, sin(theta) * nh),
+        ),
       );
     }
 
     // Counter-clockwise seen from outside, so front faces point outwards.
+    final tips = segments + 1;
     for (var i = 0; i < segments; i++) {
-      indices.addAll([0, ((i + 1) % segments) + 1, i + 1]);
+      indices.addAll([tips + i, i + 1, i]);
     }
 
     addSurface(

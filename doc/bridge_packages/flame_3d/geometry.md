@@ -280,8 +280,8 @@ Notes on individual shapes:
 - `CuboidMesh` gives each face its own four vertices, so `useFaceNormals: false` (normals computed
   from the faces) gives the same hard-edged result.
 - `ConeMesh` has a separate surface for the base disc and the side; it requires a material. The side
-  shares one tip vertex, whose computed normal points straight up, and its UV `u` wraps back from
-  `(segments - 1) / segments` to `0` across the last segment.
+  has one tip vertex per segment, with the slanted side's normal, and repeats its first ring vertex
+  with `u = 1`, so the texture runs from `u = 0` to `1` around the cone without wrapping back.
 - `CapsuleMesh.height` is the full height including the caps; the cylindrical part is
   `max(0, height - 2 * radius)`.
 - `TubeSplineMesh` frames its cross-section with parallel transport along the spline, so it does
