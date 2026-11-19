@@ -1,5 +1,6 @@
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/model.dart';
+import 'package:flame_3d/resources.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 ModelNode _node(int index, int? parent, Matrix4 transform) => ModelNode(
@@ -61,6 +62,40 @@ void main() {
           throwsA(isA<StateError>()),
         );
       });
+    });
+
+    test('animatedAabb includes the pose at every keyframe', () {
+      // A short peak at t = 0.05 that evenly spaced samples would miss.
+      final dash = ModelAnimation(
+        name: 'dash',
+        nodes: {
+          0: NodeAnimation(
+            channels: [
+              AnimationController(
+                animation: TranslationAnimationSpline.from(
+                  interpolation: AnimationInterpolation.linear,
+                  times: [0, 0.05, 1],
+                  values: [Vector3.zero(), Vector3(10, 0, 0), Vector3.zero()],
+                ),
+              ),
+            ],
+          ),
+        },
+      );
+      final model = Model(
+        nodes: {
+          0: ModelNode(
+            name: 'Body',
+            nodeIndex: 0,
+            parentNodeIndex: null,
+            transform: Matrix4.identity(),
+            mesh: CuboidMesh(size: Vector3.all(1)),
+            joints: {},
+          ),
+        },
+        animations: [dash],
+      );
+      expect(model.animatedAabb.max.x, closeTo(10.5, 1e-5));
     });
   });
 }

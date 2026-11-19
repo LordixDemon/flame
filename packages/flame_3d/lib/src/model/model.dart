@@ -68,8 +68,12 @@ class Model {
   Aabb3 get aabb => _aabb ??= _calculateRestBoundingBox();
   Aabb3? _aabb;
 
-  /// Conservative bounding box enclosing the rest pose and all [animations] of
-  /// this model, suitable for frustum culling of animated [ModelComponent]s.
+  /// Bounding box enclosing the rest pose and the poses of all [animations]
+  /// of this model at their keyframes and between them (see
+  /// [maxBoundsSamplesPerClip]), suitable for frustum culling of animated
+  /// [ModelComponent]s. Skinned surfaces are expanded through every joint
+  /// matrix. Morph targets, layers, blends and bone modifiers are not
+  /// included.
   Aabb3 get animatedAabb => _animatedAabb ??= _calculateAnimatedBoundingBox();
   Aabb3? _animatedAabb;
 
@@ -143,18 +147,53 @@ class Model {
       }
     }
 
-    const samplesPerClip = 8;
     for (final clip in animations) {
       state.startAnimation(clip, mode: AnimationPlayMode.once);
-      final duration = math.max(0.0, clip.lastTime);
-      final steps = duration > 0 ? samplesPerClip : 0;
-      for (var s = 0; s <= steps; s++) {
-        state.clock = steps == 0 ? 0.0 : duration * (s / steps);
+      for (final time in _boundsSampleTimes(clip)) {
+        state.clock = time;
         evaluateInto(state, workspace);
         hullCurrentPose();
       }
     }
     return box;
+  }
+
+  /// At most this many poses of one clip are sampled for [animatedAabb].
+  static const int maxBoundsSamplesPerClip = 512;
+
+  /// The times at which [animatedAabb] samples [clip]: every keyframe of
+  /// every channel and the midpoint between consecutive keyframes (where a
+  /// rotation interpolates farthest from both keys), or, when that is more
+  /// than [maxBoundsSamplesPerClip], as many evenly spaced times.
+  static List<double> _boundsSampleTimes(ModelAnimation clip) {
+    final keys = <double>{0.0, math.max(0.0, clip.lastTime)};
+    for (final node in clip.nodes.values) {
+      for (final channel in node.channels) {
+        for (final key in channel.animation.values) {
+          keys.add(key.time);
+        }
+      }
+      final morph = node.morphWeights;
+      if (morph != null) {
+        keys.addAll(morph.times);
+      }
+    }
+    final sorted = keys.toList()..sort();
+    final times = <double>[];
+    for (var i = 0; i < sorted.length; i++) {
+      if (i > 0) {
+        times.add((sorted[i - 1] + sorted[i]) * 0.5);
+      }
+      times.add(sorted[i]);
+    }
+    if (times.length <= maxBoundsSamplesPerClip) {
+      return times;
+    }
+    final duration = math.max(0.0, clip.lastTime);
+    return [
+      for (var s = 0; s < maxBoundsSamplesPerClip; s++)
+        duration * s / (maxBoundsSamplesPerClip - 1),
+    ];
   }
 
   Set<String> get animationNames {

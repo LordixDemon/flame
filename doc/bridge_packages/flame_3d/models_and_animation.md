@@ -214,11 +214,12 @@ optional `mesh` and the `joints` that skin it. `Model.simple(mesh: mesh)` wraps 
 can also build models in code from `ModelNode`s, which is how procedural rigs are made.
 
 `Model.aabb` is the rest pose bounds; `Model.animatedAabb`, which `ModelComponent` uses for culling,
-adds the poses of every clip sampled at 9 evenly spaced times (start, end and 7 in between), with
-skinned surfaces expanded through each joint matrix. It is computed the first time it is needed,
-which evaluates every clip 9 times: a one-time cost for models with many clips. Poses between the
-samples, morph targets, layers and bone modifiers are not included, so an object can be culled a
-little early in extreme poses.
+adds the poses of every clip at each of its keyframes and halfway between consecutive keyframes
+(at most `Model.maxBoundsSamplesPerClip`, 512, evenly spaced poses for clips with more keys), with
+skinned surfaces expanded through each joint matrix. It is computed the first time it is needed, a
+one-time cost that grows with the number of keyframes. Morph targets, layers, blends of several
+clips and bone modifiers are not included, so an object can be culled a little early in such
+poses.
 
 
 ## ModelComponent
