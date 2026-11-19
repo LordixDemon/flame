@@ -413,7 +413,7 @@ package in your dependency graph. Add `watch` to rebuild when a source changes. 
 directory as an asset: `GpuBackend.initialize()` loads every `.shaderbundle` the app declares.
 
 `--with-web-gpu` also builds `.wgslbundle` files for the WebGPU backend, through the `naga` CLI
-(`cargo install naga-cli`). Only 8 of the package's 27 shaders have a web bundle (`spatial_material`
+(`cargo install naga-cli`). Only 8 of the package's 28 shaders have a web bundle (`spatial_material`
 in its non-PBR variant, `unlit_material`, `skybox_material`, `billboard_material`,
 `decal_material`, `outline_material`, `outline_material_skinned` and `ribbon_material`): on the web,
 anything that needs another shader (`StylizedMaterial`, particles, water, shadows, the depth-normal
@@ -453,9 +453,12 @@ final world = World3D(
   draws are recorded. They have no scene target: they render into textures of their own, which the
   scene's materials can sample (through `RenderContext3D.registerPassTexture`, for example).
 - `afterScene` passes run after the main pass, before the post-processing composite, and get the
-  scene's texture target in `sceneTarget`. Any enabled `afterScene` pass makes the world render
-  through a texture target and a composite pass, as post-processing does (see
-  [Post-Processing](post_processing.md#the-composite-pass)), which turns MSAA off.
+  scene's texture target in `sceneTarget`. They can sample it, or draw over it: begin the pass with
+  `pass.device.beginTexturePass(pass.sceneTarget!, keepContents: true)` (a pass begun without
+  `keepContents` clears the scene). Keeping the contents copies the scene out to a scratch target
+  and back in, two full-size passes, as Flutter GPU cannot start a pass from what a texture holds.
+  Any enabled `afterScene` pass makes the world render through a texture target and a composite
+  pass, as post-processing does (see [Post-Processing](post_processing.md#the-composite-pass)).
 - `enabled` switches a pass off without removing it.
 
 A pass draws with the device directly: `beginTexturePass`, `bindPipeline`, `setRenderState`,
@@ -656,8 +659,6 @@ order-independent transparency, so measure those in your own scene.
   near a threshold can change level every frame.
 - `Line3D.generate` draws a line that points straight down (`end` directly below `start`) upwards
   from `start`.
-- An `afterScene` custom pass cannot draw over the scene: beginning a pass on `sceneTarget` clears
-  it. It can only read it.
 - The stencil buffer is per pass and not stored: it cannot carry a mask from one pass to another.
 
 

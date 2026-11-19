@@ -305,16 +305,92 @@ class GraphicsDevice({
   }
 
   /// Begin a render pass into [target], whose texture later passes sample.
+  ///
+  /// The pass clears the target's color, or, when [keepContents] is `true`,
+  /// starts from the color it holds, to draw over a picture an earlier pass
+  /// rendered (the scene, in an `afterScene` custom pass). The depth buffer
+  /// is cleared either way.
+  ///
+  /// Keeping the contents costs two full-size copy passes and a scratch
+  /// target of the same size and format: render passes cannot load what a
+  /// texture target holds on every backend (Flutter GPU starts a pass that
+  /// should load its target from undefined contents), so the picture is
+  /// copied out and back in at the start of the pass.
   void beginTexturePass(
     GpuTextureTarget target, {
     WindingOrder frontFace = WindingOrder.counterClockwise,
+    bool keepContents = false,
   }) {
     final frame = _gpuFrame;
     if (frame == null) {
       throw StateError('beginTexturePass must be called between begin and end');
     }
+    if (keepContents) {
+      final scratch = textureTarget(
+        target.width,
+        target.height,
+        target.format,
+        role: _scratchRole,
+      );
+      _renderTarget = scratch;
+      _startPass(frame.beginRenderPass(scratch), WindingOrder.counterClockwise);
+      _copyTexture(0, target);
+      endTexturePass();
+      _renderTarget = target;
+      _startPass(frame.beginRenderPass(target), WindingOrder.counterClockwise);
+      _copyTexture(1, scratch);
+      setFrontFace(frontFace);
+      return;
+    }
     _renderTarget = target;
     _startPass(frame.beginRenderPass(target), frontFace);
+  }
+
+  static const Object _scratchRole = #flame3dKeepContents;
+  static const String _copyBundle =
+      'packages/flame_3d/assets/shaders/texture_copy.shaderbundle';
+  late final Shader _copyVertex = VertexShader.fromAsset(_copyBundle);
+  late final Shader _copyFragment = FragmentShader.fromAsset(
+    _copyBundle,
+    slots: const ['sourceTexture'],
+  );
+  static final Surface _copyQuad = Surface.fromBuffers(
+    vertices: Float32List.fromList(const [
+      -1.0, -1.0, 0.0, //
+      1.0, -1.0, 0.0, //
+      1.0, 1.0, 0.0, //
+      -1.0, 1.0, 0.0, //
+    ]),
+    indices: Uint16List.fromList(const [0, 1, 2, 0, 2, 3]),
+    layout: VertexLayout(const [
+      VertexAttribute(VertexLayout.positionAttribute, 3),
+    ]),
+  );
+  static const RenderState _copyState = RenderState(
+    depthTest: false,
+    depthWrite: false,
+  );
+  final List<GpuTextureTarget?> _copySources = List.filled(2, null);
+  final List<Texture> _copyTextures = List.filled(2, Texture.standard);
+
+  /// Draws [source] over the whole open pass.
+  void _copyTexture(int slot, GpuTextureTarget source) {
+    if (!identical(_copySources[slot], source)) {
+      _copySources[slot] = source;
+      _copyTextures[slot] = Texture(
+        null,
+        width: source.width,
+        height: source.height,
+        gpuTexture: source.texture,
+      );
+    }
+    final texture = _copyTextures[slot];
+    _copyFragment.setTexture('sourceTexture', texture);
+    bindPipeline(pipelineFor(_copyVertex, _copyFragment, _copyQuad.layout));
+    setRenderState(_copyState);
+    bindTexture(_copyFragment.slot('sourceTexture'), texture);
+    bindSurface(_copyQuad);
+    drawSurface(_copyQuad);
   }
 
   /// Submit the pass begun by [beginTexturePass] to the GPU.

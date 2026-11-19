@@ -440,8 +440,10 @@ enum CustomRenderPassStage3D() {
   /// pass begins.
   beforeScene,
 
-  /// Runs after the main 3D scene pass has finished (before or instead of
-  /// post-processing).
+  /// Runs after the main 3D scene pass has finished, before the
+  /// post-processing composite: [CustomRenderPassContext3D.sceneTarget] holds
+  /// the scene, which a pass reads, or draws over with
+  /// `device.beginTexturePass(sceneTarget, keepContents: true)`.
   afterScene,
 }
 
@@ -452,6 +454,10 @@ class CustomRenderPassContext3D({
   required final RenderContext3D renderContext,
   required final int width,
   required final int height,
+
+  /// The scene's texture target, for [CustomRenderPassStage3D.afterScene]
+  /// passes. Begin a pass on it with `keepContents: true` to draw over the
+  /// scene: without it the pass clears the scene.
   final GpuTextureTarget? sceneTarget,
   final Texture? depthNormalTexture,
 });

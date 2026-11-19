@@ -196,4 +196,31 @@ void main() {
     expect(g, closeTo((luma + other) / 2 * 255, 3));
     expect(b, g);
   });
+
+  testGpu('an afterScene custom pass draws over the scene', (tester) async {
+    final overlay = quad(opaqueUnlit(const Color(0xFFFF0000)), halfSize: 0.25);
+    final world = World3D(
+      customPasses: [
+        CustomRenderPass3D(
+          name: 'overlay',
+          execute: (pass) {
+            pass.device.beginTexturePass(pass.sceneTarget!, keepContents: true);
+            pass.renderContext
+              ..setCamera(defaultView, defaultProjection)
+              ..drawSurface(
+                overlay,
+                transform: Matrix4.translationValues(-0.7, 0, -1),
+              )
+              ..flush();
+            pass.device.endTexturePass();
+          },
+        ),
+      ],
+      children: [_panel(opaqueUnlit(const Color(0xFF00C000)), size: 1)],
+    );
+    final pixels = await _snapshot(tester, world);
+
+    expect(pixels.at(_size ~/ 2, _size ~/ 2), (0, 192, 0, 255));
+    expect(pixels.at(10, _size ~/ 2), (255, 0, 0, 255));
+  });
 }
