@@ -77,8 +77,8 @@ uses `Model` and `ModelComponent`.
 - samplers (filters and wrap modes); images from the GLB binary chunk, `data:` URIs or files next to
   a `.gltf`, decoded with Flutter's image codecs (PNG, JPEG, and WebP where the platform decodes
   it);
-- `EXT_meshopt_compression` buffer views, through `MeshoptDecoder3D` (but see
-  [Limitations](#limitations): the decoder does not decode streams written by meshoptimizer).
+- `EXT_meshopt_compression` buffer views (files written by gltfpack or other meshoptimizer-based
+  tools), through `MeshoptDecoder3D`, see [Meshopt compression](#meshopt-compression).
 
 A primitive without a material gets a magenta `SpatialMaterial`. Each primitive gets its own
 material instance, even when several primitives use the same glTF material, so they do not batch
@@ -117,6 +117,27 @@ External files of a `.gltf` (`.bin` buffers, images) are requested as
 exactly fails to find them. Prefer `.glb` files, or embed the buffers as
 `data:` URIs.
 ```
+
+
+### Meshopt compression
+
+`MeshoptDecoder3D` decodes the bitstreams of `EXT_meshopt_compression` the way meshoptimizer does,
+and is tested against meshoptimizer's reference streams:
+
+- `ATTRIBUTES`: vertex codec version 0 (`0xA0`, the version the extension requires) and version 1
+  (`0xA1`, which newer meshoptimizer releases write on request);
+- `TRIANGLES`: index codec versions 0 and 1 (`0xE0`, `0xE1`); `INDICES` (`0xD1`);
+- the `OCTAHEDRAL`, `QUATERNION` and `EXPONENTIAL` filters, computed in 32-bit floats like the
+  reference.
+
+A truncated or malformed stream, a stream with bytes left over, a codec version newer than these,
+or a buffer view that breaks the extension's rules (a filter on index data, a stride a filter does
+not allow) throws a `FormatException` instead of producing wrong geometry. Decoding runs on the
+main isolate while the model is parsed.
+
+The class also has encoders (`encodeVertexStream`, `encodeIndexStream`, `encodeFilterOct`,
+`encodeFilterQuat`, `encodeFilterExp`) that write streams meshoptimizer decodes; they are handy in
+tests and for small procedural assets, but do not optimize vertex order or quantize like gltfpack.
 
 
 ### OBJ files
@@ -745,12 +766,8 @@ the main isolate; `AsyncModelLoader3D` moves the geometry work to an isolate.
 
 ## Limitations
 
-- **Meshopt**: `MeshoptDecoder3D` only decodes the streams its own `encodeVertexStream` and
-  `encodeIndexStream` write. On the reference streams of meshoptimizer, vertex attribute
-  (`ATTRIBUTES`) and triangle (`TRIANGLES`) streams decode to wrong data; only the `INDICES` mode
-  matches (the `OCTAHEDRAL`, `QUATERNION` and `EXPONENTIAL` filters were not checked against
-  reference data). Files compressed with gltfpack or other meshoptimizer-based tools load with
-  corrupted geometry. Do not use `EXT_meshopt_compression` files.
+- **Meshopt**: only through `ModelParser` and `SceneLoader3D`, decoded on the main isolate;
+  `KHR_meshopt_compression` and its `COLOR` filter are not read.
 - **Shared morph state** between components that share a model.
 - **Crossfades** from a running crossfade or from a blend space start from a single clip and pop.
 - **Layers** override only; no additive layers.
