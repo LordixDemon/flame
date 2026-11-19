@@ -157,9 +157,8 @@ When using them to debug a scene, keep in mind that:
 - `normals`, `cascadeSplits`, `roughnessMetallic`, `albedo` and the overdraw color are written by
   the native `SpatialMaterial` shader only: a scene of `StylizedMaterial`, unlit, billboard,
   particle or water draws looks unchanged in them, and so does `SpatialMaterial` on the web;
-- `depth` and `ssao` show what the depth-normal prepass holds: opaque billboards and camera-facing
-  font text, cut out, but fixed font text as full quads (see
-  [3D UI and Text](ui_3d.md#depth-and-sorting)).
+- `depth` and `ssao` show what the depth-normal prepass holds, opaque billboards and font text
+  included, cut out as drawn (see [3D UI and Text](ui_3d.md#depth-and-sorting)).
 
 `test/gpu/hdr_ibl_4csm_multi_shadow_stencil_wboit_gpu_test.dart` renders each view and checks only
 that it is not blank.

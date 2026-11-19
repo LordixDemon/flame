@@ -8,7 +8,9 @@
 // - instanceModel1: locked upAxis (xyz) and height (w)
 // - instanceModel2: uvRect (left, top, width, height)
 // - instanceModel3: anchorY (x, 0 = center, -0.5 = bottom edge), tiltRad (y),
-//                   rollRad (z), mode (w: 0 = spherical, 1 = cylindrical)
+//                   rollRad (z), mode (w: 0 = spherical, 1 = cylindrical,
+//                   2 = fixed: in the plane of upAxis and the right direction
+//                   at the angle y about it, see billboardFixedRight)
 // - instanceColor:  RGBA tint
 // - instanceData:   emissiveBoost (x), unlit (y), fade (z),
 //                   anchorX (w, 0 = center, -0.5 = left edge)
@@ -18,6 +20,16 @@ uniform BillboardFrame {
   vec4 camUp;
   vec4 camBack;
 } bFrame;
+
+// The right direction of a fixed billboard whose up direction is [axisUp]
+// (normalized): the direction perpendicular to it closest to +X (to -Z when
+// [axisUp] is along X), turned by [angle] about [axisUp].
+vec3 billboardFixedRight(vec3 axisUp, float angle) {
+  vec3 ref = abs(axisUp.x) < 0.99 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, -1.0);
+  vec3 r0 = normalize(ref - axisUp * dot(ref, axisUp));
+  vec3 r1 = cross(axisUp, r0);
+  return r0 * cos(angle) + r1 * sin(angle);
+}
 
 // The world position of the billboard corner [corner] (in [-0.5, 0.5]) of
 // the instance, and the direction its face looks to in [normal].
@@ -37,7 +49,12 @@ vec3 billboardCorner(vec2 corner, out vec3 normal) {
   vec3 up = bFrame.camUp.xyz;
   normal = bFrame.camBack.xyz;
 
-  if (mode > 0.5) {
+  if (mode > 1.5) {
+    // Fixed, whatever the camera.
+    up = length(lockedUp) > 1e-5 ? normalize(lockedUp) : vec3(0.0, 1.0, 0.0);
+    right = billboardFixedRight(up, tiltRad);
+    normal = cross(right, up);
+  } else if (mode > 0.5) {
     // Cylindrical / HD-2D standee locked around `lockedUp` with optional tilt.
     vec3 axisUp = length(lockedUp) > 1e-5 ? normalize(lockedUp) : up;
     vec3 side = right - axisUp * dot(right, axisUp);

@@ -358,15 +358,24 @@ class _TextEntry3D({
   required final double lineHeight,
 });
 
-/// Single-draw batched 3D MSDF world-space text renderer.
+/// Batched 3D world-space text renderer with a signed-distance glyph atlas.
 ///
-/// Packs hundreds of world-space strings into **1 instanced [BillboardBatch3D]
-/// draw call** (for [TextBillboardMode3D.spherical] and
-/// [TextBillboardMode3D.cylindrical]) and **1 merged quad [Surface] draw call**
-/// (for [TextBillboardMode3D.fixed] 3D world-oriented plaques) with crisp
-/// `alphaCutoff` signed-distance edges and hardware depth occlusion.
+/// Packs hundreds of world-space strings, camera-facing
+/// ([TextBillboardMode3D.spherical], [TextBillboardMode3D.cylindrical]) and
+/// fixed ([TextBillboardMode3D.fixed] plaques) alike, into **1 instanced
+/// [BillboardBatch3D] draw call** per pass, with `alphaCutoff`
+/// signed-distance edges and hardware depth occlusion. The text is unlit: it
+/// keeps its color whatever the lights.
+///
+/// Batches without an [atlas] share one atlas made by
+/// [MsdfFontAtlas3D.generateDefault]. The atlas holds printable ASCII only;
+/// other characters draw its fallback glyph.
 class MsdfTextBatch3D({
   MsdfFontAtlas3D? atlas,
+
+  /// The distance below which atlas texels are discarded (`0.5` is the
+  /// glyph edge). Values below `1 / 255` are drawn as `1 / 255`: glyph quads
+  /// are opaque, so without a cutoff they would draw as solid boxes.
   var double alphaCutoff = 0.5,
   int initialCapacity = 128,
   super.position,
@@ -387,25 +396,20 @@ class MsdfTextBatch3D({
       material: _billboardMaterial,
       initialCapacity: math.max(16, initialCapacity),
     );
-    _fixedMaterial = SpatialMaterial(
-      albedoTexture: this.atlas.texture,
-      roughness: 1.0,
-      alphaCutoff: alphaCutoff,
-    )..renderState = RenderState.opaque;
   }
 
+  static MsdfFontAtlas3D? _sharedDefaultAtlas;
+
   /// Backing [MsdfFontAtlas3D] shared across all batched strings.
-  final MsdfFontAtlas3D atlas = atlas ?? MsdfFontAtlas3D.generateDefault();
+  final MsdfFontAtlas3D atlas =
+      atlas ?? (_sharedDefaultAtlas ??= MsdfFontAtlas3D.generateDefault());
 
   late final BillboardMaterial3D _billboardMaterial;
   late final BillboardBatch3D _billboardBatch;
-  late final SpatialMaterial _fixedMaterial;
-  Surface? _fixedSurface;
 
   final List<_TextEntry3D> _entries = [];
   bool _geometryDirty = false;
   int _glyphQuadCount = 0;
-  int _fixedGlyphCount = 0;
   final Aabb3 _localAabb = Aabb3();
   bool _hasBounds = false;
 
@@ -418,7 +422,7 @@ class MsdfTextBatch3D({
     return _glyphQuadCount;
   }
 
-  /// Underlying [BillboardMaterial3D] used for camera-facing glyphs.
+  /// Underlying [BillboardMaterial3D] the glyphs are drawn with.
   BillboardMaterial3D get billboardMaterial => _billboardMaterial;
 
   /// Clears all strings from this batch without releasing GPU buffers.
@@ -428,10 +432,7 @@ class MsdfTextBatch3D({
     }
     _entries.clear();
     _billboardBatch.clear();
-    _fixedSurface?.dispose();
-    _fixedSurface = null;
     _glyphQuadCount = 0;
-    _fixedGlyphCount = 0;
     _hasBounds = false;
     _geometryDirty = false;
     markAabbDirty();
@@ -470,7 +471,8 @@ class MsdfTextBatch3D({
     return idx;
   }
 
-  /// Replaces the string at [index] in place.
+  /// Replaces the string at [index] in place; the options left out keep
+  /// their values.
   void setText(
     int index,
     String text, {
@@ -480,6 +482,8 @@ class MsdfTextBatch3D({
     TextBillboardMode3D? mode,
     Quaternion? rotation,
     TextAlign3D? align,
+    double? letterSpacing,
+    double? lineHeight,
   }) {
     RangeError.checkValidIndex(index, this, 'index', _entries.length);
     final prev = _entries[index];
@@ -491,8 +495,8 @@ class MsdfTextBatch3D({
       mode: mode ?? prev.mode,
       rotation: rotation?.clone() ?? prev.rotation,
       align: align ?? prev.align,
-      letterSpacing: prev.letterSpacing,
-      lineHeight: prev.lineHeight,
+      letterSpacing: letterSpacing ?? prev.letterSpacing,
+      lineHeight: lineHeight ?? prev.lineHeight,
     );
     _geometryDirty = true;
     markAabbDirty();
@@ -511,19 +515,9 @@ class MsdfTextBatch3D({
       return;
     }
     _ensureRebuilt();
-    _billboardMaterial.alphaCutoff = alphaCutoff;
-    _fixedMaterial.alphaCutoff = alphaCutoff;
-
+    _billboardMaterial.alphaCutoff = math.max(alphaCutoff, 1 / 255);
     if (!_billboardBatch.isEmpty) {
       _billboardBatch.drawTransformed(context, worldTransformMatrix);
-    }
-    final fixedSurf = _fixedSurface;
-    if (fixedSurf != null && _fixedGlyphCount > 0) {
-      context.drawSurface(
-        fixedSurf,
-        transform: worldTransformMatrix,
-        material: _fixedMaterial,
-      );
     }
   }
 
@@ -534,7 +528,6 @@ class MsdfTextBatch3D({
     _geometryDirty = false;
     _billboardBatch.clear();
     _glyphQuadCount = 0;
-    _fixedGlyphCount = 0;
 
     var minX = double.infinity;
     var minY = double.infinity;
@@ -564,14 +557,8 @@ class MsdfTextBatch3D({
       }
     }
 
-    final fixedVerts = <double>[];
-    final fixedIndices = <int>[];
-    final strideFloats = VertexLayout.standard.strideInFloats;
-
     final rightVec = Vector3.zero();
     final upVec = Vector3.zero();
-    final normalVec = Vector3.zero();
-    final glyphCenter = Vector3.zero();
 
     for (var eIdx = 0; eIdx < _entries.length; eIdx++) {
       final entry = _entries[eIdx];
@@ -581,25 +568,25 @@ class MsdfTextBatch3D({
       final lines = entry.text.split('\n');
       final size = entry.fontSize;
 
-      // Extract roll/tilt if rotation is supplied for billboard modes, or full
-      // 3D basis for `TextBillboardMode3D.fixed`.
+      // The plane of fixed text, and the roll and tilt that a rotation adds
+      // to camera-facing text.
       final rot = entry.rotation;
       var rollRad = 0.0;
       var tiltRad = 0.0;
+      rightVec.setValues(1.0, 0.0, 0.0);
+      upVec.setValues(0.0, 1.0, 0.0);
       if (rot != null) {
-        rightVec.setValues(1.0, 0.0, 0.0);
         _rotateByQuat(rot, rightVec);
-        upVec.setValues(0.0, 1.0, 0.0);
         _rotateByQuat(rot, upVec);
-        normalVec.setValues(0.0, 0.0, 1.0);
-        _rotateByQuat(rot, normalVec);
         rollRad = math.atan2(rightVec.y, rightVec.x);
         tiltRad = math.asin((-upVec.z).clamp(-1.0, 1.0));
-      } else {
-        rightVec.setValues(1.0, 0.0, 0.0);
-        upVec.setValues(0.0, 1.0, 0.0);
-        normalVec.setValues(0.0, 0.0, 1.0);
       }
+      final fixed = entry.mode == TextBillboardMode3D.fixed;
+      final orientation = switch (entry.mode) {
+        TextBillboardMode3D.spherical => BillboardOrientation3D.spherical,
+        TextBillboardMode3D.cylindrical => BillboardOrientation3D.cylindrical,
+        TextBillboardMode3D.fixed => BillboardOrientation3D.fixed,
+      };
 
       for (var lineIdx = 0; lineIdx < lines.length; lineIdx++) {
         final line = lines[lineIdx];
@@ -633,109 +620,40 @@ class MsdfTextBatch3D({
             final localOffsetX = cursorX + 0.5 * adv;
             final localOffsetY = cursorY;
 
-            if (entry.mode == TextBillboardMode3D.fixed) {
-              glyphCenter
-                ..setFrom(entry.position)
-                ..addScaled(rightVec, localOffsetX)
-                ..addScaled(upVec, localOffsetY);
-              expandBounds(glyphCenter.x, glyphCenter.y, glyphCenter.z, size);
+            // Every glyph of a string sits at the string's position and is
+            // moved to its place in the string by its anchors, which the
+            // shader applies along the sprite's right and up: the camera's
+            // (or the cylinder's) for camera-facing text, so that a string
+            // keeps its width seen from any side, the plane's for fixed text.
+            final anchorX = -localOffsetX / gw;
+            final anchorY = -localOffsetY / gh;
+            final rx = (anchorX.abs() + 0.5) * gw;
+            final ry = (anchorY.abs() + 0.5) * gh;
+            final p = entry.position;
+            expandBounds(p.x, p.y, p.z, math.sqrt(rx * rx + ry * ry));
 
-              // Guard 16-bit index limit (`65535 ~/ 4 = 16383` glyphs).
-              if (_fixedGlyphCount < 16380) {
-                final vBase = _fixedGlyphCount * 4;
-                final hw = 0.5 * gw;
-                final hh = 0.5 * gh;
-                final uv = m.uvRect;
-                final cr = entry.color.r;
-                final cg = entry.color.g;
-                final cb = entry.color.b;
-                final ca = entry.color.a;
-
-                void pushVertex(double sx, double sy, double u, double v) {
-                  final px = glyphCenter.x + rightVec.x * sx + upVec.x * sy;
-                  final py = glyphCenter.y + rightVec.y * sx + upVec.y * sy;
-                  final pz = glyphCenter.z + rightVec.z * sx + upVec.z * sy;
-                  fixedVerts
-                    ..add(px)
-                    ..add(py)
-                    ..add(pz)
-                    ..add(u)
-                    ..add(v)
-                    ..add(cr)
-                    ..add(cg)
-                    ..add(cb)
-                    ..add(ca)
-                    ..add(normalVec.x)
-                    ..add(normalVec.y)
-                    ..add(normalVec.z);
-                  for (var pad = 12; pad < strideFloats; pad++) {
-                    fixedVerts.add(0.0);
-                  }
-                }
-
-                pushVertex(-hw, -hh, uv.left, uv.bottom);
-                pushVertex(hw, -hh, uv.right, uv.bottom);
-                pushVertex(hw, hh, uv.right, uv.top);
-                pushVertex(-hw, hh, uv.left, uv.top);
-
-                fixedIndices
-                  ..add(vBase)
-                  ..add(vBase + 1)
-                  ..add(vBase + 2)
-                  ..add(vBase)
-                  ..add(vBase + 2)
-                  ..add(vBase + 3);
-                _fixedGlyphCount++;
-                _glyphQuadCount++;
-              }
-            } else {
-              // Camera-facing glyphs all sit at the string's position and are
-              // moved to their place in the string by their anchors, which
-              // the shader applies along the camera's (or the cylinder's)
-              // right and up: the string keeps its width seen from any side,
-              // and a roll turns it as a whole around its position.
-              final anchorX = -localOffsetX / gw;
-              final anchorY = -localOffsetY / gh;
-              final rx = (anchorX.abs() + 0.5) * gw;
-              final ry = (anchorY.abs() + 0.5) * gh;
-              final p = entry.position;
-              expandBounds(p.x, p.y, p.z, math.sqrt(rx * rx + ry * ry));
-
-              _billboardBatch.addBillboard(
-                position: p,
-                width: gw,
-                height: gh,
-                orientation: entry.mode == TextBillboardMode3D.cylindrical
-                    ? BillboardOrientation3D.cylindrical
-                    : BillboardOrientation3D.spherical,
-                anchorY: anchorY,
-                anchorX: anchorX,
-                tiltRadians: tiltRad,
-                rollRadians: rollRad,
-                uvRect: m.uvRect,
-                color: entry.color,
-                unlit: 1.0,
-              );
-              _glyphQuadCount++;
-            }
+            _billboardBatch.addBillboard(
+              position: p,
+              width: gw,
+              height: gh,
+              orientation: orientation,
+              upAxis: fixed ? upVec : null,
+              rightAxis: fixed ? rightVec : null,
+              anchorY: anchorY,
+              anchorX: anchorX,
+              tiltRadians: fixed ? 0.0 : tiltRad,
+              rollRadians: fixed ? 0.0 : rollRad,
+              uvRect: m.uvRect,
+              color: entry.color,
+              unlit: 1.0,
+            );
+            _glyphQuadCount++;
           }
 
           cursorX += adv;
           prevCu = cu;
         }
       }
-    }
-
-    _fixedSurface?.dispose();
-    if (_fixedGlyphCount > 0) {
-      _fixedSurface = Surface.fromBuffers(
-        vertices: Float32List.fromList(fixedVerts),
-        indices: Uint16List.fromList(fixedIndices),
-        layout: VertexLayout.standard,
-        material: _fixedMaterial,
-      );
-    } else {
-      _fixedSurface = null;
     }
 
     if (minX.isFinite) {

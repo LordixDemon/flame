@@ -14,6 +14,30 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('MsdfFontAtlas3D & single-draw MsdfTextBatch3D', () {
+    test('batches without an atlas share one', () {
+      expect(MsdfTextBatch3D().atlas, same(MsdfTextBatch3D().atlas));
+    });
+
+    test('keeps every glyph of a long fixed string', () {
+      final batch = MsdfTextBatch3D()
+        ..addText(
+          'A' * 17000,
+          position: Vector3.zero(),
+          mode: TextBillboardMode3D.fixed,
+        );
+      expect(batch.glyphCount, 17000);
+    });
+
+    test('setText changes the letter spacing and line height', () {
+      final batch = MsdfTextBatch3D();
+      final slot = batch.addText('ABC\nDEF', position: Vector3.zero());
+      final width = batch.aabb.max.x - batch.aabb.min.x;
+      final height = batch.aabb.max.y - batch.aabb.min.y;
+      batch.setText(slot, 'ABC\nDEF', letterSpacing: 1, lineHeight: 3);
+      expect(batch.aabb.max.x - batch.aabb.min.x, greaterThan(width + 0.9));
+      expect(batch.aabb.max.y - batch.aabb.min.y, greaterThan(height + 0.9));
+    });
+
     test(
       'MsdfFontAtlas3D packs printable ASCII + symbols with valid UV rects, '
       'kerning, and signed-distance stroke contours',
@@ -58,8 +82,8 @@ void main() {
     );
 
     test(
-      'MsdfTextBatch3D renders 150 world-space strings in 1 instanced GPU '
-      'draw call with alphaCutoff depth occlusion, plus fixed 3D plaques',
+      'MsdfTextBatch3D records 150 world-space strings as 1 instanced draw '
+      'call (on a recording fake backend), plus fixed 3D plaques',
       () {
         final backend = FakeGpuBackend();
         final device = GraphicsDevice(backend: backend);

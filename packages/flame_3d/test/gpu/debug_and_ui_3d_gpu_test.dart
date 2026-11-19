@@ -382,6 +382,117 @@ void main() {
       },
     );
 
+    testGpuEngine('draws fixed text in its color under white light', () async {
+      int brightest(Pixels pixels) {
+        var best = 0;
+        for (var i = 0; i < pixels.rgba.length; i += 4) {
+          best = math.max(best, pixels.rgba[i]);
+        }
+        return best;
+      }
+
+      final lights = [
+        Light(
+          position: Vector3.zero(),
+          source: AmbientLight(intensity: 0.3),
+        ),
+        Light(
+          position: Vector3.zero(),
+          source: DirectionalLight(direction: Vector3(0, 0, -1), intensity: 3),
+        ),
+      ];
+      for (final mode in [
+        TextBillboardMode3D.fixed,
+        TextBillboardMode3D.spherical,
+      ]) {
+        final text = MsdfTextBatch3D()
+          ..addText(
+            'LIT',
+            position: Vector3(0, 0, -5),
+            fontSize: 0.3,
+            mode: mode,
+            align: TextAlign3D.center,
+          );
+        final frame = await renderFrame(draw: text.draw, lights: lights);
+        expect(brightest(frame.pixels), greaterThan(240), reason: '$mode');
+      }
+    });
+
+    testGpuEngine(
+      'lays fixed text in its plane, turned with the batch',
+      () async {
+        final text = MsdfTextBatch3D()
+          ..addText(
+            'PLAQUE',
+            position: Vector3.zero(),
+            fontSize: 0.15,
+            mode: TextBillboardMode3D.fixed,
+            align: TextAlign3D.center,
+          )
+          ..addText(
+            'LABEL',
+            position: Vector3(0, -0.5, 0),
+            fontSize: 0.15,
+            align: TextAlign3D.center,
+          )
+          ..position.setValues(0, 0, -5);
+        Future<int> widthFrom(Vector3 eye) async {
+          // Only the plaque: the label is below the middle row.
+          final frame = await renderFrame(
+            draw: text.draw,
+            view: _viewFrom(eye),
+          );
+          expect(frame.stats.drawCalls, 1);
+          var first = 64;
+          var last = -1;
+          for (var x = 0; x < 64; x++) {
+            for (var y = 24; y < 40; y++) {
+              if (!frame.pixels.isClear(x, y)) {
+                first = math.min(first, x);
+                last = math.max(last, x);
+              }
+            }
+          }
+          return last < 0 ? 0 : last - first;
+        }
+
+        final front = await widthFrom(Vector3.zero());
+        expect(front, greaterThan(10));
+        expect(await widthFrom(Vector3(5, 0, -5)), lessThan(4));
+        // Turned a quarter turn about Y, the plaque faces +X.
+        text.rotation.setFrom(
+          Quaternion.axisAngle(Vector3(0, 1, 0), math.pi / 2),
+        );
+        expect(await widthFrom(Vector3(5, 0, -5)), closeTo(front, 1));
+        expect(await widthFrom(Vector3.zero()), lessThan(4));
+      },
+    );
+
+    testGpuEngine('cuts glyphs out even with a zero cutoff', () async {
+      final text = MsdfTextBatch3D(alphaCutoff: 0)
+        ..addText(
+          '+',
+          position: Vector3(0, 0, -5),
+          align: TextAlign3D.center,
+        );
+      final frame = await renderFrame(draw: text.draw);
+      // The cross of the + is drawn, the corners of its quad (0.5 units
+      // high, 16 pixels) are not.
+      final glyph = text.atlas.metricsFor('+'.codeUnitAt(0));
+      final halfWidth = (glyph.width * 0.5 / 2 * 32).floor();
+      expect(frame.pixels.isClear(32, 32), isFalse);
+      for (final (x, y) in [
+        (32 - halfWidth + 1, 32 - 7),
+        (32 + halfWidth - 2, 32 - 7),
+        (32 - halfWidth + 1, 32 + 6),
+        (32 + halfWidth - 2, 32 + 6),
+      ]) {
+        // Nothing at all: an opaque quad would leave its color there, with
+        // a zero alpha, which the canvas adds to what is behind.
+        expect(frame.pixels.at(x, y), (0, 0, 0, 0), reason: '($x, $y)');
+      }
+    });
+
     testGpuEngine('follows the transform of the batch', () async {
       final text = MsdfTextBatch3D()
         ..addText(

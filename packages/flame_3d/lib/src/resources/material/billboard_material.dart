@@ -12,6 +12,10 @@ enum BillboardOrientation3D() {
   /// Rotates around an upright axis to face the camera horizontally, with an
   /// optional HD-2D standee backward tilt.
   cylindrical,
+
+  /// Does not turn towards the camera: lies in the plane of its up axis and
+  /// its right axis, like a sign.
+  fixed,
 }
 
 /// Material used by `BillboardBatch3D` and `Text3DComponent` to render

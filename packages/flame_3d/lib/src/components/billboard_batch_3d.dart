@@ -47,6 +47,7 @@ class BillboardBatch3D({
   );
 
   static final Vector3 _defaultUp = Vector3(0, 1, 0);
+  static final Vector3 _defaultRight = Vector3(1, 0, 0);
 
   int _capacity = 32;
   int _length = 0;
@@ -83,6 +84,10 @@ class BillboardBatch3D({
   /// beyond `±0.5` place the sprite away from [position] along the camera
   /// plane (`MsdfTextBatch3D` lays out the glyphs of a string this way).
   /// [rollRadians] turns the sprite around its pivot, in the camera plane.
+  ///
+  /// A [BillboardOrientation3D.fixed] sprite does not face the camera: it
+  /// lies in the plane of [upAxis] and [rightAxis] (made perpendicular to
+  /// [upAxis]) and ignores [tiltRadians].
   int addBillboard({
     required Vector3 position,
     required double width,
@@ -91,6 +96,7 @@ class BillboardBatch3D({
     Vector3? upAxis,
     double anchorY = -0.5,
     double anchorX = 0.0,
+    Vector3? rightAxis,
     double tiltRadians = 0.0,
     double rollRadians = 0.0,
     Rect uvRect = const Rect.fromLTWH(0, 0, 1, 1),
@@ -113,6 +119,7 @@ class BillboardBatch3D({
       height: height,
       orientation: orientation,
       upAxis: upAxis ?? _defaultUp,
+      rightAxis: rightAxis ?? _defaultRight,
       anchorY: anchorY,
       anchorX: anchorX,
       tiltRadians: tiltRadians,
@@ -140,6 +147,7 @@ class BillboardBatch3D({
     Vector3? upAxis,
     double anchorY = -0.5,
     double anchorX = 0.0,
+    Vector3? rightAxis,
     double tiltRadians = 0.0,
     double rollRadians = 0.0,
     Rect uvRect = const Rect.fromLTWH(0, 0, 1, 1),
@@ -156,6 +164,7 @@ class BillboardBatch3D({
       height: height,
       orientation: orientation,
       upAxis: upAxis ?? _defaultUp,
+      rightAxis: rightAxis ?? _defaultRight,
       anchorY: anchorY,
       anchorX: anchorX,
       tiltRadians: tiltRadians,
@@ -179,6 +188,7 @@ class BillboardBatch3D({
     required double height,
     required BillboardOrientation3D orientation,
     required Vector3 upAxis,
+    required Vector3 rightAxis,
     required double anchorY,
     required double anchorX,
     required double tiltRadians,
@@ -190,6 +200,18 @@ class BillboardBatch3D({
     required double fade,
   }) {
     final b = index * _stride;
+    // A fixed sprite keeps its right direction as an angle about its up
+    // axis in the slot of the tilt, which it has no use for.
+    final tiltOrRight = orientation == BillboardOrientation3D.fixed
+        ? _fixedRightAngle(
+            upAxis.x,
+            upAxis.y,
+            upAxis.z,
+            rightAxis.x,
+            rightAxis.y,
+            rightAxis.z,
+          )
+        : tiltRadians;
     _instances
       ..[b] = position.x
       ..[b + 1] = position.y
@@ -204,7 +226,7 @@ class BillboardBatch3D({
       ..[b + 10] = uvRect.width
       ..[b + 11] = uvRect.height
       ..[b + 12] = anchorY
-      ..[b + 13] = tiltRadians
+      ..[b + 13] = tiltOrRight
       ..[b + 14] = rollRadians
       ..[b + 15] = orientation.index.toDouble()
       ..[b + 16] = color.r
@@ -349,11 +371,84 @@ class BillboardBatch3D({
       final ux = src[b + 4];
       final uy = src[b + 5];
       final uz = src[b + 6];
-      out[b + 4] = m[0] * ux + m[4] * uy + m[8] * uz;
-      out[b + 5] = m[1] * ux + m[5] * uy + m[9] * uz;
-      out[b + 6] = m[2] * ux + m[6] * uy + m[10] * uz;
+      final tx = m[0] * ux + m[4] * uy + m[8] * uz;
+      final ty = m[1] * ux + m[5] * uy + m[9] * uz;
+      final tz = m[2] * ux + m[6] * uy + m[10] * uz;
+      out[b + 4] = tx;
+      out[b + 5] = ty;
+      out[b + 6] = tz;
       out[b + 7] = src[b + 7] * scale;
+      if (src[b + 15] > 1.5) {
+        // A fixed sprite: turn its right direction too.
+        _fixedReference(ux, uy, uz);
+        final r = _reference;
+        final angle = src[b + 13];
+        final c = math.cos(angle);
+        final sn = math.sin(angle);
+        final rx = r[0] * c + r[3] * sn;
+        final ry = r[1] * c + r[4] * sn;
+        final rz = r[2] * c + r[5] * sn;
+        out[b + 13] = _fixedRightAngle(
+          tx,
+          ty,
+          tz,
+          m[0] * rx + m[4] * ry + m[8] * rz,
+          m[1] * rx + m[5] * ry + m[9] * rz,
+          m[2] * rx + m[6] * ry + m[10] * rz,
+        );
+      }
     }
     return out;
+  }
+
+  // The two directions perpendicular to an up axis that the right direction
+  // of a fixed sprite is measured from, as billboardFixedRight in
+  // shaders/flame_3d/billboard_vertex.glsl computes them: r0 (0..2), the
+  // direction closest to +X (to -Z for an up axis along X), and r1 (3..5),
+  // up × r0.
+  static final Float64List _reference = Float64List(6);
+
+  static void _fixedReference(double upX, double upY, double upZ) {
+    final length = math.sqrt(upX * upX + upY * upY + upZ * upZ);
+    final valid = length > 1e-5;
+    final ux = valid ? upX / length : 0.0;
+    final uy = valid ? upY / length : 1.0;
+    final uz = valid ? upZ / length : 0.0;
+    final alongX = ux.abs() >= 0.99;
+    final ax = alongX ? 0.0 : 1.0;
+    final az = alongX ? -1.0 : 0.0;
+    final d = ax * ux + az * uz;
+    var r0x = ax - ux * d;
+    var r0y = -uy * d;
+    var r0z = az - uz * d;
+    final r0Length = math.sqrt(r0x * r0x + r0y * r0y + r0z * r0z);
+    r0x /= r0Length;
+    r0y /= r0Length;
+    r0z /= r0Length;
+    _reference
+      ..[0] = r0x
+      ..[1] = r0y
+      ..[2] = r0z
+      ..[3] = uy * r0z - uz * r0y
+      ..[4] = uz * r0x - ux * r0z
+      ..[5] = ux * r0y - uy * r0x;
+  }
+
+  /// The angle about the up axis ([ux], [uy], [uz]) of the right direction
+  /// ([rx], [ry], [rz]) of a fixed sprite, as the shader reads it.
+  static double _fixedRightAngle(
+    double ux,
+    double uy,
+    double uz,
+    double rx,
+    double ry,
+    double rz,
+  ) {
+    _fixedReference(ux, uy, uz);
+    final r = _reference;
+    return math.atan2(
+      rx * r[3] + ry * r[4] + rz * r[5],
+      rx * r[0] + ry * r[1] + rz * r[2],
+    );
   }
 }
