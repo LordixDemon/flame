@@ -167,10 +167,13 @@ offscreen world of a camera whose `worldRenderScale` is not `1`, and in
 `CameraComponent.renderToImageSync`. Those pictures scale their canvas to their pixels themselves
 and report it with Flame's `RasterScale` (see the post processing page of Flame), so the layer
 takes the canvas units as pixels and renders `renderScale` pixels per unit, with the image aligned
-to the picture's pixel grid. Leave `renderScale` at the value you would use on screen. A post
-process of your own that records the subtree into a scaled picture without `rasterizeSubtree`
-reports its scale with `RasterScale.push` and `RasterScale.pop`; otherwise the layer renders at the
-device pixel ratio times the picture's scale.
+to the picture's pixel grid. Leave `renderScale` at the value you would use on screen, and do not
+clip the canvas yourself: those pictures clip their canvas to the image, the pass covers what of the
+scene lands in it (the game's area in the picture's pixels when a picture does not clip), and
+`visibleRect` narrows it as on screen. A post process of your own that records the subtree into a
+scaled picture without `rasterizeSubtree` reports its scale with `RasterScale.push` and
+`RasterScale.pop`; otherwise the layer renders at the device pixel ratio times the picture's scale,
+and, without a clip, only over the game's logical size taken in the picture's pixels.
 
 The render target is rounded up to a multiple of 64 pixels in both directions, and the target of the
 last render is kept while the part fits in it and covers at least half of it, so that panning,

@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:flame/components.dart' show RectangleComponent, World;
 import 'package:flame/game.dart';
 import 'package:flame/post_process.dart';
+import 'package:flame/rendering.dart' show RasterScale;
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
@@ -67,10 +68,95 @@ class _RasterizingUnannounced() extends PostProcess {
   }
 }
 
+/// Rasterizes the world as `rasterizeSubtree` does, without telling the
+/// components and without clipping the picture's canvas: what
+/// `rasterizeSubtree` did before `RasterScale`.
+class _RasterizingUnannouncedUnclipped() extends PostProcess {
+  this : super(pixelRatio: _pixelRatio);
+
+  final Paint _paint = Paint()..filterQuality = FilterQuality.none;
+
+  @override
+  void postProcess(Vector2 size, Canvas canvas) {
+    final recorder = PictureRecorder();
+    final inner = Canvas(recorder)..scale(pixelRatio);
+    renderSubtree(inner);
+    final picture = recorder.endRecording();
+    final image = picture.toImageSync(
+      (size.x * pixelRatio).ceil(),
+      (size.y * pixelRatio).ceil(),
+    );
+    picture.dispose();
+    canvas.drawImageRect(
+      image,
+      Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+      Offset.zero & size.toSize(),
+      _paint,
+    );
+    image.dispose();
+  }
+}
+
+/// Rasterizes the world into a picture scaled by [pixelRatio] whose canvas
+/// it does not clip, announcing the scale with `RasterScale`: a renderer of a
+/// game's own that forgets the clip.
+class _RasterizingAnnouncedUnclipped() extends PostProcess {
+  this : super(pixelRatio: _pixelRatio);
+
+  final Paint _paint = Paint()..filterQuality = FilterQuality.none;
+
+  @override
+  void postProcess(Vector2 size, Canvas canvas) {
+    final recorder = PictureRecorder();
+    final inner = Canvas(recorder)..scale(pixelRatio);
+    RasterScale.push(pixelRatio);
+    try {
+      renderSubtree(inner);
+    } finally {
+      RasterScale.pop();
+    }
+    final picture = recorder.endRecording();
+    final image = picture.toImageSync(
+      (size.x * pixelRatio).ceil(),
+      (size.y * pixelRatio).ceil(),
+    );
+    picture.dispose();
+    canvas.drawImageRect(
+      image,
+      Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+      Offset.zero & size.toSize(),
+      _paint,
+    );
+    image.dispose();
+  }
+}
+
 /// A 2D backdrop and a retained layer showing a lit, turned cube with hard
-/// edges, whose pixels depend on the resolution the layer renders at.
-class _Scene({PostProcess? postProcess, double renderScale = 1}) {
+/// edges, whose pixels depend on the resolution the layer renders at, and
+/// with `grid`, small cubes across the whole view (and no caching).
+class _Scene({
+  PostProcess? postProcess,
+  double renderScale = 1,
+  bool grid = false,
+}) {
   this {
+    // A layer that renders every frame keeps the statistics of a pass.
+    if (grid) {
+      layer.cacheMode = Scene3DCacheMode.none;
+    }
+    if (grid) {
+      final mesh = CuboidMesh(
+        size: Vector3.all(0.3),
+        material: SpatialMaterial(albedoColor: const Color(0xFF60D060)),
+      );
+      for (var i = -2.0; i <= 6; i += 0.5) {
+        for (var j = -2.0; j <= 6; j += 0.5) {
+          layer.world.add(
+            MeshComponent(mesh: mesh, position: Vector3(i, j, 0.15)),
+          );
+        }
+      }
+    }
     layer.world.addAll([
       LightComponent.ambient(intensity: 0.3),
       LightComponent.directional(direction: Vector3(-0.4, -0.7, -1)),
@@ -221,6 +307,109 @@ void main() {
       expect(scaled.layer.renderedRect, const Rect.fromLTWH(0, 0, 80, 60));
       expect(scaled.targetWidth, 128);
       expect(_cubePixels(scaledPixels), greaterThan(1000));
+    });
+
+    group('without a clip of its own', () {
+      // Each frame draws the cubes of the grid it does not cull: the
+      // number of triangles tells how much of the scene the pass covers.
+      testGpu('the whole visible scene is drawn, as with the manual fix', (
+        tester,
+      ) async {
+        final direct = _Scene(grid: true);
+        final directPixels = await direct.render(tester);
+        final drawn = direct.layer.renderStats.triangles;
+        expect(drawn, greaterThan(60));
+
+        // rasterizeSubtree: the layer keeps renderScale 1, no clip needed.
+        final detected = _Scene(grid: true, postProcess: _Rasterizing());
+        final detectedPixels = await detected.render(tester);
+        expect(detected.layer.renderStats.triangles, drawn);
+        expect(
+          detected.layer.renderedRect,
+          const Rect.fromLTWH(0, 0, _width, _height),
+        );
+
+        // What callers did by hand: a clip to the picture and renderScale
+        // divided by the device pixel ratio.
+        final manual = _Scene(
+          grid: true,
+          postProcess: _RasterizingUnannounced(),
+          renderScale: 1 / _pixelRatio,
+        );
+        final manualPixels = await manual.render(tester);
+        expect(manual.layer.renderStats.triangles, drawn);
+        expect(
+          differingPixels(manualPixels, detectedPixels, tolerance: 0),
+          0,
+        );
+        expect(differingPixels(directPixels, detectedPixels, tolerance: 0), 0);
+
+        // Before RasterScale, without the clip: the pass was bounded by the
+        // game's logical size taken in the picture's pixels, a quarter of
+        // the view.
+        final unclipped = _Scene(
+          grid: true,
+          postProcess: _RasterizingUnannouncedUnclipped(),
+          renderScale: 1 / _pixelRatio,
+        );
+        await unclipped.render(tester);
+        expect(unclipped.layer.renderStats.triangles, lessThan(drawn));
+        expect(
+          unclipped.layer.renderedRect,
+          const Rect.fromLTWH(0, 0, _width / 2, _height / 2),
+        );
+      });
+
+      testGpu('a renderer that announces its scale needs no clip', (
+        tester,
+      ) async {
+        final detected = _Scene(grid: true, postProcess: _Rasterizing());
+        final detectedPixels = await detected.render(tester);
+        final announced = _Scene(
+          grid: true,
+          postProcess: _RasterizingAnnouncedUnclipped(),
+        );
+        final announcedPixels = await announced.render(tester);
+        expect(
+          announced.layer.renderStats.triangles,
+          detected.layer.renderStats.triangles,
+        );
+        expect(
+          differingPixels(announcedPixels, detectedPixels, tolerance: 0),
+          0,
+        );
+      });
+
+      testGpu('visibleRect narrows the pass, and bounds it within the view', (
+        tester,
+      ) async {
+        final whole = _Scene(grid: true, postProcess: _Rasterizing());
+        await whole.render(tester);
+        final drawn = whole.layer.renderStats.triangles;
+
+        // A visibleRect larger than the view changes nothing.
+        final large = _Scene(grid: true, postProcess: _Rasterizing());
+        large.layer.visibleRect = const Rect.fromLTWH(-1000, -1000, 2000, 2000);
+        await large.render(tester);
+        expect(large.layer.renderStats.triangles, drawn);
+        expect(
+          large.layer.renderedRect,
+          const Rect.fromLTWH(0, 0, _width, _height),
+        );
+
+        // One around the cube at (2, 2) narrows the pass to its picture.
+        final narrow = _Scene(grid: true, postProcess: _Rasterizing());
+        final center = narrow.layer.scenePointToLocal(Vector3(2, 2, 0.7));
+        narrow.layer.visibleRect = Rect.fromCenter(
+          center: Offset(center.x, center.y),
+          width: 60,
+          height: 40,
+        );
+        final narrowPixels = await narrow.render(tester);
+        expect(narrow.layer.renderStats.triangles, lessThan(drawn));
+        expect(narrow.layer.renderedRect.width, lessThan(_width));
+        expect(_cubePixels(narrowPixels), greaterThan(500));
+      });
     });
   });
 }
