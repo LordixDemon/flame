@@ -248,11 +248,17 @@ What it costs:
   shader that only writes depth and normal, into a quarter of the scene's pixels;
 - one quarter-size 8-bit target (and its transient depth buffer).
 
-Translucent draws, draws without depth writes and draws of materials whose instances do not hold
-model matrices (`Material.instancesHoldModelMatrices` is `false`: particles, billboards, ribbons,
-camera-facing text) are left out. Every surface is drawn at its rest
-position: vertex animation done in a material's vertex shader (the wind of `StylizedMaterial`) is
-not seen, skinning is. Shaders read the texture through the `depthNormalTexture` sampler and the
+Translucent draws and draws without depth writes are left out. So are draws of materials whose
+instances do not hold model matrices (`Material.instancesHoldModelMatrices` is `false`: billboard
+particles and ribbons), because the prepass's shader would read their instance data as matrices,
+unless the material supplies a `Material.depthNormalMaterial` that places and cuts out its vertices
+as the main pass does. `BillboardMaterial3D` does for its opaque draws, so opaque
+`BillboardBatch3D` billboards and `MsdfTextBatch3D` text are in the texture, cut out by their
+`alphaCutoff`; `Text3DComponent` labels are translucent and are not (see
+[Depth and sorting](ui_3d.md#depth-and-sorting)). Mesh particles draw with ordinary materials and
+are in it when those are opaque. Every other surface is drawn at its rest position: vertex
+animation done in a material's vertex shader (the wind of `StylizedMaterial`) is not seen, skinning
+is. Shaders read the texture through the `depthNormalTexture` sampler and the
 `DepthNormal` block (`params.x` is `1` when the texture is valid, `params.yz` its texel size); the
 depth is decoded as `(r * 255 * 256 + g * 255) / 65535`.
 
@@ -389,9 +395,10 @@ The pipeline is the same; what differs is the image it runs on.
 ## Limitations
 
 - HDR falls back to 8 bits on OpenGL ES, where colors above `1` clip (see [HDR](#hdr)).
-- Opaque particles, billboards and camera-facing text are missing from the depth-normal texture:
-  their instances do not hold model matrices, so the prepass leaves them out (see
-  [Depth and sorting](ui_3d.md#depth-and-sorting)).
+- Billboard particles (`ParticleMaterial`), ribbons and translucent labels are missing from the
+  depth-normal texture, so SSAO and depth of field do not see them; opaque `BillboardBatch3D`
+  billboards and `MsdfTextBatch3D` text are in it (see
+  [Depth-normal prepass](#depth-normal-prepass)).
 - SSAO and depth of field work in normalized depth with fixed thresholds and a screen-space radius:
   they do not scale with the world, and under a perspective camera they fade out with distance.
 - The composite runs on premultiplied colors: tone mapping, which is not linear, is slightly off at

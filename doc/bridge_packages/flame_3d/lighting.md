@@ -52,8 +52,8 @@ or one of its ancestors turns it. A light with neither a direction nor a transfo
 down (`-Y`). The values of the source may be changed at any time: they are read once per render
 pass.
 
-`LightComponent.point` has no `shadows` parameter: give a point light shadows by building its
-source yourself.
+The `directional`, `point` and `spot` constructors take `shadows` (see [Shadows](shadows.md)), and
+a `LightComponent` can also be built around a source of your own:
 
 ```dart
 final lamp = LightComponent(
@@ -135,8 +135,8 @@ A `PointLight` shines in every direction from the world position of its componen
 the distance `d`: `intensity / d²`. With one, it fades out smoothly and reaches no further:
 `intensity * (1 - d / range)²`. `StylizedMaterial` wraps it around the object,
 `max(pointLightWrap, n·l)`, so it also reaches the side turned away from it. With `shadows`, it
-casts omnidirectional (dual-paraboloid) shadows that only `SpatialMaterial` receives, see
-[Shadows](shadows.md).
+casts omnidirectional (dual-paraboloid) shadows, which every shadow receiver receives, see
+[Shadows](shadows.md#point-light-shadows).
 
 
 ### Spot light
@@ -154,7 +154,8 @@ cone = clamp((cos θ - cos outer) / (cos inner - cos outer), 0, 1)²
 as a point light. `outerConeAngle` is clamped to `0.001..0.999π` and `innerConeAngle` to below it.
 `StylizedMaterial` wraps spot lights by half its `pointLightWrap` and gives them highlights that
 scale with their intensity. With `shadows` a spot light casts perspective shadows, see
-[Shadows](shadows.md). `WaterMaterial` ignores spot lights.
+[Shadows](shadows.md). `WaterMaterial` lights its body and its glints with spot lights too, with
+the same cone and falloff.
 
 
 ## How many lights reach a shader
@@ -200,11 +201,10 @@ once per pass, without allocating, in time proportional to the number of lights.
 World3D manyLights() => World3D(prioritizeNearestLights: true);
 ```
 
-Shadows of point and spot lights are matched with their light by its position in the world's
-light order, while the uniform arrays are filled in score order when lights are prioritized: then,
-and when a zero-intensity point light comes before the one with shadows, the shadow is applied to
-another light. Keep shadow-casting point and spot lights among the first ones and their number
-within the limits, see the [Limitations](#limitations).
+The shadow pass takes its spot and point casters among the lights the pass selected, at their
+places in the arrays, so a shadow follows its light whatever the order. A shadow-casting light that
+the selection leaves out casts no shadow in that pass (see
+[Spot-light shadows](shadows.md#spot-light-shadows)).
 
 
 ### Which materials use which lights
@@ -218,8 +218,8 @@ within the limits, see the [Limitations](#limitations).
 
 `UnlitMaterial`, `DecalMaterial`, `OutlineMaterial`, `SkyboxMaterial3D`, `ShadowCatcherMaterial`,
 `ParticleMaterial` and `RibbonMaterial3D` are not lit. Which lights' shadows each material receives
-is described in [Shadows](shadows.md); `StylizedMaterial` and `WaterMaterial` receive the shadows
-of one light only (see [Materials](materials.md#limitations)).
+is described in [Shadows](shadows.md#receiving-shadows): `SpatialMaterial`, `StylizedMaterial` and
+`WaterMaterial` receive those of every light that casts them.
 
 
 ## Light masks
@@ -583,10 +583,8 @@ material's slots (see [Materials](materials.md#custom-shaders)):
 - At most 4 directional, 8 point and 4 spot lights light a pass, chosen per pass from the camera's
   point of view. There are no per-object light lists and no clustered or tiled shading: the
   `LightClusterGrid3D` is not used by the renderer.
-- The shadow of a point or spot light is matched with its light by the light's position in the
-  world's order, while the light arrays skip zero-intensity point lights and are reordered by
-  priority (always for more than four spot lights, with `prioritizeNearestLights` for more than
-  eight point lights). The shadow then darkens another light, or none.
+- A shadow-casting spot or point light that the per-pass selection leaves out casts no shadow in
+  that pass.
 - Reflections: one volume per object (one per instanced draw of your own), no blending between
   overlapping volumes; boxes are axis-aligned; `priority` is the component's ordering priority as
   well.
@@ -595,8 +593,6 @@ material's slots (see [Materials](materials.md#custom-shaders)):
   uploaded mip levels.
 - Light probe grids are baked without occlusion, and on the GPU they drop the mixed terms of band 2
   of each probe's spherical harmonics (see [Light probe grids](#light-probe-grids)).
-- `StylizedMaterial` and `WaterMaterial` receive wrong shadows when the scene uses the multi-light
-  shadow atlas (see [Materials](materials.md#limitations)).
 - Changing the fields of the current `FogSettings` or of a probe in place does not invalidate a
   retained `Scene3DComponent` image (see
   [Changing lights at run time](#changing-lights-at-run-time)).

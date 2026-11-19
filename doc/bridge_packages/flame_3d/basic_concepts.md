@@ -51,8 +51,16 @@ Every `Component3D` has `aabb`, its world-space bounding box including its child
 only when it or a descendant moved. `World3D.sceneBounds` is the union of the bounds of the world's
 components, lights and reflection probe volumes excepted, or `null` for an empty world; it is kept
 up to date incrementally (reading it after `k` of `n` components moved costs about `k * log2(n)`
-box unions) and is what a `Scene3DComponent` uses to render only the part of the screen its scene
-covers.
+box unions). The sun's shadow map is fitted to it (see [Shadows](shadows.md)), and a
+`Scene3DComponent` uses it to render only the part of the screen its scene covers.
+
+A direct child of the world whose `includeInSceneBounds` is `false` is left out of `sceneBounds`;
+it is still drawn and culled with its own `aabb`. Use it for a component whose bounds are far larger
+than what the shadows should cover, such as an overlay that may draw anywhere (`DebugRenderer3D`
+sets it), so that adding it does not spread the shadow map thin. While a world holds such a
+component, `World3D.hasUnboundedComponents` is `true` and a `Scene3DComponent` renders its whole
+visible area. Only direct children of the world count: a nested component is counted through the
+bounds of its parent.
 
 A world can also hold ordinary Flame components for their logic: camera rigs, timers, behaviors.
 Do not use it for components that paint on the canvas: the world's children are traversed once per

@@ -127,9 +127,10 @@ given depth on a local point.
 Each time the layer renders, it renders the part of the screen it covers in one render pass (plus a
 shadow pass, a depth prepass and post-processing passes when those are on): the canvas's clip (the
 game's area when nothing clips the canvas), intersected with the picture of the bounding box of the
-scene's components (lights do not count) and, when the component has a non-zero `size`, with the
-rectangle from `(0, 0)` to `size`. Objects outside that part are culled. Nothing is rendered when
-the part is empty, for example when the scene is off screen.
+scene's components (lights do not count, nor components whose `includeInSceneBounds` is `false`)
+and, when the component has a non-zero `size`, with the rectangle from `(0, 0)` to `size`. Objects
+outside that part are culled. Nothing is rendered when the part is empty, for example when the scene
+is off screen.
 
 Two optional bounds narrow the part further, without clipping the canvas: `visibleRect`, a
 rectangle in the layer's local coordinates (followed exactly through a rotated or sheared canvas),
@@ -146,14 +147,18 @@ layer.visibleRect = const Rect.fromLTWH(0, 0, 640, 480);
 The bounding box of the scene is `World3D.sceneBounds`, which the world keeps up to date as its
 components move: reading it only visits the components whose bounds changed since the last frame
 (`log2(n)` unions each), and costs next to nothing for a scene that does not move. It is always the
-exact union of the bounds of the components.
+exact union of the bounds of the components it counts. While the world holds a component left out
+of it (`includeInSceneBounds` set to `false`, as `DebugRenderer3D` does; see
+[Basic Concepts](basic_concepts.md#the-world-and-its-components)), `World3D.hasUnboundedComponents`
+is `true` and the layer renders its whole visible area, since such a component may draw anywhere.
 
 The pass runs at the resolution of the screen: the device pixel ratio times `renderScale` pixels
 per logical pixel, with the image aligned to the device's pixel grid. The camera of the pass is
 built from the canvas transform, so a scene point lands exactly where the projection puts it. With
 `renderScale` at `1` the image is drawn back unfiltered, one image pixel per device pixel; a lower
 `renderScale` saves fill rate and the image is scaled up with `scaledFilterQuality`. `msaa`
-switches multisample anti-aliasing on, except while bloom, post-processing or HDR is active.
+switches multisample anti-aliasing on for the scene pass, also when the scene renders into a texture
+for bloom, post-processing or HDR (the composite pass itself has one sample).
 
 The render target is rounded up to a multiple of 64 pixels in both directions, and the target of the
 last render is kept while the part fits in it and covers at least half of it, so that panning,
@@ -258,7 +263,7 @@ shadow casters as changed (use `shadows: false` when none moved).
 Anything that changes on every frame keeps the layer rendering every frame, with the cost of the
 comparison on top: particle systems with live particles, playing animations, a `FoliageSystem3D`
 with a `windStrength` above `0` (it marks the world dirty on every update, see
-[Large Worlds](world_scale.md#limitations)), and components whose transform or drawing properties
+[Large Worlds](world_scale.md#foliage)), and components whose transform or drawing properties
 change every frame (writing an unchanged value is not a change). Put such objects in a layer of
 their own without caching, above or below the retained one, and share shadows between the two with
 a `ShadowGroup`.
@@ -315,10 +320,9 @@ final crystals = Scene3DComponent(
 With `bloom`, an active `postProcess`, `hdrEnabled`, or the `depth` and `ssao` debug modes, the
 scene renders into a texture first, and a composite pass draws the layer's image from it. The
 composite keeps the scene's alpha, so the 2D art behind the layer shows through where the scene is
-empty and the glow is added onto it; the grading, however, also runs on the empty pixels (see
-Limitations). The scene pass then has no multisampling, whatever `msaa` says; use `postProcess.fxaa`
-instead. Each layer runs its own chain. The settings, their costs and what differs in a layer are
-described in
+empty and the glow is added onto it; the grading applies to the covered part of each pixel only, so
+empty pixels stay transparent. `msaa` still applies to the scene pass. Each layer runs its own
+chain. The settings, their costs and what differs in a layer are described in
 [Post-Processing](post_processing.md#in-a-scene3dcomponent-and-in-a-flamegame3d).
 
 For HD-2D standees and labels that 3D objects hide, use `BillboardBatch3D` and `Text3DComponent`
@@ -413,9 +417,6 @@ game share a device of their own, `layer.device`, whose `lastFrameStats` cover a
   whole number of physical pixels, as a full-screen `GameWidget` is.
 - A retained layer does not see the changes listed under "What renders the layer again" that the
   engine cannot observe; call `markDirty()` after them.
-- `msaa` has no effect while `bloom`, `postProcess` or `hdrEnabled` is active.
-- The `postProcess` grading runs on the layer's premultiplied colors, the empty, fully transparent
-  pixels included: a `contrast` below `1` turns them gray (with `contrast: 0.5`, black 2D art behind
-  the layer becomes `(64, 64, 64)` across the layer's rendered rectangle), and so do a color LUT
-  whose black entry is not black and `ToneMapMode.agx`, which maps black to about `0.43`. On a layer
-  drawn over 2D art, keep `contrast` at `1` or above and use `reinhard` or `acesFilmic`.
+- The composite tone-maps premultiplied colors: at the anti-aliased and translucent edges of a layer
+  drawn over 2D art, tone mapping, which is not linear, is slightly off (see
+  [Post-Processing](post_processing.md#limitations)).

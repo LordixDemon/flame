@@ -205,13 +205,10 @@ near plane to 1 at its far plane, not a distance:
   a near plane at 0.1 and a far plane at 100, `0.0005` fades over 0.5 units at 10 units from the
   camera, 0.005 units at 1 unit, and 12.5 units at 50.
 
-The prepass computes the depth per vertex and interpolates it across each triangle, which is exact
-for orthographic and affine projections. Under a perspective camera it is wrong inside large
-triangles, and inside triangles that reach behind the camera: behind a ground plane made of two
-triangles, particles in front of the ground fade out as if they were inside it (seen in a test with
-a 40 by 40 unit plane 5 to 45 units from the camera, where more than half of a billboard standing
-on the ground faded out). Tessellate large opaque surfaces that soft particles show against, or
-keep `softDepthFade` at `0` with perspective cameras.
+The prepass stores the depth the GPU computes for each pixel, and each particle fragment compares
+its own per-pixel depth with it, so the fade is right inside large triangles and under perspective
+cameras too; what changes with distance under a perspective camera is only the span in scene units,
+as above.
 
 The prepass texture has half the width and half the height of the scene, and its 16-bit depth is
 filtered, so the fade is coarse along the edges of opaque objects. Each faded fragment reads it
@@ -293,9 +290,11 @@ their meshes.
 Billboards cast no shadows, whatever their `renderState`: the shadow pass draws every instance with
 a model matrix, and the instance data of a billboard is not one. `ParticleMaterial.castsShadows` is
 always `false` (setting it to `true` fails an assertion), and a system of billboards skips the
-shadow pass, sorting nothing. For the same reason billboards are not drawn into the depth-normal
-prepass, even cut-out ones (an opaque `renderState`), so SSAO and depth of field do not see them;
-mesh particles with an opaque material are drawn into it.
+shadow pass, sorting nothing. For the same reason billboard particles are not drawn into the
+depth-normal prepass, even cut-out ones (an opaque `renderState`), so SSAO and depth of field do not
+see them; mesh particles with an opaque material are drawn into it. (The opaque sprites of a
+`BillboardBatch3D` are, through a depth-normal material of their own, see
+[Post-Processing](post_processing.md#depth-normal-prepass).)
 
 A system with mesh particles counts as a moving caster on every frame it has live particles, so it
 keeps `ShadowSettings.cacheWhenStatic` from reusing the shadow map. The system writes its instance
@@ -505,8 +504,9 @@ tests, not on an OpenGL ES device.
 ## Limitations
 
 - Particles collide with their ground plane only, not with meshes.
-- Soft particles fade wrongly behind large triangles under a perspective camera, and their fade is
-  given in normalized depth rather than in scene units (see [Soft particles](#soft-particles)).
-- Billboards cast no shadows and are not in the depth-normal prepass, cut-out ones included.
+- The fade of soft particles is given in normalized depth rather than in scene units, so under a
+  perspective camera it spans more units far away than near (see [Soft particles](#soft-particles)).
+- Billboard particles cast no shadows and are not in the depth-normal prepass, cut-out ones
+  included; mesh particles cast and are in it.
 - Ribbons do not widen at sharp turns.
 - `ParticleMaterial` and `RibbonMaterial3D` are not available on the web.

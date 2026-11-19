@@ -12,9 +12,9 @@ to, image-based lighting and probes are described in [Lighting](lighting.md), sh
 | Material                | Use it for                             | Lit | Shadows | Fog | Web |
 | ----------------------- | -------------------------------------- | --- | ------- | --- | --- |
 | `SpatialMaterial`       | textured and glTF models, metal, glass | yes | yes     | yes | yes |
-| `StylizedMaterial`      | vertex-colored low-poly art            | yes | 1 light | yes | no  |
+| `StylizedMaterial`      | vertex-colored low-poly art            | yes | yes     | yes | no  |
 | `UnlitMaterial`         | self-lit surfaces, pictures, UI        | no  | no      | no  | yes |
-| `WaterMaterial`         | animated water                         | yes | 1 sun   | yes | no  |
+| `WaterMaterial`         | animated water                         | yes | yes     | yes | no  |
 | `OutlineMaterial`       | silhouette contours                    | no  | no      | no  | no  |
 | `DecalMaterial`         | rings, markers, blob shadows           | no  | no      | no  | no  |
 | `SkyboxMaterial3D`      | the sky behind everything              | no  | no      | no  | yes |
@@ -36,10 +36,11 @@ to, image-based lighting and probes are described in [Lighting](lighting.md), sh
 - Use `UnlitMaterial` where lighting would get in the way: pictures, labels, emissive signs,
   debug geometry.
 
-"1 light" means that the material receives the shadows of one light only, on the single-light
-shadow path, and wrong shadows when the scene uses the multi-light shadow atlas (see the
-[Limitations](#limitations)). "Web" says whether the material has WebGPU shaders and runs in a
-browser; see [Web](#web).
+"Shadows" says whether the material receives shadows: the materials marked "yes" read every
+shadow the pass renders (the sun and its cascades, and spot and point lights with shadows) through
+`flame_3d/shadows.glsl`, also when they are packed into the shadow atlas (see
+[Shadows](shadows.md#receiving-shadows)). "Web" says whether the material has WebGPU shaders and
+runs in a browser; see [Web](#web).
 
 Every material works with `World3D.hdrEnabled`: the HDR scene target holds sRGB-encoded colors
 with the range extended above `1`. The native `SpatialMaterial` shader writes its lighting there
@@ -68,8 +69,8 @@ filled per render pass (camera, lights, fog, shadows) are written once per pass 
 pipeline changes; joint matrices are written for every skinned draw.
 
 - `SpatialMaterial` (native): vertex `CameraMatrices`, `JointMatrices`; fragment `Material`,
-  `PassOptions`, `ShadowAtlas`, `Shadows`, `Camera`, `Fog`, `AmbientLight`, `Lights`,
-  `DirectionalLights`, `SpotLights`, `HemisphereLight` (11 blocks) and 11 textures: the six maps
+  `PassOptions`, `Shadows`, `Camera`, `Fog`, `AmbientLight`, `Lights`, `DirectionalLights`,
+  `SpotLights`, `HemisphereLight` (10 blocks) and 11 textures: the six maps
   (albedo, normal, metallic-roughness, occlusion, emissive, environment), the lightmap,
   `brdfLutTexture`, `probeGridTexture`, `sceneColorTexture` and `shadowMap`. Maps that are not set
   are bound to a 1x1 white texture.
@@ -87,11 +88,12 @@ pipeline changes; joint matrices are written for every skinned draw.
 `RenderStats` (see [Rendering](rendering.md#frame-output-and-statistics)) counts the material
 changes of a frame.
 
-Material values are read when the material is bound, so changing them (or a component's `color`,
-`instanceData` or `jointTransforms`) shows on the next frame. The engine cannot see such changes,
-though: a `Scene3DComponent` with `Scene3DCacheMode.retained` keeps showing its cached image until
-something it tracks changes. After animating a material or instance value in such a layer, call
-`world.markSceneDirty(shadows: false)` or `layer.markDirty()`, see
+Material values are read when the material is bound, so changing them shows on the next frame.
+The engine cannot see such changes, though: a `Scene3DComponent` with `Scene3DCacheMode.retained`
+keeps showing its cached image until something it tracks changes. After animating a material value
+in such a layer, call `world.markSceneDirty(shadows: false)` or `layer.markDirty()`. A component's
+`color`, `instanceData` (in place too) and `jointTransforms` report themselves when assigned; joint
+matrices written into the existing lists need `component.markDrawDirty()`. See
 [Embedding](embedding.md#retained-layer-caching) and
 [Basic Concepts](basic_concepts.md#scene-versions-and-dirty-marking).
 
@@ -154,13 +156,14 @@ changed at any time; they are read when the material is bound.
   a second channel use the first one for the lightmap.
 - The normal map perturbs the normal in tangent space, its `x` and `y` scaled by `normalScale`.
   Surfaces in `VertexLayout.pbrStandard` (with `vertexTangent` and `vertexTexCoord1`) use their
-  MikkTSpace tangents, through a second vertex shader variant; other surfaces use a tangent frame
+  vertex tangents, through a second vertex shader variant; other surfaces use a tangent frame
   derived per pixel from screen-space derivatives, which works without tangents but shows seams on
   mirrored UVs. `Surface.computeTangents` adds tangents (and optionally the second UV channel) and
-  switches the surface to `pbrStandard`:
+  switches the surface to `pbrStandard`; its tangents are not MikkTSpace ones (see
+  [Geometry](geometry.md)):
 
 ```dart
-// Adds MikkTSpace tangents and a second UV channel to the surface: it now
+// Adds tangents and a second UV channel to the surface: it now
 // uses VertexLayout.pbrStandard and the tangent-space shader variant.
 surface.computeTangents(texCoord1: uv1);
 final material = SpatialMaterial(
@@ -470,6 +473,7 @@ lit  = occlusion * (ambient light
                                    + groundBounce * ground * bounce))
        + Σ directional: max(0, n·l) * intensity * color * shadow
        + Σ point: intensity * color * falloff * max(pointLightWrap, n·l)
+                  * shadow
        + Σ spot: intensity * color * falloff * cone
                  * max(pointLightWrap / 2, n·l) * shadow
 spec = only where gloss > specularThreshold:
@@ -496,7 +500,7 @@ alpha = albedoColor.a * vertex alpha * instance color alpha * (1 - fade)
 ```
 
 `falloff` and `cone` are those of the point and spot lights (see
-[Lighting](lighting.md#point-light)). `shadow` is `1`, except for the light that casts shadows,
+[Lighting](lighting.md#point-light)). `shadow` is `1`, except for each light that casts shadows,
 where it is `mix(white, color, strength * (1 - visibility))` with the light's shadow `color` and
 `strength` and `visibility` from `0` (in its shadow) to `1` (see
 [Shadows](shadows.md#receiving-shadows)). MatCap textures are sampled at
@@ -512,14 +516,12 @@ premultiplied by its alpha. For orthographic cameras, `v` is the camera's direct
 default `skyFill` for a fill of `(0.35, 0.35, 0.32)` times the sky color.
 
 It reads the same lights as the other materials: up to 4 directional, 8 point and 4 spot lights per
-render pass, chosen as [Lighting](lighting.md#how-many-lights-reach-a-shader) describes. It does
-not use environment probes, reflection probes, light probe grids or lightmaps. It receives the
-shadows of one light, through the `Shadows` block: a directional light with 1 or 2 cascades, or a
-spot light. When the scene needs the multi-light shadow atlas (3 or 4 cascades, a point light with
-shadows, or more than one light with shadows, see [Shadows](shadows.md)), its shadows are wrong.
-Without a `HemisphereLight` in the scene, `ambientBase`, `skyFill` and `groundBounce` have no
-effect and only the ambient light lights the shadowed side.
-
+render pass, chosen as [Lighting](lighting.md#how-many-lights-reach-a-shader) describes. It does not
+use environment probes, reflection probes, light probe grids or lightmaps. It receives the shadows
+of every light that casts them (the sun with its cascades, and spot and point lights), on the single
+shadow map and on the shadow atlas alike (see [Shadows](shadows.md)). Without a `HemisphereLight` in
+the scene, `ambientBase`, `skyFill` and `groundBounce` have no effect and only the ambient light
+lights the shadowed side.
 | Parameter                                     | Default                   | Meaning              |
 | --------------------------------------------- | ------------------------- | -------------------- |
 | `albedoColor`                                 | white                     | times vertex color   |
@@ -864,8 +866,8 @@ water.time += dt;
   lights and the spot lights (diffuse `n·l` and glints, inside their cone and range, glints scaled
   by the spot light's `specular`). The sky color is the hemisphere light's sky color times its
   intensity, or the ambient light without a hemisphere light: the water does not reflect the
-  skybox or an environment probe. It receives the shadow of the sun that casts shadows on the
-  single-light shadow path only, like `StylizedMaterial`.
+  skybox or an environment probe. It receives the shadows of every light that casts them (the sun
+  and its cascades, spot lights and the point light), on the single map and on the atlas.
 - Ripples perturb the normal in the plane perpendicular to `upAxis`, in the same frame as the
   waves, so the water looks the same in `+Y`-up and `+Z`-up worlds.
 - Refraction: with `World3D.grabSceneColorEnabled`, the water shows the opaque scene below it,
@@ -1369,8 +1371,8 @@ lists them; everything else in the slots is the material's to write in `apply`:
 | `Lights`               | `lights.glsl`   | up to 8 point lights                       |
 | `SpotLights`           | `lights.glsl`   | up to 4 spot lights                        |
 | `Fog`                  | `fog.glsl`      | the fog of the pass, read by `applyFog`    |
-| `Shadows`, `shadowMap` | `shadows.glsl`  | the shadow map, read by `shadowVisibility` |
-| `ShadowAtlas`          |                 | the multi-light shadow atlas               |
+| `Shadows`, `shadowMap` | `shadows.glsl`  | the shadow map or atlas and its tiles      |
+| `ShadowAtlas`          |                 | the atlas tiles (no built-in shader reads) |
 | `JointMatrices`        | `skinning.glsl` | 64 joint matrices, per skinned draw        |
 | `brdfLutTexture`       |                 | the split-sum BRDF table                   |
 | `probeGridTexture`     |                 | the light probe grid                       |
@@ -1410,8 +1412,9 @@ On the web, the materials run on WebGPU through hand-written WGSL versions of th
 - `SpatialMaterial` uses a WGSL version of the older spatial shader: the maps (with the per-pixel
   tangent frame), environment texture and probe SH9, every kind of light, fog, alpha cutoff and
   dither fade. Clearcoat, transmission, lightmaps, the split-sum BRDF table, reflection probe
-  volumes, light probe grids, MikkTSpace tangents and HDR output are native only. Shadows are not
-  rendered on the web.
+  volumes, light probe grids, vertex tangents and HDR output are native only. Shadows are not
+  rendered on the web (the shadow caster shaders have no WebGPU build, so the shadow pass is
+  skipped).
 - `UnlitMaterial`, `SkyboxMaterial3D` and `BillboardMaterial3D` have WGSL shaders.
 - `StylizedMaterial`, `OutlineMaterial`, `DecalMaterial` and `ShadowCatcherMaterial` throw an
   `UnsupportedError` when created there (WGSL files exist for the outline and decal shaders but
@@ -1426,13 +1429,6 @@ The texture sampler options, including anisotropy up to 16, work on the web.
 - Only `SpatialMaterial` (native) keeps light brighter than white under HDR; the other materials
   write display colors (see [Choosing a material](#choosing-a-material)), so they bloom only where
   additive draws stack above white.
-- `StylizedMaterial` and `WaterMaterial` read only the single-light `Shadows` block. When the
-  multi-light shadow atlas is in use (3 or 4 cascades, a shadowed point light, or two or more
-  lights with shadows), that block describes the last cascade while the bound shadow map is the
-  whole atlas, and their shadows land in the wrong places: in a test scene, a cube's shadow on a
-  stylized floor covered 59 pixels with 1 or 2 cascades and 2,397 with 4, and 1,297 when a second
-  light had shadows, where `SpatialMaterial` showed 59 in every case. Keep to one shadow-casting
-  directional light with at most 2 cascades in scenes with these materials.
 - Shadow casters ignore alpha: `alphaCutoff` cutouts cast the shadow of their whole quad, and
   objects faded with `instanceData.w` or `ditherFade` cast their full shadow.
 - `SpatialMaterial`: the default `metallic` is `0.8`; `uvScale` and `uvOffset` are applied to every
@@ -1444,8 +1440,10 @@ The texture sampler options, including anisotropy up to 16, work on the web.
   decals' bounds, so decals spread far apart can still be drawn in the wrong order against
   translucent objects between them. Textured decals are multiplied by their alpha a second time,
   which darkens the soft edges of premultiplied images.
-- Straight-alpha blending of premultiplied textures: translucent `SpatialMaterial` and
-  `BillboardMaterial3D` (and so `Text3DComponent`) blend with straight alpha while textures made
-  from Flutter images are premultiplied, which darkens their soft edges.
+- Straight-alpha blending of premultiplied textures: translucent `SpatialMaterial` blends with
+  straight alpha while textures made from Flutter images are premultiplied, which darkens their
+  soft edges. (`BillboardMaterial3D`, and so `Text3DComponent`, blends premultiplied colors and
+  takes a `premultipliedTexture` flag, see [3D UI and Text](ui_3d.md#the-material).) The package
+  has no single alpha convention for textures yet.
 - KTX2: no supercompression, and no CPU decoder for BC7, ETC2, ASTC and RGBA32F.
 - `ImageTexture` has no color space option: images cannot be sampled as sRGB.

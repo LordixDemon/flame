@@ -261,9 +261,9 @@ them the camera explicitly.
 
 Each enabled slot costs a full render of its world: its own shadow pass when a light casts shadows
 (a `ShadowGroup` is not shared across slots), its own post-processing passes, and a traversal of the
-world's components. Each slot also creates a new render target (a color and a depth texture of the
-slot's size) on every frame, see Limitations. `lastRenderedSlotCount` tells how many slots the last
-frame drew.
+world's components. Each slot keeps a render target of its own (color textures and a depth texture
+of the slot's size, see above), so the memory grows with the number and the size of the slots.
+`lastRenderedSlotCount` tells how many slots the last frame drew.
 
 
 ## Camera rigs
@@ -357,7 +357,7 @@ game.add(arm);
 ```
 
 It is a single ray, not a swept sphere: the camera can still clip a wall it grazes. The ray tests
-the visible components of the world, whatever their `cameraMask` (see
+the visible components of the world that some camera draws (any non-zero `cameraMask`, see
 [Geometry and Scene Queries](geometry.md)): a hidden wall does not block the boom, and
 `collisionFilter` can drop what should not block it either.
 

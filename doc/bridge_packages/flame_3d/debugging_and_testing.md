@@ -361,24 +361,23 @@ from 2D golden tests.
 
 ### What runs where
 
-Without the flags, every GPU test of the package skips: a plain run of `packages/flame_3d`
-reports 791 tests, 602 passed and 189 skipped. The repository's CI runs `flutter test` without the
-flags, so the GPU tests run only when someone runs them locally with the flags.
-
-`test/shaders/shader_compilation_test.dart` recompiles every shader with
-`dart run bin/build_shaders.dart`, which rewrites the bundles in `assets/shaders/` in place, and
-then compares them with what was there before. GPU tests that load the bundles while it runs can
-fail with `Shader library ... has not been loaded`, so do not run it in the same invocation as the
-GPU tests. Run it on its own, then the rest:
+`packages/flame_3d` has 1,200 tests in 166 files (49 of them under `test/gpu`); with the flags all of
+them pass at the time of writing, in about a minute. Without the flags every GPU test of the package
+skips. The repository's CI runs `flutter test` without the flags, so the GPU tests run only when
+someone runs them locally with the flags:
 
 ```sh
 cd packages/flame_3d
-flutter test test/shaders
-flutter test --enable-impeller --enable-flutter-gpu \
-  $(ls -d test/*/ | grep -v -e '^test/shaders/' -e '^test/_') \
-  test/*_test.dart
+flutter test --enable-impeller --enable-flutter-gpu
 ```
 
-The same failure appears when two `flutter test` processes run at the same time in the same
-package: they share its `build/unit_test_assets` folder, and one rebuilds it while the other loads
-from it. Run a failing GPU test again alone before suspecting the code.
+`test/shaders/shader_compilation_test.dart` recompiles every shader with
+`dart run bin/build_shaders.dart --out <temporary directory>` and compares the fresh bundles with
+the ones in `assets/shaders/`, which it never rewrites, so it can run in the same invocation as the
+GPU tests. It needs the `impellerc` of the Flutter SDK and fails when a shader source changed
+without its bundle being rebuilt.
+
+Two `flutter test` processes running at the same time in the same package share its
+`build/unit_test_assets` folder, and one rebuilds it while the other loads from it, which fails
+with `Shader library ... has not been loaded`. Run a failing GPU test again alone before suspecting
+the code.

@@ -252,7 +252,7 @@ reference to them goes away:
 
 ```dart
 final level = AssetScope3D();
-final house = level.retain(await ModelParser.parse('models/house.glb'));
+final house = level.retain(await ModelParser.parse('assets/models/house.glb'));
 world.add(ModelComponent(model: house));
 
 // When the level closes:
@@ -341,7 +341,7 @@ behavior described above.
 
 ```dart
 final scene = await SceneLoader3D.loadAsset(
-  'models/village.glb',
+  'assets/models/village.glb',
   onNodeExtras: (node) {
     if (node.extrasMap?['spawn'] == 'chest') {
       node.addComponent(Group3D(position: node.worldPosition));
@@ -381,6 +381,5 @@ Loading glTF models and their materials and animations is described in
 - `AssetScope3D` does not track lightmap textures or the textures of `StylizedMaterial` and other
   materials, and miscounts assets changed between `retain` and `release`.
 - Device-loss recovery is manual and cannot rebuild resources that wrap existing GPU objects.
-- `SceneLoader3D` reads files through the model loader and inherits its defects, among them the
-  transform of a skinned mesh's node applied twice and the external buffers of a `.gltf` requested
-  with a doubled slash (see [Models and Animation](models_and_animation.md#limitations)).
+- `SceneLoader3D` reads files through the model loader and shares its limits (see
+  [Models and Animation](models_and_animation.md#limitations)).

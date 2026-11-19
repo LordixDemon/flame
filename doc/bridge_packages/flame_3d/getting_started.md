@@ -53,11 +53,15 @@ Everything else fails:
 
 - these constructors throw an `UnsupportedError` on the web: `StylizedMaterial`,
   `ShadowCatcherMaterial`, `ParticleMaterial`, `DecalMaterial`, `OutlineMaterial` and
-  `RibbonMaterial3D`;
-- these features have no WGSL shaders and throw a `StateError` the first time they render: shadows
-  (any light with `shadows`), bloom, `postProcess` and `hdrEnabled` (their composite pass), the depth
-  prepass, weighted blended transparency and `WaterMaterial` (see also
-  [Post-Processing](post_processing.md#platform-support));
+  `RibbonMaterial3D`, and `Text3DComponent` and `WidgetSurface3D`, which need a `dart:ui` image as a
+  texture (see [3D UI and Text](ui_3d.md));
+- these features have no WGSL shaders and throw an `UnsupportedError` naming the missing shader the
+  first time they render: bloom, `postProcess` and `hdrEnabled` (their composite pass), the depth
+  prepass, weighted blended transparency, `keepContents` texture passes and `WaterMaterial` (see
+  also [Post-Processing](post_processing.md#platform-support));
+- shadows do not render: the shadow caster shaders have no WGSL build, so the first shadow pass
+  prints that once and the scene renders without shadows from then on (see
+  [Shadows](shadows.md#platform-support));
 - `Texture.toImage()` throws, and the wireframe debug mode draws filled triangles.
 
 Rendered images reach Flutter through a copy into an image bitmap after each pass. Multisampling

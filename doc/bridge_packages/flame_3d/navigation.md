@@ -430,10 +430,10 @@ phone slower, so read them as orders of magnitude.
 
 ## Debugging
 
-The mesh's `vertices` and `polygons` (with `v0`, `v1`, `v2`, `centroid`, `normal` and `portals`)
-are public, so it can be drawn with a `DebugRenderer3D` (see `debugging_and_testing.md`). Its
-custom lines stay until `clearCustomSegments`, so draw the mesh once and again after obstacles
-change:
+The mesh's `vertices` and `polygons` (with `v0`, `v1`, `v2`, `centroid`, `normal` and `portals`) are
+public, so it can be drawn with a `DebugRenderer3D` (see [Debugging, Profiling and
+Testing](debugging_and_testing.md)). Its custom lines stay until `clearCustomSegments`, so draw the
+mesh once and again after obstacles change:
 
 ```dart
 void drawNavMesh(DebugRenderer3D debug, NavMesh3D navMesh) {
@@ -462,8 +462,8 @@ chose, the second what the funnel made of it. `polyCount`, `blockedPolygonCount`
 ## Scenes with Z up
 
 `NavMeshBuilder3D` assumes +Y up. A scene that uses Z up, as a `Scene3DComponent` layer drawn over
-2D art often does (see `embedding.md`), can still use it by rotating the geometry into a Y-up frame
-with the source transform, and the query points and results back:
+2D art often does (see [Embedding](embedding.md)), can still use it by rotating the geometry into a
+Y-up frame with the source transform, and the query points and results back:
 
 ```dart
 final toYUp = Matrix4.rotationX(-math.pi / 2); // (x, y, z) -> (x, z, -y)

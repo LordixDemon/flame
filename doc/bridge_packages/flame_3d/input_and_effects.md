@@ -59,7 +59,7 @@ are made with `CameraComponent3D.viewportPointToRay`, for perspective and orthog
 
 ### In a 3D layer of a 2D game
 
-For a `Scene3DComponent` (see `embedding.md`), create the router with `PointerRouter3D.forScene`
+For a `Scene3DComponent` (see [Embedding](embedding.md)), create the router with `PointerRouter3D.forScene`
 and add it as a child of the layer, or anywhere else in the same 2D world, for example as the
 layer's sibling:
 
@@ -238,8 +238,8 @@ router
 Input costs nothing per frame. Each tap down, tap up, drag start and mouse move costs one
 `World3D.raycast`: a walk over the world's components with a bounds test each, and a triangle test
 for the candidates. Turn on `World3D.spatialIndex3DEnabled` for worlds with many objects (see
-`geometry.md`). Drag updates do not raycast. Each event allocates a few small objects (the event,
-copies of the ray and point).
+[Geometry](geometry.md)). Drag updates do not raycast. Each event allocates a few small objects (the
+event, copies of the ray and point).
 
 
 ## Effects on 3D components
@@ -307,7 +307,7 @@ so they override other changes to that property while they run.
   `targetColor`, alpha included.
 - `InstanceDataEffect3D(targetData, controller)` blends the `instanceData` vector of a
   `MeshComponent` or a `ModelComponent` (four floats that custom shaders read, see
-  `materials.md`); added to another kind of `Object3D` it throws an `UnsupportedError` when
+  [Materials](materials.md)); added to another kind of `Object3D` it throws an `UnsupportedError` when
   mounted.
 
 Both are absolute and mark the enclosing world as changed on every step, so retained layers
@@ -424,7 +424,7 @@ component: an effect that moves the object would be undone by the next blend.
   non-interactive one other than the `filter`.
 - A `forScene` router must be under the same 2D camera as its layer.
 - `PointerRouter3D` works with one camera or layer; for split screens with a `CameraStack3D`, pick
-  with `CameraStack3D.raycastAt` (see `cameras.md`), which uses the mask of the slot's camera.
+  with `CameraStack3D.raycastAt` (see [Cameras](cameras.md)), which uses the mask of the slot's camera.
 - `SplinePathEffect3D` does not move at constant speed (a speed-based controller sets its average
   speed); `SquashStretchEffect3D` is exact only for the principal axes and has no measure for a
   speed-based controller.

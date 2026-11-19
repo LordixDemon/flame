@@ -345,6 +345,11 @@ current clock); an unknown name throws an `ArgumentError`. `stopAnimation()` ret
 pose. `animationNames` lists the clips. `AnimationPlayMode` is `loop` (the default), `once`
 (stops on the last frame, sets `animationState.isCompleted` and calls `onComplete`) or `pingPong`.
 
+A `Timeline3D` can drive a model too: while its playhead is inside a span of an
+`AnimationClipTrack3D`, the track owns the model's clock, holding `animationState.speed` at `0` and
+setting the clock itself, so speeds set from game code do not apply until the track gives the clock
+back (see [Cinematics](cinematics.md#skeletal-clip-and-morph-weight-tracks)).
+
 Each channel is sampled by binary search over its keyframes: linear interpolation for translations
 and scales, shortest-arc spherical interpolation for rotations, `STEP` holds the previous key, and
 `CUBICSPLINE` uses the Hermite tangents of the file (or a smoothstep between keys when a spline has
