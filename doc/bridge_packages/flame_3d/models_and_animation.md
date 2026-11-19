@@ -111,12 +111,11 @@ Rejected with an exception:
 Primitive modes other than triangles (points, lines, strips, fans) trip an assertion in debug builds
 and are read as triangle lists in release builds.
 
-```{note}
-External files of a `.gltf` (`.bin` buffers, images) are requested as
-`<directory>//<uri>`, with a doubled slash: an asset bundle that matches keys
-exactly fails to find them. Prefer `.glb` files, or embed the buffers as
-`data:` URIs.
-```
+External files of a `.gltf` (`.bin` buffers, images) are read through `Flame.assets` from the
+directory of the `.gltf`: the `uri` is percent-decoded and `.` and `..` segments are resolved, so
+`textures/wood%20grain.png` next to `assets/models/house.gltf` is read as
+`assets/models/textures/wood grain.png`. Declare those files as assets too.
+`GltfRoot.resolveUri(directory, uri)` gives the key that is read.
 
 
 ### Meshopt compression
@@ -781,8 +780,7 @@ the main isolate; `AsyncModelLoader3D` moves the geometry work to an isolate.
 - **Layers** override only; no additive layers.
 - **glTF**: no sparse accessors, no second UV set, no tangents, at most 4 joint influences per
   vertex, only `KHR_materials_unlit`, `KHR_materials_emissive_strength`, `KHR_texture_transform`
-  (offset and scale) and `KHR_mesh_quantization` among material and mesh extensions; external
-  `.gltf` files are requested with a doubled slash.
+  (offset and scale) and `KHR_mesh_quantization` among material and mesh extensions.
 - **OBJ**: fan triangulation (concave polygons come out wrong), only the diffuse color of
   materials.
 - **Ray casts** hit skinned surfaces in their rest pose (see

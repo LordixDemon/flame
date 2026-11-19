@@ -67,9 +67,31 @@ class GltfRoot._({
       }
       throw FormatException('Unsupported data URI: $uri');
     } else {
-      final path = _prefix.isEmpty ? uri : '$_prefix/$uri';
-      return await Flame.assets.readBinaryFile(path);
+      return await Flame.assets.readBinaryFile(resolveUri(_prefix, uri));
     }
+  }
+
+  /// The asset path of the external file [uri] of a glTF file whose
+  /// directory is [prefix] (with or without a trailing `/`): the URI is
+  /// percent-decoded, joined with one `/`, and `.` and `..` segments are
+  /// resolved, so the result matches the asset's key in the bundle.
+  static String resolveUri(String prefix, String uri) {
+    final decoded = Uri.decodeFull(uri);
+    final joined = prefix.isEmpty
+        ? decoded
+        : (prefix.endsWith('/') ? '$prefix$decoded' : '$prefix/$decoded');
+    final segments = <String>[];
+    for (final segment in joined.split('/')) {
+      if (segment.isEmpty || segment == '.') {
+        continue;
+      }
+      if (segment == '..' && segments.isNotEmpty && segments.last != '..') {
+        segments.removeLast();
+      } else {
+        segments.add(segment);
+      }
+    }
+    return '${joined.startsWith('/') ? '/' : ''}${segments.join('/')}';
   }
 
   T resolve<T extends GltfNode>(int index) {

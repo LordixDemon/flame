@@ -121,4 +121,71 @@ void main() {
       }
     });
   });
+
+  group('ModelParser glTF files with external resources', () {
+    test('requests buffers next to the .gltf with a single slash', () async {
+      final positions = Float32List.fromList([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+      final bin = positions.buffer.asUint8List();
+      final gltf = {
+        'asset': {'version': '2.0'},
+        'scene': 0,
+        'scenes': [
+          {
+            'nodes': [0],
+          },
+        ],
+        'nodes': [
+          {'mesh': 0},
+        ],
+        'meshes': [
+          {
+            'primitives': [
+              {
+                'attributes': {'POSITION': 0},
+              },
+            ],
+          },
+        ],
+        'buffers': [
+          {'uri': 'data/scene%20bin.bin', 'byteLength': bin.length},
+        ],
+        'bufferViews': [
+          {'buffer': 0, 'byteOffset': 0, 'byteLength': bin.length},
+        ],
+        'accessors': [
+          {
+            'bufferView': 0,
+            'componentType': 5126,
+            'count': 3,
+            'type': 'VEC3',
+            'min': [0, 0, 0],
+            'max': [1, 1, 0],
+          },
+        ],
+      };
+      final bundle = _RecordingBundle({
+        'assets/m/scene.gltf': _text(jsonEncode(gltf)),
+        'assets/m/data/scene bin.bin': bin,
+      });
+      Flame.assets = AssetsCache(bundle: bundle);
+
+      final model = await ModelParser.parse('assets/m/scene.gltf');
+
+      expect(bundle.requested, [
+        'assets/m/scene.gltf',
+        'assets/m/data/scene bin.bin',
+      ]);
+      expect(model.nodes.values.single.mesh!.surfaces.single.vertexCount, 3);
+    });
+
+    test('resolves relative URIs to asset keys', () {
+      expect(GltfRoot.resolveUri('assets/m/', 'a.bin'), 'assets/m/a.bin');
+      expect(GltfRoot.resolveUri('assets/m', 'a.bin'), 'assets/m/a.bin');
+      expect(GltfRoot.resolveUri('', 'a.bin'), 'a.bin');
+      expect(
+        GltfRoot.resolveUri('assets/m/', '../textures/./wood%20grain.png'),
+        'assets/textures/wood grain.png',
+      );
+    });
+  });
 }
