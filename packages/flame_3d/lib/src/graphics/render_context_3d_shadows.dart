@@ -70,6 +70,15 @@ class _ShadowPass(final RenderContext3D _context) {
   GpuTextureTarget? _target;
   Texture? _texture;
   final Expando<_StaticShadowMap> _staticMaps = Expando();
+  final Expando<_StaticShadowAtlas> _staticAtlases = Expando();
+
+  // What the atlas of the frame holds, compared with that of a cached one:
+  // its size and encoding, then each tile's kind, light, rectangle and
+  // projection (or light position and range).
+  final Float64List _atlasSignature = Float64List(
+    _StaticShadowAtlas.signatureCapacity,
+  );
+  int _atlasSignatureLength = 0;
 
   // The camera of the main pass, set back when the shadow pass ends.
   final Matrix4 _mainView = Matrix4.identity();
@@ -222,6 +231,8 @@ class _ShadowPass(final RenderContext3D _context) {
 
     if (useUnifiedAtlas) {
       return _beginUnifiedAtlas(
+        projection: projection,
+        castersKey: castersKey,
         sceneBounds: sceneBounds,
         dirLight: dirLight,
         dirIndex: foundDirIndex,
@@ -359,6 +370,7 @@ class _ShadowPass(final RenderContext3D _context) {
 
     version++;
     _mapIsAtlas = false;
+    _staticAtlases[projection] = null;
     final GpuTextureTarget target;
     if (settings.cacheWhenStatic && castersKey != null) {
       var entry = _staticMaps[projection];
@@ -443,6 +455,8 @@ class _ShadowPass(final RenderContext3D _context) {
   }
 
   bool _beginUnifiedAtlas({
+    required DirectionalShadowProjection projection,
+    required Object? castersKey,
     required Aabb3 sceneBounds,
     required Light? dirLight,
     required int dirIndex,
@@ -609,34 +623,79 @@ class _ShadowPass(final RenderContext3D _context) {
     }
 
     final atlasDim = atlas.atlasSize;
-    _unifiedAtlasTarget = device.textureTarget(
-      atlasDim,
-      atlasDim,
-      format,
-    );
-    _target = _unifiedAtlasTarget;
-    _texture = Texture(
-      null,
-      width: atlasDim,
-      height: atlasDim,
-      gpuTexture: _unifiedAtlasTarget!.texture,
-    );
+    _staticMaps[projection] = null;
+    final cache =
+        castersKey != null &&
+        (dirSettings?.cacheWhenStatic ?? true) &&
+        spotCasters.every((spot) => spot.$4.cacheWhenStatic) &&
+        (pointCaster?.$4.cacheWhenStatic ?? true);
+    final GpuTextureTarget target;
+    if (cache) {
+      _writeAtlasSignature(atlasDim, atlasDim, float);
+      var entry = _staticAtlases[projection];
+      if (entry != null && entry.castersKey == castersKey) {
+        if (entry.matches(_atlasSignature, _atlasSignatureLength)) {
+          // The atlas of an earlier frame holds the same tiles of the same
+          // casters: receive it again, without rendering.
+          if (!identical(_texture, entry.texture)) {
+            version++;
+            _target = entry.target;
+            _texture = entry.texture;
+          }
+          _writeAtlasMap(atlasDim, atlasDim, primarySettings);
+          active = true;
+          atlasActive = true;
+          _mapIsAtlas = true;
+          RenderProfile.switchPass(RenderPhase.shadowSetup, shadow: false);
+          return false;
+        }
+      }
+      if (entry == null ||
+          entry.width != atlasDim ||
+          entry.height != atlasDim ||
+          entry.packDepth != !float) {
+        final owned = device.backend.createTextureTarget(
+          width: atlasDim,
+          height: atlasDim,
+          format: format,
+          clearValue: const Color(0xFFFFFFFF),
+        );
+        entry = _StaticShadowAtlas(
+          width: atlasDim,
+          height: atlasDim,
+          packDepth: !float,
+          target: owned,
+          texture: Texture(
+            null,
+            width: atlasDim,
+            height: atlasDim,
+            gpuTexture: owned.texture,
+          ),
+        );
+        _staticAtlases[projection] = entry;
+      }
+      entry
+        ..castersKey = castersKey
+        ..store(_atlasSignature, _atlasSignatureLength);
+      target = entry.target;
+      _target = target;
+      _texture = entry.texture;
+    } else {
+      _staticAtlases[projection] = null;
+      target = device.textureTarget(atlasDim, atlasDim, format);
+      if (!identical(target, _target)) {
+        _target = target;
+        _texture = Texture(
+          null,
+          width: atlasDim,
+          height: atlasDim,
+          gpuTexture: target.texture,
+        );
+      }
+    }
+    _unifiedAtlasTarget = target;
 
-    final atlasSizeF = atlasDim.toDouble();
-    _map.setValues(atlasSizeF, atlasSizeF, 1.0 / atlasSizeF, 1.0 / atlasSizeF);
-    final c = primarySettings.color;
-    _color.setValues(
-      c.r,
-      c.g,
-      c.b,
-      primarySettings.strength.clamp(0.0, 1.0),
-    );
-    _bias.setValues(
-      _csmTiles.isNotEmpty ? _csmTiles.first.texelWorldSize : 0.02,
-      primarySettings.depthBias,
-      primarySettings.normalBias,
-      primarySettings.softness.toDouble(),
-    );
+    _writeAtlasMap(atlasDim, atlasDim, primarySettings);
 
     version++;
     _mapIsAtlas = true;
@@ -652,6 +711,59 @@ class _ShadowPass(final RenderContext3D _context) {
     _configureAtlasTile(atlas.tiles[0]);
     RenderProfile.lap(RenderPhase.passBegin);
     return true;
+  }
+
+  /// Sets the values of the `Shadows` block that describe the atlas of
+  /// [width] by [height] texels and its directional light, of [settings].
+  void _writeAtlasMap(int width, int height, ShadowSettings settings) {
+    _map.setValues(
+      width.toDouble(),
+      height.toDouble(),
+      1.0 / width,
+      1.0 / height,
+    );
+    final c = settings.color;
+    _color.setValues(c.r, c.g, c.b, settings.strength.clamp(0.0, 1.0));
+    _bias.setValues(
+      _csmTiles.isNotEmpty ? _csmTiles.first.texelWorldSize : 0.02,
+      settings.depthBias,
+      settings.normalBias,
+      settings.softness.toDouble(),
+    );
+  }
+
+  /// Writes what the tiles of the [atlas] render into
+  /// [_atlasSignature].
+  void _writeAtlasSignature(int width, int height, bool float) {
+    final out = _atlasSignature;
+    var n = 0;
+    out[n++] = width.toDouble();
+    out[n++] = height.toDouble();
+    out[n++] = float ? 1 : 0;
+    final tiles = atlas.tiles;
+    out[n++] = tiles.length.toDouble();
+    for (var i = 0; i < tiles.length; i++) {
+      final tile = tiles[i];
+      out[n++] = tile.kind.index.toDouble();
+      out[n++] = tile.lightIndex.toDouble();
+      out[n++] = tile.x.toDouble();
+      out[n++] = tile.y.toDouble();
+      out[n++] = tile.width.toDouble();
+      final viewProjection = tile.viewProjection;
+      if (viewProjection != null) {
+        final m = viewProjection.storage;
+        for (var k = 0; k < 16; k++) {
+          out[n++] = m[k];
+        }
+      } else {
+        final position = tile.lightPosition;
+        out[n++] = position?.x ?? 0;
+        out[n++] = position?.y ?? 0;
+        out[n++] = position?.z ?? 0;
+        out[n++] = tile.lightRange;
+      }
+    }
+    _atlasSignatureLength = n;
   }
 
   // The cascades of the directional light that got a projection fitted in
@@ -1339,6 +1451,39 @@ class _StaticShadowMap({
 }) {
   Object? castersKey;
   final Float32List lightVp = Float32List(16);
+}
+
+class _StaticShadowAtlas({
+  required final int width,
+  required final int height,
+  required final bool packDepth,
+  required final GpuTextureTarget target,
+  required final Texture texture,
+}) {
+  /// The most floats a signature of the atlas takes: a header of 4, and 21
+  /// per tile for at most 8 tiles.
+  static const int signatureCapacity = 4 + 21 * 8;
+
+  Object? castersKey;
+  final Float64List _signature = Float64List(signatureCapacity);
+  int _length = 0;
+
+  bool matches(Float64List signature, int length) {
+    if (length != _length) {
+      return false;
+    }
+    for (var i = 0; i < length; i++) {
+      if ((signature[i] - _signature[i]).abs() > 1e-9) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void store(Float64List signature, int length) {
+    _signature.setRange(0, length, signature);
+    _length = length;
+  }
 }
 
 class _CasterPipeline({

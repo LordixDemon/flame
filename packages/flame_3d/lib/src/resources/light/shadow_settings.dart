@@ -71,6 +71,8 @@ class ShadowSettings({
   /// Whether the shadow pass is skipped on frames where the light direction,
   /// shadow settings, fitted shadow projection, and shadow-casting scene
   /// geometry have not changed since the previous shadow map was rendered.
+  /// When the lights share the atlas (cascades, a point light, several
+  /// lights), it is skipped only if every light that casts shadows sets it.
   var bool cacheWhenStatic = false,
 
   /// Number of directional shadow cascades (`1`..`4`). The last cascade

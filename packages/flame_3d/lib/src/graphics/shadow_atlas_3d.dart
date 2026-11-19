@@ -1,3 +1,4 @@
+import 'dart:collection' show UnmodifiableListView;
 import 'dart:ui' show Color;
 
 import 'package:flame_3d/game.dart';
@@ -65,8 +66,9 @@ class ShadowAtlas3D({
   int _shelfY = 0;
   int _shelfHeight = 0;
 
-  /// Tiles allocated for the current frame.
-  List<ShadowAtlasTile3D> get tiles => List.unmodifiable(_tiles);
+  /// Tiles allocated for the current frame: a read-only view that follows
+  /// the allocations.
+  late final List<ShadowAtlasTile3D> tiles = UnmodifiableListView(_tiles);
 
   /// Clears all tile allocations for a new frame.
   void reset() {

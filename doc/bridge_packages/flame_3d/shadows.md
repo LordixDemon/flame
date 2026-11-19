@@ -277,8 +277,8 @@ LightComponent.directional(
 );
 ```
 
-The cache is used on the single-map path only (one sun with `cascades: 1`, or a lone spot light).
-The atlas ignores `cacheWhenStatic` and renders every frame.
+The cache is used on both paths. On the atlas, every light that casts shadows in the pass must set
+`cacheWhenStatic`; otherwise the atlas renders every frame.
 
 The map is reused when all of these match the frame that rendered it:
 
@@ -286,10 +286,11 @@ The map is reused when all of these match the frame that rendered it:
   group, a hash of the versions of its worlds), and, for the first directional light with settings,
   its index among the lights, its direction, and the `resolution`, `fit`, `maxDistance`,
   `stabilize` and `cascades` of its settings;
-- the resolution and the encoding of the map;
+- the resolution and the encoding of the map (for the atlas, its size);
 - the fitted light view-projection, compared element by element: the bounds of the scene, the
   settings' `bounds`, the position and direction of a spot light, and, with `ShadowFit.view`, the
-  camera are all part of it.
+  camera are all part of it. On the atlas, every tile is compared: its light, its rectangle, and its
+  view-projection (the position and range of a point light).
 
 `strength`, `color`, `softness` and the biases are not part of the key: they are applied by the
 receivers, and changing them shows on the next frame without rendering the map again.
@@ -319,9 +320,9 @@ map is never cached.
 
 The cached map is kept per render context and per `DirectionalShadowProjection`: one for each world
 (`World3D.shadowProjection`) and one for each `ShadowGroup` (`ShadowGroup.projection`), each
-`resolution² × 4` bytes (4 MiB at the default 1024) besides the maps of the frame. It is created
-outside the device's pool of render targets, and released the next time the world renders a single
-map without the cache.
+`resolution² × 4` bytes (4 MiB at the default 1024; for the atlas, the size of the atlas) besides
+the maps of the frame. It is created outside the device's pool of render targets, and released the
+next time the world renders without the cache, or switches between the single map and the atlas.
 
 With `ShadowFit.view`, every move of the camera refits the map and renders it again: the cache only
 helps a still camera. With `ShadowFit.scene`, the map depends on the bounds of the scene alone, and
@@ -502,7 +503,7 @@ leaves the other tiles of the atlas empty (lit). `needsShadowCascade1`, `beginSh
 | Path               | Render passes | Traversals of the scene | Shadow textures                   |
 | ------------------ | ------------- | ----------------------- | --------------------------------- |
 | Single map         | 1             | 1                       | `resolution² × 4` B (4 MiB)       |
-| Single map, cached | 0             | 0                       | the cached map, kept              |
+| Cached map/atlas   | 0             | 0                       | the cached map, kept              |
 | Atlas              | 1             | 1 per tile, up to 8     | `2048² × 4` B (16 MiB)            |
 
 The sizes in parentheses are for the default `resolution` of 1024. Each map also has a depth
@@ -560,8 +561,8 @@ These are the parts of shadows that are not finished at this point:
 
 - `WaterMaterial` has no spot lights, so it receives the shadows of the sun and of the point light
   only.
-- `cacheWhenStatic` is ignored on the atlas, and its key does not see changes that do not change
-  `World3D.castersVersion` (see [Static shadows](#static-shadows)).
+- The key of `cacheWhenStatic` does not see changes that do not change `World3D.castersVersion`
+  (see [Static shadows](#static-shadows)).
 - With an orthographic camera, or `ShadowFit.scene`, the inner cascades are fixed in the middle of
   the region and do not follow the camera.
 - The atlas is always 2048 by 2048 texels, with tiles of at most 1024, and its tiles are traversed
