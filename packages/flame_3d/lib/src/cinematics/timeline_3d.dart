@@ -59,6 +59,14 @@ class CameraShot3D({
 
 /// Activates [VirtualCamera3D] shots over `[startTime..endTime]` intervals so
 /// a [VirtualCameraBrain3D] automatically cuts or cross-blends between them.
+///
+/// The shot covering the playhead (the later one where shots overlap) is
+/// enabled with its `activePriority` and its `blendDurationOverride`; the
+/// cameras of the other shots are disabled and get back the priority and
+/// blend duration override they had when the track was created. Where no
+/// shot covers the playhead (before the first shot, in a gap, after the
+/// last), every camera of the track is disabled: the brain goes to another
+/// enabled camera, or holds its last pose when there is none.
 class CameraShotTrack3D({
   required List<CameraShot3D> shots,
   super.enabled,
@@ -66,6 +74,10 @@ class CameraShotTrack3D({
   this {
     for (final s in this.shots) {
       _baselinePriorities.putIfAbsent(s.camera, () => s.camera.priority);
+      _baselineBlendOverrides.putIfAbsent(
+        s.camera,
+        () => s.camera.blendDurationOverride,
+      );
     }
   }
 
@@ -73,6 +85,9 @@ class CameraShotTrack3D({
   final List<CameraShot3D> shots = _sortShots(shots);
 
   final Map<VirtualCamera3D, int> _baselinePriorities = {};
+  final Map<VirtualCamera3D, double?> _baselineBlendOverrides = {};
+  // The cameras whose blend duration override a shot replaced.
+  final Set<VirtualCamera3D> _overridden = {};
 
   static List<CameraShot3D> _sortShots(List<CameraShot3D> raw) {
     final copy = List<CameraShot3D>.of(raw)
@@ -107,18 +122,27 @@ class CameraShotTrack3D({
 
     for (var i = 0; i < shots.length; i++) {
       final s = shots[i];
-      if (!identical(s, winner)) {
-        s.camera
-          ..enabled = false
-          ..priority = _baselinePriorities[s.camera] ?? 0;
+      final camera = s.camera;
+      if (identical(camera, winner?.camera)) {
+        continue;
+      }
+      camera
+        ..enabled = false
+        ..priority = _baselinePriorities[camera] ?? 0;
+      if (_overridden.remove(camera)) {
+        camera.blendDurationOverride = _baselineBlendOverrides[camera];
       }
     }
 
     if (winner != null) {
+      final camera = winner.camera;
       if (winner.blendDurationOverride != null) {
-        winner.camera.blendDurationOverride = winner.blendDurationOverride;
+        camera.blendDurationOverride = winner.blendDurationOverride;
+        _overridden.add(camera);
+      } else if (_overridden.remove(camera)) {
+        camera.blendDurationOverride = _baselineBlendOverrides[camera];
       }
-      winner.camera
+      camera
         ..enabled = true
         ..priority = winner.activePriority;
     }
@@ -313,12 +337,12 @@ class TransformTrack3D({
       case TimelineInterpolation3D.cubicHermite:
         final b0 = k0.outTangent;
         final a1 = k1.inTangent;
-        if (b0 != null && a1 != null) {
+        if (b0 != null || a1 != null) {
           AnimationInterpolation.cubicHermiteQuaternionInto(
             k0.value,
-            b0,
+            b0 ?? _zeroQuat,
             k1.value,
-            a1,
+            a1 ?? _zeroQuat,
             dt,
             t,
             out,
@@ -336,6 +360,7 @@ class TransformTrack3D({
   }
 
   static final Vector3 _zeroVec3 = Vector3.zero();
+  static final Quaternion _zeroQuat = Quaternion(0, 0, 0, 0);
 }
 
 // =============================================================================
@@ -362,6 +387,14 @@ class AnimationClipSpan3D({
 
 /// Triggers and deterministically scrubs [ModelAnimation] clips on a
 /// [ModelComponent] across forward playback and arbitrary `seek` jumps.
+///
+/// While the playhead is inside one of its spans the track owns the model's
+/// animation clock: it sets the clock from the timeline and holds the
+/// model's [AnimationState.speed] at `0`, so that the model does not advance
+/// the clip on its own when the timeline is paused or scrubbed. When the
+/// playhead leaves every span, the model gets back the speed it had, and
+/// plays on from where the timeline left it. [releaseModelClock] gives it
+/// back at once ([Timeline3D] calls it when removed).
 class AnimationClipTrack3D({
   required final ModelComponent target,
   required List<AnimationClipSpan3D> clips,
@@ -369,6 +402,20 @@ class AnimationClipTrack3D({
 }) extends TimelineTrack3D {
   /// Clip spans ordered by `startTime`.
   final List<AnimationClipSpan3D> clips = _sortClips(clips);
+
+  // The model's animation speed when the track took its clock, or `null`
+  // while the track does not hold it.
+  double? _heldSpeed;
+
+  /// Gives the model back the animation speed it had before the track took
+  /// its clock, if the track holds it.
+  void releaseModelClock() {
+    final held = _heldSpeed;
+    if (held != null) {
+      _heldSpeed = null;
+      target.animationState.speed = held;
+    }
+  }
 
   static List<AnimationClipSpan3D> _sortClips(List<AnimationClipSpan3D> raw) {
     final sorted = List<AnimationClipSpan3D>.of(raw)
@@ -400,6 +447,7 @@ class AnimationClipTrack3D({
       }
     }
     if (active == null) {
+      releaseModelClock();
       return;
     }
 
@@ -427,7 +475,10 @@ class AnimationClipTrack3D({
         mode: active.loop ? AnimationPlayMode.loop : AnimationPlayMode.once,
       );
     }
-    animState.clock = localClock;
+    _heldSpeed ??= animState.speed;
+    animState
+      ..speed = 0.0
+      ..clock = localClock;
     target
       ..markPoseDirty()
       ..evaluatePose();
@@ -744,16 +795,37 @@ class Timeline3D({
   /// Whether playback is currently active.
   bool get isPlaying => _isPlaying;
 
-  /// Starts or resumes playback from [currentTime] (rewinding to `0` first if
-  /// non-looping playback already reached [duration]).
+  /// Starts or resumes playback from [currentTime].
+  ///
+  /// A non-looping timeline that already reached the end it plays towards
+  /// starts over from the other end: from `0` when it reached [duration]
+  /// playing forward, from [duration] when it reached `0` playing backward
+  /// (a negative [speed]).
   void play() {
     final dur = duration;
-    if (!loop && dur > 0.0 && _currentTime >= dur - 1e-9) {
-      _currentTime = 0.0;
-      _atInitialStart = true;
+    if (!loop && dur > 0.0) {
+      if (speed < 0.0) {
+        if (_currentTime <= 1e-9) {
+          _currentTime = dur;
+          _atInitialStart = true;
+        }
+      } else if (_currentTime >= dur - 1e-9) {
+        _currentTime = 0.0;
+        _atInitialStart = true;
+      }
     }
     _isPlaying = true;
     _evaluateNonEventTracks(_currentTime);
+  }
+
+  @override
+  void onRemove() {
+    for (final track in _tracks) {
+      if (track is AnimationClipTrack3D) {
+        track.releaseModelClock();
+      }
+    }
+    super.onRemove();
   }
 
   /// Pauses playback at the current playhead timestamp.

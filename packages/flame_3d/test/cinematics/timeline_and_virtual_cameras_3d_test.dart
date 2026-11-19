@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flame/game.dart' show FlameGame;
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/cinematics.dart';
 import 'package:flame_3d/components.dart';
@@ -350,5 +351,171 @@ void main() {
         );
       },
     );
+  });
+
+  group('Timeline3D playback', () {
+    test('plays backward from the end, after a seek or from the start', () {
+      final log = <String>[];
+      Timeline3D build() => Timeline3D(
+        speed: -1,
+        tracks: [
+          EventMarkerTrack3D(
+            onMarker: (m, dir) => log.add('${dir.name}:${m.name}'),
+            markers: [
+              EventMarker3D(name: 'start', time: 0),
+              EventMarker3D(name: 'middle', time: 1),
+              EventMarker3D(name: 'end', time: 2),
+            ],
+          ),
+        ],
+      );
+
+      var completed = 0;
+      final timeline = build()..onComplete = () => completed++;
+      timeline
+        ..seek(2, fireEvents: false)
+        ..play()
+        ..update(0.5);
+      expect(timeline.currentTime, closeTo(1.5, 1e-9));
+      expect(timeline.isPlaying, isTrue);
+      expect(completed, 0);
+      timeline.update(2);
+      expect(timeline.currentTime, 0);
+      expect(completed, 1);
+      expect(log, ['backward:middle', 'backward:start']);
+
+      // Playing backward again from the start begins at the end.
+      log.clear();
+      timeline
+        ..play()
+        ..update(0.25);
+      expect(timeline.currentTime, closeTo(1.75, 1e-9));
+      expect(log, ['backward:end']);
+
+      // A fresh timeline with a negative speed plays from its end.
+      final fresh = build()..play();
+      expect(fresh.currentTime, 2);
+      fresh.update(0.5);
+      expect(fresh.currentTime, closeTo(1.5, 1e-9));
+    });
+
+    test('AnimationClipTrack3D holds the model clock inside its spans', () {
+      final actor = _buildMorphAndAnimActor();
+      final track = AnimationClipTrack3D(
+        target: actor,
+        clips: [
+          AnimationClipSpan3D(
+            animation: actor.model.animations.single,
+            startTime: 0,
+            endTime: 2,
+          ),
+        ],
+      );
+      final timeline = Timeline3D(tracks: [track], duration: 3);
+      double headY() => actor.nodeTransform(0)!.getTranslation().y;
+
+      // Paused inside the span, the model does not advance the clip.
+      timeline.seek(0.5);
+      expect(headY(), closeTo(1.5, 1e-9));
+      actor.update(0.5);
+      expect(headY(), closeTo(1.5, 1e-9));
+      expect(actor.animationState.speed, 0);
+
+      // Outside every span the model gets its speed back and plays on from
+      // where the timeline left it.
+      timeline.seek(2.5);
+      expect(actor.animationState.speed, 1);
+      actor.update(0.5);
+      expect(headY(), closeTo(3, 1e-9));
+
+      // Back in a span, then released at once.
+      timeline.seek(1);
+      expect(actor.animationState.speed, 0);
+      track.releaseModelClock();
+      expect(actor.animationState.speed, 1);
+    });
+
+    testWithGame(
+      'a removed timeline gives the model its clock back',
+      FlameGame.new,
+      (game) async {
+        final actor = _buildMorphAndAnimActor()..animationState.speed = 2;
+        final timeline = Timeline3D(
+          tracks: [
+            AnimationClipTrack3D(
+              target: actor,
+              clips: [
+                AnimationClipSpan3D(
+                  animation: actor.model.animations.single,
+                  startTime: 0,
+                ),
+              ],
+            ),
+          ],
+        );
+        await game.ensureAdd(timeline);
+        timeline.seek(1);
+        expect(actor.animationState.speed, 0);
+        timeline.removeFromParent();
+        await game.ready();
+        expect(actor.animationState.speed, 2);
+      },
+    );
+
+    test('CameraShotTrack3D gives the blend duration override back', () {
+      final camA = VirtualCamera3D(enabled: false);
+      final camB = VirtualCamera3D(enabled: false, blendDurationOverride: 2);
+      final track = CameraShotTrack3D(
+        shots: [
+          CameraShot3D(
+            camera: camA,
+            startTime: 0,
+            endTime: 1,
+            blendDurationOverride: 0,
+          ),
+          CameraShot3D(
+            camera: camB,
+            startTime: 1,
+            endTime: 2,
+            blendDurationOverride: 0.25,
+          ),
+        ],
+      );
+      track.evaluate(0.5);
+      expect(camA.blendDurationOverride, 0);
+      expect(camB.blendDurationOverride, 2);
+      track.evaluate(1.5);
+      expect(camA.blendDurationOverride, isNull);
+      expect(camB.blendDurationOverride, 0.25);
+      expect(camA.enabled, isFalse);
+      expect(camB.enabled, isTrue);
+      // Outside every shot the cameras are disabled with their own values.
+      track.evaluate(2.5);
+      expect(camB.enabled, isFalse);
+      expect(camB.blendDurationOverride, 2);
+    });
+
+    test('TransformTrack3D uses a single quaternion tangent as vectors do', () {
+      final prop = _TargetActor();
+      TransformTrack3D(
+        target: prop,
+        rotationKeys: [
+          TransformKeyframe3D<Quaternion>(
+            time: 0,
+            value: Quaternion.identity(),
+            interpolation: TimelineInterpolation3D.cubicHermite,
+            outTangent: Quaternion(0, 1, 0, 0),
+          ),
+          TransformKeyframe3D<Quaternion>(
+            time: 2,
+            value: Quaternion.axisAngle(Vector3(0, 1, 0), math.pi / 2),
+          ),
+        ],
+      ).evaluate(1);
+      // Hermite with a zero incoming tangent: about 70.5 degrees, where a
+      // smoothstep slerp would give 45.
+      final q = prop.rotation;
+      expect(2 * math.atan2(q.y, q.w), closeTo(1.23096, 1e-4));
+    });
   });
 }

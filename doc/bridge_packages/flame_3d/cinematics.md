@@ -176,10 +176,13 @@ camera one frame late.
 
 ### Playback
 
-- `play()` starts or resumes from `currentTime`; a non-looping timeline that sits at its end
-  rewinds to `0` first. `pause()` keeps the playhead, `stop()` rewinds to `0`.
-- `speed` scales time (`1` by default); a negative speed plays backwards. `loop` wraps around at
-  either end, otherwise playback stops at the end (or at `0` backwards) and calls `onComplete`.
+- `play()` starts or resumes from `currentTime`; a non-looping timeline that sits at the end it
+  plays towards starts over from the other end: from `0` playing forwards, from `duration` playing
+  backwards. `pause()` keeps the playhead, `stop()` rewinds to `0`.
+- `speed` scales time (`1` by default); a negative speed plays backwards, so
+  `timeline..speed = -1..play()` plays a stopped timeline from its end, and `seek(t)` followed by
+  `play()` plays backwards from `t`. `loop` wraps around at either end, otherwise playback stops at
+  the end (or at `0` backwards) and calls `onComplete`.
 - Every update while playing evaluates every enabled track at the playhead. Tracks are evaluated
   at an absolute time, not by accumulating steps, so jumping around gives the same result as
   playing.
@@ -200,9 +203,10 @@ key's value. A key's `interpolation` applies to the segment that starts at it:
 
 - `step` holds the key's value until the next key;
 - `linear` (the default) interpolates vectors linearly and rotations along the shortest arc;
-- `cubicHermite` uses the key's `outTangent` and the next key's `inTangent`, in units per second.
-  For positions and scales a missing tangent counts as zero; for rotations both tangents are
-  needed, and without them the segment is eased with `3t² - 2t³` instead.
+- `cubicHermite` uses the key's `outTangent` and the next key's `inTangent`, in units per second,
+  a missing tangent counting as zero. Rotations are interpolated component by component and
+  normalized, as glTF cubic splines are. Without either tangent the segment is eased with
+  `3t² - 2t³` instead (along the shortest arc for rotations).
 
 ```dart
 final arc = TransformTrack3D(
@@ -227,14 +231,17 @@ final arc = TransformTrack3D(
 ### Camera shot tracks
 
 `CameraShotTrack3D` holds `CameraShot3D`s, each a `camera` active from `startTime` to `endTime`.
-While a shot is active its camera is enabled with the shot's `activePriority` (default `100`);
-every other camera of the track is disabled and gets back the priority it had when the track was
-built. When shots overlap, the one that starts later wins; the end of the last shot is included.
-The brain then cuts or blends between the cameras as usual. A shot's `blendDurationOverride` is
-copied onto its camera.
+While a shot is active its camera is enabled with the shot's `activePriority` (default `100`) and,
+when the shot has one, its `blendDurationOverride`; every other camera of the track is disabled
+and gets back the priority and blend duration override it had when the track was built. When
+shots overlap, the one that starts later wins; the end of the last shot is included. The brain
+then cuts or blends between the cameras as usual.
 
-The track owns the `enabled` flag of every camera it lists: keep a fallback camera that should
-stay available outside the track.
+Where no shot covers the playhead (before the first shot, in a gap between shots, after the last
+one when the timeline's `duration` is longer), every camera of the track is disabled: the brain
+switches to another enabled camera, or keeps the camera where it was when there is none. The track
+owns the `enabled` flag of every camera it lists: keep a fallback camera that should stay
+available outside the track.
 
 
 ### Skeletal clip and morph weight tracks
@@ -243,8 +250,14 @@ stay available outside the track.
 `AnimationClipSpan3D` starts at `startTime`, ends at `endTime` (by default
 `startTime + animation.lastTime / |speed|`), starts the clip at `clipOffset` seconds, plays it at
 `speed` and optionally loops it. When spans overlap the later one wins. At each evaluation the
-track starts the clip on the model if needed, sets its clock and evaluates the pose. Between spans
-the track does nothing.
+track starts the clip on the model if needed, sets its clock and evaluates the pose.
+
+While the playhead is inside a span the track owns the model's clock: it holds the model's
+`animationState.speed` at `0`, so the clip does not advance on its own while the timeline is
+paused or scrubbed, nor run a frame ahead of the playhead. When the playhead leaves every span the
+model gets back the speed it had and plays on from where the timeline left it;
+`releaseModelClock()` gives it back at once, and a timeline removed from the game does so for its
+tracks.
 
 `MorphWeightTrack3D` keys the morph target weights of a `ModelComponent` (of the node named
 `nodeName`, or all nodes), with the same interpolation modes; `cubicHermite` reads per-weight
@@ -264,13 +277,7 @@ final smile = MorphWeightTrack3D(
     MorphWeightKeyframe3D(time: 0.8, weights: const [1]),
   ],
 );
-// The timeline sets the clip's clock; stop the model advancing it too.
-character.animationState.speed = 0;
 ```
-
-The model keeps updating its own animation clock in its `update`. While a timeline drives it, set
-its `animationState.speed` to `0`, otherwise the clip keeps playing when the timeline is paused
-and runs one frame ahead of the playhead.
 
 
 ### Event markers
@@ -327,15 +334,7 @@ class CallbackTrack3D extends TimelineTrack3D {
 
 ## Limitations
 
-- Reverse playback of a non-looping timeline from its end does not start with `seek(duration)`
-  followed by `play()`: `play()` rewinds a timeline that sits at its end, and the first backward
-  step then completes it. Call `play()` first, then `seek(timeline.duration)`.
-- `AnimationClipTrack3D` does not take the model's clock over (see above), and does not blend
-  between overlapping spans.
-- `CameraShot3D.blendDurationOverride` stays on its camera after the shot ends, and also applies
-  when the camera is chosen outside the timeline later.
-- Past the end of the last shot (with an explicit `duration` longer than the shots), every camera
-  of a shot track is disabled and the brain leaves the camera where it was.
+- `AnimationClipTrack3D` does not blend between overlapping spans: the later one wins.
 - The brain walks the whole tree of its world on every update to find the virtual cameras
   (recursively, with a linear duplicate check per camera found). With 10,000 components that took
   about 0.1 ms per update in a JIT test run; the cost grows with the size of the world.
@@ -344,4 +343,5 @@ class CallbackTrack3D extends TimelineTrack3D {
 
 The behavior described here is covered by
 `test/cinematics/timeline_and_virtual_cameras_3d_test.dart` (shot selection, damping, blending,
-every track type, markers in both directions, looping).
+every track type, markers in both directions, looping, reverse playback from the end, the model
+clock held by a clip track, shot overrides given back, single rotation tangents).
