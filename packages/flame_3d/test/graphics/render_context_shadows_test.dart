@@ -679,6 +679,58 @@ void main() {
       );
     });
 
+    test('reuses its tiles from frame to frame', () {
+      final settings = ShadowSettings(cascades: 2, cascadeSplits: [0.8, 1]);
+      atlasOf(settings);
+      final first = context.shadowAtlas.tiles.toList();
+      final rects = [for (final tile in first) tile.uvRect];
+      final matrix = first[0].viewProjection!.clone();
+      atlasOf(settings);
+      final second = context.shadowAtlas.tiles;
+      expect(second, hasLength(first.length));
+      for (var i = 0; i < first.length; i++) {
+        expect(identical(second[i], first[i]), isTrue);
+        expect(identical(second[i].uvRect, rects[i]), isTrue);
+      }
+      expect(second[0].viewProjection, matrix);
+    });
+
+    test('copies what its tiles are given', () {
+      final atlas = ShadowAtlas3D()..reset(width: 512, height: 256);
+      final view = Matrix4.translationValues(1, 2, 3);
+      final position = Vector3(4, 5, 6);
+      final tile = atlas.allocateTile(
+        kind: ShadowAtlasTileKind3D.spotLight,
+        lightIndex: 1,
+        tileSize: 256,
+        view: view,
+        projection: Matrix4.identity(),
+        viewProjection: view,
+        lightPosition: position,
+      )!;
+      view.setIdentity();
+      position.setZero();
+      expect(tile.view, Matrix4.translationValues(1, 2, 3));
+      expect(tile.lightPosition, Vector3(4, 5, 6));
+      expect(tile.uvRect, Vector4(0, 0, 0.5, 1));
+      final point = atlas.allocateTile(
+        kind: ShadowAtlasTileKind3D.pointParaboloidFront,
+        lightIndex: 0,
+        tileSize: 256,
+      )!;
+      expect(point.view, isNull);
+      expect(point.lightPosition, isNull);
+      expect(point.uvRect, Vector4(0.5, 0, 0.5, 1));
+      expect(
+        atlas.allocateTile(
+          kind: ShadowAtlasTileKind3D.pointParaboloidBack,
+          lightIndex: 0,
+          tileSize: 256,
+        ),
+        isNull,
+      );
+    });
+
     test('shrinks its tiles to fit within its largest size', () {
       final atlas = ShadowAtlas3D();
       expect(atlas.recommendedTileSize(2, preferred: 8192), 2048);

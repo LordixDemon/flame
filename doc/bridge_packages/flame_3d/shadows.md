@@ -522,8 +522,9 @@ with the same size.
   sun and has no highlights. On the atlas, the receivers sample the sun's cascades in the same way
   (twice within the blend band), each shadowed spot light and the point light with their own
   `softness` (the point light's clamped to 2).
-- The CPU fits the projections every frame, cached or not, and the atlas path allocates small
-  objects for its tiles every frame.
+- The CPU fits the projections every frame, cached or not, without allocating: the tiles of the
+  atlas (`ShadowAtlas3D.tiles`) are reused from frame to frame, so a tile read in one frame holds
+  the values of the next one after it.
 
 `RenderStats.shadowPasses` and `RenderStats.shadowDrawCalls` count the shadow passes and their draw
 calls, which are also counted in `renderPasses` and `drawCalls`. The layers of a `ShadowGroup` that

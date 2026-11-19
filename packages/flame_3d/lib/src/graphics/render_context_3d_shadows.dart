@@ -56,6 +56,14 @@ class _ShadowPass(final RenderContext3D _context) {
   final Vector4 _paraboloidParams = Vector4(1, 0, 0, 0);
   bool _recordingParaboloidTile = false;
 
+  // The spot lights (two at most) and the point light that cast shadows in
+  // the pass, with their indices in their blocks, found by [begin].
+  final List<Light?> _spotCasters = List<Light?>.filled(2, null);
+  final Int32List _spotCasterIndices = Int32List(2);
+  int _spotCasterCount = 0;
+  Light? _pointCaster;
+  int _pointCasterIndex = -1;
+
   // Spot light helpers.
   final Matrix4 _spotView = Matrix4.identity();
   final Matrix4 _spotProj = Matrix4.identity();
@@ -179,10 +187,10 @@ class _ShadowPass(final RenderContext3D _context) {
     var dirIndex = 0;
     var foundDirIndex = -1;
 
-    final spotCasters = <(Light, SpotLight, int, ShadowSettings)>[];
+    _spotCasterCount = 0;
     var spotIdx = 0;
 
-    (Light, PointLight, int, ShadowSettings)? pointCaster;
+    _pointCaster = null;
     var pointIdx = 0;
 
     for (var i = 0; i < lights.length; i++) {
@@ -202,8 +210,9 @@ class _ShadowPass(final RenderContext3D _context) {
         }
       } else if (source is SpotLight) {
         if (source.intensity > 0 && spotIdx < RenderContext3D.maxSpotLights) {
-          if (source.shadows != null && spotCasters.length < 2) {
-            spotCasters.add((l, source, spotIdx, source.shadows!));
+          if (source.shadows != null && _spotCasterCount < 2) {
+            _spotCasters[_spotCasterCount] = l;
+            _spotCasterIndices[_spotCasterCount++] = spotIdx;
           }
           spotIdx++;
         }
@@ -211,15 +220,17 @@ class _ShadowPass(final RenderContext3D _context) {
         if (pointIdx < RenderContext3D.maxPointLights) {
           if (source.intensity > 0 &&
               source.shadows != null &&
-              pointCaster == null) {
-            pointCaster = (l, source, pointIdx, source.shadows!);
+              _pointCaster == null) {
+            _pointCaster = l;
+            _pointCasterIndex = pointIdx;
           }
           pointIdx++;
         }
       }
     }
 
-    if (dirLight == null && spotCasters.isEmpty && pointCaster == null) {
+    final pointCaster = _pointCaster;
+    if (dirLight == null && _spotCasterCount == 0 && pointCaster == null) {
       return _none();
     }
 
@@ -227,7 +238,7 @@ class _ShadowPass(final RenderContext3D _context) {
     // two hemispheres of a point light, or the maps of several lights.
     final totalShadowLights =
         (dirLight != null ? 1 : 0) +
-        spotCasters.length +
+        _spotCasterCount +
         (pointCaster != null ? 1 : 0);
     final useUnifiedAtlas =
         (dirSettings != null && dirSettings.cascades >= 2) ||
@@ -242,8 +253,6 @@ class _ShadowPass(final RenderContext3D _context) {
         dirLight: dirLight,
         dirIndex: foundDirIndex,
         dirSettings: dirSettings,
-        spotCasters: spotCasters,
-        pointCaster: pointCaster,
       );
     }
 
@@ -259,10 +268,9 @@ class _ShadowPass(final RenderContext3D _context) {
       index = foundDirIndex;
     } else {
       isSpotShadow = true;
-      final s = spotCasters.first;
-      light = s.$1;
-      settings = s.$4;
-      index = 100 + s.$3;
+      light = _spotCasters[0]!;
+      settings = (light.source as SpotLight).shadows!;
+      index = 100 + _spotCasterIndices[0];
     }
 
     final direction = light.direction(_direction);
@@ -466,9 +474,13 @@ class _ShadowPass(final RenderContext3D _context) {
     required Light? dirLight,
     required int dirIndex,
     required ShadowSettings? dirSettings,
-    required List<(Light, SpotLight, int, ShadowSettings)> spotCasters,
-    required (Light, PointLight, int, ShadowSettings)? pointCaster,
   }) {
+    final spotCount = _spotCasterCount;
+    final pointCaster = _pointCaster;
+    final pointSettings = (pointCaster?.source as PointLight?)?.shadows;
+    final firstSpotSettings = spotCount > 0
+        ? (_spotCasters[0]!.source as SpotLight).shadows
+        : null;
     final context = _context;
     final device = context.device;
     _csmTiles.clear();
@@ -478,12 +490,12 @@ class _ShadowPass(final RenderContext3D _context) {
 
     final csmCount = dirSettings?.cascades ?? 0;
     final totalRequestedTiles =
-        csmCount + spotCasters.length + (pointCaster != null ? 2 : 0);
+        csmCount + spotCount + (pointCaster != null ? 2 : 0);
     final preferredRes =
         dirSettings?.resolution ??
-        (spotCasters.isNotEmpty
-            ? spotCasters.first.$4.resolution
-            : (pointCaster?.$4.resolution ?? 512));
+        firstSpotSettings?.resolution ??
+        pointSettings?.resolution ??
+        512;
     final tileSize = atlas.recommendedTileSize(
       totalRequestedTiles,
       preferred: preferredRes,
@@ -492,9 +504,7 @@ class _ShadowPass(final RenderContext3D _context) {
     _atlasDirLightIndex = -1;
     _atlasCascadeCount = 0;
 
-    final primarySettings =
-        dirSettings ??
-        (spotCasters.isNotEmpty ? spotCasters.first.$4 : pointCaster!.$4);
+    final primarySettings = dirSettings ?? firstSpotSettings ?? pointSettings!;
 
     _cascadeMask = 0;
     if (dirLight != null && dirSettings != null && csmCount > 0) {
@@ -508,7 +518,7 @@ class _ShadowPass(final RenderContext3D _context) {
     }
     // The atlas holds the cascades kept and the tiles of the other lights, in
     // a grid of tiles as square as it can be.
-    var tileCount = spotCasters.length + (pointCaster != null ? 2 : 0);
+    var tileCount = spotCount + (pointCaster != null ? 2 : 0);
     for (var c = 0; c < csmCount; c++) {
       if (_cascadeMask & (1 << c) != 0) {
         tileCount++;
@@ -556,7 +566,11 @@ class _ShadowPass(final RenderContext3D _context) {
       _toLight.setFrom(_noShadows);
     }
 
-    for (final (spotLight, spotSource, sIdx, sSettings) in spotCasters) {
+    for (var k = 0; k < spotCount; k++) {
+      final spotLight = _spotCasters[k]!;
+      final spotSource = spotLight.source as SpotLight;
+      final sSettings = spotSource.shadows!;
+      final sIdx = _spotCasterIndices[k];
       final dir = spotLight.direction(_spotDirScratch);
       final eye = spotLight.position;
       _spotTarget
@@ -604,7 +618,10 @@ class _ShadowPass(final RenderContext3D _context) {
     _atlasSpotShadowCount = _spotTiles.length;
 
     if (pointCaster != null) {
-      final (ptLight, ptSource, ptIdx, ptSettings) = pointCaster;
+      final ptLight = pointCaster;
+      final ptSource = pointCaster.source as PointLight;
+      final ptSettings = pointSettings!;
+      final ptIdx = _pointCasterIndex;
       final ptRange = math.max(1.0, ptSource.range ?? 24.0);
       _pointFrontTile = atlas.allocateTile(
         kind: ShadowAtlasTileKind3D.pointParaboloidFront,
@@ -654,8 +671,8 @@ class _ShadowPass(final RenderContext3D _context) {
     final cache =
         castersKey != null &&
         (dirSettings?.cacheWhenStatic ?? true) &&
-        spotCasters.every((spot) => spot.$4.cacheWhenStatic) &&
-        (pointCaster?.$4.cacheWhenStatic ?? true);
+        _spotCastersCache(spotCount) &&
+        (pointSettings?.cacheWhenStatic ?? true);
     final GpuTextureTarget target;
     if (cache) {
       _writeAtlasSignature(atlasWidth, atlasHeight, float);
@@ -737,6 +754,17 @@ class _ShadowPass(final RenderContext3D _context) {
     device.stats.shadowPasses++;
     _configureAtlasTile(atlas.tiles[0]);
     RenderProfile.lap(RenderPhase.passBegin);
+    return true;
+  }
+
+  /// Whether the first [count] spot lights that cast shadows all set
+  /// [ShadowSettings.cacheWhenStatic].
+  bool _spotCastersCache(int count) {
+    for (var k = 0; k < count; k++) {
+      if (!(_spotCasters[k]!.source as SpotLight).shadows!.cacheWhenStatic) {
+        return false;
+      }
+    }
     return true;
   }
 

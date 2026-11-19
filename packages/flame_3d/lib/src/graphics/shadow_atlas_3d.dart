@@ -20,35 +20,201 @@ enum ShadowAtlasTileKind3D() {
 }
 
 /// Rectangular viewport/scissor tile allocated inside a [ShadowAtlas3D].
+///
+/// The atlas reuses its tiles from frame to frame: a tile read from
+/// [ShadowAtlas3D.tiles] holds the values of the current frame only.
 class ShadowAtlasTile3D({
-  required final ShadowAtlasTileKind3D kind,
-  required final int lightIndex,
-  required final int subIndex,
-  required final int x,
-  required final int y,
-  required final int width,
-  required final int height,
-  required final int atlasWidth,
-  required final int atlasHeight,
-  final Matrix4? view,
-  final Matrix4? projection,
-  final Matrix4? viewProjection,
-  final Vector3? lightPosition,
-  final double lightRange = 10.0,
-  final double texelWorldSize = 0.01,
-  final double depthBias = 1.0,
-  final double softness = 1.0,
-  final double strength = 1.0,
-  final double blendRange = 0.1,
-  final Color color = const Color(0xFF000000),
+  required ShadowAtlasTileKind3D kind,
+  required int lightIndex,
+  required int subIndex,
+  required int x,
+  required int y,
+  required int width,
+  required int height,
+  required int atlasWidth,
+  required int atlasHeight,
+  Matrix4? view,
+  Matrix4? projection,
+  Matrix4? viewProjection,
+  Vector3? lightPosition,
+  double lightRange = 10.0,
+  double texelWorldSize = 0.01,
+  double depthBias = 1.0,
+  double softness = 1.0,
+  double strength = 1.0,
+  double blendRange = 0.1,
+  Color color = const Color(0xFF000000),
 }) {
+  /// Creates a tile; [view], [projection], [viewProjection] and
+  /// [lightPosition] are copied.
+  this {
+    _set(
+      kind: kind,
+      lightIndex: lightIndex,
+      subIndex: subIndex,
+      x: x,
+      y: y,
+      width: width,
+      height: height,
+      atlasWidth: atlasWidth,
+      atlasHeight: atlasHeight,
+      view: view,
+      projection: projection,
+      viewProjection: viewProjection,
+      lightPosition: lightPosition,
+      lightRange: lightRange,
+      texelWorldSize: texelWorldSize,
+      depthBias: depthBias,
+      softness: softness,
+      strength: strength,
+      blendRange: blendRange,
+      color: color,
+    );
+  }
+
+  /// What the tile holds.
+  ShadowAtlasTileKind3D get kind => _kind;
+  late ShadowAtlasTileKind3D _kind;
+
+  /// The index of the tile's light in its block.
+  int get lightIndex => _lightIndex;
+  int _lightIndex = 0;
+
+  /// The cascade of a directional light, or the hemisphere of a point light.
+  int get subIndex => _subIndex;
+  int _subIndex = 0;
+
+  /// The left edge of the tile in the atlas, in texels.
+  int get x => _x;
+  int _x = 0;
+
+  /// The top edge of the tile in the atlas, in texels.
+  int get y => _y;
+  int _y = 0;
+
+  /// The width of the tile, in texels.
+  int get width => _width;
+  int _width = 0;
+
+  /// The height of the tile, in texels.
+  int get height => _height;
+  int _height = 0;
+
+  /// The width of the atlas, in texels.
+  int get atlasWidth => _atlasWidth;
+  int _atlasWidth = 1;
+
+  /// The height of the atlas, in texels.
+  int get atlasHeight => _atlasHeight;
+  int _atlasHeight = 1;
+
+  /// The light's view, or `null` for a point light's tile.
+  Matrix4? get view => _hasMatrices ? _view : null;
+
+  /// The light's projection, or `null` for a point light's tile.
+  Matrix4? get projection => _hasMatrices ? _projection : null;
+
+  /// `projection * view`, or `null` for a point light's tile.
+  Matrix4? get viewProjection => _hasMatrices ? _viewProjection : null;
+
+  final Matrix4 _view = Matrix4.identity();
+  final Matrix4 _projection = Matrix4.identity();
+  final Matrix4 _viewProjection = Matrix4.identity();
+  bool _hasMatrices = false;
+
+  /// The position of the tile's light, when given.
+  Vector3? get lightPosition => _hasLightPosition ? _lightPosition : null;
+  final Vector3 _lightPosition = Vector3.zero();
+  bool _hasLightPosition = false;
+
+  /// The reach of the tile's light.
+  double get lightRange => _lightRange;
+  double _lightRange = 10;
+
+  /// The size of a texel of the tile in world units.
+  double get texelWorldSize => _texelWorldSize;
+  double _texelWorldSize = 0.01;
+
+  /// The depth bias of the tile's light, in texels.
+  double get depthBias => _depthBias;
+  double _depthBias = 1;
+
+  /// The radius of the filter of the tile's light, in texels.
+  double get softness => _softness;
+  double _softness = 1;
+
+  /// The strength of the shadows of the tile's light.
+  double get strength => _strength;
+  double _strength = 1;
+
+  /// The fraction of the border of a cascade over which it blends into the
+  /// next one.
+  double get blendRange => _blendRange;
+  double _blendRange = 0.1;
+
+  /// The color of the shadows of the tile's light.
+  Color get color => _color;
+  Color _color = const Color(0xFF000000);
+
   /// Normalized atlas UV rectangle `(offsetU, offsetV, scaleU, scaleV)`.
-  late final Vector4 uvRect = Vector4(
-    x / atlasWidth,
-    y / atlasHeight,
-    width / atlasWidth,
-    height / atlasHeight,
-  );
+  Vector4 get uvRect => _uvRect;
+  final Vector4 _uvRect = Vector4.zero();
+
+  void _set({
+    required ShadowAtlasTileKind3D kind,
+    required int lightIndex,
+    required int subIndex,
+    required int x,
+    required int y,
+    required int width,
+    required int height,
+    required int atlasWidth,
+    required int atlasHeight,
+    required Matrix4? view,
+    required Matrix4? projection,
+    required Matrix4? viewProjection,
+    required Vector3? lightPosition,
+    required double lightRange,
+    required double texelWorldSize,
+    required double depthBias,
+    required double softness,
+    required double strength,
+    required double blendRange,
+    required Color color,
+  }) {
+    _kind = kind;
+    _lightIndex = lightIndex;
+    _subIndex = subIndex;
+    _x = x;
+    _y = y;
+    _width = width;
+    _height = height;
+    _atlasWidth = atlasWidth;
+    _atlasHeight = atlasHeight;
+    _hasMatrices = view != null && projection != null && viewProjection != null;
+    if (_hasMatrices) {
+      _view.setFrom(view!);
+      _projection.setFrom(projection!);
+      _viewProjection.setFrom(viewProjection!);
+    }
+    _hasLightPosition = lightPosition != null;
+    if (lightPosition != null) {
+      _lightPosition.setFrom(lightPosition);
+    }
+    _lightRange = lightRange;
+    _texelWorldSize = texelWorldSize;
+    _depthBias = depthBias;
+    _softness = softness;
+    _strength = strength;
+    _blendRange = blendRange;
+    _color = color;
+    _uvRect.setValues(
+      x / atlasWidth,
+      y / atlasHeight,
+      width / atlasWidth,
+      height / atlasHeight,
+    );
+  }
 }
 
 /// Shelf / grid tile packer for a unified multi-light shadow atlas texture
@@ -64,6 +230,9 @@ class ShadowAtlas3D({
   final int atlasSize = 4096,
 }) {
   final List<ShadowAtlasTile3D> _tiles = [];
+
+  // The tiles of earlier frames, reused by [allocateTile].
+  final List<ShadowAtlasTile3D> _pool = [];
 
   int _shelfX = 0;
   int _shelfY = 0;
@@ -121,7 +290,8 @@ class ShadowAtlas3D({
   }
 
   /// Allocates a square [tileSize]x[tileSize] tile inside the atlas, returning
-  /// `null` if the atlas is full.
+  /// `null` if the atlas is full. The tile object of the same rank in an
+  /// earlier frame is reused, with the matrices and the position copied.
   ShadowAtlasTile3D? allocateTile({
     required ShadowAtlasTileKind3D kind,
     required int lightIndex,
@@ -151,28 +321,57 @@ class ShadowAtlas3D({
       return null;
     }
 
-    final tile = ShadowAtlasTile3D(
-      kind: kind,
-      lightIndex: lightIndex,
-      subIndex: subIndex,
-      x: _shelfX,
-      y: _shelfY,
-      width: tileSize,
-      height: tileSize,
-      atlasWidth: _width,
-      atlasHeight: _height,
-      view: view?.clone(),
-      projection: projection?.clone(),
-      viewProjection: viewProjection?.clone(),
-      lightPosition: lightPosition?.clone(),
-      lightRange: lightRange,
-      texelWorldSize: texelWorldSize,
-      depthBias: depthBias,
-      softness: softness,
-      strength: strength,
-      blendRange: blendRange,
-      color: color,
-    );
+    final index = _tiles.length;
+    final ShadowAtlasTile3D tile;
+    if (index < _pool.length) {
+      tile = _pool[index]
+        .._set(
+          kind: kind,
+          lightIndex: lightIndex,
+          subIndex: subIndex,
+          x: _shelfX,
+          y: _shelfY,
+          width: tileSize,
+          height: tileSize,
+          atlasWidth: _width,
+          atlasHeight: _height,
+          view: view,
+          projection: projection,
+          viewProjection: viewProjection,
+          lightPosition: lightPosition,
+          lightRange: lightRange,
+          texelWorldSize: texelWorldSize,
+          depthBias: depthBias,
+          softness: softness,
+          strength: strength,
+          blendRange: blendRange,
+          color: color,
+        );
+    } else {
+      tile = ShadowAtlasTile3D(
+        kind: kind,
+        lightIndex: lightIndex,
+        subIndex: subIndex,
+        x: _shelfX,
+        y: _shelfY,
+        width: tileSize,
+        height: tileSize,
+        atlasWidth: _width,
+        atlasHeight: _height,
+        view: view,
+        projection: projection,
+        viewProjection: viewProjection,
+        lightPosition: lightPosition,
+        lightRange: lightRange,
+        texelWorldSize: texelWorldSize,
+        depthBias: depthBias,
+        softness: softness,
+        strength: strength,
+        blendRange: blendRange,
+        color: color,
+      );
+      _pool.add(tile);
+    }
     _tiles.add(tile);
     _shelfX += tileSize;
     if (tileSize > _shelfHeight) {
