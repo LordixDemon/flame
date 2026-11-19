@@ -408,15 +408,13 @@ a ring buffer allocated with the trail, dropping the oldest. The width (`width`,
 the full width) and the opacity of `color` follow `widthOverLife` and `opacityOverLife` over the age
 of each point, from 0 (the newest) to 1 (the oldest); both go from 1 to 0 by default.
 
-What it tracks is `target` when set, otherwise its parent when that is a `Component3D`, otherwise
-itself. Its own position counts only in that last case: a trail added as a child of a moving object
-follows the object's origin, whatever its `position`. To trail an offset point, such as the tip of
-a sword, give the point a component of its own and make it the target:
+What it tracks is `target` when set, otherwise its own world position, which follows its parent: a
+trail added as a child of a moving object at an offset `position`, such as the tip of a sword,
+trails that point. A `target` trails another component wherever the trail itself is:
 
 ```dart
-final tip = Group3D(position: Vector3(0, 1.2, 0));
-sword.add(tip);
-world.add(RibbonTrail3D(target: tip, width: 0.1));
+sword.add(RibbonTrail3D(position: Vector3(0, 1.2, 0), width: 0.1)); // the tip
+world.add(RibbonTrail3D(target: comet, width: 0.3)); // follows the comet
 ```
 
 The points are in world space and drawn as they are. `emitting` stops and resumes adding points,
@@ -509,6 +507,5 @@ tests, not on an OpenGL ES device.
 - Soft particles fade wrongly behind large triangles under a perspective camera, and their fade is
   given in normalized depth rather than in scene units (see [Soft particles](#soft-particles)).
 - Billboards cast no shadows and are not in the depth-normal prepass, cut-out ones included.
-- `RibbonTrail3D` ignores its own position when its parent is a `Component3D`; ribbons do not widen
-  at sharp turns.
+- Ribbons do not widen at sharp turns.
 - `ParticleMaterial` and `RibbonMaterial3D` are not available on the web.

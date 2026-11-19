@@ -472,8 +472,8 @@ class RibbonTrail3D({
     _count = alive;
 
     if (emitting) {
-      final tracked =
-          target ?? (parent is Component3D ? parent! as Component3D : this);
+      // Its own world position, which follows its parent's.
+      final tracked = target ?? this;
       final s = tracked.worldTransformMatrix.storage;
       final wx = s[12];
       final wy = s[13];
