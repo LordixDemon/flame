@@ -1,10 +1,11 @@
 /// {@template bloom_settings}
 /// Soft-knee GPU bloom post-processing for a `World3D` or `Scene3DComponent`.
 ///
-/// Bright pixels above [threshold] (smoothed over [softKnee]) are extracted at
-/// reduced resolution, blurred across [passes] dual-Kawase iterations scaled
-/// by [radius], and added back onto the rendered image at [intensity] while
-/// preserving target alpha for transparent `Scene3DComponent` layers.
+/// Bright pixels above [threshold] (smoothed over [softKnee]) are extracted
+/// at half resolution, blurred by [passes] 5-tap passes at that resolution
+/// whose taps spread with [radius], and added back onto the rendered image at
+/// [intensity] while preserving target alpha for transparent
+/// `Scene3DComponent` layers.
 /// {@endtemplate}
 class BloomSettings({
   /// Brightness threshold above which fragments contribute to bloom (`>= 0`).

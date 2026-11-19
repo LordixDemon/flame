@@ -116,9 +116,10 @@ class const StencilState({
 /// and depth writes, stencil test, polygon mode, face culling, and whether it
 /// is translucent.
 ///
-/// Translucent draws are drawn after every opaque draw, sorted back to front,
-/// and are never batched into instanced draws. Opaque draws are grouped to
-/// batch and to limit state changes, then ordered roughly front to back.
+/// Translucent draws are drawn after every opaque draw, sorted back to front;
+/// consecutive draws of the same surface and material in that order are
+/// batched into one instanced draw. Opaque draws are grouped to batch and to
+/// limit state changes, then ordered roughly front to back.
 ///
 /// The front-face winding is not part of the state: it is counter-clockwise
 /// on screen, and flips automatically when the camera or the object's model

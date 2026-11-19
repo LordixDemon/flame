@@ -507,8 +507,9 @@ graph.clear(); // before declaring the next frame's passes
 ```
 
 `World3D` does not use `RenderGraph3D`: its own passes are fixed. `compile` allocates its plan on
-every call, and the targets a graph creates are pooled by descriptor and never released (a graph
-rebuilt at every new screen size keeps the targets of every size it saw).
+every call. The targets a graph creates are pooled by descriptor; a descriptor no pass used for
+`RenderGraph3D.targetRetainExecutions` (30) `execute` calls has its targets released, so a graph
+rebuilt at a new screen size lets go of the old size.
 
 
 ## Order-independent transparency

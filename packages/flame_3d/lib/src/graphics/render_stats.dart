@@ -24,7 +24,9 @@ class RenderStats() {
   int pipelineChanges = 0;
 
   /// The number of render state changes applied: each change of the blend
-  /// state, the depth state, the cull mode or the winding order counts once.
+  /// state, the depth state, the cull mode, the winding order, the stencil
+  /// state, the polygon mode or the primitive topology counts once, and so
+  /// does each viewport and scissor set.
   int stateChanges = 0;
 
   /// The number of times the bound material changed.

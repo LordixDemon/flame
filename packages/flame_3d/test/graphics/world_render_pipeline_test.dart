@@ -133,4 +133,38 @@ void main() {
       expect(backend.countCommands('drawIndexed'), 1);
     });
   });
+
+  test('RenderGraph3D releases the pooled targets of sizes it stops using', () {
+    final backend = FakeGpuBackend(textureTargets: true);
+    final device = GraphicsDevice(backend: backend);
+    final context = RenderContext3D(device);
+    final graph = RenderGraph3D();
+
+    void execute(int size) {
+      final texture = graph.createTexture(
+        'target',
+        RenderGraphTextureDesc3D(width: size, height: size),
+      );
+      graph.addRenderPass(
+        name: 'draw',
+        writes: [texture],
+        hasSideEffects: true,
+        execute: (_) {},
+      );
+      device.begin();
+      graph.execute(device, context);
+      device.end();
+      graph.clear();
+    }
+
+    execute(64);
+    execute(64);
+    expect(backend.textureTargetsCreated, hasLength(1));
+    for (var i = 0; i < RenderGraph3D.targetRetainExecutions; i++) {
+      execute(128);
+    }
+    execute(64);
+    // The 64 x 64 target was released while unused, then created again.
+    expect(backend.textureTargetsCreated, hasLength(3));
+  });
 }

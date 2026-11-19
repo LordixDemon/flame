@@ -105,6 +105,13 @@ class RenderGraph3D() {
   // by physical slot descriptor so aliased non-overlapping resources genuinely
   // share the exact same GPU memory allocation.
   final Map<RenderGraphTextureDesc3D, List<GpuTextureTarget>> _targetPool = {};
+  final Map<RenderGraphTextureDesc3D, int> _targetLastUsed = {};
+  int _executions = 0;
+
+  /// The number of [execute] calls a pooled target of a descriptor no graph
+  /// used is kept for before it is released (a graph rebuilt at a new size
+  /// does not keep the targets of the old size for ever).
+  static const int targetRetainExecutions = 30;
 
   /// Clears declared passes and virtual resources while retaining pooled GPU
   /// targets for reuse on the next frame.
@@ -384,6 +391,26 @@ class RenderGraph3D() {
     );
   }
 
+  void _releaseUnusedTargets(Map<RenderGraphTextureDesc3D, int> used) {
+    final execution = ++_executions;
+    _targetPool.removeWhere((desc, targets) {
+      final count = used[desc];
+      if (count != null) {
+        _targetLastUsed[desc] = execution;
+        if (count < targets.length) {
+          targets.removeRange(count, targets.length);
+        }
+        return false;
+      }
+      final lastUsed = _targetLastUsed[desc] ?? execution;
+      if (execution - lastUsed < targetRetainExecutions) {
+        return false;
+      }
+      _targetLastUsed.remove(desc);
+      return true;
+    });
+  }
+
   /// Compiles and executes all live passes on [device] and [renderContext],
   /// allocating (and pooling) only [CompiledRenderGraph3D.physicalTargetCount]
   /// transient GPU texture targets.
@@ -415,6 +442,7 @@ class RenderGraph3D() {
       }
       usedPerDesc[desc] = idx + 1;
     }
+    _releaseUnusedTargets(usedPerDesc);
 
     final resolved = <int, GpuTextureTarget>{
       ..._importedTargets,
