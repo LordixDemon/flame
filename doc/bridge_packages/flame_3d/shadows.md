@@ -376,17 +376,17 @@ cascade they use.
 
 The frame renders the atlas instead of a single map when a sun has two to four cascades, when a
 point light casts shadows, or when more than one light casts shadows (a sun and a spot light, two
-spot lights). All its maps are tiles of one texture of 2048 by 2048 texels, rendered in one render
-pass: each tile sets the viewport and the scissor to its rectangle, and the components are traversed
-once more for each tile.
+spot lights). All its maps are square tiles of one texture, rendered in one render pass: each tile
+sets the viewport and the scissor to its rectangle, and the components are traversed once more for
+each tile.
 
-- All tiles have the same size: up to 1024 texels with at most four tiles, 512 with five to eight,
-  the `resolution` of the sun's settings (or of the first spot light's, or of the point light's)
-  rounded down to a power of two. `resolution: 768` gives tiles of 512.
+- All tiles have the same size: the `resolution` of the sun's settings (or of the first spot
+  light's, or of the point light's), made smaller only where the tiles would not fit in 4096 by
+  4096 texels (`ShadowAtlas3D.atlasSize`).
 - The tiles are, in order: the sun's cascades, the spot lights (two at most), and the point light's
-  two hemispheres. There are eight at most, which fit.
-- The texture always takes `2048² × 4` bytes (16 MiB), however many tiles it holds; with one cascade
-  and one spot light, half of it is unused.
+  two hemispheres; eight at most. They sit in a grid as square as it can be, and the texture is the
+  size of that grid: one cascade and a spot light at 1024 take 2048 by 1024 texels (8 MiB), three
+  or four tiles 2048 by 2048 (16 MiB), five to eight 3072 by 3072 at most.
 - The encoding is that of the sun's settings (or of the first light's), and so are the `softness`,
   `color` and `strength` of the sun's cascades. Each spot light and the point light use their own
   `color`, `strength`, `depthBias` and `softness`.
@@ -419,12 +419,12 @@ The light renders through a perspective projection that covers its cone: a field
 `bounds`, `maxDistance`, `stabilize` and `cascades` do not apply.
 
 A spot light that is the only light casting shadows uses the single map at its `resolution`, with
-its `depthBias`, `normalBias` and `softness`, and is cached with `cacheWhenStatic`. The biases are in
-texels of the map at about a third of the range, so they are coarse near the light. Two spot lights,
-or a spot light and a sun or a point light, use the atlas; there, each spot light's tile is filtered
-with its `softness` and pushed along the normal by 1.2 texels, whatever its `normalBias`. Every
-receiver but `WaterMaterial` (which has no spot lights) receives them on both paths. The map stores
-the depth of every pixel of the casters, so large triangles do not shadow themselves.
+its `depthBias`, `normalBias` and `softness`, and is cached with `cacheWhenStatic`. The biases are
+in texels of the map at about a third of the range, so they are coarse near the light. Two spot
+lights, or a spot light and a sun or a point light, use the atlas; there, each spot light's tile is
+filtered with its `softness` and pushed along the normal by 1.2 texels, whatever its `normalBias`.
+Every receiver but `WaterMaterial` (which has no spot lights) receives them on both paths. The map
+stores the depth of every pixel of the casters, so large triangles do not shadow themselves.
 
 Only the first two spot lights with settings among the first four lit spot lights of the pass cast
 shadows. With more than four spot lights, the lights are picked by their distance to the camera,
@@ -506,7 +506,7 @@ loop leaves the other tiles of the atlas empty (lit). `needsShadowCascade1`, `be
 | ------------------ | ------------- | ----------------------- | --------------------------------- |
 | Single map         | 1             | 1                       | `resolution² × 4` B (4 MiB)       |
 | Cached map/atlas   | 0             | 0                       | the cached map, kept              |
-| Atlas              | 1             | 1 per tile, up to 8     | `2048² × 4` B (16 MiB)            |
+| Atlas              | 1             | 1 per tile, up to 8     | its grid of tiles × 4 B (8-36 MiB)|
 
 The sizes in parentheses are for the default `resolution` of 1024. Each map also has a depth
 attachment, transient: it lives in tile memory where the GPU has it. The texture of a frame comes
@@ -526,10 +526,10 @@ with the same size.
   objects for its tiles every frame.
 
 `RenderStats.shadowPasses` and `RenderStats.shadowDrawCalls` count the shadow passes and their draw
-calls, which are also counted in `renderPasses` and `drawCalls`. The layers of a `ShadowGroup` that reuse its map count no
-shadow pass. In a headless test, a hundred cubes sharing a mesh on a ground in a `Scene3DComponent`
-render with 2 draw calls in 1 pass without shadows, and 4 draw calls in 2 passes with them (2 of
-them in the shadow pass).
+calls, which are also counted in `renderPasses` and `drawCalls`. The layers of a `ShadowGroup` that
+reuse its map count no shadow pass. In a headless test, a hundred cubes sharing a mesh on a ground
+in a `Scene3DComponent` render with 2 draw calls in 1 pass without shadows, and 4 draw calls in 2
+passes with them (2 of them in the shadow pass).
 
 
 ## Measuring and debugging
@@ -567,8 +567,8 @@ These are the parts of shadows that are not finished at this point:
   (see [Static shadows](#static-shadows)).
 - With an orthographic camera, or `ShadowFit.scene`, the inner cascades are fixed in the middle of
   the region and do not follow the camera.
-- The atlas is always 2048 by 2048 texels, with tiles of at most 1024, and its tiles are traversed
-  and rendered every frame.
+- Every tile of the atlas traverses the scene again (eight traversals at most), unless the atlas
+  is cached.
 - Only one point light casts shadows, split along the world z axis.
 - The index of the light a shadow belongs to is counted among the lights in the order they were
   added. When the pass picks its lights by distance (more than four spot lights, or

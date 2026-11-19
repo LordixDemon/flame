@@ -604,6 +604,89 @@ void main() {
     });
   });
 
+  group('The atlas', () {
+    /// Renders a frame of a sun with [settings], and [others], and returns
+    /// the size of the atlas (from the `map` member) and of its tiles.
+    (List<double>, List<int>) atlasOf(
+      ShadowSettings settings, [
+      List<Light> others = const [],
+    ]) {
+      final material = _Receiver();
+      final surface = triangle(material);
+      frame([sun(shadows: settings), ...others], () {
+        context.drawSurface(
+          surface,
+          transform: Matrix4.translationValues(0, 0, -10),
+        );
+      });
+      expect(context.hasShadowAtlas, isTrue);
+      return (
+        shadowsMember(material, 'map', 2).toList(),
+        [for (final tile in context.shadowAtlas.tiles) tile.width],
+      );
+    }
+
+    void expectAtlas(
+      (List<double>, List<int>) atlas,
+      List<double> size,
+      List<int> tiles,
+    ) {
+      expect(atlas.$1, size);
+      expect(atlas.$2, tiles);
+    }
+
+    test('keeps the resolution asked for', () {
+      // Two cascades of 2048 are side by side in 4096 by 2048 texels.
+      expectAtlas(
+        atlasOf(
+          ShadowSettings(
+            resolution: 2048,
+            cascades: 2,
+            cascadeSplits: [0.8, 1],
+          ),
+        ),
+        [4096, 2048],
+        [2048, 2048],
+      );
+      // A resolution that is not a power of two is kept.
+      expectAtlas(
+        atlasOf(
+          ShadowSettings(
+            resolution: 768,
+            cascades: 2,
+            cascadeSplits: [0.8, 1],
+          ),
+        ),
+        [1536, 768],
+        [768, 768],
+      );
+    });
+
+    test('is as large as its tiles', () {
+      final spot = Light(
+        position: Vector3(0, 4, -10),
+        source: SpotLight(
+          direction: Vector3(0, -1, 0),
+          range: 10,
+          shadows: ShadowSettings(),
+        ),
+      );
+      // A sun and a spot light: two tiles, not a square of four.
+      expectAtlas(
+        atlasOf(ShadowSettings(), [spot]),
+        [2048, 1024],
+        [1024, 1024],
+      );
+    });
+
+    test('shrinks its tiles to fit within its largest size', () {
+      final atlas = ShadowAtlas3D();
+      expect(atlas.recommendedTileSize(2, preferred: 8192), 2048);
+      expect(atlas.recommendedTileSize(8, preferred: 2048), 1365);
+      expect(atlas.recommendedTileSize(1, preferred: 700), 700);
+    });
+  });
+
   group('Point light tiles', () {
     // The main camera sees x and y in [-1, 1]; the point light at
     // (2.5, 0, -3) reaches 10 units around it.

@@ -290,9 +290,9 @@ Only mesh particles are drawn into a shadow map (see [Shadows](shadows.md)): whe
 mesh's materials casts shadows, and the system's `castsShadows` is `true`, they cast the shadows of
 their meshes.
 
-Billboards cast no shadows, whatever their `renderState`: the shadow pass draws every instance
-with a model matrix, and the instance data of a billboard is not one. `ParticleMaterial.castsShadows`
-is always `false` (setting it to `true` fails an assertion), and a system of billboards skips the
+Billboards cast no shadows, whatever their `renderState`: the shadow pass draws every instance with
+a model matrix, and the instance data of a billboard is not one. `ParticleMaterial.castsShadows` is
+always `false` (setting it to `true` fails an assertion), and a system of billboards skips the
 shadow pass, sorting nothing. For the same reason billboards are not drawn into the depth-normal
 prepass, even cut-out ones (an opaque `renderState`), so SSAO and depth of field do not see them;
 mesh particles with an opaque material are drawn into it.
@@ -485,7 +485,8 @@ opacity at the start (`instanceModel2`) and at the end (`instanceModel3`), the c
 - CPU, each frame: the simulation of every live particle (once per step, up to eight steps), a
   radix sort of the particles of blended billboards, and the writing of 24 floats per particle for
   each pass the system is drawn in (the main pass, and for mesh particles each shadow map they cast
-  into and the depth-normal prepass). A trail rebuilds its segments; a stroke batch only when it changes.
+  into and the depth-normal prepass). A trail rebuilds its segments; a stroke batch only when it
+  changes.
 - GPU: one draw call per system (per surface of the mesh for mesh particles), per stroke batch and
   per trail, with 96 bytes of instance data uploaded per particle or segment. Billboards are two
   triangles each, drawn without depth writes when blended, so overlapping large particles cost fill

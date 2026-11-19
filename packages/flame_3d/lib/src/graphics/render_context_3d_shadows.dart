@@ -471,7 +471,6 @@ class _ShadowPass(final RenderContext3D _context) {
   }) {
     final context = _context;
     final device = context.device;
-    atlas.reset();
     _csmTiles.clear();
     _spotTiles.clear();
     _pointFrontTile = null;
@@ -497,9 +496,31 @@ class _ShadowPass(final RenderContext3D _context) {
         dirSettings ??
         (spotCasters.isNotEmpty ? spotCasters.first.$4 : pointCaster!.$4);
 
+    _cascadeMask = 0;
+    if (dirLight != null && dirSettings != null && csmCount > 0) {
+      _fitCascades(
+        dirLight.direction(_direction),
+        sceneBounds,
+        dirSettings,
+        csmCount,
+        tileSize,
+      );
+    }
+    // The atlas holds the cascades kept and the tiles of the other lights, in
+    // a grid of tiles as square as it can be.
+    var tileCount = spotCasters.length + (pointCaster != null ? 2 : 0);
+    for (var c = 0; c < csmCount; c++) {
+      if (_cascadeMask & (1 << c) != 0) {
+        tileCount++;
+      }
+    }
+    atlas.reset(
+      width: ShadowAtlas3D.columnsFor(tileCount) * tileSize,
+      height: ShadowAtlas3D.rowsFor(tileCount) * tileSize,
+    );
+
     if (dirLight != null && dirSettings != null && csmCount > 0) {
       final dir = dirLight.direction(_direction);
-      _fitCascades(dir, sceneBounds, dirSettings, csmCount, tileSize);
       for (var c = 0; c < csmCount; c++) {
         if (_cascadeMask & (1 << c) == 0) {
           continue;
@@ -627,7 +648,8 @@ class _ShadowPass(final RenderContext3D _context) {
       _decode.setFrom(_packedDecode);
     }
 
-    final atlasDim = atlas.atlasSize;
+    final atlasWidth = atlas.width;
+    final atlasHeight = atlas.height;
     _staticMaps[projection] = null;
     final cache =
         castersKey != null &&
@@ -636,7 +658,7 @@ class _ShadowPass(final RenderContext3D _context) {
         (pointCaster?.$4.cacheWhenStatic ?? true);
     final GpuTextureTarget target;
     if (cache) {
-      _writeAtlasSignature(atlasDim, atlasDim, float);
+      _writeAtlasSignature(atlasWidth, atlasHeight, float);
       var entry = _staticAtlases[projection];
       if (entry != null && entry.castersKey == castersKey) {
         if (entry.matches(_atlasSignature, _atlasSignatureLength)) {
@@ -647,7 +669,7 @@ class _ShadowPass(final RenderContext3D _context) {
             _target = entry.target;
             _texture = entry.texture;
           }
-          _writeAtlasMap(atlasDim, atlasDim, primarySettings);
+          _writeAtlasMap(atlasWidth, atlasHeight, primarySettings);
           active = true;
           atlasActive = true;
           _mapIsAtlas = true;
@@ -656,24 +678,24 @@ class _ShadowPass(final RenderContext3D _context) {
         }
       }
       if (entry == null ||
-          entry.width != atlasDim ||
-          entry.height != atlasDim ||
+          entry.width != atlasWidth ||
+          entry.height != atlasHeight ||
           entry.packDepth != !float) {
         final owned = device.backend.createTextureTarget(
-          width: atlasDim,
-          height: atlasDim,
+          width: atlasWidth,
+          height: atlasHeight,
           format: format,
           clearValue: const Color(0xFFFFFFFF),
         );
         entry = _StaticShadowAtlas(
-          width: atlasDim,
-          height: atlasDim,
+          width: atlasWidth,
+          height: atlasHeight,
           packDepth: !float,
           target: owned,
           texture: Texture(
             null,
-            width: atlasDim,
-            height: atlasDim,
+            width: atlasWidth,
+            height: atlasHeight,
             gpuTexture: owned.texture,
           ),
         );
@@ -687,20 +709,20 @@ class _ShadowPass(final RenderContext3D _context) {
       _texture = entry.texture;
     } else {
       _staticAtlases[projection] = null;
-      target = device.textureTarget(atlasDim, atlasDim, format);
+      target = device.textureTarget(atlasWidth, atlasHeight, format);
       if (!identical(target, _target)) {
         _target = target;
         _texture = Texture(
           null,
-          width: atlasDim,
-          height: atlasDim,
+          width: atlasWidth,
+          height: atlasHeight,
           gpuTexture: target.texture,
         );
       }
     }
     _unifiedAtlasTarget = target;
 
-    _writeAtlasMap(atlasDim, atlasDim, primarySettings);
+    _writeAtlasMap(atlasWidth, atlasHeight, primarySettings);
 
     version++;
     _mapIsAtlas = true;
