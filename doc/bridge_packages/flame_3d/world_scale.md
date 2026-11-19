@@ -351,8 +351,9 @@ stationOrigin.translateWorld(0.5, 0, 0);
   be a direct child of the world, as its `position` is compared with the threshold).
 - On a rebase the controller moves `camera.position` and `camera.target`, moves `trackedTarget`
   back by the shift unless a binding places it, re-applies every bound object, calls the listeners
-  (`onOriginShifted`, `addOriginShiftListener`) with the local shift, and marks the world dirty. `rebaseToWorldOrigin` moves the origin to a given 64-bit position,
-  for teleports. `localToWorld64`, `world64ToLocal` and `cameraWorldPosition64` convert.
+  (`onOriginShifted`, `addOriginShiftListener`) with the local shift, and marks the world dirty.
+  `rebaseToWorldOrigin` moves the origin to a given 64-bit position, for teleports.
+  `localToWorld64`, `world64ToLocal` and `cameraWorldPosition64` convert.
 - Objects that are neither bound nor moved by a listener stay at their local coordinates, so they
   jump by the shift relative to the camera.
 
@@ -454,8 +455,8 @@ hero.position.setFrom(heroPosition);
   listed in `interactors`. Blades inside lean away from the center and flatten by up to 65 %, at
   `trampleAttackRate` (28 per second), and spring back at `trampleSpringRate` (6.5 per second).
   The lean is a shear, not a rotation: `maxBendAngle` (1.05) is how far the tip moves sideways per
-  unit of blade height (about 45 degrees with the default), despite its name. `bladeBendVector`, `bladeCrush` and `bladePosition` read
-  the state of a blade.
+  unit of blade height (about 45 degrees with the default), despite its name. `bladeBendVector`,
+  `bladeCrush` and `bladePosition` read the state of a blade.
 - Each instance's `instanceData` holds the wind phase, the wind strength, the crush and the tilt,
   for custom shaders.
 - `castsShadows` is `false` by default. With `castsShadows: true`, a shadow pass culls cells
@@ -588,8 +589,9 @@ the streamer: do it in `onChunkEvicted`.
 
 - `ChunkedTerrain3D` has no geomorphing (levels pop), builds chunks inside the draw on first use
   (allocating while it does), and never frees built chunks before removal or
-  `markHeightsChanged()`. Its colors are per vertex; there is no texture splatting. Decals projected onto a terrain follow its full-resolution surface, so where a coarser
-  chunk is drawn the terrain can hide them.
+  `markHeightsChanged()`. Its colors are per vertex; there is no texture splatting. Decals
+  projected onto a terrain follow its full-resolution surface, so where a coarser chunk is drawn
+  the terrain can hide them.
 - `StaticMeshBatcher3D` merges only instances with the same instance data (and, for materials other
   than `SpatialMaterial` and `UnlitMaterial`, the same color): many distinct values mean many
   draws.
