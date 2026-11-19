@@ -455,18 +455,21 @@ world.lightProbeGrid = LightProbeGrid3D.bakeFromLights(
   every light at every lattice point analytically: no occlusion, no bounced light. It stores direct
   light, not global illumination. Lights baked into the grid and also left in the world light
   twice.
-- On the GPU the grid is a strip texture of one RGB value per probe: the constant band plus `0.35`
-  of the band-1 term along `+Y`, stored in 8 bits for the range `0..4` (steps of `1/64`). Each
-  fragment reads it trilinearly and adds `kD * base * value * intensity`. The normal is not used: a
-  probe lit from one side lights every side of a surface the same (in a test, a sphere in a grid
-  baked from a light on `+X` was as bright on its `-X` side, where `sampleIrradiance` gave `1.06`
-  and `0.06`).
-- The texture is rebuilt and uploaded on the next pass after a probe changes. Changing probes does
-  not mark the scene changed (see [Changing lights at run time](#changing-lights-at-run-time)).
+- On the GPU every probe is an ambient cube: the irradiance its spherical harmonics give along
+  `+X`, `-X`, `+Y`, `-Y`, `+Z` and `-Z`, packed into a strip texture (`volumeTextureFor`) as
+  `sqrt(E / range)` in 8 bits, where `range` (`volumeTextureRange`) is the grid's largest value, so
+  bright probes do not clip and dim ones keep their precision. Each fragment reads the six values
+  trilinearly and rebuilds the irradiance for its normal `n` as the sum over the axes of
+  `n² (E₊ + E₋) / 2 + n (E₊ - E₋) / 2`. This is what `sampleIrradiance` gives without the three
+  mixed terms of band 2 (`xy`, `yz`, `zx`): exact for surfaces facing an axis and for smooth light
+  such as an ambient or hemisphere light, close for light from oblique directions. A probe lit from
+  one side leaves the other side dark.
+- The texture is uploaded again on the next pass after a probe changes. Changing probes does not
+  mark the scene changed (see [Changing lights at run time](#changing-lights-at-run-time)).
 
 The grid is useful as a cheap stand-in for many static local lights: bake them into it instead of
-adding them, and areas take their color and brightness without the per-pass light limits, with flat
-shading.
+adding them, and areas take their color and brightness, and the side the light comes from, without
+the per-pass light limits.
 
 
 ### Lightmaps
@@ -517,7 +520,8 @@ retained `Scene3DComponent` keeps showing the old image until something else cha
   list. The cost that matters is per fragment: `SpatialMaterial` evaluates a full GGX term for every
   light of the pass on every covered pixel, `StylizedMaterial` a cheaper term.
 - Image-based lighting on native backends: 1 to 2 reflection reads and 1 to 2 lookup-table reads
-  per fragment, the spherical harmonics in a few multiply-adds, and 2 reads for a light probe grid.
+  per fragment, the spherical harmonics in a few multiply-adds, and 12 reads for a light probe
+  grid.
 - Baking: `EnvironmentProbe3D.fromEquirectangular` and `bakeFromLights` run on the calling isolate,
   synchronously; the probe's blurred mip levels and the BRDF table are computed on the first frame
   that uses them. Keep panoramas small (the 128 x 64 of `skyDome` is enough for diffuse light and
@@ -572,8 +576,8 @@ material's slots (see [Materials](materials.md#custom-shaders)):
   harmonics are linearized (with `srgb: true`), so reflections are brighter relative to the diffuse
   light than they would be in linear light; the blurred mip levels are a Gaussian approximation and
   are missing on devices without manually uploaded mip levels.
-- Light probe grids on the GPU ignore the normal, hold values up to `4` in steps of `1/64`, and are
-  baked without occlusion.
+- Light probe grids are baked without occlusion, and on the GPU they drop the mixed terms of band 2
+  of each probe's spherical harmonics (see [Light probe grids](#light-probe-grids)).
 - `StylizedMaterial` and `WaterMaterial` receive wrong shadows when the scene uses the multi-light
   shadow atlas, and `WaterMaterial` ignores spot lights (see
   [Materials](materials.md#limitations)).

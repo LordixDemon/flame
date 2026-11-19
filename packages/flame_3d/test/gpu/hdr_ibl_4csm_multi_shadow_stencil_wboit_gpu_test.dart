@@ -630,8 +630,10 @@ void main() {
         view: view,
         projection: proj,
       );
-      final (lr, _, lb, _) = gridPx.at(36, 64);
-      final (rr, _, rb, _) = gridPx.at(92, 64);
+      // The grid lights each side of a sphere with the light it faces: the
+      // outer side of the left sphere is red, that of the right one blue.
+      final (lr, _, lb, _) = gridPx.at(20, 64);
+      final (rr, _, rb, _) = gridPx.at(108, 64);
       expect(lr, greaterThan(lb + 15));
       expect(rb, greaterThan(rr + 15));
     },

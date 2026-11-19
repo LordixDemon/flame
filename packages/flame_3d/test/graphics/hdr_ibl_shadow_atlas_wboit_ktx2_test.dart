@@ -419,8 +419,72 @@ void main() {
 
       final gpuTex = grid.volumeTextureFor(backend);
       expect(gpuTex.width, grid.resolutionX * grid.resolutionZ);
-      expect(gpuTex.height, grid.resolutionY);
+      expect(gpuTex.height, grid.resolutionY * 6);
     });
+
+    test(
+      'LightProbeGrid3D packs an ambient cube per probe without clipping',
+      () {
+        final backend = FakeGpuBackend();
+        final grid = LightProbeGrid3D.bakeFromLights(
+          bounds: Aabb3.minMax(Vector3(-5, 0, -5), Vector3(5, 4, 5)),
+          resolutionX: 3,
+          resolutionZ: 2,
+          ambientIntensity: 0,
+          lights: [
+            Light(
+              position: Vector3(-4, 1, 0),
+              source: PointLight(
+                color: const Color(0xFFFF4422),
+                intensity: 60,
+                range: 12,
+              ),
+            ),
+          ],
+        );
+        final tex = grid.volumeTextureFor(backend);
+        final bytes = tex.sourceData!.buffer.asUint8List(
+          tex.sourceData!.offsetInBytes,
+          tex.sourceData!.lengthInBytes,
+        );
+        final range = grid.volumeTextureRange;
+        expect(
+          range,
+          greaterThan(4),
+          reason: 'brighter than the old 0..4 range',
+        );
+        const axes = [
+          (1.0, 0.0, 0.0),
+          (-1.0, 0.0, 0.0),
+          (0.0, 1.0, 0.0),
+          (0.0, -1.0, 0.0),
+          (0.0, 0.0, 1.0),
+          (0.0, 0.0, -1.0),
+        ];
+        final b = grid.bounds;
+        for (var iz = 0; iz < grid.resolutionZ; iz++) {
+          for (var iy = 0; iy < grid.resolutionY; iy++) {
+            for (var ix = 0; ix < grid.resolutionX; ix++) {
+              final node = Vector3(
+                b.min.x + (b.max.x - b.min.x) * ix / (grid.resolutionX - 1),
+                b.min.y + (b.max.y - b.min.y) * iy / (grid.resolutionY - 1),
+                b.min.z + (b.max.z - b.min.z) * iz / (grid.resolutionZ - 1),
+              );
+              for (final (f, (x, y, z)) in axes.indexed) {
+                final expected = grid.sampleIrradiance(node, Vector3(x, y, z));
+                final texel =
+                    ((f * grid.resolutionY + iy) * tex.width +
+                        iz * grid.resolutionX +
+                        ix) *
+                    4;
+                final t = bytes[texel] / 255;
+                expect(t * t * range, closeTo(expected.x, range * 0.01 + 0.02));
+              }
+            }
+          }
+        }
+      },
+    );
   });
 
   group('ShadowAtlas3D & Unified Multi-Light Shadow Pass', () {

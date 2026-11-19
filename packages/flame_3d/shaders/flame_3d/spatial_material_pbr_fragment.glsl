@@ -66,7 +66,7 @@ uniform PassOptions {
   vec4 flags;
   // xyz: lightProbeGrid bounds min, w: grid intensity (>0 active)
   vec4 gridBoundsMin;
-  // xyz: lightProbeGrid 1 / bounds span, w: unused
+  // xyz: lightProbeGrid 1 / bounds span, w: irradiance of a texel value of 1
   vec4 gridInvSpan;
   // xyz: (resX, resY, resZ), w: unused
   vec4 gridRes;
@@ -204,12 +204,10 @@ vec3 boxProjectDir(vec3 worldPos, vec3 reflDir) {
   return normalize(hitPos - material.probeCenter.xyz);
 }
 
-vec3 sampleProbeGrid3D(vec3 worldPos) {
-  vec3 uvw = clamp(
-    (worldPos - passOptions.gridBoundsMin.xyz) * passOptions.gridInvSpan.xyz,
-    vec3(0.0),
-    vec3(1.0)
-  );
+// One axis band of the LightProbeGrid3D ambient-cube strip (see
+// LightProbeGrid3D.volumeTextureFor), trilinear: bilinear in x and y within a
+// Z slice, linear across the two nearest slices. Texels hold sqrt(E / range).
+vec3 sampleProbeGridBand(float band, vec3 uvw) {
   float rx = max(1.0, passOptions.gridRes.x);
   float ry = max(1.0, passOptions.gridRes.y);
   float rz = max(1.0, passOptions.gridRes.z);
@@ -220,14 +218,37 @@ vec3 sampleProbeGrid3D(vec3 worldPos) {
   float zf = zCoord - z0;
 
   float xTex = uvw.x * (rx - 1.0) + 0.5;
-  float yTex = (uvw.y * (ry - 1.0) + 0.5) / ry;
+  float yTex = (band * ry + uvw.y * (ry - 1.0) + 0.5) / (6.0 * ry);
   float invStripW = 1.0 / (rx * rz);
 
-  vec2 uv0 = vec2((z0 * rx + xTex) * invStripW, yTex);
-  vec2 uv1 = vec2((z1 * rx + xTex) * invStripW, yTex);
-  vec3 s0 = texture(probeGridTexture, uv0).rgb;
-  vec3 s1 = texture(probeGridTexture, uv1).rgb;
-  return mix(s0, s1, zf) * (4.0 * passOptions.gridBoundsMin.w);
+  vec3 s0 = texture(probeGridTexture, vec2((z0 * rx + xTex) * invStripW, yTex)).rgb;
+  vec3 s1 = texture(probeGridTexture, vec2((z1 * rx + xTex) * invStripW, yTex)).rgb;
+  vec3 t = mix(s0, s1, zf);
+  return t * t;
+}
+
+// Irradiance of the LightProbeGrid3D at worldPos for the unit normal n,
+// times the grid's intensity. With F+ and F- the irradiance
+// along +axis and -axis, E(n) = sum over the axes of
+//   n_i^2 (F+ + F-) / 2 + n_i (F+ - F-) / 2,
+// the probe's SH9 irradiance without the xy, yz and zx terms of band 2.
+vec3 sampleProbeGrid3D(vec3 worldPos, vec3 n) {
+  vec3 uvw = clamp(
+    (worldPos - passOptions.gridBoundsMin.xyz) * passOptions.gridInvSpan.xyz,
+    vec3(0.0),
+    vec3(1.0)
+  );
+  vec3 plus = 0.5 * n * (n + 1.0);
+  vec3 minus = 0.5 * n * (n - 1.0);
+  vec3 e =
+    plus.x * sampleProbeGridBand(0.0, uvw) +
+    minus.x * sampleProbeGridBand(1.0, uvw) +
+    plus.y * sampleProbeGridBand(2.0, uvw) +
+    minus.y * sampleProbeGridBand(3.0, uvw) +
+    plus.z * sampleProbeGridBand(4.0, uvw) +
+    minus.z * sampleProbeGridBand(5.0, uvw);
+  return max(e, vec3(0.0)) *
+    (passOptions.gridInvSpan.w * passOptions.gridBoundsMin.w);
 }
 
 float sampleAtlasTilePcf(
@@ -606,7 +627,7 @@ void main() {
 
   // Volumetric 3D LightProbeGrid3D trilinear indirect irradiance.
   if (passOptions.gridBoundsMin.w > 0.0) {
-    ambient += kD * baseColor * sampleProbeGrid3D(fragPosition);
+    ambient += kD * baseColor * sampleProbeGrid3D(fragPosition, normal);
   }
 
   // Split-Sum Specular IBL + Prefiltered Roughness Mip + Kulla-Conty

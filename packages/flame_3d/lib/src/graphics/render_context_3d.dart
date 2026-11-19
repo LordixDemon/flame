@@ -918,7 +918,7 @@ class RenderContext3D(super.device) extends RenderContext {
         )
         ..setVector4(
           'gridInvSpan',
-          v..setValues(1.0 / sx, 1.0 / sy, 1.0 / sz, 0.0),
+          v..setValues(1.0 / sx, 1.0 / sy, 1.0 / sz, grid.volumeTextureRange),
         )
         ..setVector4(
           'gridRes',

@@ -9,8 +9,12 @@ import 'package:flame_3d/resources.dart';
 /// Volumetric 3D lattice of `L0..L2` Spherical Harmonics (`SH9`) diffuse
 /// irradiance probes over a world-space [bounds] box, backed by a flat
 /// zero-allocation `Float32List` (`resolutionX * resolutionY * resolutionZ *`
-/// `27` floats) plus a packed 2D strip GPU volume [Texture] for per-fragment
-/// spatial indirect illumination in `World3D`.
+/// `27` floats).
+///
+/// Set as `World3D.lightProbeGrid`, it adds its light to the ambient term of
+/// `SpatialMaterial` surfaces: each fragment reads the probes around it
+/// trilinearly from [volumeTextureFor], the irradiance of each probe along
+/// the six axis directions, and rebuilds the irradiance for its normal.
 class LightProbeGrid3D({
   required Aabb3 bounds,
   final int resolutionX = 4,
@@ -342,57 +346,105 @@ class LightProbeGrid3D({
     );
   }
 
-  /// Lazily packs the 3D irradiance volume into a `(resolutionX * resolutionZ)
-  /// x resolutionY` 2D strip [Texture] (`RGBA8888`, encoding `[0..4]` HDR range
-  /// scaled by `0.25`) so batched GPU instances sample spatially varying
-  /// indirect light per-fragment.
+  /// The irradiance that a texel value of `1` stands for in
+  /// [volumeTextureFor]: the largest irradiance of the grid along any axis.
+  double get volumeTextureRange {
+    _packVolume();
+    return _packedRange;
+  }
+
+  /// Lazily packs the grid into a 2D strip [Texture] for the GPU.
+  ///
+  /// Every probe is stored as an ambient cube: its irradiance (from the full
+  /// `SH9`) along `+X`, `-X`, `+Y`, `-Y`, `+Z` and `-Z`. The texture is
+  /// `resolutionX * resolutionZ` texels wide (the `Z` slices side by side)
+  /// and `6 * resolutionY` tall (one band of `resolutionY` rows per axis
+  /// direction, in that order). A texel holds `sqrt(E / range)` in `RGBA8`,
+  /// where `range` is [volumeTextureRange]: dim probes keep their precision
+  /// next to bright ones, and nothing clips. With `E+` and `E-` the values
+  /// along an axis, a shader rebuilds the irradiance for a normal `n` as the
+  /// sum over the axes of `n² (E+ + E-) / 2 + n (E+ - E-) / 2`: the `SH9`
+  /// irradiance without the `xy`, `yz` and `zx` terms of band 2.
   Texture volumeTextureFor([GpuBackend? backend]) {
     final b = backend ?? GpuBackend.instance;
+    _packVolume();
     final cached = _gpuTextures[b];
-    if (cached != null && cached.$1 == _version) {
+    if (cached != null) {
+      if (cached.$1 != _version) {
+        // Same size and buffer: upload the new texels on the next use.
+        cached.$2.recreateResource = true;
+        _gpuTextures[b] = (_version, cached.$2);
+      }
       return cached.$2;
     }
-
-    final width = resolutionX * resolutionZ;
-    final height = resolutionY;
-    final bytes = Uint8List(width * height * 4);
-    for (var iz = 0; iz < resolutionZ; iz++) {
-      for (var iy = 0; iy < resolutionY; iy++) {
-        for (var ix = 0; ix < resolutionX; ix++) {
-          final base = _nodeOffset(ix, iy, iz);
-          // hemispherical average irradiance from L0 + upward L1 bias:
-          final r = math.max(
-            0.0,
-            _shData[base] * 0.886227 + _shData[base + 3] * 0.35,
-          );
-          final g = math.max(
-            0.0,
-            _shData[base + 1] * 0.886227 + _shData[base + 4] * 0.35,
-          );
-          final bl = math.max(
-            0.0,
-            _shData[base + 2] * 0.886227 + _shData[base + 5] * 0.35,
-          );
-          final x = iz * resolutionX + ix;
-          final dst = (iy * width + x) * 4;
-          // Store 0..4.0 linear irradiance normalized into 0..1 (decoded * 4.0
-          // in shader) so bright local probes do not clip at 1.0.
-          bytes[dst] = ((r * 0.25).clamp(0.0, 1.0) * 255.0).round();
-          bytes[dst + 1] = ((g * 0.25).clamp(0.0, 1.0) * 255.0).round();
-          bytes[dst + 2] = ((bl * 0.25).clamp(0.0, 1.0) * 255.0).round();
-          bytes[dst + 3] = 255;
-        }
-      }
-    }
-
     final tex = Texture(
-      ByteData.sublistView(bytes),
-      width: width,
-      height: height,
+      ByteData.sublistView(_packed),
+      width: resolutionX * resolutionZ,
+      height: resolutionY * 6,
       sampler: TextureSampler.linear,
     );
     _gpuTextures[b] = (_version, tex);
     return tex;
+  }
+
+  late final Uint8List _packed = Uint8List(probeCount * 6 * 4);
+  late final Float32List _faceIrradiance = Float32List(probeCount * 6 * 3);
+  int _packedVersion = -1;
+  double _packedRange = 1;
+
+  void _packVolume() {
+    if (_packedVersion == _version) {
+      return;
+    }
+    _packedVersion = _version;
+    const a0 = 0.886227;
+    const a1 = 1.023327;
+    const a2zz = 0.247708;
+    const a2xy = 0.429043;
+    final faces = _faceIrradiance;
+    var maxE = 0.0;
+    for (var node = 0; node < probeCount; node++) {
+      final base = node * 27;
+      for (var ch = 0; ch < 3; ch++) {
+        final c0 = _shData[base + ch] * a0;
+        final c1 = _shData[base + 3 + ch] * a1;
+        final c2 = _shData[base + 6 + ch] * a1;
+        final c3 = _shData[base + 9 + ch] * a1;
+        final c6 = _shData[base + 18 + ch] * a2zz;
+        final c8 = _shData[base + 24 + ch] * a2xy;
+        final o = node * 18 + ch;
+        faces
+          ..[o] = math.max(0.0, c0 + c3 - c6 + c8)
+          ..[o + 3] = math.max(0.0, c0 - c3 - c6 + c8)
+          ..[o + 6] = math.max(0.0, c0 + c1 - c6 - c8)
+          ..[o + 9] = math.max(0.0, c0 - c1 - c6 - c8)
+          ..[o + 12] = math.max(0.0, c0 + c2 + 2 * c6)
+          ..[o + 15] = math.max(0.0, c0 - c2 + 2 * c6);
+        for (var f = 0; f < 6; f++) {
+          maxE = math.max(maxE, faces[o + f * 3]);
+        }
+      }
+    }
+    _packedRange = maxE > 1e-6 ? maxE : 1.0;
+    final invRange = 1.0 / _packedRange;
+    final width = resolutionX * resolutionZ;
+    for (var iz = 0; iz < resolutionZ; iz++) {
+      for (var iy = 0; iy < resolutionY; iy++) {
+        for (var ix = 0; ix < resolutionX; ix++) {
+          final node = (iz * resolutionY + iy) * resolutionX + ix;
+          final x = iz * resolutionX + ix;
+          for (var f = 0; f < 6; f++) {
+            final src = node * 18 + f * 3;
+            final dst = ((f * resolutionY + iy) * width + x) * 4;
+            for (var ch = 0; ch < 3; ch++) {
+              final t = math.sqrt(faces[src + ch] * invRange);
+              _packed[dst + ch] = (t.clamp(0.0, 1.0) * 255.0).round();
+            }
+            _packed[dst + 3] = 255;
+          }
+        }
+      }
+    }
   }
 
   static void _projectDirectionalLobe(
