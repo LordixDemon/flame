@@ -54,6 +54,7 @@
  - **DOCS**(flame_3d): Correct the joint limit and batching notes in material dartdocs. ([c35609b9](https://github.com/LordixDemon/flame/commit/c35609b9aa1f397e03f4c0e1716427a37532e721))
  - **FIX**(flame_3d): `StylizedMaterial` decodes its accent and rim palette slots in the vertex stage: interpolation could push a packed slot under its boundary, leaving transparent, wrongly coloured pixels at fade 0. ([1b873010](https://github.com/LordixDemon/flame/commit/1b873010))
  - **FEAT**(flame_3d): `DecalMaterial.premultipliedTexture` and `DecalBatch3D(sortByDepth:)`. ([fe415a63](https://github.com/LordixDemon/flame/commit/fe415a63), [8b3f6253](https://github.com/LordixDemon/flame/commit/8b3f6253))
+ - **FEAT**(flame_3d): `StylizedMaterial.emissiveColorSource` (`EmissiveColorSource`): the emissive mask glows in each instance's color, accent or rim palette entry instead of `emissiveColor`, so instances of one mesh glow in colors of their own in one draw, exactly as with one material per color. ([349e55c4](https://github.com/LordixDemon/flame/commit/349e55c4))
 
 
 ### Shadows
