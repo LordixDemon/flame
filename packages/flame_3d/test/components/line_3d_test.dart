@@ -39,5 +39,24 @@ void main() {
         ),
       );
     });
+
+    test('can create a line pointing straight down', () {
+      final line = Line3D.generate(
+        start: Vector3.zero(),
+        end: Vector3(0, -2, 0),
+        material: UnlitMaterial(),
+      );
+
+      // The cylinder spans y in [-1, 1] before the transform.
+      final matrix = line.transform.transformMatrix;
+      expect(
+        matrix.transformed3(Vector3(0, -1, 0)),
+        closeToVector3(Vector3.zero(), 1e-6),
+      );
+      expect(
+        matrix.transformed3(Vector3(0, 1, 0)),
+        closeToVector3(Vector3(0, -2, 0), 1e-6),
+      );
+    });
   });
 }

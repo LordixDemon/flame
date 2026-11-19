@@ -671,8 +671,6 @@ order-independent transparency, so measure those in your own scene.
   spatially compact groups.
 - `LodMeshComponent` switches levels at the thresholds without hysteresis, so an object that stays
   near a threshold can change level every frame.
-- `Line3D.generate` draws a line that points straight down (`end` directly below `start`) upwards
-  from `start`.
 - The stencil buffer is per pass and not stored: it cannot carry a mask from one pass to another.
 
 

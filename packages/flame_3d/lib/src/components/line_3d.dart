@@ -68,7 +68,13 @@ class Line3D._({
 
     final normal = origin.cross(dest);
     if (normal.length == 0) {
-      return Matrix4.identity();
+      if (origin.dot(dest) >= 0) {
+        return Matrix4.identity();
+      }
+      // Pointing the opposite way: half a turn around any perpendicular axis.
+      final axis = origin.x.abs() < 0.9 ? Vector3(1, 0, 0) : Vector3(0, 0, 1);
+      return Matrix4.identity()
+        ..rotate(origin.cross(axis)..normalize(), math.pi);
     }
 
     final dotProduct = origin.dot(dest);
