@@ -5,11 +5,21 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/ui3d/picture_texture.dart';
 import 'package:flutter/painting.dart'
     show EdgeInsets, TextPainter, TextSpan, TextStyle;
 
 /// Depth-tested 3D world-space text badge / floating label rendered on the GPU
 /// via [BillboardMaterial3D] so 3D geometry accurately occludes it.
+///
+/// The text, its background and its border are rasterized into a texture,
+/// again whenever [text], [style], [backgroundColor], [borderColor],
+/// [cornerRadius] or [padding] change; the previous texture is disposed, and
+/// so is the last one when the label is removed.
+///
+/// It needs a GPU backend that can use a `dart:ui` image as a texture
+/// (Flutter GPU on Android, iOS and macOS): on another one, such as WebGPU on
+/// the web, creating a label throws an [UnsupportedError].
 class Text3DComponent({
   required String text,
   TextStyle style = const TextStyle(
@@ -18,10 +28,10 @@ class Text3DComponent({
     fontWeight: ui.FontWeight.w700,
   ),
   var double worldHeight = 0.55,
-  var ui.Color? backgroundColor = const ui.Color(0xB30F172A),
-  var ui.Color? borderColor = const ui.Color(0xFF38BDF8),
-  var double cornerRadius = 10.0,
-  var EdgeInsets padding = const EdgeInsets.symmetric(
+  ui.Color? backgroundColor = const ui.Color(0xB30F172A),
+  ui.Color? borderColor = const ui.Color(0xFF38BDF8),
+  double cornerRadius = 10.0,
+  EdgeInsets padding = const EdgeInsets.symmetric(
     horizontal: 14,
     vertical: 6,
   ),
@@ -41,17 +51,67 @@ class Text3DComponent({
       return;
     }
     _text = value;
-    _rebuildTexture();
-    worldOrNull?.markSceneDirty(shadows: false);
+    _restyle();
   }
 
   TextStyle _style = style;
   TextStyle get style => _style;
   set style(TextStyle value) {
     _style = value;
+    _restyle();
+  }
+
+  ui.Color? _backgroundColor = backgroundColor;
+
+  /// The color of the rounded background, or `null` for none.
+  ui.Color? get backgroundColor => _backgroundColor;
+  set backgroundColor(ui.Color? value) {
+    if (value != _backgroundColor) {
+      _backgroundColor = value;
+      _restyle();
+    }
+  }
+
+  ui.Color? _borderColor = borderColor;
+
+  /// The color of the border, or `null` for none.
+  ui.Color? get borderColor => _borderColor;
+  set borderColor(ui.Color? value) {
+    if (value != _borderColor) {
+      _borderColor = value;
+      _restyle();
+    }
+  }
+
+  double _cornerRadius = cornerRadius;
+
+  /// The radius of the background's corners, in logical pixels.
+  double get cornerRadius => _cornerRadius;
+  set cornerRadius(double value) {
+    if (value != _cornerRadius) {
+      _cornerRadius = value;
+      _restyle();
+    }
+  }
+
+  EdgeInsets _padding = padding;
+
+  /// The space around the text, in logical pixels.
+  EdgeInsets get padding => _padding;
+  set padding(EdgeInsets value) {
+    if (value != _padding) {
+      _padding = value;
+      _restyle();
+    }
+  }
+
+  void _restyle() {
     _rebuildTexture();
+    markAabbDirty();
     worldOrNull?.markSceneDirty(shadows: false);
   }
+
+  ImageTexture? _texture;
 
   late Vector3 _upAxis;
 
@@ -76,11 +136,11 @@ class Text3DComponent({
 
     final texW = math.max(
       8,
-      (painter.width + padding.horizontal).ceil(),
+      (painter.width + _padding.horizontal).ceil(),
     );
     final texH = math.max(
       8,
-      (painter.height + padding.vertical).ceil(),
+      (painter.height + _padding.vertical).ceil(),
     );
     _aspect = texW / texH;
 
@@ -89,49 +149,73 @@ class Text3DComponent({
     final rect = ui.Rect.fromLTWH(0, 0, texW.toDouble(), texH.toDouble());
     final rrect = ui.RRect.fromRectAndRadius(
       rect.deflate(1.5),
-      ui.Radius.circular(cornerRadius),
+      ui.Radius.circular(_cornerRadius),
     );
-    if (backgroundColor != null) {
-      canvas.drawRRect(rrect, ui.Paint()..color = backgroundColor!);
+    if (_backgroundColor case final background?) {
+      canvas.drawRRect(rrect, ui.Paint()..color = background);
     }
-    if (borderColor != null) {
+    if (_borderColor case final border?) {
       canvas.drawRRect(
         rrect,
         ui.Paint()
-          ..color = borderColor!
+          ..color = border
           ..style = ui.PaintingStyle.stroke
           ..strokeWidth = 2.0,
       );
     }
-    painter.paint(canvas, ui.Offset(padding.left, padding.top));
+    painter.paint(canvas, ui.Offset(_padding.left, _padding.top));
     painter.dispose();
 
     final picture = recorder.endRecording();
     final img = picture.toImageSync(texW, texH);
     picture.dispose();
 
-    GpuTexture? gpuTex;
-    if (GpuBackend.isAvailable) {
-      try {
-        gpuTex = GpuBackend.instance.createTextureFromImage(img);
-      } on Object {
-        gpuTex = null;
-      }
+    final GpuTexture? gpuTex;
+    try {
+      gpuTex = textureOfRasterizedImage(img, 'Text3DComponent');
+    } finally {
+      img.dispose();
     }
+    _disposeTexture();
     if (gpuTex != null) {
-      _material.albedoTexture = ImageTexture(
+      _material.albedoTexture = _texture = ImageTexture(
         null,
         width: texW,
         height: texH,
         sampler: TextureSampler.linear,
         gpuTexture: gpuTex,
       );
-      img.dispose();
     } else {
-      // Fallback for non-GPU unit test environments.
+      // Without a GPU (a plain `flutter test`) nothing is drawn.
       _material.albedoTexture = ColorTexture(const ui.Color(0xFFFFFFFF));
-      img.dispose();
     }
+  }
+
+  void _disposeTexture() {
+    final texture = _texture;
+    _texture = null;
+    if (texture != null && texture.hasResource) {
+      texture.dispose();
+    }
+  }
+
+  @override
+  void onMount() {
+    super.onMount();
+    if (_textureReleased) {
+      _textureReleased = false;
+      _rebuildTexture();
+    }
+  }
+
+  // Whether the texture was disposed when the label was removed.
+  bool _textureReleased = false;
+
+  @override
+  void onRemove() {
+    _disposeTexture();
+    _textureReleased = true;
+    super.onRemove();
   }
 
   @override

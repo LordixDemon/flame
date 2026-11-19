@@ -8,6 +8,7 @@ import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/input.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/ui3d/picture_texture.dart';
 import 'package:flutter/foundation.dart' show ValueChanged;
 import 'package:flutter/painting.dart'
     show TextDirection, TextPainter, TextSpan, TextStyle;
@@ -217,13 +218,22 @@ class SurfaceSlider2D({
 }
 
 /// Interactive diegetic 2D-in-3D world panel mapping a custom `dart:ui`
-/// [paintSurface] canvas plus declarative [SurfaceButton2D] / [SurfaceSlider2D]
-/// controls onto an [ImageTexture] quad in 3D space.
+/// [paintSurface] canvas plus [SurfaceControl2D]s ([SurfaceButton2D],
+/// [SurfaceSlider2D] or your own) onto an [ImageTexture] quad in 3D space.
 ///
-/// Integrates natively with [PointerRouter3D] via [TapCallbacks3D],
-/// [HoverCallbacks3D], and [DragCallbacks3D], projecting 3D ray hits onto exact
-/// panel pixel coordinates `Offset(u * pixelWidth, v * pixelHeight)` while
-/// re-uploading static panels `0` times.
+/// Despite its name it does not host Flutter widgets: there is no widget
+/// tree, layout, text field, scrolling or focus. What it shows is painted
+/// with `dart:ui` by [paintSurface] and by its controls.
+///
+/// Integrates with [PointerRouter3D] via [TapCallbacks3D],
+/// [HoverCallbacks3D], and [DragCallbacks3D], projecting 3D ray hits onto
+/// panel pixel coordinates `Offset(u * pixelWidth, v * pixelHeight)`. The
+/// canvas is rasterized again only when dirty; the previous texture is
+/// disposed, and so is the last one when the panel is removed.
+///
+/// It needs a GPU backend that can use a `dart:ui` image as a texture
+/// (Flutter GPU on Android, iOS and macOS): on another one, such as WebGPU on
+/// the web, creating a panel throws an [UnsupportedError].
 class WidgetSurface3D({
   final double width = 2.0,
   final double height = 1.2,
@@ -351,7 +361,7 @@ class WidgetSurface3D({
     _worldNormal.setValues(m[8], m[9], m[10]);
     if (_worldNormal.length2 > 1e-12) {
       _worldNormal.normalize();
-      dragPlaneNormal = _worldNormal.clone();
+      dragPlaneNormal = _worldNormal;
     }
     if (_dirty && _sinceLastUpload >= minUploadInterval) {
       _refreshTextureNow();
@@ -360,6 +370,28 @@ class WidgetSurface3D({
 
   @override
   Aabb3? computeLocalAabb() => _panelMesh.aabb;
+
+  // Whether the texture was disposed when the panel was removed.
+  bool _textureReleased = false;
+
+  @override
+  void onMount() {
+    super.onMount();
+    if (_textureReleased) {
+      _textureReleased = false;
+      _refreshTextureNow();
+    }
+  }
+
+  @override
+  void onRemove() {
+    final texture = _surfaceTexture;
+    if (texture != null && texture.hasResource) {
+      texture.dispose();
+    }
+    _textureReleased = true;
+    super.onRemove();
+  }
 
   @override
   void draw(covariant RenderContext3D context) {
@@ -638,15 +670,12 @@ class WidgetSurface3D({
     final image = picture.toImageSync(pixelWidth, pixelHeight);
     picture.dispose();
 
-    GpuTexture? gpuTex;
-    if (GpuBackend.isAvailable) {
-      try {
-        gpuTex = GpuBackend.instance.createTextureFromImage(image);
-      } on Object {
-        gpuTex = null;
-      }
+    final GpuTexture? gpuTex;
+    try {
+      gpuTex = textureOfRasterizedImage(image, 'WidgetSurface3D');
+    } finally {
+      image.dispose();
     }
-    image.dispose();
 
     final prevTex = _surfaceTexture;
     if (gpuTex != null) {
@@ -658,6 +687,7 @@ class WidgetSurface3D({
         gpuTexture: gpuTex,
       );
     } else {
+      // Without a GPU (a plain `flutter test`) nothing is drawn.
       final fallback = _fallbackRgba ??= ByteData(pixelWidth * pixelHeight * 4);
       _surfaceTexture = ImageTexture(
         fallback,

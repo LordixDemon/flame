@@ -188,6 +188,12 @@ class GizmoCommandHistory3D({
 /// Interactive runtime 3D transform gizmo (`translate`, `rotate`, `scale`)
 /// rendered via [DebugRenderer3D] with constant-screen-size distance scaling,
 /// analytical 3D ray picking, grid/angle/scale snapping, and undo/redo history.
+///
+/// It is not a component and nothing routes pointer events to it: the game
+/// turns pointer positions into rays (for instance with
+/// `CameraComponent3D.viewportPointToRay`) and calls [pickHandle],
+/// [updateHover], [beginDrag], [updateDrag] and [endDrag] itself, and asks it
+/// to draw into a [DebugRenderer3D].
 class TransformGizmo3D({
   var Component3D? target,
   var GizmoMode3D mode = GizmoMode3D.translate,
@@ -278,7 +284,8 @@ class TransformGizmo3D({
   }
 
   /// Emits all wireframe/handle primitives for the current [mode] into
-  /// [renderer].
+  /// [renderer], as custom segments that stay until
+  /// [DebugRenderer3D.clearCustomSegments].
   void render(DebugRenderer3D renderer, {Vector3? cameraPosition}) {
     if (cameraPosition != null) {
       _lastCameraPosition = cameraPosition.clone();

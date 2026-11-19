@@ -107,7 +107,9 @@ class SceneInspector3D({
   }
 
   /// Emits world AABB highlight, local basis triad, and [gizmo] handles for
-  /// [selected] into [renderer].
+  /// [selected] into [renderer], as custom segments: they stay until
+  /// [DebugRenderer3D.clearCustomSegments], so clear the renderer before
+  /// calling it again.
   void render(DebugRenderer3D renderer, {Vector3? cameraPosition}) {
     if (!enabled) {
       return;
@@ -136,6 +138,10 @@ class SceneInspector3D({
 
   /// Walks [world]'s component hierarchy in pre-order and computes node,
   /// visibility, instance, and triangle estimates.
+  ///
+  /// Triangles are estimated for `MeshComponent`, the current level of
+  /// `LodMeshComponent`, `InstancedGroup3D`, and 2 per skybox or text
+  /// label; models, particles and batches count none.
   SceneHierarchySummary3D summarize(World3D world) {
     final nodes = <SceneNodeInfo3D>[];
     var visibleCount = 0;

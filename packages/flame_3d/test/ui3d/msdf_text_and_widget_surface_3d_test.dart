@@ -1,11 +1,15 @@
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:flame/game.dart' show FlameGame;
 import 'package:flame_3d/camera.dart';
+import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/input.dart';
 import 'package:flame_3d/ui3d.dart';
+import 'package:flame_test/flame_test.dart';
+import 'package:flutter/painting.dart' show EdgeInsets;
 import 'package:flutter_test/flutter_test.dart';
 
 import '../_fakes/fake_gpu_backend.dart';
@@ -315,6 +319,58 @@ void main() {
         // Hover exit clears `button.hovered`.
         router.dispatchHoverExit();
         expect(button.hovered, isFalse);
+      },
+    );
+  });
+
+  group('Rasterized textures', () {
+    test(
+      'Text3DComponent and WidgetSurface3D fail loudly on a backend that '
+      'cannot use an image as a texture',
+      () {
+        // As the WebGPU backend: running, but without image textures.
+        FakeGpuBackend(wrapsImages: false);
+        addTearDown(FakeGpuBackend.new);
+        expect(
+          () => Text3DComponent(text: 'label'),
+          throwsA(
+            isA<UnsupportedError>().having(
+              (e) => e.message,
+              'message',
+              contains('Text3DComponent'),
+            ),
+          ),
+        );
+        expect(WidgetSurface3D.new, throwsUnsupportedError);
+      },
+      skip: GpuBackend.isAvailable
+          ? false
+          : 'Without a GPU backend nothing is drawn and nothing fails; run '
+                'with --enable-impeller --enable-flutter-gpu',
+    );
+
+    test('a label rebuilds its texture when its look changes', () {
+      final label = Text3DComponent(text: 'label', padding: EdgeInsets.zero);
+      final width = label.worldWidth;
+      label.padding = const EdgeInsets.symmetric(horizontal: 40);
+      expect(label.worldWidth, greaterThan(width));
+      expect(
+        label.aabb.max.x - label.aabb.min.x,
+        closeTo(label.worldWidth, 1e-5),
+      );
+    });
+
+    testWithGame(
+      'a removed panel rasterizes again when added again',
+      () => FlameGame(world: World3D()),
+      (game) async {
+        final panel = WidgetSurface3D();
+        await game.world.ensureAdd(panel);
+        expect(panel.uploadCount, 1);
+        panel.removeFromParent();
+        await game.ready();
+        await game.world.ensureAdd(panel);
+        expect(panel.uploadCount, 2);
       },
     );
   });

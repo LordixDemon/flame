@@ -34,6 +34,10 @@ final class FakeGpuBackend({
   /// When `null`, uncompressed formats are supported (and float formats follow
   /// [floatTextureTargets]).
   final Set<GpuPixelFormat>? supportedFormats,
+
+  /// Whether [createTextureFromImage] gives a texture, as Flutter GPU does,
+  /// or `null`, as the WebGPU backend does.
+  final bool wrapsImages = true,
 }) extends GpuBackend {
   @override
   int get uniformAlignment => uniformAlignmentInBytes;
@@ -115,6 +119,10 @@ final class FakeGpuBackend({
 
   /// Every texture created.
   final List<FakeTexture> textures = [];
+
+  @override
+  GpuTexture? createTextureFromImage(Image image) =>
+      wrapsImages ? FakeTexture(image.width, image.height, 1) : null;
 
   @override
   GpuTexture createTexture({

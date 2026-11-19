@@ -144,12 +144,12 @@ world.add(label);
 label.text = 'Harbour (2)'; // rasterizes the texture again
 ```
 
-- `style` (white, 28 logical pixels, bold) and `text` rebuild the texture when set.
+- `style` (white, 28 logical pixels, bold) and `text` rebuild the texture when set, as do the
+  badge's options below.
 - `worldHeight` (`0.55`) is the label's height in world units; its width follows the aspect ratio
   of the texture (`worldWidth`).
 - `backgroundColor` (`0xB30F172A`, `null` for none), `borderColor` (`0xFF38BDF8`, `null` for none),
-  `cornerRadius` (`10`) and `padding` (14 by 6 logical pixels) shape the badge. They are read only
-  when the texture is rebuilt: after changing them, set `text` or `style` again.
+  `cornerRadius` (`10`) and `padding` (14 by 6 logical pixels) shape the badge.
 - `orientation` (`spherical`) and `upAxis` (`+Y`) as for billboards.
 
 Only the label's world position is used: `rotation` and `scale` do not apply. The texture is as
@@ -164,10 +164,13 @@ and a new GPU texture; do not change it every frame.
 
 ### Text label limitations
 
-- On the web, Flutter GPU's zero-copy texture wrapping is not available and the label falls back
-  to a plain white texture: it draws as a white rectangle. Without a GPU (plain `flutter test`) it
-  uses the same white texture.
-- The previous texture is not disposed when the text changes; it is freed when garbage collected.
+- The label needs a GPU backend that can use a `dart:ui` image as a texture, as Flutter GPU does on
+  Android, iOS and macOS. The WebGPU backend cannot: on the web, creating a label throws an
+  `UnsupportedError` (it used to draw a white rectangle). Without a GPU (plain `flutter test`) it
+  uses a white placeholder texture, and nothing is drawn anyway.
+- The texture it replaces, and its last one when it is removed, are disposed (their handle is
+  dropped; the GPU memory is freed when nothing refers to it any more). A label added again
+  rasterizes its texture again.
 
 
 ## Many strings with the built-in font
@@ -383,13 +386,12 @@ class Badge extends SurfaceControl2D {
 
 ### Panel limitations
 
-- On the web the panel cannot wrap the rasterized image as a texture and shows a transparent
-  placeholder: nothing of it is visible. Without a GPU (plain `flutter test`) the same placeholder
-  is used; the input mapping still works.
+- Like a text label, the panel needs a backend that can use a `dart:ui` image as a texture: on the
+  web, creating a panel throws an `UnsupportedError` (it used to be invisible). Without a GPU
+  (plain `flutter test`) it uses a transparent placeholder; the input mapping still works.
 - No keyboard input, text entry or focus traversal.
-- `update` allocates one `Vector3` per panel per frame (the drag plane normal).
-- The panel's last texture is not disposed when the panel is removed; it is freed when garbage
-  collected.
+- Its last texture is disposed when the panel is removed, and the canvas is rasterized again when
+  it is added again.
 
 
 ## Depth and sorting
