@@ -88,9 +88,15 @@ class OccluderQuad3D({
 /// Rasterizes registered [OccluderBox3D] and [OccluderQuad3D] primitives at
 /// `2x2` subpixel resolution and downsamples via conservative `max` reduction
 /// into `width x height` (`128 x 64` by default) plus two hierarchical `2x2`
-/// max-depth mips (`64 x 32` and `32 x 16`). Partially covered silhouette
-/// pixels retain far depth (`1.0`), ensuring visible geometry is never falsely
-/// culled.
+/// max-depth mips (`64 x 32` and `32 x 16`).
+///
+/// The rasterization is conservative: a subpixel takes an occluder's depth
+/// only when the whole subpixel square lies inside the occluder's projection
+/// (a quad, or the silhouette of a box), and it takes the farthest depth the
+/// occluder has over that square. A pixel is therefore occluded only where it
+/// is entirely covered, and [isAabbVisible] may fail to cull an object, but
+/// never reports a visible one hidden. Each occluder covers on its own: a gap
+/// between two occluders, however narrow, is not filled.
 class OcclusionCuller3D({
   /// Base Hi-Z buffer width (`128` by default).
   final int width = 128,
@@ -138,6 +144,20 @@ class OcclusionCuller3D({
   final Float64List _polyA = Float64List(64);
   final Float64List _polyB = Float64List(64);
   final Float64List _boxCorners = Float64List(24);
+
+  // The convex screen-space polygon being rasterized, in subpixels: up to 16
+  // (x, y) vertices, counter-clockwise.
+  final Float64List _screenPoly = Float64List(32);
+  // Its edge functions: (a, b, c) with `a * x + b * y + c >= 0` when the
+  // subpixel square centered on (x, y) is inside the edge.
+  final Float64List _edges = Float64List(48);
+  // Its depth planes: (a, b, c) with `a * x + b * y + c` the farthest depth
+  // of the plane over the subpixel square centered on (x, y).
+  final Float64List _planes = Float64List(18);
+  // The eight projected box corners (x, y, z) and the hull scratch.
+  final Float64List _boxScreen = Float64List(24);
+  final Int32List _hullOrder = Int32List(8);
+  final Int32List _hull = Int32List(17);
 
   int _testedCount = 0;
   int _occludedCount = 0;
@@ -465,6 +485,12 @@ class OcclusionCuller3D({
     }
 
     final vp = viewProjection.storage;
+    if (_rasterizeBoxSilhouette(vp)) {
+      return;
+    }
+    // The box crosses the near plane: rasterize its faces one by one. Their
+    // shared edges are covered by neither face, so the box occludes a little
+    // less than it could, never more.
     for (var f = 0; f < 6; f++) {
       final fb = f * 4;
       final i0 = _boxFaceQuads[fb] * 3;
@@ -487,6 +513,246 @@ class OcclusionCuller3D({
         vp,
         doubleSided: false,
       );
+    }
+  }
+
+  /// Rasterizes the box whose corners are in [_boxCorners] as its convex
+  /// screen silhouette, at the depth where each view ray enters it (the
+  /// farthest of its front-face planes). Returns `false`, rasterizing
+  /// nothing, when a corner is behind the near plane.
+  bool _rasterizeBoxSilhouette(Float32List vp) {
+    final halfW = _subWidth * 0.5;
+    final halfH = _subHeight * 0.5;
+    for (var i = 0; i < 8; i++) {
+      final o = i * 3;
+      final wx = _boxCorners[o];
+      final wy = _boxCorners[o + 1];
+      final wz = _boxCorners[o + 2];
+      final cx = vp[0] * wx + vp[4] * wy + vp[8] * wz + vp[12];
+      final cy = vp[1] * wx + vp[5] * wy + vp[9] * wz + vp[13];
+      final cz = vp[2] * wx + vp[6] * wy + vp[10] * wz + vp[14];
+      final cw = vp[3] * wx + vp[7] * wy + vp[11] * wz + vp[15];
+      if (cw <= 1e-4 || cz < 0) {
+        return false;
+      }
+      final invW = 1.0 / cw;
+      _boxScreen
+        ..[o] = (cx * invW + 1.0) * halfW
+        ..[o + 1] = (cy * invW + 1.0) * halfH
+        ..[o + 2] = cz * invW;
+    }
+
+    var planeCount = 0;
+    for (var f = 0; f < 6; f++) {
+      final fb = f * 4;
+      final i0 = _boxFaceQuads[fb] * 3;
+      final i1 = _boxFaceQuads[fb + 1] * 3;
+      final i2 = _boxFaceQuads[fb + 2] * 3;
+      final i3 = _boxFaceQuads[fb + 3] * 3;
+      // Faces are counter-clockwise seen from outside: a positive area faces
+      // the camera. Edge-on faces cannot be where a ray enters the box.
+      final area =
+          _triangleArea2(_boxScreen, i0, i1, i2) +
+          _triangleArea2(_boxScreen, i0, i2, i3);
+      if (area <= 1e-6) {
+        continue;
+      }
+      final firstLarger =
+          _triangleArea2(_boxScreen, i0, i1, i2).abs() >=
+          _triangleArea2(_boxScreen, i0, i2, i3).abs();
+      final added = firstLarger
+          ? _addPlane(_boxScreen, 3, i0 ~/ 3, i1 ~/ 3, i2 ~/ 3, planeCount)
+          : _addPlane(_boxScreen, 3, i0 ~/ 3, i2 ~/ 3, i3 ~/ 3, planeCount);
+      if (added) {
+        planeCount++;
+      }
+    }
+    if (planeCount == 0) {
+      return true;
+    }
+
+    final hullCount = _convexHullOfBox();
+    if (hullCount < 3) {
+      return true;
+    }
+    _rasterizeConvexPolygon(hullCount, 1, planeCount);
+    return true;
+  }
+
+  /// Twice the signed area of the triangle of the (x, y) points at offsets
+  /// [a], [b] and [c] of [points].
+  static double _triangleArea2(Float64List points, int a, int b, int c) {
+    return (points[b] - points[a]) * (points[c + 1] - points[a + 1]) -
+        (points[b + 1] - points[a + 1]) * (points[c] - points[a]);
+  }
+
+  /// Stores in [_planes] at [index] the depth plane through the points
+  /// [i0], [i1] and [i2] of [points] (x, y, z, with [stride] values per
+  /// point), padded to its farthest depth over a subpixel square. Returns
+  /// `false` for a degenerate triangle.
+  bool _addPlane(
+    Float64List points,
+    int stride,
+    int i0,
+    int i1,
+    int i2,
+    int index,
+  ) {
+    final o0 = i0 * stride;
+    final o1 = i1 * stride;
+    final o2 = i2 * stride;
+    final x0 = points[o0];
+    final y0 = points[o0 + 1];
+    final z0 = points[o0 + 2];
+    final dx1 = points[o1] - x0;
+    final dy1 = points[o1 + 1] - y0;
+    final dz1 = points[o1 + 2] - z0;
+    final dx2 = points[o2] - x0;
+    final dy2 = points[o2 + 1] - y0;
+    final dz2 = points[o2 + 2] - z0;
+    final area = dx1 * dy2 - dy1 * dx2;
+    if (area.abs() <= 1e-9) {
+      return false;
+    }
+    final a = (dz1 * dy2 - dy1 * dz2) / area;
+    final b = (dx1 * dz2 - dz1 * dx2) / area;
+    final o = index * 3;
+    _planes
+      ..[o] = a
+      ..[o + 1] = b
+      ..[o + 2] = z0 - a * x0 - b * y0 + 0.5 * (a.abs() + b.abs());
+    return true;
+  }
+
+  /// Writes the counter-clockwise convex hull of the eight projected box
+  /// corners into [_screenPoly] and returns its vertex count (monotone
+  /// chain, without allocating).
+  int _convexHullOfBox() {
+    final pts = _boxScreen;
+    final order = _hullOrder;
+    for (var i = 0; i < 8; i++) {
+      order[i] = i;
+    }
+    // Insertion sort by x, then y.
+    for (var i = 1; i < 8; i++) {
+      final key = order[i];
+      final kx = pts[key * 3];
+      final ky = pts[key * 3 + 1];
+      var j = i - 1;
+      while (j >= 0) {
+        final jx = pts[order[j] * 3];
+        final jy = pts[order[j] * 3 + 1];
+        if (jx < kx || (jx == kx && jy <= ky)) {
+          break;
+        }
+        order[j + 1] = order[j];
+        j--;
+      }
+      order[j + 1] = key;
+    }
+
+    final hull = _hull;
+    var k = 0;
+    for (var i = 0; i < 8; i++) {
+      while (k >= 2 && _turn(pts, hull[k - 2], hull[k - 1], order[i]) <= 0) {
+        k--;
+      }
+      hull[k++] = order[i];
+    }
+    final lowerSize = k + 1;
+    for (var i = 6; i >= 0; i--) {
+      while (k >= lowerSize &&
+          _turn(pts, hull[k - 2], hull[k - 1], order[i]) <= 0) {
+        k--;
+      }
+      hull[k++] = order[i];
+    }
+    final count = k - 1;
+    for (var i = 0; i < count; i++) {
+      _screenPoly
+        ..[i * 2] = pts[hull[i] * 3]
+        ..[i * 2 + 1] = pts[hull[i] * 3 + 1];
+    }
+    return count;
+  }
+
+  /// The turn from corner [o] to [a] to [b] of the (x, y, z) [points]:
+  /// positive when counter-clockwise.
+  static double _turn(Float64List points, int o, int a, int b) =>
+      _triangleArea2(points, o * 3, a * 3, b * 3);
+
+  /// Rasterizes the convex polygon of [count] vertices in [_screenPoly]
+  /// ([orientation] `1` when counter-clockwise, `-1` when clockwise) with the
+  /// first [planeCount] depth planes of [_planes]: every subpixel whose whole
+  /// square is inside the polygon takes the farthest depth of the planes
+  /// over that square, when nearer than what it holds.
+  void _rasterizeConvexPolygon(int count, double orientation, int planeCount) {
+    var minX = double.infinity;
+    var minY = double.infinity;
+    var maxX = double.negativeInfinity;
+    var maxY = double.negativeInfinity;
+    for (var i = 0; i < count; i++) {
+      final x = _screenPoly[i * 2];
+      final y = _screenPoly[i * 2 + 1];
+      final x1 = _screenPoly[((i + 1) % count) * 2];
+      final y1 = _screenPoly[((i + 1) % count) * 2 + 1];
+      minX = math.min(minX, x);
+      maxX = math.max(maxX, x);
+      minY = math.min(minY, y);
+      maxY = math.max(maxY, y);
+      // Inside of the edge from (x, y) to (x1, y1): orientation * cross >= 0.
+      final ex = x1 - x;
+      final ey = y1 - y;
+      final a = -orientation * ey;
+      final b = orientation * ex;
+      final c = orientation * (ey * x - ex * y);
+      // The square is inside when its worst corner is.
+      _edges
+        ..[i * 3] = a
+        ..[i * 3 + 1] = b
+        ..[i * 3 + 2] = c - 0.5 * (a.abs() + b.abs());
+    }
+
+    // Subpixel sx covers [sx, sx + 1]: only squares within the bounds can be
+    // inside.
+    final sx0 = math.max(0, minX.ceil());
+    final sx1 = math.min(_subWidth - 1, maxX.floor() - 1);
+    final sy0 = math.max(0, minY.ceil());
+    final sy1 = math.min(_subHeight - 1, maxY.floor() - 1);
+    if (sx0 > sx1 || sy0 > sy1) {
+      return;
+    }
+
+    for (var sy = sy0; sy <= sy1; sy++) {
+      final py = sy + 0.5;
+      final row = sy * _subWidth;
+      for (var sx = sx0; sx <= sx1; sx++) {
+        final px = sx + 0.5;
+        var inside = true;
+        for (var e = 0; e < count; e++) {
+          final o = e * 3;
+          if (_edges[o] * px + _edges[o + 1] * py + _edges[o + 2] < 0) {
+            inside = false;
+            break;
+          }
+        }
+        if (!inside) {
+          continue;
+        }
+        var depth = double.negativeInfinity;
+        for (var p = 0; p < planeCount; p++) {
+          final o = p * 3;
+          final d = _planes[o] * px + _planes[o + 1] * py + _planes[o + 2];
+          if (d > depth) {
+            depth = d;
+          }
+        }
+        final z = depth.clamp(0.0, 1.0);
+        final idx = row + sx;
+        if (z < _subDepth[idx]) {
+          _subDepth[idx] = z;
+        }
+      }
     }
   }
 
@@ -522,37 +788,64 @@ class OcclusionCuller3D({
     }
 
     // Convert clipped vertices in `_polyA` to subpixel screen `(sx, sy, ndcZ)`
-    // in `_polyB`.
+    // in `_polyB`, and the (x, y) in `_screenPoly`.
     final halfW = _subWidth * 0.5;
     final halfH = _subHeight * 0.5;
+    var area = 0.0;
     for (var i = 0; i < countZ; i++) {
       final o = i * 4;
       final invW = 1.0 / _polyA[o + 3];
+      final x = (_polyA[o] * invW + 1.0) * halfW;
+      final y = (_polyA[o + 1] * invW + 1.0) * halfH;
       _polyB
-        ..[o] = (_polyA[o] * invW + 1.0) * halfW
-        ..[o + 1] = (_polyA[o + 1] * invW + 1.0) * halfH
-        ..[o + 2] = (_polyA[o + 2] * invW).clamp(0.0, 1.0);
+        ..[o] = x
+        ..[o + 1] = y
+        ..[o + 2] = _polyA[o + 2] * invW;
+      _screenPoly
+        ..[i * 2] = x
+        ..[i * 2 + 1] = y;
+    }
+    for (var i = 0; i < countZ; i++) {
+      final j = (i + 1) % countZ;
+      area +=
+          _screenPoly[i * 2] * _screenPoly[j * 2 + 1] -
+          _screenPoly[j * 2] * _screenPoly[i * 2 + 1];
+    }
+    if (area.abs() <= 1e-8 || (!doubleSided && area <= 0)) {
+      return;
+    }
+    final orientation = area > 0 ? 1.0 : -1.0;
+
+    // Only a convex outline can be tested edge by edge; a non-convex quad
+    // occludes nothing.
+    for (var i = 0; i < countZ; i++) {
+      final a = i * 2;
+      final b = ((i + 1) % countZ) * 2;
+      final c = ((i + 2) % countZ) * 2;
+      final turn =
+          (_screenPoly[b] - _screenPoly[a]) *
+              (_screenPoly[c + 1] - _screenPoly[b + 1]) -
+          (_screenPoly[b + 1] - _screenPoly[a + 1]) *
+              (_screenPoly[c] - _screenPoly[b]);
+      if (turn * orientation < -1e-9) {
+        return;
+      }
     }
 
-    final sx0 = _polyB[0];
-    final sy0 = _polyB[1];
-    final sz0 = _polyB[2];
+    // The quad is planar: its depth plane through the largest fan triangle.
+    var best = -1;
+    var bestArea = 0.0;
     for (var k = 1; k + 1 < countZ; k++) {
-      final o1 = k * 4;
-      final o2 = (k + 1) * 4;
-      _rasterizeScreenTriangle(
-        sx0,
-        sy0,
-        sz0,
-        _polyB[o1],
-        _polyB[o1 + 1],
-        _polyB[o1 + 2],
-        _polyB[o2],
-        _polyB[o2 + 1],
-        _polyB[o2 + 2],
-        doubleSided: doubleSided,
-      );
+      final t = _triangleArea2(_polyB, 0, k * 4, (k + 1) * 4).abs();
+      if (t > bestArea) {
+        bestArea = t;
+        best = k;
+      }
     }
+    if (best < 0 || !_addPlane(_polyB, 4, 0, best, best + 1, 0)) {
+      return;
+    }
+    _rasterizeConvexPolygon(countZ, orientation, 1);
   }
 
   static void _project4(
@@ -629,93 +922,6 @@ class OcclusionCuller3D({
       }
     }
     return outCount;
-  }
-
-  void _rasterizeScreenTriangle(
-    double ax,
-    double ay,
-    double az,
-    double bx,
-    double by,
-    double bz,
-    double cx,
-    double cy,
-    double cz, {
-    required bool doubleSided,
-  }) {
-    var x1 = bx;
-    var y1 = by;
-    var z1 = bz;
-    var x2 = cx;
-    var y2 = cy;
-    var z2 = cz;
-    var area = (x1 - ax) * (y2 - ay) - (y1 - ay) * (x2 - ax);
-    if (!doubleSided && area <= 1e-8) {
-      return;
-    }
-    if (area.abs() <= 1e-8) {
-      return;
-    }
-    if (area < 0) {
-      final tx = x1;
-      final ty = y1;
-      final tz = z1;
-      x1 = x2;
-      y1 = y2;
-      z1 = z2;
-      x2 = tx;
-      y2 = ty;
-      z2 = tz;
-      area = -area;
-    }
-
-    final minX = math.min(ax, math.min(x1, x2));
-    final maxX = math.max(ax, math.max(x1, x2));
-    final minY = math.min(ay, math.min(y1, y2));
-    final maxY = math.max(ay, math.max(y1, y2));
-
-    final sx0 = math.max(0, (minX - 0.5).ceil());
-    final sx1 = math.min(_subWidth - 1, (maxX - 0.5).floor());
-    final sy0 = math.max(0, (minY - 0.5).ceil());
-    final sy1 = math.min(_subHeight - 1, (maxY - 0.5).floor());
-    if (sx0 > sx1 || sy0 > sy1) {
-      return;
-    }
-
-    final invArea = 1.0 / area;
-    final dzdx = ((y1 - y2) * az + (y2 - ay) * z1 + (ay - y1) * z2) * invArea;
-    final dzdy = ((x2 - x1) * az + (ax - x2) * z1 + (x1 - ax) * z2) * invArea;
-    final slopePad = 0.5 * (dzdx.abs() + dzdy.abs());
-
-    for (var sy = sy0; sy <= sy1; sy++) {
-      final py = sy + 0.5;
-      final row = sy * _subWidth;
-      for (var sx = sx0; sx <= sx1; sx++) {
-        final px = sx + 0.5;
-        final w0 = (x1 - px) * (y2 - py) - (y1 - py) * (x2 - px);
-        if (w0 < -1e-7) {
-          continue;
-        }
-        final w1 = (x2 - px) * (ay - py) - (y2 - py) * (ax - px);
-        if (w1 < -1e-7) {
-          continue;
-        }
-        final w2 = (ax - px) * (y1 - py) - (ay - py) * (x1 - px);
-        if (w2 < -1e-7) {
-          continue;
-        }
-
-        final b0 = w0 * invArea;
-        final b1 = w1 * invArea;
-        final b2 = 1.0 - b0 - b1;
-        final zCenter = b0 * az + b1 * z1 + b2 * z2;
-        final zConservative = (zCenter + slopePad).clamp(0.0, 1.0);
-        final idx = row + sx;
-        if (zConservative < _subDepth[idx]) {
-          _subDepth[idx] = zConservative;
-        }
-      }
-    }
   }
 }
 
@@ -831,6 +1037,11 @@ class PortalOcclusionGraph3D() {
   final Set<int> _visibleRooms = <int>{};
   final Set<int> _activeStack = <int>{};
   Float64List _roomScissors = Float64List(64);
+  // The smallest portal depth at which each room was traversed with its
+  // current scissor.
+  Int32List _roomDepths = Int32List(16);
+  final List<int> _startRooms = <int>[];
+  final Float64List _rect = Float64List(4);
   int _maxRoomId = -1;
   int _traversedPortalCount = 0;
 
@@ -858,6 +1069,11 @@ class PortalOcclusionGraph3D() {
       final needed = (_maxRoomId + 1) * 4;
       if (_roomScissors.length < needed) {
         _roomScissors = Float64List(math.max(needed, _roomScissors.length * 2));
+      }
+      if (_roomDepths.length <= _maxRoomId) {
+        _roomDepths = Int32List(
+          math.max(_maxRoomId + 1, _roomDepths.length * 2),
+        );
       }
     }
   }
@@ -909,7 +1125,7 @@ class PortalOcclusionGraph3D() {
       return;
     }
 
-    final startRooms = <int>[];
+    final startRooms = _startRooms..clear();
     if (cameraRoomId != null && _rooms.containsKey(cameraRoomId)) {
       startRooms.add(cameraRoomId);
     } else {
@@ -924,21 +1140,13 @@ class PortalOcclusionGraph3D() {
       // Camera is outdoors / outside all registered rooms: mark rooms whose
       // bounds project onscreen as visible roots.
       for (final room in _rooms.values) {
-        final rect = _projectAabbNormalized(room.bounds, viewProjection);
-        if (rect != null) {
-          _expandRoomScissor(
+        if (_projectAabbNormalized(room.bounds, viewProjection, _rect)) {
+          _enterRoom(
             room.id,
-            rect.minX,
-            rect.minY,
-            rect.maxX,
-            rect.maxY,
-          );
-          _traverse(
-            room.id,
-            rect.minX,
-            rect.minY,
-            rect.maxX,
-            rect.maxY,
+            _rect[0],
+            _rect[1],
+            _rect[2],
+            _rect[3],
             cameraPosition,
             viewProjection,
             0,
@@ -950,8 +1158,7 @@ class PortalOcclusionGraph3D() {
     }
 
     for (final startId in startRooms) {
-      _expandRoomScissor(startId, 0, 0, 1, 1);
-      _traverse(
+      _enterRoom(
         startId,
         0,
         0,
@@ -993,8 +1200,8 @@ class PortalOcclusionGraph3D() {
     if (!_visibleRooms.contains(roomId)) {
       return false;
     }
-    final rect = _projectAabbNormalized(worldBounds, viewProjection);
-    if (rect == null) {
+    final rect = _rect;
+    if (!_projectAabbNormalized(worldBounds, viewProjection, rect)) {
       return false;
     }
     final b = roomId * 4;
@@ -1002,10 +1209,52 @@ class PortalOcclusionGraph3D() {
     final sMinY = _roomScissors[b + 1];
     final sMaxX = _roomScissors[b + 2];
     final sMaxY = _roomScissors[b + 3];
-    return rect.maxX > sMinX &&
-        rect.minX < sMaxX &&
-        rect.maxY > sMinY &&
-        rect.minY < sMaxY;
+    return rect[2] > sMinX &&
+        rect[0] < sMaxX &&
+        rect[3] > sMinY &&
+        rect[1] < sMaxY;
+  }
+
+  /// Adds the view `[minX, minY, maxX, maxY]` into [roomId] at portal
+  /// [depth] and, when it shows more of the room than the views the room was
+  /// already traversed with (or the room was only traversed deeper), follows
+  /// its portals with the room's whole scissor.
+  ///
+  /// Following the union rather than the new view alone is what keeps the
+  /// result independent of the order of the portals: a view contained in the
+  /// union is skipped only because the union was followed already, and a
+  /// downstream portal seen through any part of it was found then. The union
+  /// may also cover wall between two views, so this errs on the side of
+  /// reporting rooms visible.
+  void _enterRoom(
+    int roomId,
+    double minX,
+    double minY,
+    double maxX,
+    double maxY,
+    Vector3 cameraPos,
+    Matrix4 viewProjection,
+    int depth,
+    int maxDepth,
+  ) {
+    // `true` on the first visit too.
+    final grew = _expandRoomScissor(roomId, minX, minY, maxX, maxY);
+    if (!grew && depth >= _roomDepths[roomId]) {
+      return;
+    }
+    _roomDepths[roomId] = depth;
+    final b = roomId * 4;
+    _traverse(
+      roomId,
+      _roomScissors[b],
+      _roomScissors[b + 1],
+      _roomScissors[b + 2],
+      _roomScissors[b + 3],
+      cameraPos,
+      viewProjection,
+      depth,
+      maxDepth,
+    );
   }
 
   void _traverse(
@@ -1051,38 +1300,31 @@ class PortalOcclusionGraph3D() {
         nMaxX = sMaxX;
         nMaxY = sMaxY;
       } else {
-        final pRect = _projectPortalNormalized(portal, viewProjection);
-        if (pRect == null) {
+        final pRect = _rect;
+        if (!_projectPortalNormalized(portal, viewProjection, pRect)) {
           continue;
         }
-        nMinX = math.max(sMinX, pRect.minX);
-        nMinY = math.max(sMinY, pRect.minY);
-        nMaxX = math.min(sMaxX, pRect.maxX);
-        nMaxY = math.min(sMaxY, pRect.maxY);
+        nMinX = math.max(sMinX, pRect[0]);
+        nMinY = math.max(sMinY, pRect[1]);
+        nMaxX = math.min(sMaxX, pRect[2]);
+        nMaxY = math.min(sMaxY, pRect[3]);
       }
 
       if (nMinX >= nMaxX || nMinY >= nMaxY) {
         continue;
       }
 
-      if (_expandRoomScissor(nextRoom, nMinX, nMinY, nMaxX, nMaxY)) {
-        _traverse(
-          nextRoom,
-          nMinX,
-          nMinY,
-          nMaxX,
-          nMaxY,
-          cameraPos,
-          viewProjection,
-          depth + 1,
-          maxDepth,
-        );
-      } else {
-        // Even if nextRoom's union didn't grow, a distinct sub-beam might align
-        // with a downstream portal if not previously covered; `_expand` returns
-        // false only when `[nMin..nMax]` is already contained in nextRoom's
-        // visited scissor!
-      }
+      _enterRoom(
+        nextRoom,
+        nMinX,
+        nMinY,
+        nMaxX,
+        nMaxY,
+        cameraPos,
+        viewProjection,
+        depth + 1,
+        maxDepth,
+      );
     }
     _activeStack.remove(roomId);
   }
@@ -1125,9 +1367,10 @@ class PortalOcclusionGraph3D() {
     return true;
   }
 
-  PortalScissorRect3D? _projectPortalNormalized(
+  bool _projectPortalNormalized(
     OcclusionPortal3D portal,
     Matrix4 viewProjection,
+    Float64List out,
   ) {
     final verts = portal.vertices;
     final count = math.min(verts.length, 16);
@@ -1145,11 +1388,11 @@ class PortalOcclusionGraph3D() {
 
     final nW = OcclusionCuller3D._clipPolygonW(_clipA, count, _clipB);
     if (nW < 3) {
-      return null;
+      return false;
     }
     final nZ = OcclusionCuller3D._clipPolygonNearZ(_clipB, nW, _clipA);
     if (nZ < 3) {
-      return null;
+      return false;
     }
 
     var minX = double.infinity;
@@ -1172,25 +1415,40 @@ class PortalOcclusionGraph3D() {
     }
 
     if (minDepth > 1.0 || maxX <= 0.0 || minX >= 1.0 || maxY <= 0.0) {
-      return null;
+      return false;
     }
     if (minY >= 1.0) {
-      return null;
+      return false;
     }
+    return _writeClampedRect(out, minX, minY, maxX, maxY);
+  }
 
+  static bool _writeClampedRect(
+    Float64List out,
+    double minX,
+    double minY,
+    double maxX,
+    double maxY,
+  ) {
     final cMinX = minX.clamp(0.0, 1.0);
     final cMinY = minY.clamp(0.0, 1.0);
     final cMaxX = maxX.clamp(0.0, 1.0);
     final cMaxY = maxY.clamp(0.0, 1.0);
     if (cMinX >= cMaxX || cMinY >= cMaxY) {
-      return null;
+      return false;
     }
-    return PortalScissorRect3D(cMinX, cMinY, cMaxX, cMaxY);
+    out
+      ..[0] = cMinX
+      ..[1] = cMinY
+      ..[2] = cMaxX
+      ..[3] = cMaxY;
+    return true;
   }
 
-  static PortalScissorRect3D? _projectAabbNormalized(
+  static bool _projectAabbNormalized(
     Aabb3 box,
     Matrix4 viewProjection,
+    Float64List out,
   ) {
     final vp = viewProjection.storage;
     var minX = double.infinity;
@@ -1209,7 +1467,7 @@ class PortalOcclusionGraph3D() {
       final cz = vp[2] * wx + vp[6] * wy + vp[10] * wz + vp[14];
       final cw = vp[3] * wx + vp[7] * wy + vp[11] * wz + vp[15];
       if (cw <= 1e-5 || cz < 0) {
-        return PortalScissorRect3D(0, 0, 1, 1);
+        return _writeClampedRect(out, 0, 0, 1, 1);
       }
       final invW = 1.0 / cw;
       final sx = cx * invW * 0.5 + 0.5;
@@ -1224,18 +1482,11 @@ class PortalOcclusionGraph3D() {
     }
 
     if (maxZ < 0 || minZ > 1 || maxX <= 0 || minX >= 1 || maxY <= 0) {
-      return null;
+      return false;
     }
     if (minY >= 1) {
-      return null;
+      return false;
     }
-    final cMinX = minX.clamp(0.0, 1.0);
-    final cMinY = minY.clamp(0.0, 1.0);
-    final cMaxX = maxX.clamp(0.0, 1.0);
-    final cMaxY = maxY.clamp(0.0, 1.0);
-    if (cMinX >= cMaxX || cMinY >= cMaxY) {
-      return null;
-    }
-    return PortalScissorRect3D(cMinX, cMinY, cMaxX, cMaxY);
+    return _writeClampedRect(out, minX, minY, maxX, maxY);
   }
 }

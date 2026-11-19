@@ -208,11 +208,19 @@ for (final prop in props) {
 - Occluders: `OccluderBox3D(center:, halfExtents:, rotation:)` and `OccluderBox3D.fromAabb`, and
   `OccluderQuad3D(v0:, v1:, v2:, v3:)` (a planar convex quad) or `OccluderQuad3D.wall`, a vertical
   quad rising `height` along +Y. Quads are double-sided by default; with `doubleSided: false` only
-  the side whose corners appear counter-clockwise on screen occludes. Occluders must be solid and
-  inside the objects they stand for: an occluder larger than its object hides what is visible.
+  the side whose corners appear counter-clockwise on screen occludes. A quad that looks non-convex
+  on screen occludes nothing. Occluders must be solid and inside the objects they stand for: an
+  occluder larger than its object hides what is visible.
 - Buffer: `width` by `height` pixels (128 by 64 by default, multiples of 4), rasterized at 2 by 2
-  samples per pixel, plus two coarser levels holding the farthest depth of 2 by 2 pixels. Depth is
-  the engine's clip-space depth, 0 at the near plane and 1 at the far plane.
+  subpixels per pixel, plus two coarser levels holding the farthest depth of 2 by 2 pixels. Depth
+  is the engine's clip-space depth, 0 at the near plane and 1 at the far plane.
+- Conservative: a subpixel takes an occluder's depth only when its whole square lies inside the
+  occluder's outline on screen (the quad, or the silhouette of a box), and it takes the farthest
+  depth of the occluder over that square. A pixel therefore counts as hidden only when it is
+  entirely covered, and a visible object is never reported hidden, however thin the part of it
+  that shows. In return an occluder's outline loses up to one subpixel all around, and each
+  occluder covers on its own: two occluders that touch leave their common edge uncovered. A box
+  that crosses the near plane is rasterized face by face, which leaves its edges uncovered too.
 - `isAabbVisible(bounds, viewProjection, depthBias: 0.002)` returns `false` when the box is outside
   the view, or when its nearest depth is farther than the farthest occluder depth over the screen
   rectangle it covers (plus `depthBias`); it returns `true` for boxes that reach in front of the
@@ -220,8 +228,9 @@ for (final prop in props) {
 - `testedCount`, `occludedCount` and `rasterizedOccluderCount` count the work since the last
   `rasterizeOccluders`.
 
-Cost: `rasterizeOccluders` clears about 43,000 floats at the default size, rasterizes the samples
-that the occluders cover (up to 32,768) and rebuilds the two coarse levels; each query projects 8
+Cost: `rasterizeOccluders` clears about 43,000 floats at the default size, tests every subpixel of
+each occluder's screen bounds against its edges (up to 32,768 subpixels per occluder) and rebuilds
+the two coarse levels; each query projects 8
 corners and reads the covered pixels, usually a few from the coarsest level. It pays off when a few
 large occluders (city blocks, walls, terrain ridges) hide many objects that cost real draws, and
 the frame is limited by draw recording. It does not in open scenes, for cheap objects, or for
@@ -275,10 +284,15 @@ hallContents.visible = graph.isRoomVisible(1);
 - After `evaluateVisibility`: `isRoomVisible(id)`, `visibleRoomIds`, `roomScissor(id)` (the union
   of the rectangles through which the room is seen, in `[0, 1]` with y growing upwards from the
   bottom of the screen) and `isAabbVisibleInRoom(id, bounds, viewProjection)` for single objects.
+- A room seen through several portals is followed with the union of the rectangles it is seen
+  through, again each time that union grows, so the result does not depend on the order in which
+  portals were added. The union can include wall between two portals: the graph may report a room
+  visible that is hidden, never the reverse.
 - Room ids index an array: keep them small and dense.
 
 Cost: proportional to the portals traversed (`traversedPortalCount`); each projects and clips up
-to 16 vertices. It allocates a few small objects per evaluation.
+to 16 vertices. A room seen through several portals can be traversed again when its rectangle
+grows. Evaluations and queries do not allocate.
 
 
 ## Floating origin
@@ -562,13 +576,8 @@ the streamer: do it in `onChunkEvicted`.
 - `StaticMeshBatcher3D` ignores `instanceData`, assumes triangle lists (surfaces with another
   topology come out garbled), and re-uploads a whole merged surface when one slot is shown, hidden
   or removed.
-- `OcclusionCuller3D` decides coverage from sample points: an object visible only through a gap
-  narrower than half a sample (a quarter of a buffer pixel; up to about 2.5 screen pixels for a
-  1280-pixel wide view at the default size) next to an occluder edge can be reported hidden.
-- `PortalOcclusionGraph3D` keeps one rectangle per room. When a room is seen through three or more
-  portals, a view through a later portal that falls inside the rectangle of the earlier ones is not
-  followed further, and rooms visible only through it are reported hidden. Whether it happens
-  depends on the order in which the portals were added and on the view.
+- `PortalOcclusionGraph3D` keeps one rectangle per room, so rooms seen through two separate
+  portals may be reported visible through the wall between them.
 - Occlusion results applied through `visible` also remove the objects' shadows.
 - `FloatingOriginController3D` only moves the camera and bound objects; a `trackedTarget` must be
   bound and moved with `translateWorld`, otherwise the origin moves again every frame (an unbound
