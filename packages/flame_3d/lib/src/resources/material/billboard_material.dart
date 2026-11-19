@@ -16,6 +16,11 @@ enum BillboardOrientation3D() {
 
 /// Material used by `BillboardBatch3D` and `Text3DComponent` to render
 /// depth-buffered HD-2D sprites, standees, and world-space labels.
+///
+/// Texels whose alpha is below [alphaCutoff] are discarded and the rest is
+/// drawn opaque, writing depth. With `translucent: true` there is no cutoff
+/// and the sprites are blended with [RenderState.premultipliedAlphaBlend],
+/// without writing depth.
 class BillboardMaterial3D({
   Texture? albedoTexture,
   var Color albedoColor = const Color(0xFFFFFFFF),
@@ -23,6 +28,16 @@ class BillboardMaterial3D({
   var double shadeWeight = 0.65,
   var bool ditherFade = false,
   bool translucent = false,
+
+  /// Whether the colors of [albedoTexture] are premultiplied by their alpha.
+  ///
+  /// Textures made from a `dart:ui` `Image` (`ImageTexture.create`, decoded
+  /// assets, rasterized pictures) are, and so is the default. Set it to
+  /// `false` for a texture built from straight-alpha bytes. The shader
+  /// divides premultiplied texels by their alpha before tinting and
+  /// lighting them, so that translucent and cut-out edges keep their color
+  /// instead of darkening.
+  var bool premultipliedTexture = true,
 }) extends Material {
   this
     : super(
@@ -48,7 +63,7 @@ class BillboardMaterial3D({
     castsShadows = false;
     if (translucent) {
       alphaCutoff = 0.0;
-      renderState = RenderState.alphaBlend;
+      renderState = RenderState.premultipliedAlphaBlend;
     } else {
       renderState = RenderState.opaque;
     }
@@ -107,7 +122,11 @@ class BillboardMaterial3D({
         _vec..setValues(_back.x, _back.y, _back.z, 0),
       );
 
-    final premul = renderState.blend == BlendState.premultipliedAlpha;
+    // 1 when blending premultiplied colors, plus 2 when the texture holds
+    // premultiplied colors.
+    final blendFlags =
+        (renderState.blend == BlendState.premultipliedAlpha ? 1.0 : 0.0) +
+        (premultipliedTexture ? 2.0 : 0.0);
     fragmentShader
       ..setTexture('albedoTexture', albedoTexture)
       ..setColor('BillboardLook.albedoColor', albedoColor)
@@ -116,7 +135,7 @@ class BillboardMaterial3D({
         _vec..setValues(
           alphaCutoff,
           shadeWeight,
-          premul ? 1.0 : 0.0,
+          blendFlags,
           ditherFade ? 1.0 : 0.0,
         ),
       );

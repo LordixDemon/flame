@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flame/components.dart' show RectangleComponent, World;
@@ -167,6 +168,82 @@ void main() {
       expect(isRed(frame.pixels, 0.65, -0.6), isTrue);
       expect(isRed(frame.pixels, 0.3, -0.6), isFalse);
     });
+  });
+
+  group('BillboardMaterial3D', () {
+    /// A 1x1 texture of the RGBA bytes [rgba].
+    Texture texel(List<int> rgba) => Texture(
+      ByteData.sublistView(Uint8List.fromList(rgba)),
+      width: 1,
+      height: 1,
+    );
+
+    Future<Pixels> renderSprite(BillboardMaterial3D material) async {
+      final batch = BillboardBatch3D(material: material)
+        ..addBillboard(
+          position: Vector3(0, 0, -5),
+          width: 1,
+          height: 1,
+          orientation: BillboardOrientation3D.spherical,
+          anchorY: 0,
+          unlit: 1,
+        );
+      return (await renderFrame(draw: batch.draw)).pixels;
+    }
+
+    void expectColor(Pixels pixels, (int, int, int, int) expected) {
+      final (r, g, b, a) = pixels.at(32, 32);
+      expect(r, closeTo(expected.$1, 2));
+      expect(g, closeTo(expected.$2, 2));
+      expect(b, closeTo(expected.$3, 2));
+      expect(a, closeTo(expected.$4, 2));
+    }
+
+    testGpuEngine('blends a premultiplied texture once', () async {
+      // 50 % white, premultiplied, over the clear target.
+      final pixels = await renderSprite(
+        BillboardMaterial3D(
+          albedoTexture: texel([128, 128, 128, 128]),
+          translucent: true,
+        ),
+      );
+      expectColor(pixels, (128, 128, 128, 128));
+    });
+
+    testGpuEngine('blends a straight-alpha texture', () async {
+      final pixels = await renderSprite(
+        BillboardMaterial3D(
+          albedoTexture: texel([255, 255, 255, 128]),
+          translucent: true,
+          premultipliedTexture: false,
+        ),
+      );
+      expectColor(pixels, (128, 128, 128, 128));
+    });
+
+    testGpuEngine('keeps the color of cut-out premultiplied texels', () async {
+      // A half transparent red texel above the cutoff is drawn opaque, in
+      // its full color.
+      final pixels = await renderSprite(
+        BillboardMaterial3D(albedoTexture: texel([128, 0, 0, 128])),
+      );
+      expectColor(pixels, (255, 0, 0, 255));
+    });
+
+    testGpuEngine(
+      'draws a translucent label background at its alpha',
+      () async {
+        final label = Text3DComponent(
+          text: '',
+          backgroundColor: const Color(0x80FFFFFF),
+          borderColor: null,
+          position: Vector3(0, 0, -5),
+          worldHeight: 0.5,
+        );
+        final frame = await renderFrame(draw: label.draw);
+        expectColor(frame.pixels, (128, 128, 128, 128));
+      },
+    );
   });
 
   group('MsdfTextBatch3D', () {

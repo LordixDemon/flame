@@ -380,6 +380,8 @@ class MsdfTextBatch3D({
       albedoTexture: this.atlas.texture,
       alphaCutoff: alphaCutoff,
       shadeWeight: 0.0,
+      // The atlas is white with the distance in alpha: straight alpha.
+      premultipliedTexture: false,
     );
     _billboardBatch = BillboardBatch3D(
       material: _billboardMaterial,

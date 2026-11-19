@@ -92,7 +92,16 @@ the camera on its own). `test/gpu/debug_and_ui_3d_gpu_test.dart` draws a moved a
   term and no shadow is received. The normal is the sprite's facing direction;
 - `ditherFade`: discards with a 4×4 ordered dither where the alpha is low, for fading opaque
   sprites without sorting;
-- `translucent: true`: straight alpha blending without a cutoff, see the depth section below.
+- `translucent: true`: premultiplied alpha blending without a cutoff and without depth writes, see
+  the depth section below;
+- `premultipliedTexture` (`true`): whether the texture's colors are premultiplied by its alpha, as
+  those of textures made from a `dart:ui` `Image` are (`ImageTexture.create`, decoded assets,
+  rasterized pictures). Set it to `false` for a texture built from straight-alpha bytes. The shader
+  turns premultiplied texels back into straight colors before tinting and lighting them, so
+  translucent texels and the edges of cut-out sprites keep their color. In
+  `debug_and_ui_3d_gpu_test.dart`, a 50 % white texel over a transparent target renders as
+  `(128, 128, 128, 128)` from either kind of texture, and a half transparent red texel above the
+  cutoff renders full red.
 
 Fog applies to billboards.
 
@@ -114,9 +123,6 @@ a slot or the transform changes.
   [Depth and sorting](#depth-and-sorting).
 - Sprites inside one batch are not sorted against each other; a translucent batch is sorted
   against other translucent draws as one piece, by the center of its bounds.
-- With `translucent: true` the material blends with straight alpha, while textures made from a
-  `dart:ui` `Image` hold premultiplied colors: semi-transparent texels come out darker than they
-  should (see `Text3DComponent` below).
 
 
 ## Text labels
@@ -150,16 +156,13 @@ many pixels as the laid-out text in logical pixels plus the padding, whatever th
 or the device pixel ratio: a label that is large on screen looks soft. Use a larger `fontSize` for
 the same `worldHeight` to sharpen it, at the cost of texture memory (4 bytes per texel).
 
-A label is drawn translucent (alpha blended, depth tested, no depth writes) in one draw call of its
-own, after the opaque draws. Changing the text costs a text layout, a picture rasterization and a
-new GPU texture; do not change it every frame.
+A label is drawn translucent (premultiplied alpha, depth tested, no depth writes) in one draw call
+of its own, after the opaque draws. Changing the text costs a text layout, a picture rasterization
+and a new GPU texture; do not change it every frame.
 
 
 ### Text label limitations
 
-- The texture holds premultiplied colors but is blended with straight alpha, so translucent pixels
-  are multiplied by their alpha twice: a background of 50 % white renders at 25 % brightness, and
-  anti-aliased glyph edges get dark fringes. Opaque background and text colors are not affected.
 - On the web, Flutter GPU's zero-copy texture wrapping is not available and the label falls back
   to a plain white texture: it draws as a white rectangle. Without a GPU (plain `flutter test`) it
   uses the same white texture.
@@ -389,8 +392,8 @@ class Badge extends SurfaceControl2D {
 | Component                        | Blending            | Depth           | Lit                 |
 | -------------------------------- | ------------------- | --------------- | ------------------- |
 | `BillboardBatch3D` (default)     | opaque cutout       | tested, written | yes (`shadeWeight`) |
-| `BillboardBatch3D` (translucent) | straight alpha      | tested          | yes                 |
-| `Text3DComponent`                | straight alpha      | tested          | no                  |
+| `BillboardBatch3D` (translucent) | premultiplied alpha | tested          | yes                 |
+| `Text3DComponent`                | premultiplied alpha | tested          | no                  |
 | `MsdfTextBatch3D` camera-facing  | opaque cutout       | tested, written | no                  |
 | `MsdfTextBatch3D` fixed          | opaque cutout       | tested, written | yes (PBR)           |
 | `WidgetSurface3D`                | premultiplied alpha | tested, written | no                  |

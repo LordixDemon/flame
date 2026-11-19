@@ -15,7 +15,9 @@ uniform sampler2D albedoTexture;
 
 uniform BillboardLook {
   vec4 albedoColor;
-  // x: alphaCutoff, y: defaultShadeWeight, z: premultiplyAlpha, w: ditherFade
+  // x: alphaCutoff, y: defaultShadeWeight, w: ditherFade,
+  // z: 1 when the output is blended as premultiplied colors, plus 2 when the
+  //    texture holds premultiplied colors.
   vec4 params;
 } bLook;
 
@@ -32,6 +34,13 @@ uniform Camera {
 
 void main() {
   vec4 tex = texture(albedoTexture, fragUv);
+  float premultipliedTexture = step(1.5, bLook.params.z);
+  float premultipliedBlend = bLook.params.z - 2.0 * premultipliedTexture;
+  // The straight color of the texel.
+  vec3 texColor = tex.rgb;
+  if (premultipliedTexture > 0.5) {
+    texColor = tex.a > 1e-4 ? tex.rgb / tex.a : vec3(0.0);
+  }
   float fade = clamp(fragData.z, 0.0, 1.0);
   float alpha = tex.a * bLook.albedoColor.a * fragColor.a * (1.0 - fade);
 
@@ -42,7 +51,7 @@ void main() {
     discard;
   }
 
-  vec3 base = tex.rgb * bLook.albedoColor.rgb * fragColor.rgb;
+  vec3 base = texColor * bLook.albedoColor.rgb * fragColor.rgb;
   float shadeW = clamp(bLook.params.y * (1.0 - fragData.y), 0.0, 1.0);
 
   vec3 color = base;
@@ -105,7 +114,7 @@ void main() {
   );
 
   float outAlpha = bLook.params.x > 0.0 || bLook.params.w > 0.5 ? 1.0 : alpha;
-  if (bLook.params.z > 0.5) {
+  if (premultipliedBlend > 0.5) {
     outColor = vec4(color * outAlpha, outAlpha);
   } else {
     outColor = vec4(color, outAlpha);
