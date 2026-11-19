@@ -1,3 +1,5 @@
+import 'dart:ui' show Rect;
+
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
@@ -148,7 +150,104 @@ class _PickableInstancedGroup({required super.mesh})
   }
 }
 
+class _UpConsumingBox({required super.mesh})
+    extends MeshComponent
+    with TapCallbacks3D {
+  final List<String> log = [];
+
+  @override
+  void onTapDown3D(TapDownEvent3D event) => log.add('tapDown');
+
+  @override
+  void onTapUp3D(TapUpEvent3D event) {
+    log.add('tapUp');
+    event.handled = true;
+  }
+
+  @override
+  void onTapCancel3D(TapCancelEvent3D event) => log.add('tapCancel');
+}
+
 void main() {
+  group('PointerRouter3D event closure and per-pointer state', () {
+    test('a listener left out of a handled tap up gets a cancel', () {
+      final child = _UpConsumingBox(mesh: CuboidMesh(size: Vector3.all(2)));
+      final parent = _InteractiveContainer(children: [child]);
+      final world = World3D(children: [parent]);
+      final camera = CameraComponent3D(
+        position: Vector3(0, 0, 10),
+        target: Vector3.zero(),
+        viewport: FixedSizeViewport(800, 600),
+      );
+      final router = PointerRouter3D.forCamera(
+        world: world,
+        camera: camera,
+        cullMode: CullMode.none,
+      );
+      final center = camera.worldToViewportPoint(Vector3.zero());
+      router
+        ..dispatchTapDown(center)
+        ..dispatchTapUp(center);
+      expect(child.log, ['tapDown', 'tapUp']);
+      expect(parent.log, ['parentTapDown', 'parentTapCancel']);
+    });
+
+    test('each pointer has its own hover state', () {
+      final cube = CuboidMesh(size: Vector3.all(2));
+      final left = _InteractiveBox(mesh: cube, position: Vector3(-3, 0, 0));
+      final right = _InteractiveBox(mesh: cube, position: Vector3(3, 0, 0));
+      final world = World3D(children: [left, right]);
+      final camera = CameraComponent3D(
+        position: Vector3(0, 0, 12),
+        target: Vector3.zero(),
+        viewport: FixedSizeViewport(800, 600),
+      );
+      final router = PointerRouter3D.forCamera(
+        world: world,
+        camera: camera,
+        cullMode: CullMode.none,
+      );
+      router
+        ..dispatchHover(camera.worldToViewportPoint(Vector3(-3, 0, 0)))
+        ..dispatchHover(
+          camera.worldToViewportPoint(Vector3(3, 0, 0)),
+          pointerId: 7,
+        );
+      expect(left.log, ['hoverEnter']);
+      expect(right.log, ['hoverEnter']);
+
+      router.dispatchHover(Vector2(5, 5), pointerId: 7);
+      expect(right.log, ['hoverEnter', 'hoverExit']);
+      expect(left.log, ['hoverEnter']);
+
+      router.dispatchHoverExit(pointerId: null);
+      expect(left.log, ['hoverEnter', 'hoverExit']);
+    });
+
+    test('a forScene perspective drag ignores plane hits behind the eye', () {
+      final box = _InteractiveBox(mesh: CuboidMesh(size: Vector3.all(1)));
+      final scene = Scene3DComponent(
+        projection: Scene3DProjection.perspective(
+          eye: Vector3(0, -10, 5),
+          target: Vector3.zero(),
+          rect: const Rect.fromLTWH(0, 0, 800, 600),
+        ),
+      );
+      scene.world.add(box);
+      final router = PointerRouter3D.forScene(
+        scene,
+        cullMode: CullMode.none,
+        defaultDragNormal: Vector3(0, 0, 1),
+      );
+      final onBox = scene.scenePointToLocal(Vector3(0, 0, 0.5));
+      expect(router.dispatchDragStart(onBox), isTrue);
+      // Near the top of the picture the line of sight rises: the drag plane
+      // (z = 0.5) is behind the eye there.
+      expect(router.dispatchDragUpdate(Vector2(400, 5)), isTrue);
+      expect(box.position, closeToVector3(Vector3.zero(), 1e-9));
+    });
+  });
+
   group('3D Input Events & PointerRouter3D', () {
     test('dispatches tap down, tap up, and off-target tap cancel', () {
       final cube = CuboidMesh(size: Vector3.all(2));

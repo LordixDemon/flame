@@ -9,6 +9,10 @@ import 'package:flame_3d/src/input/events_3d.dart';
 /// Bridges 2D Flame pointer gestures (and headless imperative dispatches) into
 /// 3D raycast hit-testing, ancestor event bubbling, hover enter/move/exit
 /// tracking, and 3D ray-plane / 1D axis-constrained dragging.
+///
+/// The router is not a drop payload: [isDropPayload] is `false` unless set,
+/// so drags skip the drop-target hit tests and are never offered to a
+/// `DropTargetCallbacks` component as a drop.
 class PointerRouter3D._({
   final Scene3DComponent? _scene,
   final World3D? _world,
@@ -25,7 +29,16 @@ class PointerRouter3D._({
   super.priority,
   super.key,
 }) extends PositionComponent with TapCallbacks, DragCallbacks, HoverCallbacks {
+  this {
+    isDropPayload = false;
+  }
+
   /// Creates a router targeting an embedded [Scene3DComponent] layer.
+  ///
+  /// The router may be a child of [layer] or placed elsewhere in the same
+  /// component tree (for example as its sibling): its local points are
+  /// converted to the layer's local coordinates through both components'
+  /// absolute transforms.
   factory PointerRouter3D.forScene(
     Scene3DComponent layer, {
     Vector3? defaultDragNormal,
@@ -100,9 +113,24 @@ class PointerRouter3D._({
   final Map<int, _ActiveTapState> _activeTaps = {};
   final Map<int, _ActiveDragState> _activeDrags = {};
   final Map<int, Vector2> _lastPointerPositions = {};
-  List<HoverCallbacks3D> _hoveredChain = [];
-  Vector2 _lastHoverPosition = Vector2.zero();
-  Ray _lastHoverRay = Ray();
+  // Hover state per pointer.
+  final Map<int, _HoverState> _hovers = {};
+
+  /// Converts a point in this router's local coordinates to the local
+  /// coordinates of its `forScene` layer.
+  Vector2 _toLayerPoint(Vector2 point, Scene3DComponent scene) {
+    if (identical(parent, scene)) {
+      return positionOf(point);
+    }
+    return scene.absoluteToLocal(absolutePositionOf(point));
+  }
+
+  bool get _isPerspective {
+    if (_scene case final scene?) {
+      return !scene.projection.isAffine;
+    }
+    return _camera?.projection == CameraProjection.perspective;
+  }
 
   @override
   bool containsLocalPoint(Vector2 point) {
@@ -110,7 +138,7 @@ class PointerRouter3D._({
       return super.containsLocalPoint(point);
     }
     if (_scene case final scene? when scene.size.x > 0 && scene.size.y > 0) {
-      return scene.containsLocalPoint(point);
+      return scene.containsLocalPoint(_toLayerPoint(point, scene));
     }
     if (_camera case final camera?) {
       final vpSize = camera.viewport.virtualSize;
@@ -124,10 +152,11 @@ class PointerRouter3D._({
     return true;
   }
 
-  /// Projects [point] into a world-space [Ray].
+  /// Projects [point], in this router's local coordinates, into a
+  /// world-space [Ray].
   Ray pointToWorldRay(Vector2 point, {Ray? output}) {
     if (_scene case final scene?) {
-      return scene.localPointToRay(point, output: output);
+      return scene.localPointToRay(_toLayerPoint(point, scene), output: output);
     }
     return _camera!.viewportPointToRay(point, output: output);
   }
@@ -201,18 +230,18 @@ class PointerRouter3D._({
     for (final listener in active.listeners) {
       final stillInside =
           hit != null && _isSameOrDescendant(hit.object, listener);
-      if (stillInside) {
-        if (upEvent == null || !upEvent.handled) {
-          upEvent ??= TapUpEvent3D(
-            pointerId: pointerId,
-            localPosition: point.clone(),
-            worldRay: Ray.copy(ray),
-            target: hit.object,
-            hit: hit,
-            instanceIndex: active.instanceIndex,
-          );
-          listener.onTapUp3D(upEvent);
-        }
+      // Every listener of the tap down gets an up or a cancel: once a
+      // listener handled the up, the remaining ones get a cancel.
+      if (stillInside && (upEvent == null || !upEvent.handled)) {
+        upEvent ??= TapUpEvent3D(
+          pointerId: pointerId,
+          localPosition: point.clone(),
+          worldRay: Ray.copy(ray),
+          target: hit.object,
+          hit: hit,
+          instanceIndex: active.instanceIndex,
+        );
+        listener.onTapUp3D(upEvent);
       } else {
         cancelEvent ??= TapCancelEvent3D(
           pointerId: pointerId,
@@ -256,11 +285,15 @@ class PointerRouter3D._({
   /// Imperatively evaluates 3D hover state at [point], emitting
   /// `onHoverExit3D` before `onHoverEnter3D` when the hovered target changes,
   /// and `onHoverMove3D` when continuing across an already-hovered target.
+  ///
+  /// Each [pointerId] has its own hover state.
   void dispatchHover(Vector2 point, {int pointerId = 0}) {
     _lastPointerPositions[pointerId] = point.clone();
     final (ray, hit) = _pick(point);
-    _lastHoverPosition = point.clone();
-    _lastHoverRay = Ray.copy(ray);
+    final state = _hovers.putIfAbsent(pointerId, _HoverState.new);
+    state.lastPosition.setFrom(point);
+    state.lastRay.copyFrom(ray);
+    final hoveredChain = state.chain;
 
     final candidates = <HoverCallbacks3D>[];
     if (hit != null) {
@@ -271,7 +304,7 @@ class PointerRouter3D._({
       }
     }
 
-    for (final prev in _hoveredChain) {
+    for (final prev in hoveredChain) {
       if (!candidates.contains(prev)) {
         final exitEvent = HoverExitEvent3D(
           pointerId: pointerId,
@@ -292,7 +325,7 @@ class PointerRouter3D._({
 
       for (final candidate in candidates) {
         if (stopped) {
-          if (_hoveredChain.contains(candidate)) {
+          if (hoveredChain.contains(candidate)) {
             candidate.onHoverExit3D(
               HoverExitEvent3D(
                 pointerId: pointerId,
@@ -307,7 +340,7 @@ class PointerRouter3D._({
         }
 
         nextHovered.add(candidate);
-        if (_hoveredChain.contains(candidate)) {
+        if (hoveredChain.contains(candidate)) {
           moveEvent ??= HoverMoveEvent3D(
             pointerId: pointerId,
             localPosition: point.clone(),
@@ -335,21 +368,25 @@ class PointerRouter3D._({
       }
     }
 
-    _hoveredChain = nextHovered;
+    state.chain = nextHovered;
   }
 
-  /// Clears any active 3D hovered targets, emitting `onHoverExit3D` on each.
-  void dispatchHoverExit({int pointerId = 0, Vector2? point}) {
-    if (_hoveredChain.isEmpty) {
+  /// Clears the hovered targets of [pointerId] (of every pointer when
+  /// [pointerId] is `null`), emitting `onHoverExit3D` on each.
+  void dispatchHoverExit({int? pointerId = 0, Vector2? point}) {
+    if (pointerId == null) {
+      for (final id in _hovers.keys.toList(growable: false)) {
+        dispatchHoverExit(pointerId: id, point: point);
+      }
       return;
     }
-    final pos = point?.clone() ?? _lastHoverPosition.clone();
-    final ray = point != null
-        ? pointToWorldRay(point)
-        : Ray.copy(_lastHoverRay);
-    final previous = _hoveredChain;
-    _hoveredChain = [];
-    for (final prev in previous) {
+    final state = _hovers.remove(pointerId);
+    if (state == null || state.chain.isEmpty) {
+      return;
+    }
+    final pos = point?.clone() ?? state.lastPosition.clone();
+    final ray = point != null ? pointToWorldRay(point) : state.lastRay;
+    for (final prev in state.chain) {
       prev.onHoverExit3D(
         HoverExitEvent3D(
           pointerId: pointerId,
@@ -425,10 +462,7 @@ class PointerRouter3D._({
       ..lastRay = Ray.copy(ray);
 
     for (final entry in active.entries) {
-      final nextPoint = entry.projectRay(
-        ray,
-        isPerspective: _camera?.projection == CameraProjection.perspective,
-      );
+      final nextPoint = entry.projectRay(ray, isPerspective: _isPerspective);
       final delta = nextPoint - entry.lastPlanePoint;
       entry.lastPlanePoint.setFrom(nextPoint);
 
@@ -465,11 +499,7 @@ class PointerRouter3D._({
 
     for (final entry in active.entries) {
       final finalPoint = point != null
-          ? entry.projectRay(
-              ray,
-              isPerspective:
-                  _camera?.projection == CameraProjection.perspective,
-            )
+          ? entry.projectRay(ray, isPerspective: _isPerspective)
           : entry.lastPlanePoint.clone();
       final delta = finalPoint - entry.lastPlanePoint;
 
@@ -566,9 +596,11 @@ class PointerRouter3D._({
 
   @override
   void onDragUpdate(DragUpdateEvent event) {
+    // Flame's drag update events carry the pointer's current position as
+    // their *start* position (their end position adds the delta once more).
     final pos = event.renderingTrace.isNotEmpty
-        ? event.localEndPosition
-        : event.canvasEndPosition;
+        ? event.localStartPosition
+        : event.canvasStartPosition;
     dispatchDragUpdate(pos, pointerId: event.pointerId);
   }
 
@@ -611,17 +643,17 @@ class PointerRouter3D._({
 
   @override
   void onHoverExit() {
-    dispatchHoverExit();
+    dispatchHoverExit(pointerId: null);
   }
 
   @override
   void onHoverCancel() {
-    dispatchHoverExit();
+    dispatchHoverExit(pointerId: null);
   }
 
   @override
   void onRemove() {
-    dispatchHoverExit();
+    dispatchHoverExit(pointerId: null);
     _activeTaps.clear();
     _activeDrags.clear();
     _lastPointerPositions.clear();
@@ -667,6 +699,12 @@ class PointerRouter3D._({
     final e = dx * wx + dy * wy + dz * wz;
     return (b * e - d) / denom;
   }
+}
+
+class _HoverState() {
+  List<HoverCallbacks3D> chain = const [];
+  final Vector2 lastPosition = Vector2.zero();
+  final Ray lastRay = Ray();
 }
 
 class _ActiveTapState({

@@ -48,10 +48,7 @@ class Board extends FlameGame3D {
   Future<void> onLoad() async {
     camera.position.setValues(0, 10, 10);
     world.add(Piece(mesh: CuboidMesh(size: Vector3.all(1))));
-    add(
-      PointerRouter3D.forCamera(world: world, camera: camera)
-        ..isDropPayload = false,
-    );
+    add(PointerRouter3D.forCamera(world: world, camera: camera));
   }
 }
 ```
@@ -63,19 +60,21 @@ are made with `CameraComponent3D.viewportPointToRay`, for perspective and orthog
 ### In a 3D layer of a 2D game
 
 For a `Scene3DComponent` (see `embedding.md`), create the router with `PointerRouter3D.forScene`
-and add it as a child of the layer:
+and add it as a child of the layer, or anywhere else in the same 2D world, for example as the
+layer's sibling:
 
 ```dart
-final router = PointerRouter3D.forScene(layer)..isDropPayload = false;
+final router = PointerRouter3D.forScene(layer);
 layer.add(router);
 ```
 
-The router passes its own local coordinates to `layer.localPointToRay`, so it must share the
-layer's coordinates: a child of the layer at the default position, scale and angle does. A router
-placed elsewhere, as a sibling of a layer that is moved or scaled, would cast its rays from the
-wrong points. Flame converts the event positions through the 2D camera, the layer's transform and
-the router, so picking stays exact while the 2D camera pans and zooms. Without a `size`, the router
-covers the layer's `size` when the layer has one, and everything otherwise.
+The router converts each point from its own coordinates to the layer's (through the router's and
+the layer's transforms) and passes it to `layer.localPointToRay`, so a router and a layer that are
+moved, scaled or rotated independently still pick exactly. Flame converts the event positions
+through the 2D camera, so picking stays exact while the 2D camera pans and zooms. Both must be
+under the same 2D camera (a router in the camera's viewport for a layer in its world does not get
+matching coordinates). Without a `size`, the router covers the layer's `size` when the layer has
+one, and everything otherwise.
 
 
 ### How the hit is found
@@ -123,18 +122,18 @@ after it, if it lets them.
   start, as everywhere in Flame.
 
 Give HUD components a higher priority than the router (or put them in front of it) so they are
-served first. A drag that ends over a `DropTargetCallbacks` component is offered to it as a drop
-unless `isDropPayload` is `false`, which also skips the drop-target hit tests during the drag; set
-it to `false` as in the examples above unless you use drag and drop.
+served first. The router's `isDropPayload` is `false`: its drags skip the drop-target hit tests and
+are never offered to a `DropTargetCallbacks` component as a drop.
 
 
 ### Taps
 
 `onTapDown3D` goes to the hit object if it has `TapCallbacks3D`, then to each ancestor that has
 it, bottom-up, until one sets `event.handled = true`. When the pointer is released, every object
-that received the tap down gets `onTapUp3D` if the ray at the release point still hits it or one of
-its descendants, and `onTapCancel3D` otherwise. When Flame cancels the tap, the objects that
-received the tap down get `onTapCancel3D`.
+that received the tap down gets exactly one of `onTapUp3D` and `onTapCancel3D`: the up, in the
+same order, if the ray at the release point still hits it or one of its descendants and no object
+before it set `handled` on the up event; the cancel otherwise. When Flame cancels the tap, the
+objects that received the tap down get `onTapCancel3D`.
 
 ```dart
 class Card3D extends MeshComponent with TapCallbacks3D {
@@ -173,7 +172,8 @@ On every mouse move inside its area, the router casts a ray. Objects that start 
 `onHoverMove3D`, and when the pointer leaves the router's area, a button is pressed or the mouse
 stops being tracked, every hovered object gets `onHoverExit3D`. The hit object and its ancestors
 with `HoverCallbacks3D` are hovered together; `event.handled = true` in one of them ends the hover
-of the ancestors above it. Touch screens do not hover.
+of the ancestors above it. Each pointer (`pointerId`) has its own hovered objects, so two mice or a
+mouse and a stylus do not end each other's hover. Touch screens do not hover.
 
 
 ### Drags
@@ -189,9 +189,10 @@ pointer projected onto its own drag geometry:
   (`forScene`).
 
 `worldPlanePoint` is the projected point and `worldDelta` its change since the previous event, so
-`position.add(event.worldDelta)` moves an object with the pointer. A ray parallel to the plane, or
-meeting it behind a perspective camera, repeats the last point. `onDragEnd3D` has
-`wasCancelled` set when the gesture was cancelled.
+`position.add(event.worldDelta)` moves an object with the pointer, which it follows exactly (the
+router uses the pointer's current position from each Flame drag update). A ray parallel to the
+plane, or meeting it behind the eye of a perspective camera or perspective layer, repeats the last
+point. `onDragEnd3D` has `wasCancelled` set when the gesture was cancelled.
 
 ```dart
 class Token extends MeshComponent with DragCallbacks3D {
@@ -218,7 +219,8 @@ class Token extends MeshComponent with DragCallbacks3D {
 The router's work is also available as methods taking a point in its coordinates:
 `dispatchTapDown`, `dispatchTapUp`, `dispatchTapCancel`, `dispatchHover`, `dispatchHoverExit`,
 `dispatchDragStart`, `dispatchDragUpdate` and `dispatchDragEnd` (tap down and drag start return
-whether a listener took the event). They drive tests without a widget tree and custom input such
+whether a listener took the event; `dispatchHoverExit(pointerId: null)` ends the hover of every
+pointer). They drive tests without a widget tree and custom input such
 as a gamepad cursor; `pointToWorldRay` gives the ray of a point.
 
 ```dart
@@ -421,9 +423,7 @@ component: an effect that moves the object would be undone by the next blend.
   excludes them.
 - The nearest hit wins, listener or not; there is no pass-through to objects behind a
   non-interactive one other than the `filter`.
-- A `forScene` router works in its own coordinates and must share the layer's (be its child).
-- All pointers share one hover state, and an event handled in an ancestor chain is not offered to
-  the remaining listeners of a tap up, which then get neither an up nor a cancel.
+- A `forScene` router must be under the same 2D camera as its layer.
 - `PointerRouter3D` works with one camera or layer; for split screens with a `CameraStack3D`, pick
   with `CameraStack3D.raycastAt` (see `cameras.md`), which also honors `cameraMask` and
   visibility.
