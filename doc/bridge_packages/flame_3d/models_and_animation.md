@@ -250,6 +250,15 @@ uniform block of that draw. In the vertex shader, `computeSkinMatrix()` blends t
 the vertex by its weights (a vertex whose weights are all zero is not moved), the result is applied
 to the position and the normal, and then the instance's model matrix.
 
+As glTF requires, the transform of the node that carries a skinned mesh does not move the mesh:
+only the joints do. The mesh is drawn with the node's transform like any other node, so the joint
+matrices in `ProcessedNode.jointTransforms` are stored relative to that node
+(`inverse(nodeTransform) * jointTransform * inverseBindMatrix`); multiplied by the node's transform
+they give the joint's skinning matrix in the model's space. A skinned mesh under a scaled or
+rotated armature node (common in Blender and Mixamo exports) therefore lands where other glTF
+viewers put it. Only when the node's own transform is singular (a zero scale) do the matrices stay
+in the model's space, and the mesh collapses with the node.
+
 Your own skinned surfaces use the same path: give a `Surface` joint indices and weights (in the
 standard layout, or `StylizedMaterial.buildSurface` for its skinned layout) and pass the matrices to
 `MeshComponent.jointTransforms` (a map from surface index to matrices) or to
@@ -259,15 +268,6 @@ into the list you pass.
 Skinned draws are never batched: every skinned surface of every component costs one draw call and
 one upload of `64 * joints` bytes in each pass it is drawn in (the shadow pass, the depth prepass
 when enabled, and the main pass). Shadows of skinned surfaces follow the animation.
-
-```{note}
-The transform of the node that carries a skinned mesh is applied on top of
-the joint matrices, whereas glTF says it must be ignored. When that node (or
-one of its ancestors) is not at the origin with identity rotation and scale,
-for example a mesh under a scaled or rotated armature node, the skinned mesh
-is transformed twice. Apply the armature's transform in your modelling tool
-before exporting.
-```
 
 
 ## Morph targets
@@ -745,9 +745,6 @@ the main isolate; `AsyncModelLoader3D` moves the geometry work to an isolate.
 
 ## Limitations
 
-- **Skinned mesh node transform**: applied on top of the joint matrices (see the note in
-  [Skinning](#skinning)); models whose skinned mesh sits under a transformed node render
-  transformed twice.
 - **Meshopt**: `MeshoptDecoder3D` only decodes the streams its own `encodeVertexStream` and
   `encodeIndexStream` write. On the reference streams of meshoptimizer, vertex attribute
   (`ATTRIBUTES`) and triangle (`TRIANGLES`) streams decode to wrong data; only the `INDICES` mode
