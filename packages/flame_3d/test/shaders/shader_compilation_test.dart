@@ -16,14 +16,14 @@ void main() {
           .where((f) => f.path.endsWith('.shaderbundle'))
           .toList();
 
-      final before = {
-        for (final bundle in bundles) bundle.path: bundle.readAsBytesSync(),
-      };
-
-      // Recompile shaders from source.
+      // Recompile the shaders into a temporary directory: the shipped bundles
+      // are never rewritten, so GPU tests loading them can run at the same
+      // time.
+      final outDir = Directory.systemTemp.createTempSync('flame3d_bundles');
+      addTearDown(() => outDir.deleteSync(recursive: true));
       final result = await Process.run(
         'dart',
-        ['run', 'bin/build_shaders.dart'],
+        ['run', 'bin/build_shaders.dart', '--out-dir=${outDir.path}'],
         workingDirectory: packageRoot.path,
       );
 
@@ -33,11 +33,22 @@ void main() {
         reason: 'Shader compilation failed:\n${result.stderr}',
       );
 
+      final fresh = {
+        for (final file in outDir.listSync().whereType<File>())
+          file.uri.pathSegments.last: file,
+      };
+      expect(
+        fresh.keys.toSet(),
+        {for (final bundle in bundles) bundle.uri.pathSegments.last},
+        reason:
+            'The shipped bundles do not match the shader sources. '
+            'Run: dart run bin/build_shaders.dart',
+      );
       for (final bundle in bundles) {
         final name = bundle.uri.pathSegments.last;
         expect(
-          bundle.readAsBytesSync(),
-          equals(before[bundle.path]),
+          fresh[name]!.readAsBytesSync(),
+          equals(bundle.readAsBytesSync()),
           reason:
               'Shader bundle "$name" is out of sync with its sources. '
               'Run: dart run bin/build_shaders.dart',

@@ -4,7 +4,11 @@
 // Every Dart dependency that ships a top-level `shaders/` directory is made
 // available, so a shader can `#include <pkg_name/foo.glsl>`.
 //
-//   dart run flame_3d:build_shaders [--with-web-gpu] [watch]
+//   dart run flame_3d:build_shaders [--with-web-gpu] [--out-dir=<dir>] [watch]
+//
+// `--out-dir` writes the bundles to another directory instead of
+// `assets/shaders/` (used by the tests to compare fresh bundles with the
+// shipped ones without rewriting them).
 
 import 'dart:convert';
 import 'dart:io';
@@ -16,7 +20,14 @@ import '_build_wgslbundle.dart' as wgslbundle;
 void main(List<String> arguments) async {
   final withWebGpu = arguments.contains('--with-web-gpu');
   final root = Directory.current;
-  final assets = Directory.fromUri(root.uri.resolve('assets/shaders'));
+  const outDirFlag = '--out-dir=';
+  final outDir = arguments
+      .where((a) => a.startsWith(outDirFlag))
+      .map((a) => a.substring(outDirFlag.length))
+      .firstOrNull;
+  final assets = outDir != null
+      ? Directory(outDir)
+      : Directory.fromUri(root.uri.resolve('assets/shaders'));
   final shaders = Directory.fromUri(root.uri.resolve('shaders'));
   final packageShaderDirs = await _resolvePackageShaderDirs();
 
