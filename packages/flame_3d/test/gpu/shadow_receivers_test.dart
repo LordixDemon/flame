@@ -509,7 +509,7 @@ void main() {
 
         final shadowed = await render(shadows: true);
         final unshadowed = await render(shadows: false);
-      // The lamp's shadow, on the water.
+        // The lamp's shadow, on the water.
         expect(
           _at(unshadowed, 0.35, 0).$3 - _at(shadowed, 0.35, 0).$3,
           greaterThan(8),

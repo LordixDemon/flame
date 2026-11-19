@@ -18,6 +18,10 @@
  - **PERF**(flame_3d): `CameraStack3D` keeps a render target per slot instead of creating one per slot and frame. ([4025969a](https://github.com/LordixDemon/flame/commit/4025969ab055d3f5a201f5be744918dfae879129))
  - **FIX**(flame_3d): `Canvas3DFallbackComponent` draws what a camera pass would (visibility, masks, custom matrices, 0 to 1 depth), without per-frame allocations. ([051c9d44](https://github.com/LordixDemon/flame/commit/051c9d445d8e44c054d9f63bc2ede7b77320f8e4))
  - **FIX**(flame_3d): `ThirdPersonCamera` damping snaps instead of diverging on long frames; the camera rigs stop allocating per update. ([2c33903d](https://github.com/LordixDemon/flame/commit/2c33903d499a56978094e6d037bc596886668680))
+ - **FEAT**(flame_3d): `World3D.lightsFrom` lets the layers of a `ShadowGroup` borrow the lights of one world instead of each holding a copy (`lightsVersion`, `lights`). ([2ba33c56](https://github.com/LordixDemon/flame/commit/2ba33c56))
+ - **FEAT**(flame, flame_3d): `RasterScale` marks canvases that already contain a raster scale (`PostProcess.rasterizeSubtree`, a camera's scaled offscreen world); `Scene3DComponent` detects it and picks its resolution and pass bounds itself, and offscreen raster canvases are clipped to their image. ([65141704](https://github.com/LordixDemon/flame/commit/65141704), [ad20e9b9](https://github.com/LordixDemon/flame/commit/ad20e9b9), [9d321310](https://github.com/LordixDemon/flame/commit/9d321310))
+ - **FEAT**(flame_3d): `RayHit3D.instanceIndex` for hits on instanced groups and crowd agents. ([1dc1feb8](https://github.com/LordixDemon/flame/commit/1dc1feb8))
+
 
 ### Rendering and post-processing
 
@@ -33,6 +37,9 @@
  - **FEAT**(flame_3d): `dart run flame_3d:build_shaders --src <dir> --out <dir>` builds a project's shaders from any folder; the shader compilation test builds into a temporary directory. ([a3347f2e](https://github.com/LordixDemon/flame/commit/a3347f2e5ae1f7324f673a4f1118dadc4bab1b94), [ba7c880e](https://github.com/LordixDemon/flame/commit/ba7c880ee929f492c496a4b480959bca2f4d17af))
  - **FIX**(flame_3d): `Line3D` pointing straight down. ([bcd8ae0c](https://github.com/LordixDemon/flame/commit/bcd8ae0c4a93b5c1e390359198b44ebeebf00125))
  - **CHORE**(flame_3d): Rebuild the shader bundles. ([75b16849](https://github.com/LordixDemon/flame/commit/75b16849ad681bdf408e4793f54d2b30584e09e0), [021ce5e8](https://github.com/LordixDemon/flame/commit/021ce5e853dc382d6c5ebd89c4ab932f0d720cb9), [70a29f61](https://github.com/LordixDemon/flame/commit/70a29f615eb3a83e77122bb833f893a09b455917), [75836d73](https://github.com/LordixDemon/flame/commit/75836d7398e043935fa1f38e6a2ff00160be221f))
+ - **FIX**(flame_3d): The vignette of a layer's post-processing is centred on the visible frame, not on the render target. ([a43bfc4c](https://github.com/LordixDemon/flame/commit/a43bfc4c))
+ - **FEAT**(flame_3d): Opaque `ParticleMaterial` billboards are in the depth-normal prepass; the prepass encoding is one shared shader chunk. ([20520932](https://github.com/LordixDemon/flame/commit/20520932), [d9458002](https://github.com/LordixDemon/flame/commit/d9458002))
+
 
 ### Materials and lighting
 
@@ -45,6 +52,9 @@
  - **FIX**(flame_3d): `DecalBatch3D` is sorted at the center of its decals. ([3abb281f](https://github.com/LordixDemon/flame/commit/3abb281f0b50ae57ed10e901ca86433ad007f108))
  - **FIX**(flame_3d): `LightClusterGrid3D` is described as the CPU helper it is (the renderer does not read it) and throws instead of wrapping packed values. ([6f831952](https://github.com/LordixDemon/flame/commit/6f83195228549043ca5fda60965564e6e8dcfcb1))
  - **DOCS**(flame_3d): Correct the joint limit and batching notes in material dartdocs. ([c35609b9](https://github.com/LordixDemon/flame/commit/c35609b9aa1f397e03f4c0e1716427a37532e721))
+ - **FIX**(flame_3d): `StylizedMaterial` decodes its accent and rim palette slots in the vertex stage: interpolation could push a packed slot under its boundary, leaving transparent, wrongly coloured pixels at fade 0. ([1b873010](https://github.com/LordixDemon/flame/commit/1b873010))
+ - **FEAT**(flame_3d): `DecalMaterial.premultipliedTexture` and `DecalBatch3D(sortByDepth:)`. ([fe415a63](https://github.com/LordixDemon/flame/commit/fe415a63), [8b3f6253](https://github.com/LordixDemon/flame/commit/8b3f6253))
+
 
 ### Shadows
 

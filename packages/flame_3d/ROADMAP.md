@@ -113,10 +113,12 @@ These exist, partly, and are described with their limits in the documentation:
   and 4 spot lights per pass (`LightClusterGrid3D` is a CPU helper only).
 - [ ] Per-instance culling and sorting in `InstancedGroup3D`.
 - [ ] Hysteresis in `LodMeshComponent`.
-- [ ] An `instanceIndex` on `RayHit3D` instead of reusing `surfaceIndex` for instanced groups.
+- [x] `RayHit3D.instanceIndex` for hits on instanced groups and crowd agents (`surfaceIndex` still
+  holds the instance index on an `InstancedGroup3D`, for compatibility).
 - [ ] Ray casts against the animated pose of skinned surfaces.
-- [ ] `Scene3DComponent` layers that detect a pre-scaled canvas (a camera with a
-  `worldRenderScale`) and pick their resolution themselves.
+- [x] `Scene3DComponent` layers detect a pre-scaled canvas (`RasterScale` in Flame, pushed by
+  `PostProcess.rasterizeSubtree` and by a camera with a `worldRenderScale`) and pick their
+  resolution themselves. `FlameGame3D` does not read it yet.
 - [ ] A depth buffer shared between `CameraStack3D` slots (`CameraClearMode3D.depthOnly`).
 - [ ] `RenderGraph3D` used by `World3D`, with a `compile` that does not allocate.
 
@@ -124,7 +126,8 @@ These exist, partly, and are described with their limits in the documentation:
 ### Materials, lighting and post-processing
 
 - [ ] A single alpha convention for premultiplied textures: translucent `SpatialMaterial` blends
-  straight alpha and textured decals multiply by alpha twice; `ImageTexture` has no sRGB option.
+  straight alpha, and textured decals multiply by alpha twice unless
+  `DecalMaterial.premultipliedTexture` is set; `ImageTexture` has no sRGB option.
 - [ ] Light brighter than white under HDR from materials other than `SpatialMaterial`.
 - [ ] KTX2 supercompression, and CPU decoders for BC7, ETC2, ASTC and RGBA32F.
 - [ ] HDR (float) environment probes, GGX prefiltering, and blending between reflection volumes.
@@ -137,8 +140,8 @@ These exist, partly, and are described with their limits in the documentation:
 
 ### Shadows
 
-- [ ] Shared lights for a `ShadowGroup`: the layers of a group must hold the same lights in the
-  same order.
+- [x] Shared lights for a `ShadowGroup`: `World3D.lightsFrom` lets the other layers borrow the
+  lights of one world.
 - [ ] Casters that honor alpha cutouts and fades.
 - [ ] More than one shadowed point light; `fit`, `bounds` and `normalBias` for spot lights.
 - [ ] One traversal for all the tiles of the shadow atlas.
@@ -148,7 +151,8 @@ These exist, partly, and are described with their limits in the documentation:
 ### Particles
 
 - [ ] Particle collisions with meshes.
-- [ ] Billboard particles in shadow maps and in the depth-normal prepass.
+- [x] Opaque billboard particles in the depth-normal prepass.
+- [ ] Billboard particles in shadow maps.
 - [ ] Mitred ribbon joins at sharp turns.
 - [ ] Soft-particle fades in scene units.
 
