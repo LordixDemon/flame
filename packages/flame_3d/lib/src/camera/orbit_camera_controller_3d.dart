@@ -261,8 +261,11 @@ class OrbitCameraController3D({
     }
   }
 
+  static final Vector3 _zAxis = Vector3(0, 0, 1);
+  static final Vector3 _negativeYAxis = Vector3(0, -1, 0);
+
   void _computeHorizontalFrame() {
-    final ref = _upAxis.z.abs() < 0.9 ? Vector3(0, 0, 1) : Vector3(0, -1, 0);
+    final ref = _upAxis.z.abs() < 0.9 ? _zAxis : _negativeYAxis;
     _upAxis.crossInto(ref, _axisX);
     _axisX.normalize();
     _axisX.crossInto(_upAxis, _axisZ);

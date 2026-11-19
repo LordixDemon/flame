@@ -81,6 +81,22 @@ void main() {
       expect(camera.frustum.containsVector3(following), isTrue);
     });
 
+    test('snaps instead of overshooting when damping times dt reaches 1', () {
+      final camera = ThirdPersonCamera(
+        following: Vector3.zero(),
+        position: Vector3.zero(),
+        followDamping: 10,
+        viewport: FixedSizeViewport(800, 600),
+      );
+
+      // 10 * 0.25 = 2.5 of the way would overshoot to z = 12.5 (and diverge
+      // on the next updates); the camera lands on z = 5 and stays there.
+      for (var i = 0; i < 4; i++) {
+        camera.update(0.25);
+        expect(camera.position, closeToVector3(Vector3(0, 0, 5), 1e-6));
+      }
+    });
+
     test('keeps the distance along its rotation', () {
       final camera = ThirdPersonCamera(
         following: Vector3.zero(),

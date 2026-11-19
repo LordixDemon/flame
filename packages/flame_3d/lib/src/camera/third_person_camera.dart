@@ -12,7 +12,9 @@ class ThirdPersonCamera({
   /// Damping factor for smoothing out rotation and position changes.
   ///
   /// Each update moves the camera `followDamping * dt` of the way from its
-  /// position to the desired one.
+  /// position to the desired one, at most all of it: when
+  /// `followDamping * dt` reaches `1` (a long frame or a large damping) the
+  /// camera snaps to the desired position instead of overshooting it.
   var double followDamping = 1.0,
   super.fovY,
   super.orthographicHeight,
@@ -46,7 +48,7 @@ class ThirdPersonCamera({
       ..add(following);
 
     // Smoothly interpolate the camera's position toward the desired position.
-    final t = followDamping * dt;
+    final t = (followDamping * dt).clamp(0.0, 1.0);
     position.setValues(
       position.x + (_desired.x - position.x) * t,
       position.y + (_desired.y - position.y) * t,

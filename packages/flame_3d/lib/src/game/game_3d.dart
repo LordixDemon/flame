@@ -52,8 +52,7 @@ mixin Game3D on Game implements Scene3DHost {
   /// A subset of OpenGLES-only devices do not support this functionality and
   /// will silently fall back to [Msaa.off].
   ///
-  /// **Four sample MSAA is currently only supported in the mobile and desktop
-  /// backends, it is silently ignored for the web.**
+  /// The web (WebGPU) backend renders with four samples as well.
   Msaa msaa() => Msaa.off;
 
   @override

@@ -174,7 +174,7 @@ class SpringArmCamera3D({
         _probeRay,
         maxDistance: _armLength + probeRadius,
         cullMode: CullMode.none,
-        filter: _passesCollisionFilter,
+        filter: _collisionFilterTearOff,
       );
       if (hit != null) {
         _isOccluded = true;
@@ -203,23 +203,28 @@ class SpringArmCamera3D({
     );
   }
 
+  late final bool Function(Object3D) _collisionFilterTearOff =
+      _passesCollisionFilter;
+
   bool _passesCollisionFilter(Object3D candidate) {
     if (targetComponent case final followed?) {
-      if (identical(candidate, followed)) {
-        return false;
-      }
-      for (final ancestor in candidate.ancestors()) {
-        if (identical(ancestor, followed)) {
+      Component? cursor = candidate;
+      while (cursor != null) {
+        if (identical(cursor, followed)) {
           return false;
         }
+        cursor = cursor.parent;
       }
     }
     final customFilter = collisionFilter;
     return customFilter == null || customFilter(candidate);
   }
 
+  static final Vector3 _zAxis = Vector3(0, 0, 1);
+  static final Vector3 _negativeYAxis = Vector3(0, -1, 0);
+
   void _computeArmDirection() {
-    final ref = _upAxis.z.abs() < 0.9 ? Vector3(0, 0, 1) : Vector3(0, -1, 0);
+    final ref = _upAxis.z.abs() < 0.9 ? _zAxis : _negativeYAxis;
     _upAxis.crossInto(ref, _axisX);
     _axisX.normalize();
     _axisX.crossInto(_upAxis, _axisZ);

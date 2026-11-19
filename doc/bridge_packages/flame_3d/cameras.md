@@ -281,9 +281,9 @@ and timelines of [Cinematics](cinematics.md).
 `FirstPersonCamera` puts its eye on the `following` point and looks one unit along its `rotation`
 (the -Z axis of the rotation). `ThirdPersonCamera` stays `distance` (default `5`, at least `0.1`
 through the setter) behind the `following` point along its `rotation` and always looks at it; each
-update moves the eye `followDamping * dt` of the way to the desired position (default
-`followDamping` `1`). Both are `CameraComponent3D` subclasses and accept the usual projection
-settings.
+update moves the eye `followDamping * dt` of the way to the desired position, at most all of it
+(default `followDamping` `1`). Both are `CameraComponent3D` subclasses and accept the usual
+projection settings.
 
 ```dart
 final camera = ThirdPersonCamera(
@@ -293,9 +293,9 @@ final camera = ThirdPersonCamera(
 );
 ```
 
-The third-person damping is linear in `dt`: with `followDamping * dt` above `1` the camera
-overshoots, and above `2` it diverges. Keep `followDamping` below `1 / dt` of the slowest frame, or
-use `OrbitCameraController3D`, whose damping is exponential.
+The third-person damping is linear in `dt`: once `followDamping * dt` reaches `1` (a long frame or
+a large damping) the camera snaps to the desired position, so its smoothing depends on the frame
+rate. `OrbitCameraController3D` damps exponentially, the same way at every frame rate.
 
 
 ### OrbitCameraController3D
@@ -416,5 +416,4 @@ any rig that sets the camera every frame: add it after the rig, or give it a hig
   rendered image as a 2D picture.
 - `CameraClearMode3D.depthOnly` and `CameraClearMode3D.none` produce the same result; there is no
   depth buffer shared between slots.
-- `ThirdPersonCamera` damping is not stable for `followDamping * dt > 2`.
-- `SpringArmCamera3D` uses one ray, and the camera rigs allocate a small vector on every update.
+- `SpringArmCamera3D` uses one ray, not a swept sphere.
