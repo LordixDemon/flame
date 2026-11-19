@@ -708,7 +708,12 @@ class _FlutterGpuRenderPass(
   @override
   void setBlendState(BlendState blend) {
     if (blend == BlendState.opaque) {
-      _renderPass.setColorBlendEnable(false);
+      // Disabling blending alone keeps the effect of an equation that keeps
+      // the target (a depth-only draw): the color of the next draw would be
+      // lost.
+      _renderPass
+        ..setColorBlendEquation(_replace)
+        ..setColorBlendEnable(false);
       return;
     }
     _renderPass
@@ -935,6 +940,13 @@ class _FlutterGpuRenderPass(
   static final _disabledStencil = gpu.StencilConfig(
     readMask: 0xFF,
     writeMask: 0,
+  );
+
+  static final _replace = gpu.ColorBlendEquation(
+    sourceColorBlendFactor: gpu.BlendFactor.one,
+    destinationColorBlendFactor: gpu.BlendFactor.zero,
+    sourceAlphaBlendFactor: gpu.BlendFactor.one,
+    destinationAlphaBlendFactor: gpu.BlendFactor.zero,
   );
 
   static final _premultiplied = gpu.ColorBlendEquation(

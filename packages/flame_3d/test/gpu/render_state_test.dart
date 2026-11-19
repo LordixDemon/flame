@@ -50,6 +50,35 @@ void main() {
       expect(a, closeTo(128, 1));
     });
 
+    testGpuEngine(
+      'writes the color of an opaque draw after a depth-only one',
+      () async {
+        // Two flushes in one pass: a depth-only quad, then an opaque one in
+        // front of it.
+        final depthOnly = quad(
+          UnlitMaterial(albedoColor: const Color(0xFFCC0000))
+            ..renderState = RenderState.depthOnly,
+        );
+        final opaque = quad(opaqueUnlit(const Color(0xFF00CC00)));
+        final frame = await renderFrame(
+          draw: (context) {
+            context
+              ..drawSurface(
+                depthOnly,
+                transform: Matrix4.translationValues(0, 0, -5),
+              )
+              ..flush()
+              ..drawSurface(
+                opaque,
+                transform: Matrix4.translationValues(0, 0, -4),
+              );
+          },
+        );
+        final (x, y) = pixelAt(0, 0);
+        expect(frame.pixels.at(x, y), (0, 204, 0, 255));
+      },
+    );
+
     testGpuEngine('does not blend opaque draws', () async {
       final (r, g, b, a) = await renderOne(
         const Color(0x80CC0000),
