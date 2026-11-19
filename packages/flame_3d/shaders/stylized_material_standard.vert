@@ -28,6 +28,7 @@ out vec4 fragMasks;
 out float fragOcclusion;
 out vec4 fragInstanceColor;
 out vec4 fragInstanceData;
+out vec3 fragInstanceColorFine;
 
 // See stylized_material.vert.
 vec3 transformNormal(mat4 model, vec3 normal) {
@@ -56,4 +57,5 @@ void main() {
   fragOcclusion = 1.0;
   fragInstanceColor = instanceColor;
   fragInstanceData = stylizedFragmentInstanceData(instanceData);
+  fragInstanceColorFine = stylizedInstanceColorFine(instanceColor.rgb);
 }

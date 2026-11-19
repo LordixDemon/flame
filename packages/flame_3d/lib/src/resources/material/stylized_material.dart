@@ -57,8 +57,8 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 /// (`MeshComponent.instanceData`, zero by default):
 ///
 /// - `x`, the emissive boost: added to [emissiveStrength] on the vertices of
-///   the emissive mask; from `0` to `1` it also moves their glow color from
-///   [emissiveColor] towards [emissiveBoostColor];
+///   the emissive mask; from `0` to `1` it also moves their glow color (see
+///   "Glow colors") towards [emissiveBoostColor];
 /// - `y`, the highlight: [highlightColor] times it is added to every vertex;
 /// - `z`, the wind strength, added to `1`: `-1` stills the sway of the object
 ///   and `1` doubles it;
@@ -97,7 +97,8 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 ///           + spec + highlight * highlightColor
 /// glow = clamp(emissive mask * (emissiveStrength + boost), 0, 1)
 /// out  = mix(shaded,
-///            mix(emissiveColor, emissiveBoostColor, clamp(boost, 0, 1)),
+///            mix(glow color, emissiveBoostColor ?? glow color,
+///                clamp(boost, 0, 1)),
 ///            glow)
 /// alpha = albedoColor.a * vertex alpha * (1 - fade)
 /// ```
@@ -117,6 +118,29 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 /// follow the direction of the directional lights, not their intensity. The
 /// result is clamped to `[0, 1]`, with no tone mapping, graded, and output
 /// premultiplied by its alpha.
+///
+/// ## Glow colors
+///
+/// The vertices of the emissive mask glow in [emissiveColor] by default. With
+/// [emissiveColorSource] they glow in a color of their instance instead, so
+/// that instances of one mesh glow in different colors in one draw:
+///
+/// - [EmissiveColorSource.instanceColor]: the color of the instance, the one
+///   that tints the vertices of the tint mask (a tinted inlay glows in its
+///   tint);
+/// - [EmissiveColorSource.accent]: its accent, the [accentPalette] entry it
+///   picks with [packPaletteAndFade], or [accentColor] without one;
+/// - [EmissiveColorSource.rim]: the color of its [rimPalette] entry, or
+///   [emissiveColor] without one. The alpha of the entry, the strength of its
+///   rim, is not used: an entry of alpha `0` glows without a rim.
+///
+/// Only the color changes: the glow still mixes the shaded color towards it
+/// by `glow` (above), and the boost still moves it towards
+/// [emissiveBoostColor] when that is set. An instance looks exactly like the
+/// same instance drawn with a material whose [emissiveColor] is its glow
+/// color, on every pixel, in the stylized layout (skinned or not) and every
+/// render state. Surfaces in the standard layout have no emissive mask, so
+/// they do not glow, whatever the source.
 ///
 /// ## Metals
 ///
@@ -206,17 +230,29 @@ class StylizedMaterial({
   /// `instanceData.w` without breaking instanced batching.
   List<Color> accentPalette = const [],
 
-  /// The color the vertices of the emissive mask glow with.
+  /// The color the vertices of the emissive mask glow with, unless
+  /// [emissiveColorSource] takes it from each instance.
   var Color emissiveColor = const Color(0xFFFFFFFF),
 
+  /// Where the vertices of the emissive mask take the color they glow with:
+  /// the material's [emissiveColor] ([EmissiveColorSource.emissiveColor], the
+  /// default), or a color of each instance, so that the instances of one mesh
+  /// glow in colors of their own and still share one draw: its color
+  /// ([EmissiveColorSource.instanceColor]), its accent
+  /// ([EmissiveColorSource.accent]) or its [rimPalette] entry
+  /// ([EmissiveColorSource.rim]). See "Glow colors".
+  var EmissiveColorSource emissiveColorSource =
+      EmissiveColorSource.emissiveColor,
+
   /// How strongly the vertices of the emissive mask glow, from `0` (lit like
-  /// the others) to `1` (the [emissiveColor] alone).
+  /// the others) to `1` (their glow color alone).
   var double emissiveStrength = 1.0,
 
   /// The color the vertices of the emissive mask glow with in objects whose
   /// emissive boost (the `x` of their instance data) is `1`; the color moves
-  /// from [emissiveColor] towards it as the boost goes from `0` to `1`.
-  /// `null` (the default) keeps [emissiveColor].
+  /// from their glow color ([emissiveColor], or the instance's color picked
+  /// by [emissiveColorSource]) towards it as the boost goes from `0` to `1`.
+  /// `null` (the default) keeps the glow color of each object.
   var Color? emissiveBoostColor,
 
   /// The color added to objects in proportion to their highlight (the `y` of
@@ -654,6 +690,14 @@ class StylizedMaterial({
         matBlock.setColor('rimPalette', rimPalette[i], index: i);
       }
     }
+    // Fragment shaders of before (in tests) have neither: writes to members
+    // a block does not have are ignored.
+    matBlock
+      ..setFloat(
+        'emissiveColorSource',
+        emissiveColorSource.index.toDouble(),
+      )
+      ..setFloat('emissiveBoostFollows', emissiveBoostColor == null ? 1 : 0);
     fragmentShader
       ..setTexture('matCapTexture', matCap ?? Texture.empty)
       ..setTexture('gemMatCapTexture', gemMatCap ?? Texture.empty)
@@ -889,6 +933,37 @@ class StylizedMaterial({
     }
     return wide ? Uint32List.fromList(indices) : Uint16List.fromList(indices);
   }
+}
+
+/// Where the vertices of a [StylizedMaterial]'s emissive mask take the color
+/// they glow with, see [StylizedMaterial.emissiveColorSource].
+///
+/// The instance colors are exact on every pixel: an instance looks exactly
+/// like the same instance drawn with a material whose
+/// [StylizedMaterial.emissiveColor] is its glow color. The shader numbers the
+/// sources in this order.
+enum EmissiveColorSource() {
+  /// The material's [StylizedMaterial.emissiveColor], the same for every
+  /// instance (the default).
+  emissiveColor,
+
+  /// The color of each instance (`MeshComponent.color`), the one that tints
+  /// the vertices of the tint mask: a tinted inlay glows in its tint. Its
+  /// alpha is not used.
+  instanceColor,
+
+  /// The accent of each instance: the [StylizedMaterial.accentPalette] entry
+  /// it picks with [StylizedMaterial.packPaletteAndFade], or the material's
+  /// [StylizedMaterial.accentColor] without one (or with an index beyond the
+  /// palette), the color its accent-masked vertices take.
+  accent,
+
+  /// The [StylizedMaterial.rimPalette] entry of each instance, picked with
+  /// [StylizedMaterial.packPaletteAndFade]: its color, not its alpha (the
+  /// strength of its rim), so an entry of alpha `0` glows without a rim. An
+  /// instance without an entry (or with an index beyond the palette) glows
+  /// in [StylizedMaterial.emissiveColor].
+  rim,
 }
 
 /// The space a [StylizedMaterial]'s wind direction and amplitudes are given

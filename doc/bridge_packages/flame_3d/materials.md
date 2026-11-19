@@ -436,8 +436,9 @@ see [Rendering](rendering.md#per-instance-color-and-data)):
 | `z`       | wind strength, added to 1: `-1` stills the object's wind, `1` doubles it      |
 | `w`       | fade: the object's opacity is `1 - w`; or packed accent and rim indices       |
 
-From `0` to `1`, the emissive boost also moves the color of the glowing vertices from
-`emissiveColor` towards `emissiveBoostColor` (by default the same color).
+From `0` to `1`, the emissive boost also moves the color of the glowing vertices from their glow
+color (`emissiveColor`, or a color of their instance, see [Glow colors](#glow-colors)) towards
+`emissiveBoostColor` (by default the glow color itself).
 
 Objects that differ only in these values still cost one draw call per surface, so a hovered building
 can glow more, or a tree sway less, without a material of its own:
@@ -492,14 +493,16 @@ shaded  = mix(surface + cap, min(surface, 1) * reflected, matCapMetallic)
           + spec + highlight * highlightColor
 glow = clamp(emissive mask * (emissiveStrength + boost), 0, 1)
 lit  = clamp(mix(shaded,
-                 mix(emissiveColor, emissiveBoostColor, clamp(boost, 0, 1)),
+                 mix(glowColor, emissiveBoostColor ?? glowColor,
+                     clamp(boost, 0, 1)),
                  glow), 0, 1)
 out  = fog(mix(mix(luminosity(lit), lit, saturation), overlayColor.rgb,
                overlayColor.a))
 alpha = albedoColor.a * vertex alpha * instance color alpha * (1 - fade)
 ```
 
-`falloff` and `cone` are those of the point and spot lights (see
+`glowColor` is `emissiveColor`, or the color of the instance that `emissiveColorSource` picks (see
+[Glow colors](#glow-colors)). `falloff` and `cone` are those of the point and spot lights (see
 [Lighting](lighting.md#point-light)). `shadow` is `1`, except for each light that casts shadows,
 where it is `mix(white, color, strength * (1 - visibility))` with the light's shadow `color` and
 `strength` and `visibility` from `0` (in its shadow) to `1` (see
@@ -534,7 +537,8 @@ lights the shadowed side.
 | `specularThreshold`                           | `0.12`                    | least gloss to shine |
 | `rimStrength`, `rimPower`, `rimColor`         | `0.14`, `3`, black        | rim light            |
 | `emissiveColor`, `emissiveStrength`           | white, `1`                | glowing vertices     |
-| `emissiveBoostColor`                          | `emissiveColor`           | glow at boost 1      |
+| `emissiveColorSource`                         | `emissiveColor`           | glow color source    |
+| `emissiveBoostColor`                          | the glow color            | glow at boost 1      |
 | `highlightColor`                              | white                     | instance highlight   |
 | `matCapTexture`, `matCapStrength`             | none, `1`                 | MatCap sheen         |
 | `matCapThreshold`, `matCapGlossWeight`        | `0`, `1`                  | least gloss, weight  |
@@ -788,6 +792,74 @@ palettes' ranges, and an index beyond the length of a palette selects nothing (t
 no rim). The rim index is decoded with the accent index, as exactly, and the fade is rounded the
 same way (see [above](#batching-accent-palettes-and-translucency)). The shadow pass does not read
 the instance data, so rims do not change shadows.
+
+
+### Glow colors
+
+The vertices of the emissive mask glow in `emissiveColor`, the same for every object of the
+material. With `emissiveColorSource` they glow in a color of their own instance instead, so that
+the instances of one mesh glow in different colors and still share one material and one instanced
+draw:
+
+| `emissiveColorSource`               | The glow color of an instance                      |
+| ----------------------------------- | -------------------------------------------------- |
+| `EmissiveColorSource.emissiveColor` | `emissiveColor` (the default)                      |
+| `EmissiveColorSource.instanceColor` | its color, the tint of its tint mask               |
+| `EmissiveColorSource.accent`        | its `accentPalette` entry, or `accentColor`        |
+| `EmissiveColorSource.rim`           | its `rimPalette` entry's color, or `emissiveColor` |
+
+The instance color is `MeshComponent.color`. An instance that picks no palette entry, or an index
+beyond the palette's length, glows in the color after "or". The alpha of the instance color and of
+a rim palette entry is not used: a rim entry's alpha is the strength of its rim, so an entry of
+alpha `0` gives a glow color without a rim.
+
+```dart
+// Each piece's inlay (tint and emissive masks) glows in the piece's tint:
+final pieces = StylizedMaterial(
+  emissiveColorSource: EmissiveColorSource.instanceColor,
+  emissiveStrength: 0.8,
+);
+final piece = MeshComponent(mesh: pieceMesh, color: ownerColor);
+
+// A state color per instance, without rims, its strength per instance:
+final fields = StylizedMaterial(
+  emissiveColorSource: EmissiveColorSource.rim,
+  emissiveStrength: 0, // the boost alone sets the strength
+  rimPalette: const [
+    Color(0x0040FF60), // reachable: green, alpha 0, no rim
+    Color(0x00FF4040), // blocked: red
+  ],
+);
+field.instanceData
+  ..x = 0.35 // a pool of light: 35 % of the state color
+  ..w = StylizedMaterial.packPaletteAndFade(rim: 0);
+```
+
+Only the color changes; the strength and the boost work as in [Shading](#shading). The glow mixes
+the shaded color towards the glow color rather than adding light: where `glow` is `0.35` the
+surface keeps 65 % of its lit color and takes 35 % of the glow color, a tinted pool of light rather
+than a wash towards white, and where it is `1` the surface shows the glow color alone. With
+`emissiveBoostColor` left `null`, each instance keeps its own glow color as its boost grows; set,
+it is the color every instance moves towards.
+
+An instance looks exactly like the same instance drawn with a material whose `emissiveColor` is its
+glow color, on every pixel and MSAA sample: palette entries are picked by the exactly decoded
+palette slot (see [above](#batching-accent-palettes-and-translucency)), and the vertex stage hands
+the fragment stage the instance color in two parts that interpolation cannot blur, so that it gets
+back the instance's exact color rather than one a few float steps off. It works in the stylized
+layout, skinned or not, with every render state (opaque, `translucent`, `singlePieceTranslucent`,
+`ditherFade`) and under weighted blended order-independent transparency. Surfaces in the standard
+layout have no emissive mask, so they glow with no source. The accent source needs no accent mask:
+a mesh without accent-masked vertices can use the accent palette as a palette of glow colors.
+
+- The glow color is clamped to `[0, 1]` with the rest of the output (the material is
+  display-referred, also under HDR): it blooms where the bloom threshold is below its brightness,
+  exactly as the same `emissiveColor` would.
+- The shadow pass and the depth-normal prepass do not read it: the glow does not change shadows,
+  SSAO, soft particles or shore foam.
+- Cost: three more floats passed from the vertex stage to the fragment stage for every stylized
+  draw, whatever the source, and a few instructions per pixel with the instance color as source.
+  The source is per material, so it batches like any other value of the material.
 
 
 ### Depth bias

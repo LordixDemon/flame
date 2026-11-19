@@ -5,7 +5,8 @@
 // hemisphere, directional and point lights of the scene, with per-vertex
 // masks for the instance tint, the accent color, emission and gloss, and per
 // instance data for an emissive boost, a highlight, a fade and optional
-// per-instance accent and rim palette indices.
+// per-instance accent and rim palette indices. The emissive mask glows in the
+// material's emissive color or in a color of the instance.
 
 in vec3 fragPosition;
 in vec3 fragNormal;
@@ -16,6 +17,10 @@ in vec4 fragInstanceColor;
 // x: the emissive boost, y: the highlight, z: the palette slot, w: the fade,
 // decoded by the vertex stage, see flame_3d/stylized_instance_data.glsl.
 in vec4 fragInstanceData;
+// The instance color less its nearest multiple of 2^-16, see
+// flame_3d/stylized_instance_data.glsl. Last, so that the inputs of before
+// keep their locations.
+in vec3 fragInstanceColorFine;
 
 out vec4 outColor;
 
@@ -55,6 +60,13 @@ uniform Material {
   float rimPaletteCount;
   float rimPalettePower;
   float rimPaletteStrength;
+  // Where the emissive mask takes its glow color (the color the boost moves
+  // from), StylizedMaterial.emissiveColorSource: 0 emissiveColor, 1 the
+  // instance color, 2 the instance's accent, 3 its rim palette entry.
+  float emissiveColorSource;
+  // 1 when the boost moves towards that same color (emissiveBoostColor is
+  // null), 0 when it moves towards emissiveBoostColor.
+  float emissiveBoostFollows;
 } material;
 
 // The camera, the lights, the shadows and the fog of the render pass, filled
@@ -115,6 +127,20 @@ uniform StylizedPass {
 #include <flame_3d/fog.glsl>
 #include <flame_3d/dither.glsl>
 
+// The instance color as the instance holds it. `fragInstanceColor` arrives
+// interpolated across the triangle (or extrapolated to the MSAA samples
+// outside it), and so a few ulps off. Less the fine part, it is a few ulps
+// from a multiple of 2^-16, which rounding finds exactly; the fine part is at
+// most 2^-17, so its own interpolation error is far below the precision of
+// the color, and adding it back gives the color itself. Only channels below
+// about 2^-13 may stay a float step off: those of 8-bit colors are exact.
+vec3 stylizedExactInstanceColor() {
+  vec3 coarse = floor(
+    (fragInstanceColor.rgb - fragInstanceColorFine) * 65536.0 + 0.5
+  ) * (1.0 / 65536.0);
+  return coarse + fragInstanceColorFine;
+}
+
 float pictureMirror() {
   mat4 p = scene.Camera_projection;
   vec3 rowX = vec3(p[0][0], p[1][0], p[2][0]);
@@ -159,6 +185,8 @@ void main() {
     instanceAccent = material.accentPalette[accentIndex].rgb;
   }
   int rimIndex = rimSlot - 1;
+  bool hasRim = rimIndex >= 0 && rimIndex < int(material.rimPaletteCount) &&
+    rimIndex < 8;
   float fade = clamp(fragInstanceData.w, 0.0, 1.0);
 
   vec3 base = material.albedoColor.rgb * fragColor.rgb;
@@ -286,17 +314,29 @@ void main() {
     min(surface, vec3(1.0)) * reflected,
     material.matCapMetallic
   ) + vec3(specular) + highlight * material.highlightColor.rgb;
-  if (rimIndex >= 0 && rimIndex < int(material.rimPaletteCount) &&
-      rimIndex < 8) {
+  if (hasRim) {
     vec4 rimEntry = material.rimPalette[rimIndex];
     color += pow(1.0 - ndotv, material.rimPalettePower) * rimEntry.rgb *
       (rimEntry.a * material.rimPaletteStrength);
   }
-  vec3 emissive = mix(
-    material.emissiveColor.rgb,
-    material.emissiveBoostColor.rgb,
-    clamp(boost, 0.0, 1.0)
-  );
+  // The glow color: the material's emissive color, or the instance's color,
+  // accent (its palette entry, or accentColor) or rim palette entry (or the
+  // emissive color without one), each exact on every pixel. The boost moves it
+  // towards emissiveBoostColor, or keeps it. Only the color depends on the
+  // source: the glow still mixes the shaded color towards it.
+  int glowSource = int(material.emissiveColorSource + 0.5);
+  vec3 glowColor = material.emissiveColor.rgb;
+  if (glowSource == 1) {
+    glowColor = stylizedExactInstanceColor();
+  } else if (glowSource == 2) {
+    glowColor = instanceAccent;
+  } else if (glowSource == 3 && hasRim) {
+    glowColor = material.rimPalette[rimIndex].rgb;
+  }
+  vec3 boostColor = material.emissiveBoostFollows > 0.5
+    ? glowColor
+    : material.emissiveBoostColor.rgb;
+  vec3 emissive = mix(glowColor, boostColor, clamp(boost, 0.0, 1.0));
   float glow = clamp(
     emissiveMask * (material.emissiveStrength + boost),
     0.0,

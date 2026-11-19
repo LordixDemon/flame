@@ -72,6 +72,10 @@ out vec4 fragInstanceColor;
 // The boost, the highlight, the palette slot and the fade, see
 // flame_3d/stylized_instance_data.glsl.
 out vec4 fragInstanceData;
+// The instance color less its nearest multiple of 2^-16, see
+// flame_3d/stylized_instance_data.glsl. Last, so that the outputs of before
+// keep their locations.
+out vec3 fragInstanceColorFine;
 
 // Transforms normals by the model matrix: its cofactor matrix, which is the
 // inverse transpose up to a scale, keeps them perpendicular to the surface
@@ -123,6 +127,7 @@ void emitStylizedVertex(vec3 position, vec3 normal) {
   fragOcclusion = vertexOcclusion;
   fragInstanceColor = instanceColor;
   fragInstanceData = stylizedFragmentInstanceData(instanceData);
+  fragInstanceColorFine = stylizedInstanceColorFine(instanceColor.rgb);
 }
 
 #endif

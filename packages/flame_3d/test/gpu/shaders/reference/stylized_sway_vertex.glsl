@@ -49,6 +49,9 @@ out vec4 fragMasks;
 out float fragOcclusion;
 out vec4 fragInstanceColor;
 out vec4 fragInstanceData;
+// Not of before: the fragment stage of now, which the tests draw this stage
+// with, reads it (see flame_3d/stylized_instance_data.glsl).
+out vec3 fragInstanceColorFine;
 
 // Transforms normals by the model matrix: its cofactor matrix, which is the
 // inverse transpose up to a scale, keeps them perpendicular to the surface
@@ -81,6 +84,8 @@ void emitStylizedVertex(vec3 position, vec3 normal) {
   fragOcclusion = vertexOcclusion;
   fragInstanceColor = instanceColor;
   fragInstanceData = instanceData;
+  fragInstanceColorFine = instanceColor.rgb -
+    floor(instanceColor.rgb * 65536.0 + 0.5) * (1.0 / 65536.0);
 }
 
 #endif

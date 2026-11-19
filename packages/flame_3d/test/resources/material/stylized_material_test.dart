@@ -301,6 +301,33 @@ void main() {
       expect(backend.textureBindings.keys, contains('gemMatCapTexture'));
     });
 
+    test('writes where its glow color comes from', () {
+      final material = StylizedMaterial();
+      double value(String member) {
+        final offset =
+            material.fragmentShader
+                .slot('Material')
+                .getMemberOffsetInBytes(member)! ~/
+            4;
+        return backend.uniforms['Material']![offset];
+      }
+
+      // By default the emissive color, and the boost keeps it.
+      draw([stylizedTriangle(material)]);
+      expect(value('emissiveColorSource'), 0);
+      expect(value('emissiveBoostFollows'), 1);
+
+      for (final source in EmissiveColorSource.values) {
+        material.emissiveColorSource = source;
+        draw([standardTriangle(material)]);
+        expect(value('emissiveColorSource'), source.index);
+      }
+      material.emissiveBoostColor = const Color(0xFF00FF00);
+      draw([skinnedTriangle(material)]);
+      expect(value('emissiveColorSource'), 3);
+      expect(value('emissiveBoostFollows'), 0);
+    });
+
     test('writes its additions', () {
       final gem = ColorTexture(const Color(0xFF00FF00));
       final material = StylizedMaterial(

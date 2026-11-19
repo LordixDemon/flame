@@ -37,4 +37,14 @@ vec4 stylizedFragmentInstanceData(vec4 data) {
   return vec4(data.x, data.y, slot, fade);
 }
 
+// The instance color less its nearest multiple of 2^-16, per channel: the
+// vertex stages pass it in `fragInstanceColorFine` for the fragment stage to
+// get the exact instance color back (see stylizedExactInstanceColor in
+// flame_3d/stylized_material_fragment.glsl). Every step is exact: the scaling
+// by a power of two, the rounding to a whole number, and the difference, a
+// multiple of the precision of the color no larger than 2^-17.
+vec3 stylizedInstanceColorFine(vec3 color) {
+  return color - floor(color * 65536.0 + 0.5) * (1.0 / 65536.0);
+}
+
 #endif
