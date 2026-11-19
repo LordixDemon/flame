@@ -1,8 +1,12 @@
 import 'dart:ui';
 
-import 'package:flame_3d/core.dart';
+import 'package:flame/game.dart' show GameWidget;
+import 'package:flame_3d/camera.dart';
+import 'package:flame_3d/components.dart';
+import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flutter/widgets.dart' show ObjectKey;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'gpu_test_helpers.dart';
@@ -224,6 +228,81 @@ void main() {
       expect(plain.at(sx, sy).$1, lessThan(plain.at(gx, gy).$1 - 30));
       expect(rimmed.at(sx, sy), plain.at(sx, sy));
       expect(differingPixels(plain, rimmed), lessThan(300));
+    });
+
+    testGpu('fades under order-independent transparency as its fade says', (
+      tester,
+    ) async {
+      Future<Pixels> render(OitMode3D mode) async {
+        final world = World3D(
+          oitMode: mode,
+          children: [
+            LightComponent.ambient(intensity: 1),
+            MeshComponent(
+              mesh: SphereMesh(
+                radius: 0.6,
+                material:
+                    StylizedMaterial(
+                        albedoColor: const Color(0xFF808080),
+                        rimStrength: 0,
+                        specularStrength: 0,
+                        rimPalette: const [_cyan],
+                        translucent: true,
+                        // One layer: the far side of the sphere is culled.
+                      )
+                      ..renderState = StylizedMaterial.translucentRenderState
+                          .copyWith(
+                            cullMode: CullMode.backFace,
+                          ),
+              ),
+              instanceData: _rim(0, fade: 0.5),
+            ),
+          ],
+        );
+        final game = FlameGame3D(world: world);
+        await tester.pumpWidget(GameWidget(key: ObjectKey(game), game: game));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 16));
+        return (await tester.runAsync(() async {
+          final device = GraphicsDevice();
+          final context = RenderContext3D(device);
+          device.begin();
+          final image = world.renderToImage(
+            const Size(128, 128),
+            view: Matrix4.identity()
+              ..setAsViewMatrix(
+                Vector3(0, 0, 4),
+                Vector3.zero(),
+                Vector3(0, 1, 0),
+              ),
+            projection: Matrix4.identity()
+              ..setAsOrthographicOffCenter(-1, 1, -1, 1, 0.1, 10),
+            device: device,
+            context: context,
+          );
+          device.end();
+          final pixels = await readImage(image);
+          image.dispose();
+          return pixels;
+        }))!;
+      }
+
+      final sorted = await render(OitMode3D.none);
+      final oit = await render(OitMode3D.weightedBlended);
+      // Half faded, not hidden: the packed rim index is not read as a fade.
+      final (cx, cy) = pixelAt(0, 0, width: 128, height: 128);
+      expect(sorted.at(cx, cy).$4, closeTo(128, 3));
+      // One layer blends the same with or without sorting, rim included.
+      final (ex, ey) = pixelAt(-0.56, 0, width: 128, height: 128);
+      expect(sorted.at(ex, ey).$3, greaterThan(sorted.at(cx, cy).$3 + 20));
+      for (final (x, y) in [(cx, cy), (ex, ey)]) {
+        final (r, g, b, a) = oit.at(x, y);
+        final (sr, sg, sb, sa) = sorted.at(x, y);
+        expect(a, closeTo(sa, 3));
+        expect(r, closeTo(sr, 4));
+        expect(g, closeTo(sg, 4));
+        expect(b, closeTo(sb, 4));
+      }
     });
   });
 }
