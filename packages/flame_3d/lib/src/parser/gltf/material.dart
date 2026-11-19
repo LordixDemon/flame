@@ -6,6 +6,7 @@ import 'package:flame_3d/resources.dart' as flame_3d;
 import 'package:flame_3d/src/parser/gltf/alpha_mode.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_node.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_root.dart';
+import 'package:flame_3d/src/parser/gltf/gltf_warnings.dart';
 import 'package:flame_3d/src/parser/gltf/normal_texture_info.dart';
 import 'package:flame_3d/src/parser/gltf/occlusion_texture_info.dart';
 import 'package:flame_3d/src/parser/gltf/pbr_metallic_roughness.dart';
@@ -78,22 +79,70 @@ class Material({
     return 1.0;
   }
 
+  /// Reports, through [GltfWarnings], the texture settings the materials
+  /// cannot honor: a second UV set, and `KHR_texture_transform` rotations or
+  /// transforms that differ between textures (one offset and scale, the base
+  /// color texture's, applies to every texture).
+  void _reportUnsupportedTextureSettings() {
+    final pbr = pbrMetallicRoughness;
+    final slots = <TextureInfo?>[
+      pbr?.baseColorTexture,
+      pbr?.metallicRoughnessTexture,
+      normalTexture,
+      occlusionTexture,
+      emissiveTexture,
+    ];
+    final base = pbr?.baseColorTexture?.textureTransform;
+    for (final slot in slots) {
+      if (slot == null) {
+        continue;
+      }
+      final transform = slot.textureTransform;
+      if ((slot.texCoord ?? 0) != 0 || (transform?.texCoord ?? 0) != 0) {
+        GltfWarnings.report(
+          'textures that use a second UV set (texCoord 1) read the first',
+        );
+      }
+      if (transform != null && transform.rotation != 0.0) {
+        GltfWarnings.report('KHR_texture_transform rotations are ignored');
+      }
+      final offset = transform?.offset ?? Vector2.zero();
+      final scale = transform?.scale ?? Vector2.all(1);
+      final baseOffset = base?.offset ?? Vector2.zero();
+      final baseScale = base?.scale ?? Vector2.all(1);
+      if (offset != baseOffset || scale != baseScale) {
+        GltfWarnings.report(
+          'KHR_texture_transform: the offset and scale of the base color '
+          'texture apply to every texture of a material',
+        );
+      }
+    }
+  }
+
   flame_3d.Material toFlameMaterial() {
     final pbr = pbrMetallicRoughness;
     final cullMode = doubleSided
         ? flame_gfx.CullMode.none
         : flame_gfx.CullMode.backFace;
+    _reportUnsupportedTextureSettings();
 
     if (isUnlit) {
       final unlit = flame_3d.UnlitMaterial(
         albedoColor: pbr?.baseColorFactor?.toColor() ?? const Color(0xFFFFFFFF),
         albedoTexture: pbr?.baseColorTexture?.toFlameTexture(),
       );
+      if (alphaMode == AlphaMode.mask) {
+        GltfWarnings.report(
+          'unlit materials with alphaMode MASK are drawn blended: '
+          'UnlitMaterial has no alpha cutoff',
+        );
+      }
       unlit.renderState = switch (alphaMode) {
-        AlphaMode.opaque || AlphaMode.mask => flame_gfx.RenderState.opaque,
-        AlphaMode.blend => flame_gfx.RenderState.alphaBlend.copyWith(
+        AlphaMode.opaque => flame_gfx.RenderState.opaque.copyWith(
           cullMode: cullMode,
         ),
+        AlphaMode.mask || AlphaMode.blend =>
+          flame_gfx.RenderState.alphaBlend.copyWith(cullMode: cullMode),
       };
       return unlit;
     }

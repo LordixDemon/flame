@@ -9,6 +9,7 @@ import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/model.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/parser/gltf/gltf_warnings.dart';
 import 'package:flame_3d/src/parser/meshopt_decoder_3d.dart';
 import 'package:flame_3d/src/resources/texture/mipmaps.dart';
 
@@ -907,6 +908,17 @@ abstract final class AsyncModelLoader3D() {
     if (jsonMap == null) {
       throw const FormatException('GLB missing JSON chunk');
     }
+    // Reported on the main isolate, see `GltfWarnings`.
+    final warnings = <String>[];
+    final extensionsUsed = jsonMap['extensionsUsed'];
+    if (extensionsUsed is List) {
+      final unread = unreadExtensionsWarning(
+        extensionsUsed.whereType<String>(),
+      );
+      if (unread != null) {
+        warnings.add(unread);
+      }
+    }
 
     Uint8List resolveUriBytes(String uri) {
       final commaIdx = uri.indexOf(';base64,');
@@ -1144,6 +1156,7 @@ abstract final class AsyncModelLoader3D() {
             rawAccessors: rawAccessors,
             readDoubles: readDoubles,
             readScalarInts: readScalarInts,
+            warnings: warnings,
           ),
         );
       }
@@ -1216,6 +1229,9 @@ abstract final class AsyncModelLoader3D() {
           transformStorage: Float64List.fromList(localMat.storage),
           meshIndex: (nm['mesh'] as num?)?.toInt(),
           skinIndex: (nm['skin'] as num?)?.toInt(),
+          weights: (nm['weights'] as List<Object?>?)
+              ?.map((e) => (e! as num).toDouble())
+              .toList(growable: false),
         ),
       );
       final children = (nm['children'] as List<Object?>?) ?? const [];
@@ -1242,10 +1258,18 @@ abstract final class AsyncModelLoader3D() {
         final cm = chObj! as Map<String, Object?>;
         final target = cm['target']! as Map<String, Object?>;
         final targetNode = (target['node'] as num?)?.toInt();
-        if (targetNode == null) {
+        final path = target['path'] as String?;
+        if (targetNode == null ||
+            path == null ||
+            !const {'translation', 'rotation', 'scale', 'weights'}.contains(
+              path,
+            )) {
+          warnings.add(
+            'animation channels targeting "$path" are skipped: only node '
+            'translation, rotation, scale and weights are animated',
+          );
           continue;
         }
-        final path = target['path']! as String;
         final samp =
             aSamplers[(cm['sampler']! as num).toInt()]! as Map<String, Object?>;
         final interp = (samp['interpolation'] as String?) ?? 'LINEAR';
@@ -1280,6 +1304,7 @@ abstract final class AsyncModelLoader3D() {
       skins: skins,
       nodes: preparedNodes,
       animations: animations,
+      warnings: warnings,
     );
   }
 
@@ -1288,16 +1313,32 @@ abstract final class AsyncModelLoader3D() {
     required List<Object?> rawAccessors,
     required List<double> Function(int accIdx, int components) readDoubles,
     required List<int> Function(int accIdx) readScalarInts,
+    required List<String> warnings,
   }) {
+    final mode = (pm['mode'] as num?)?.toInt() ?? 4;
+    if (mode < 4 || mode > 6) {
+      warnings.add(
+        'primitives of mode $mode are skipped: only triangles, triangle '
+        'strips and triangle fans can be drawn',
+      );
+      return const [];
+    }
     final attrs = pm['attributes']! as Map<String, Object?>;
+    final unread = unreadAttributesWarning(attrs.keys);
+    if (unread != null) {
+      warnings.add(unread);
+    }
     final posAcc = (attrs['POSITION']! as num).toInt();
     final posData = readDoubles(posAcc, 3);
     final vertTotal = posData.length ~/ 3;
 
     final idxAcc = (pm['indices'] as num?)?.toInt();
-    final rawIndices = idxAcc != null
-        ? readScalarInts(idxAcc)
-        : List<int>.generate(vertTotal, (i) => i, growable: false);
+    final rawIndices = gltfTriangleList(
+      mode,
+      idxAcc != null
+          ? readScalarInts(idxAcc)
+          : List<int>.generate(vertTotal, (i) => i, growable: false),
+    )!;
 
     final maxIdx = rawIndices.isEmpty ? -1 : rawIndices.reduce(math.max);
     final vertCount = maxIdx + 1;
@@ -1362,6 +1403,23 @@ abstract final class AsyncModelLoader3D() {
     final weightsAcc = (attrs['WEIGHTS_0'] as num?)?.toInt();
     final jointsData = jointsAcc != null ? readDoubles(jointsAcc, 4) : null;
     final weightsData = weightsAcc != null ? readDoubles(weightsAcc, 4) : null;
+    if (jointsData != null && weightsData != null) {
+      final joints1Acc = (attrs['JOINTS_1'] as num?)?.toInt();
+      final weights1Acc = (attrs['WEIGHTS_1'] as num?)?.toInt();
+      final dropped = reduceJointInfluences(
+        jointsData,
+        weightsData,
+        joints1Acc != null ? readDoubles(joints1Acc, 4) : null,
+        weights1Acc != null ? readDoubles(weights1Acc, 4) : null,
+        math.min(jointsData.length, weightsData.length) ~/ 4,
+      );
+      if (dropped) {
+        warnings.add(
+          'vertices influenced by more than 4 joints keep their 4 largest '
+          'influences',
+        );
+      }
+    }
 
     // Morph targets
     final rawTargets = (pm['targets'] as List<Object?>?) ?? const [];
@@ -1627,6 +1685,7 @@ abstract final class AsyncModelLoader3D() {
   }
 
   static Future<Model> _materializePreparedGlb(_PreparedGlb prepared) async {
+    prepared.warnings.forEach(GltfWarnings.report);
     final decodedImages = <ImageTexture>[];
     for (final imgTransfer in prepared.images) {
       final imgBytes = imgTransfer.materialize().asUint8List();
@@ -1693,27 +1752,44 @@ abstract final class AsyncModelLoader3D() {
       }
     }
 
-    Mesh buildMesh(_PreparedMesh pm) {
+    // A transferred buffer can be materialized once: meshes used by several
+    // nodes get copies of the vertices (each node has its own surfaces, as
+    // with ModelParser) and share the indices.
+    final materialized =
+        <_PreparedSurface, (Float32List, List<int>, List<MorphTargetData>)>{};
+
+    Mesh buildMesh(_PreparedMesh pm, List<double>? nodeWeights) {
       final mesh = Mesh();
+      final weights = nodeWeights ?? pm.weights;
       for (final ps in pm.surfaces) {
-        final verts = ps.vertices.materialize().asFloat32List();
-        final idxBuf = ps.indices.materialize();
-        final List<int> indices = ps.wideIndices
-            ? idxBuf.asUint32List()
-            : idxBuf.asUint16List();
+        final Float32List verts;
+        final List<int> indices;
+        final List<MorphTargetData> morphs;
+        if (materialized[ps] case (final v, final i, final m)) {
+          verts = Float32List.fromList(v);
+          indices = i;
+          morphs = m;
+        } else {
+          verts = ps.vertices.materialize().asFloat32List();
+          final idxBuf = ps.indices.materialize();
+          indices = ps.wideIndices
+              ? idxBuf.asUint32List()
+              : idxBuf.asUint16List();
+          morphs = <MorphTargetData>[
+            for (final m in ps.morphTargets)
+              MorphTargetData(
+                name: m.name,
+                positionDeltas: m.posDeltas.materialize().asFloat32List(),
+                normalDeltas: m.nrmDeltas?.materialize().asFloat32List(),
+              ),
+          ];
+          materialized[ps] = (Float32List.fromList(verts), indices, morphs);
+        }
         final mat =
             ps.materialIndex != null &&
                 ps.materialIndex! < builtMaterials.length
             ? builtMaterials[ps.materialIndex!]
             : SpatialMaterial(albedoColor: const ui.Color(0xFFFF00FF));
-        final morphs = <MorphTargetData>[
-          for (final m in ps.morphTargets)
-            MorphTargetData(
-              name: m.name,
-              positionDeltas: m.posDeltas.materialize().asFloat32List(),
-              normalDeltas: m.nrmDeltas?.materialize().asFloat32List(),
-            ),
-        ];
         final surface = Surface.fromBuffers(
           vertices: verts,
           indices: indices,
@@ -1721,8 +1797,8 @@ abstract final class AsyncModelLoader3D() {
           jointMap: ps.jointMap,
           morphTargets: morphs,
         );
-        if (pm.weights != null && pm.weights!.isNotEmpty) {
-          surface.applyMorphWeights(pm.weights!);
+        if (weights != null && weights.isNotEmpty) {
+          surface.applyMorphWeights(weights);
         }
         mesh.addSurface(surface);
       }
@@ -1732,7 +1808,7 @@ abstract final class AsyncModelLoader3D() {
     final nodes = <int, ModelNode>{};
     for (final pn in prepared.nodes) {
       final mesh = pn.meshIndex != null
-          ? buildMesh(prepared.meshes[pn.meshIndex!])
+          ? buildMesh(prepared.meshes[pn.meshIndex!], pn.weights)
           : null;
       final modelJoints = <int, ModelJoint>{};
       if (pn.skinIndex != null) {
@@ -2073,6 +2149,7 @@ class _PreparedNode({
   required final Float64List transformStorage,
   required final int? meshIndex,
   required final int? skinIndex,
+  final List<double>? weights,
 });
 
 class _PreparedAnimChannel({
@@ -2097,4 +2174,5 @@ class _PreparedGlb({
   required final List<_PreparedSkin> skins,
   required final List<_PreparedNode> nodes,
   required final List<_PreparedAnimation> animations,
+  final List<String> warnings = const [],
 });

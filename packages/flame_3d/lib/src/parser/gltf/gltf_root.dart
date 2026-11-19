@@ -13,6 +13,7 @@ import 'package:flame_3d/src/parser/gltf/gltf_extensions.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_node.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_node_with_data.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_ref.dart';
+import 'package:flame_3d/src/parser/gltf/gltf_warnings.dart';
 import 'package:flame_3d/src/parser/gltf/image.dart';
 import 'package:flame_3d/src/parser/gltf/material.dart';
 import 'package:flame_3d/src/parser/gltf/mesh.dart';
@@ -130,6 +131,15 @@ class GltfRoot._({
       ..extensions = Parser.extensions(json)
       ..extras = Parser.extras(json);
     root.punctualLights = KhrPunctualLight.parseRootLights(root.extensions);
+    final extensionsUsed = json['extensionsUsed'];
+    if (extensionsUsed is List) {
+      final unread = unreadExtensionsWarning(
+        extensionsUsed.whereType<String>(),
+      );
+      if (unread != null) {
+        GltfWarnings.report(unread);
+      }
+    }
 
     Future<List<T>> parse<T>(
       String key,

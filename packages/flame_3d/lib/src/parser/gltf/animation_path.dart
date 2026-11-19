@@ -11,6 +11,17 @@ enum AnimationPath(final String value) {
     return values.firstWhere((e) => e.value == value);
   }
 
+  /// The path named [value], or `null` when it is missing or not one of the
+  /// node paths of glTF 2.0.
+  static AnimationPath? tryParse(String? value) {
+    for (final path in values) {
+      if (path.value == value) {
+        return path;
+      }
+    }
+    return null;
+  }
+
   static AnimationPath? parse(Map<String, Object?> map, String key) {
     return Parser.stringEnum(map, key, valueOf);
   }

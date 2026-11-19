@@ -5,6 +5,7 @@ import 'package:flame_3d/src/parser/gltf/animation_path.dart';
 import 'package:flame_3d/src/parser/gltf/animation_sampler.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_node.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_root.dart';
+import 'package:flame_3d/src/parser/gltf/gltf_warnings.dart';
 
 /// A keyframe animation.
 class Animation({
@@ -39,8 +40,17 @@ class Animation({
 
     for (final channel in channels) {
       final path = channel.target.path;
+      final node = channel.target.node;
+      if (path == null || node == null) {
+        GltfWarnings.report(
+          'animation channels targeting "${channel.target.rawPath}" are '
+          'skipped: only node translation, rotation, scale and weights are '
+          'animated',
+        );
+        continue;
+      }
       final sampler = samplers[channel.sampler];
-      final nodeIndex = channel.target.node.index;
+      final nodeIndex = node.index;
 
       final times = sampler.input.get().typedData();
       final values = sampler.output.get();

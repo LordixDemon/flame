@@ -230,7 +230,9 @@ abstract final class SceneLoader3D() {
     final directDynamicNodes = <int>{};
     for (final anim in root.animations) {
       for (final ch in anim.channels) {
-        directDynamicNodes.add(ch.target.node.index);
+        if (ch.target.node case final node?) {
+          directDynamicNodes.add(node.index);
+        }
       }
     }
     for (var idx = 0; idx < root.nodes.length; idx++) {
@@ -428,7 +430,7 @@ abstract final class SceneLoader3D() {
       final relevantAnims = <ModelAnimation>[];
       for (final anim in root.animations) {
         final touchesRig = anim.channels.any(
-          (ch) => modelNodes.containsKey(ch.target.node.index),
+          (ch) => modelNodes.containsKey(ch.target.node?.index),
         );
         if (touchesRig) {
           final full = anim.toFlameAnimation();

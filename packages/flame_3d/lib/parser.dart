@@ -4,6 +4,7 @@ export 'src/parser/gltf/buffer_view.dart' show ExtMeshoptCompression;
 export 'src/parser/gltf/glb_chunk.dart';
 export 'src/parser/gltf/gltf_extensions.dart';
 export 'src/parser/gltf/gltf_root.dart';
+export 'src/parser/gltf/gltf_warnings.dart' show GltfWarnings;
 export 'src/parser/gltf_parser.dart';
 export 'src/parser/meshopt_decoder_3d.dart';
 export 'src/parser/model_parser.dart';

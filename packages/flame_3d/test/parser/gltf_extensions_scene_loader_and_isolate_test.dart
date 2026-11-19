@@ -366,11 +366,15 @@ void main() {
 
         final model = root.toFlameModel();
 
-        // 1. KHR_materials_unlit -> UnlitMaterial with RenderState.opaque.
+        // 1. KHR_materials_unlit -> UnlitMaterial with RenderState.opaque,
+        // back faces culled as the material is not double-sided.
         final surf0 = model.nodes[0]!.mesh!.surfaces.single;
         expect(surf0.material, isA<UnlitMaterial>());
         final unlitMat = surf0.material as UnlitMaterial;
-        expect(unlitMat.renderState, RenderState.opaque);
+        expect(
+          unlitMat.renderState,
+          RenderState.opaque.copyWith(cullMode: CullMode.backFace),
+        );
         expect(unlitMat.albedoColor.b, closeTo(0.8, 0.02));
 
         // 2. KHR_mesh_quantization -> normalized INT16/INT8/UINT16/UINT8.

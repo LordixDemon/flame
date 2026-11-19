@@ -10,6 +10,7 @@ import 'package:flame_3d/src/parser/gltf/accessor_type.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_node.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_ref.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_root.dart';
+import 'package:flame_3d/src/parser/gltf/gltf_warnings.dart';
 import 'package:flame_3d/src/parser/gltf/material.dart';
 import 'package:flame_3d/src/parser/gltf/morph_target.dart';
 import 'package:flame_3d/src/parser/gltf/primitive_mode.dart';
@@ -34,6 +35,13 @@ class Primitive({
   GltfRef<Vector4Accessor>? get joints => _accessor('JOINTS_0');
   GltfRef<Vector4Accessor>? get weights => _accessor('WEIGHTS_0');
 
+  /// Whether the primitive is made of triangles (lists, strips or fans), the
+  /// only modes that can be drawn.
+  bool get isTriangles =>
+      mode == PrimitiveMode.triangles ||
+      mode == PrimitiveMode.triangleStrip ||
+      mode == PrimitiveMode.triangleFan;
+
   GltfRef<T>? _accessor<T extends GltfNode>(String key) {
     final idx = attributes[key];
     if (idx == null) {
@@ -55,20 +63,37 @@ class Primitive({
   /// with zero intermediate `Vertex` heap allocations, automatically splitting
   /// into multiple `<= 64`-joint sub-surfaces if more than 64 bones influence
   /// the primitive.
+  ///
+  /// Triangle strips and fans are converted to triangle lists; points and
+  /// lines throw an [UnsupportedError] (see [isTriangles]). Vertices
+  /// influenced by more than 4 joints (`JOINTS_1` / `WEIGHTS_1`) keep the 4
+  /// largest influences, renormalized. When [transform] is given, positions
+  /// are transformed by it, normals by its normal matrix and morph deltas by
+  /// its linear part.
   List<flame_3d.Surface> toFlameSurfaces([Matrix4? transform]) {
-    assert(mode == PrimitiveMode.triangles);
+    if (!isTriangles) {
+      throw UnsupportedError(
+        'glTF primitive mode ${mode.name} is not supported: only triangles, '
+        'triangle strips and triangle fans can be drawn',
+      );
+    }
+    final unread = unreadAttributesWarning(attributes.keys);
+    if (unread != null) {
+      GltfWarnings.report(unread);
+    }
 
     final posList = positions!.get().typedData();
-    final rawIndices =
-        indices?.get().typedData() ??
-        List<int>.generate(posList.length, (i) => i);
+    final rawIndices = gltfTriangleList(
+      mode.value,
+      indices?.get().typedData() ??
+          List<int>.generate(posList.length, (i) => i),
+    )!;
     final uvList = texCoords?.get().typedData();
     final nrmList =
         normals?.get().typedData() ??
         flame_3d.Vertex.calculateVertexNormals(posList, rawIndices);
     final colorList = _readVertexColors(posList.length);
-    final weightList = weights?.get().typedData();
-    final jointList = joints?.get().typedData();
+    final (jointList, weightList) = _readInfluences();
 
     final maxIdx = rawIndices.isEmpty ? -1 : rawIndices.reduce(math.max);
     final vertCount = maxIdx + 1;
@@ -213,6 +238,52 @@ class Primitive({
     return surfaces;
   }
 
+  /// Reads `JOINTS_0` / `WEIGHTS_0` (and `JOINTS_1` / `WEIGHTS_1`), keeping
+  /// the 4 largest influences of each vertex, renormalized.
+  (List<Vector4>?, List<Vector4>?) _readInfluences() {
+    final joints0 = joints?.get().typedData();
+    final weights0 = weights?.get().typedData();
+    if (joints0 == null || weights0 == null) {
+      return (joints0, weights0);
+    }
+    final joints1 = _accessor<Vector4Accessor>('JOINTS_1')?.get().typedData();
+    final weights1 = _accessor<Vector4Accessor>('WEIGHTS_1')?.get().typedData();
+    final count = math.min(joints0.length, weights0.length);
+    List<double> flat(List<Vector4> list) => [
+      for (var i = 0; i < count; i++) ...list[i].storage,
+    ];
+    final j0 = flat(joints0);
+    final w0 = flat(weights0);
+    final hasSecond =
+        joints1 != null &&
+        weights1 != null &&
+        joints1.length >= count &&
+        weights1.length >= count;
+    final dropped = reduceJointInfluences(
+      j0,
+      w0,
+      hasSecond ? flat(joints1) : null,
+      hasSecond ? flat(weights1) : null,
+      count,
+    );
+    if (dropped) {
+      GltfWarnings.report(
+        'vertices influenced by more than 4 joints keep their 4 largest '
+        'influences',
+      );
+    }
+    List<Vector4> vectors(List<double> values) => [
+      for (var i = 0; i < count; i++)
+        Vector4(
+          values[i * 4],
+          values[i * 4 + 1],
+          values[i * 4 + 2],
+          values[i * 4 + 3],
+        ),
+    ];
+    return (vectors(j0), vectors(w0));
+  }
+
   flame_3d.Material _resolveMaterial() {
     return material?.get().toFlameMaterial() ??
         flame_3d.SpatialMaterial(albedoColor: const Color(0xFFFF00FF));
@@ -250,6 +321,7 @@ class Primitive({
     final hasTransform = transform != null && !transform.isIdentity();
     final scratchP = Vector3.zero();
     final scratchN = Vector3.zero();
+    final normalMatrix = hasTransform ? _normalMatrix(transform) : null;
 
     for (var localIdx = 0; localIdx < vertCount; localIdx++) {
       final srcIdx = vertIndices != null ? vertIndices[localIdx] : localIdx;
@@ -289,9 +361,9 @@ class Primitive({
 
       if (srcIdx < nrmList.length) {
         final n = nrmList[srcIdx];
-        if (hasTransform) {
+        if (normalMatrix != null) {
           scratchN.setFrom(n);
-          transform.transform3(scratchN);
+          normalMatrix.transform(scratchN);
           if (scratchN.length2 > 1e-12) {
             scratchN.normalize();
           }
@@ -341,6 +413,16 @@ class Primitive({
     );
   }
 
+  /// The inverse transpose of the linear part of [transform], which keeps
+  /// normals perpendicular to surfaces under non-uniform scale.
+  static Matrix3 _normalMatrix(Matrix4 transform) {
+    final m = transform.getRotation();
+    if (m.copyInverse(m) == 0.0) {
+      return transform.getRotation();
+    }
+    return m..transpose();
+  }
+
   Float32List? _readVertexColors(int expectedCount) {
     final accRef = colors;
     if (accRef == null) {
@@ -382,6 +464,7 @@ class Primitive({
       return const [];
     }
     final hasTransform = transform != null && !transform.isIdentity();
+    final normalMatrix = hasTransform ? _normalMatrix(transform) : null;
     final scratch = Vector3.zero();
     final out = <flame_3d.MorphTargetData>[];
 
@@ -396,8 +479,9 @@ class Primitive({
       final pCount = math.min(vertCount, posVecs.length);
       for (var i = 0; i < pCount; i++) {
         if (hasTransform) {
+          // Deltas are directions: the translation does not apply.
           scratch.setFrom(posVecs[i]);
-          transform.transform3(scratch);
+          transform.rotate3(scratch);
           pDeltas[i * 3] = scratch.x;
           pDeltas[i * 3 + 1] = scratch.y;
           pDeltas[i * 3 + 2] = scratch.z;
@@ -416,10 +500,11 @@ class Primitive({
         nDeltas = Float32List(vertCount * 3);
         final nCount = math.min(vertCount, nrmVecs.length);
         for (var i = 0; i < nCount; i++) {
-          final v = nrmVecs[i];
-          nDeltas[i * 3] = v.x;
-          nDeltas[i * 3 + 1] = v.y;
-          nDeltas[i * 3 + 2] = v.z;
+          scratch.setFrom(nrmVecs[i]);
+          normalMatrix?.transform(scratch);
+          nDeltas[i * 3] = scratch.x;
+          nDeltas[i * 3 + 1] = scratch.y;
+          nDeltas[i * 3 + 2] = scratch.z;
         }
       }
       out.add(

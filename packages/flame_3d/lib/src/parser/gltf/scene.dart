@@ -39,7 +39,7 @@ class Scene({
   }) {
     final gltfNode = nodeRef.get();
 
-    final mesh = gltfNode.mesh?.get().toFlameMesh();
+    final mesh = gltfNode.mesh?.get().toFlameMesh(null, gltfNode.weights);
 
     final skin = gltfNode.skin?.get();
     final inverseBindMatrices = skin?.inverseBindMatrices?.get().typedData();

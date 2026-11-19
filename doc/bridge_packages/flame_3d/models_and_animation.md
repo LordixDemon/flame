@@ -56,26 +56,29 @@ uses `Model` and `ModelComponent`.
 (`scene`, or the first one) and reads:
 
 - the node hierarchy, with `matrix` or `translation` / `rotation` / `scale`;
-- triangle primitives with `POSITION`, `NORMAL` (computed, smooth, when absent), `TEXCOORD_0`,
-  `COLOR_0` (`VEC3` or `VEC4`), `JOINTS_0` and `WEIGHTS_0`, indexed or not, into
-  `VertexLayout.standard` surfaces; 16-bit or 32-bit indices as needed;
+- triangle primitives (lists, and strips and fans converted to lists) with `POSITION`, `NORMAL`
+  (computed, smooth, when absent), `TEXCOORD_0`, `COLOR_0` (`VEC3` or `VEC4`), `JOINTS_0` /
+  `WEIGHTS_0` and `JOINTS_1` / `WEIGHTS_1`, indexed or not, into `VertexLayout.standard`
+  surfaces; 16-bit or 32-bit indices as needed. A vertex keeps its 4 largest joint influences,
+  with the weights renormalized to a sum of 1;
 - every accessor component type, including normalized integers, so quantized data
   (`KHR_mesh_quantization`) is read; interleaved buffer views (`byteStride`); sparse accessors
   (applied over their buffer view, or over zeros for accessors without one, as Blender writes
   shape keys);
 - skins: joints and inverse bind matrices; primitives skinned by more than 64 joints are split into
   surfaces of at most 64 joints each (see [Skinning](#skinning));
-- morph targets with `POSITION` and `NORMAL` deltas, and the mesh's default `weights`;
+- morph targets with `POSITION` and `NORMAL` deltas, and the initial `weights` of the node (or of
+  the mesh when the node has none);
 - animations of `translation`, `rotation`, `scale` and `weights`, with `LINEAR`, `STEP` and
-  `CUBICSPLINE` interpolation (with the file's tangents);
+  `CUBICSPLINE` interpolation (with the file's tangents); channels with other targets (the
+  `pointer` of `KHR_animation_pointer`) are skipped;
 - materials as `SpatialMaterial`: base color factor and texture, metallic and roughness factors and
   texture, normal texture and scale, occlusion texture and strength, emissive factor and texture,
   `alphaMode` (`MASK` sets `alphaCutoff`, `BLEND` makes it translucent), `doubleSided` (otherwise
   back faces are culled), `KHR_materials_emissive_strength`, the offset and scale of
   `KHR_texture_transform` on the base color texture (applied to every texture), and
-  `KHR_materials_unlit` (an `UnlitMaterial` with the base color and texture; only `BLEND` changes
-  its render state, so unlit `MASK` materials draw without the cutoff and unlit opaque ones are
-  never culled);
+  `KHR_materials_unlit` (an `UnlitMaterial` with the base color and texture; `doubleSided` decides
+  the culling, and `MASK` is drawn blended because `UnlitMaterial` has no alpha cutoff);
 - samplers (filters and wrap modes); images from the GLB binary chunk, `data:` URIs or files next to
   a `.gltf`, decoded with Flutter's image codecs (PNG, JPEG, and WebP where the platform decodes
   it);
@@ -89,28 +92,32 @@ together; and a mesh used by several nodes is built once per node.
 
 ### What it ignores or rejects
 
-Silently ignored:
+Ignored, and reported once per message in debug builds through `GltfWarnings` (to `debugPrint`, or
+to `GltfWarnings.onWarning` when set; `AsyncModelLoader3D` reports the same messages):
 
-- `TANGENT` and `TEXCOORD_1` (call `Surface.computeTangents()` on the surfaces to get tangents, see
-  [Geometry and Scene Queries](geometry.md#tangents-and-the-second-uv-set)); the `texCoord` index
-  of texture slots (every texture reads the first UV set);
-- `JOINTS_1` / `WEIGHTS_1`: vertices influenced by more than four joints keep only the first four,
-  without renormalizing the weights;
-- the rotation and `texCoord` of `KHR_texture_transform`, and its transform on textures other than
-  the base color;
-- the per-node morph `weights` (only the mesh's default weights are applied);
-- cameras, the skin's `skeleton`, `extensionsRequired`, and every other extension, including
-  `KHR_lights_punctual` (read by `SceneLoader3D` only), the other `KHR_materials_*` extensions
-  (clearcoat, transmission, volume, sheen, specular, variants) and `KHR_animation_pointer`;
-- nodes that are not in the loaded scene.
+- primitive attributes other than those above, such as `TANGENT` (call `Surface.computeTangents()`
+  on the surfaces, see [Geometry and Scene Queries](geometry.md#tangents-and-the-second-uv-set)),
+  `TEXCOORD_1` and `COLOR_1`; attributes starting with `_` (application data) are ignored without
+  a message;
+- primitives of mode points, lines, line loop and line strip (skipped);
+- the `texCoord` index of texture slots (every texture reads the first UV set), the rotation and
+  `texCoord` of `KHR_texture_transform`, and transforms that differ between the textures of one
+  material;
+- the cutoff of unlit `MASK` materials (drawn blended);
+- extensions listed in `extensionsUsed` other than those read (`EXT_meshopt_compression`,
+  `KHR_mesh_quantization`, `KHR_materials_unlit`, `KHR_materials_emissive_strength`,
+  `KHR_texture_transform`, and `KHR_lights_punctual` and `EXT_mesh_gpu_instancing`, which
+  `SceneLoader3D` reads), whether or not they are in `extensionsRequired`;
+- animation channels that do not target node transforms or weights.
 
-Rejected with an exception:
+Ignored without a message: cameras (read by `SceneLoader3D`), the skin's `skeleton`, and nodes that
+are not in the loaded scene.
 
-- textures without a `source` (for example images given only through `KHR_texture_basisu` or
-  `EXT_texture_webp` without a fallback).
+Rejected with an exception: textures without a `source` (for example images given only through
+`KHR_texture_basisu` or `EXT_texture_webp` without a fallback).
 
-Primitive modes other than triangles (points, lines, strips, fans) trip an assertion in debug builds
-and are read as triangle lists in release builds.
+`GltfRoot.meshes[i].toFlameMesh(transform)` bakes a transform into the surfaces: positions by the
+transform, normals by its inverse transpose, morph deltas by its linear part.
 
 External files of a `.gltf` (`.bin` buffers, images) are read through `Flame.assets` from the
 directory of the `.gltf`: the `uri` is percent-decoded and `.` and `..` segments are resolved, so
@@ -783,9 +790,10 @@ the main isolate; `AsyncModelLoader3D` moves the geometry work to an isolate.
 - **Meshopt**: `KHR_meshopt_compression` and its `COLOR` filter are not read.
 - **Crossfades**: at most 4 nested interrupted fades; a fifth interruption completes the oldest.
 - **Layers** override only; no additive layers.
-- **glTF**: no second UV set, no tangents, at most 4 joint influences per
-  vertex, only `KHR_materials_unlit`, `KHR_materials_emissive_strength`, `KHR_texture_transform`
-  (offset and scale) and `KHR_mesh_quantization` among material and mesh extensions.
+- **glTF**: no second UV set, no tangents, at most 4 joint influences per vertex (the largest
+  are kept), no points or lines, only `KHR_materials_unlit`, `KHR_materials_emissive_strength`,
+  `KHR_texture_transform` (offset and scale) and `KHR_mesh_quantization` among material and mesh
+  extensions; what is dropped is reported in debug builds (`GltfWarnings`).
 - **OBJ**: fan triangulation (concave polygons come out wrong), only the diffuse color of
   materials.
 - **Ray casts** hit skinned surfaces in their rest pose (see

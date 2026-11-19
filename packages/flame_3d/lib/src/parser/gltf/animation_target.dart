@@ -10,7 +10,7 @@ class AnimationTarget({
 
   /// The reference to the node to animate. When undefined, the animated object
   /// **MAY** be defined by an extension.
-  required final GltfRef<Node> node,
+  required final GltfRef<Node>? node,
 
   /// The name of the node's TRS property to animate, or the `weights` of the
   /// Morph Targets it instantiates.
@@ -20,14 +20,21 @@ class AnimationTarget({
   /// (x, y, z, w), where w is the scalar.
   /// For the `scale` property, the values are the scaling factors along the
   /// X, Y, and Z axes.
-  required final AnimationPath path,
+  ///
+  /// `null` for paths this reader does not animate, such as the `pointer`
+  /// of `KHR_animation_pointer` (see [rawPath]).
+  required final AnimationPath? path,
+
+  /// The `path` as written in the file.
+  final String? rawPath,
 }) extends GltfNode {
   AnimationTarget.parse(
     GltfRoot root,
     Map<String, Object?> map,
   ) : this(
         root: root,
-        node: Parser.ref(root, map, 'node')!,
-        path: AnimationPath.parse(map, 'path')!,
+        node: Parser.ref(root, map, 'node'),
+        path: AnimationPath.tryParse(Parser.string(map, 'path')),
+        rawPath: Parser.string(map, 'path'),
       );
 }
