@@ -898,9 +898,51 @@ an `UnsupportedError`).
 
 The hull follows the mesh's normals: a mesh with split normals at hard edges (a cube with flat
 faces) opens gaps at its corners, so give outlined meshes smooth normals. The normals are
-transformed by the model matrix, not its inverse transpose, so non-uniformly scaled objects get
-uneven outlines. The alpha of `color` darkens the outline rather than making it see-through, since
-the material draws opaque; give it `RenderState.premultipliedAlphaBlend` for a translucent one.
+transformed by the inverse transpose of the model matrix (and of the skinning blend), so
+non-uniformly scaled objects get outlines as thick on every side. The alpha of `color` darkens the
+outline rather than making it see-through, since the material draws opaque; give it
+`RenderState.premultipliedAlphaBlend` for a translucent one.
+
+
+### Outlines for materials that move their vertices
+
+`OutlineMaterial` extrudes the mesh as it is stored: an object whose own material moves its
+vertices in the vertex shader (wind, waves, morphs) gets an outline of its rest shape. A custom
+outline material can draw the matching hull with the chunk `flame_3d/outline.glsl`, the vertex
+step `OutlineMaterial` itself uses:
+
+- `vec3 outlineWorldNormal(mat4 model, vec3 normal)` turns a model-space normal into a unit
+  world-space one with the inverse transpose of `model` (computed as its cofactor, so without an
+  inverse, and turned outwards for mirroring transforms).
+- `vec4 outlineExtrude(mat4 viewProjection, vec3 worldPos, vec3 worldNormal, float thickness, bool
+  screenSpace, float aspect, float depthBias)` returns the clip position of `worldPos` pushed along
+  `worldNormal` by `thickness` (world units, or with `screenSpace` a fraction of the viewport height
+  with `aspect` the viewport's height over width), moved away from the camera by `depthBias` in
+  clip depth.
+
+Displace the vertex and its normal exactly as the object's material does (the normal by the
+inverse transpose of the displacement's Jacobian), then extrude the result:
+
+```glsl
+#include <flame_3d/instancing.glsl>
+#include <flame_3d/camera.glsl>
+#include <flame_3d/outline.glsl>
+
+void main() {
+  vec3 p = vertexPosition + displacement(vertexPosition);
+  vec3 n = displacedNormal(vertexPosition, vertexNormal);
+  mat4 model = instanceModelMatrix();
+  gl_Position = outlineExtrude(
+    camera.viewProjection,
+    (model * vec4(p, 1.0)).xyz,
+    outlineWorldNormal(model, n),
+    thickness, false, 1.0, 0.0005);
+  fragColor = outlineColor;
+}
+```
+
+Give the material `RenderState(cullMode: CullMode.frontFace)` and `castsShadows = false`, as
+`OutlineMaterial` has.
 
 
 ## Surface decals
