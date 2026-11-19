@@ -349,7 +349,7 @@ class Scene3DComponent({
     _bloomTargetHeight = 0;
   }
 
-  static const int _keyNumberCount = 34;
+  static const int _keyNumberCount = 38;
   static const int _keyObjectCount = 4;
 
   /// Writes the values a retained image depends on, besides the camera
@@ -362,11 +362,14 @@ class Scene3DComponent({
     int targetWidth,
     int targetHeight,
     double pixelScale,
+    Rect visibleFrame,
   ) {
     final world = this.world;
     final bloom = world.bloom;
     final post = world.postProcess;
     final group = world.shadowGroup;
+    // The frame only changes the image through the vignette.
+    final vignette = (post?.vignetteIntensity ?? 0) > 0;
     _nextNumbers
       ..[0] = world.sceneVersion.toDouble()
       ..[1] = _manualVersion.toDouble()
@@ -401,7 +404,11 @@ class Scene3DComponent({
       ..[30] = post?.ssaoRadius ?? 0
       ..[31] = post?.dofFocusDepth ?? 0
       ..[32] = post?.dofFocusRange ?? 0
-      ..[33] = post?.dofBlurStrength ?? 0;
+      ..[33] = post?.dofBlurStrength ?? 0
+      ..[34] = vignette ? visibleFrame.left : 0
+      ..[35] = vignette ? visibleFrame.top : 0
+      ..[36] = vignette ? visibleFrame.right : 0
+      ..[37] = vignette ? visibleFrame.bottom : 0;
     _nextObjects
       ..[0] = world.oitMode
       ..[1] = world.renderDebugMode3D
@@ -535,6 +542,9 @@ class Scene3DComponent({
     if (visible.isEmpty) {
       return;
     }
+    // What is seen of the layer, which the vignette is centered on, whatever
+    // part of it the scene covers.
+    final frame = visible;
     final scene = _sceneBounds(a, b, c, d, tx, ty);
     if (scene != null) {
       visible = visible.intersect(scene);
@@ -598,6 +608,12 @@ class Scene3DComponent({
       (left + pixelWidth) / pixelScale,
       (top + pixelHeight) / pixelScale,
     );
+    final visibleFrame = Rect.fromLTRB(
+      frame.left * pixelScale - left,
+      frame.top * pixelScale - top,
+      frame.right * pixelScale - left,
+      frame.bottom * pixelScale - top,
+    );
 
     final isRetained = _cacheMode == Scene3DCacheMode.retained;
     if (isRetained) {
@@ -609,6 +625,7 @@ class Scene3DComponent({
         targetWidth,
         targetHeight,
         pixelScale,
+        visibleFrame,
       );
       final retainedImage = _retainedImage;
       final retainedTarget = _retainedImageTarget;
@@ -711,6 +728,7 @@ class Scene3DComponent({
       clearValue: device.clearValue,
       ownedOutputTarget: ownedTarget,
       recordDraws: () => world.renderScene(canvas),
+      visibleFrame: visibleFrame,
     );
 
     _subtract(device.stats, _statsBefore, _stats);

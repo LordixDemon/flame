@@ -39,6 +39,10 @@ uniform BloomComposite {
   // x: lutIntensity, y: lutSize (16.0), z: hdr (1=scene texture is extended
   // sRGB, decoded before and encoded after tone mapping), w: debugMode
   vec4 lutParams;
+  // The visible frame the vignette is centered on, in texture coordinates:
+  // xy: its center, zw: 2 / its size ((0.5, 0.5, 2, 2) for the whole
+  // target).
+  vec4 frame;
 } composite;
 
 float decodeDepth16(vec4 dn) {
@@ -333,7 +337,7 @@ void main() {
   float vignette = 1.0;
   float vigAmt = composite.grading.y;
   if (vigAmt > 0.0) {
-    vec2 centered = fragUv * 2.0 - 1.0;
+    vec2 centered = (fragUv - composite.frame.xy) * composite.frame.zw;
     float d = length(centered) * 0.70710678;
     float smoothW = max(composite.grading.z, 0.05);
     vignette = clamp(1.0 - smoothstep(1.0 - smoothW, 1.05, d) * vigAmt, 0.0, 1.0);

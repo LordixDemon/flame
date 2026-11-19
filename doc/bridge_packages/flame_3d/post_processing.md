@@ -177,11 +177,16 @@ the color adjustments. Its texture is created once per backend.
 
 `vignetteIntensity` (default `0`, off) darkens the image towards its corners; `vignetteSmoothness`
 (default `0.5`, at least `0.05`) is the width of the transition. The distance is measured from the
-center of the rendered image, `0` at the center and `1` in the corners.
+center of the visible frame, `0` at the center and `1` in its corners: the rendered image of a
+`FlameGame3D` camera, or, in a `Scene3DComponent`, the part of the screen where the layer is seen.
 
-In a `Scene3DComponent` the rendered image covers only the part of the screen the scene occupies,
-rounded up in size, so the vignette is centered on neither the screen nor the scene, and it moves as
-the 2D camera pans. Draw a screen vignette in 2D over the whole game instead.
+A `Scene3DComponent` renders only the part of the screen its scene occupies, into a target rounded
+up in size, but its vignette is measured on what is seen of the layer: the canvas's clip (the
+game's area when nothing clips it), intersected with the layer's `size` and `visibleRect` when it
+has them, whatever part of it the scene covers. A full-screen layer gets a vignette centered on the
+screen that stays in place as the 2D camera pans; a layer bounded by its `size` or `visibleRect`
+gets one centered on that rectangle. `GraphicsDevice.applyBloomFromTarget` takes this frame as its
+`visibleFrame`, in the pixels of the target.
 
 
 ## FXAA
@@ -370,8 +375,8 @@ The pipeline is the same; what differs is the image it runs on.
   the composite runs over that image.
 - A `Scene3DComponent` renders only the part of the screen its scene covers, into a target whose
   size is rounded up and kept while the visible part shrinks; the composite runs over that whole
-  target. Effects measured on the image (the vignette, the edges of bloom and depth of field) follow
-  that region, not the screen.
+  target. The vignette is measured on what is seen of the layer (see [Vignette](#vignette)); the
+  edges of bloom and depth of field follow the rendered region, not the screen.
 - A layer's background is transparent and is drawn over the 2D components behind it. The composite
   keeps the scene's alpha and applies grading only to the covered part of each pixel, so
   transparent pixels stay transparent; the bloom glow over them is added to the 2D art behind the

@@ -735,6 +735,9 @@ class World3D({
   /// Weighted Blended OIT, CustomRenderPass3D hooks, HDR float16 target, and
   /// Bloom/PostProcess/ColorLut3D/Debug composite) once shadows & depth-normal
   /// prepasses have completed, returning the final [Image].
+  ///
+  /// [visibleFrame], in the pixels of the target, is the part of it that is
+  /// seen, which the vignette is centered on (the whole target by default).
   @internal
   Image executeWorldRenderPipeline({
     required GraphicsDevice device,
@@ -745,6 +748,7 @@ class World3D({
     required Color clearValue,
     required void Function() recordDraws,
     GpuRenderTarget? ownedOutputTarget,
+    Rect? visibleFrame,
   }) {
     syncContextOptions(renderContext);
     renderContext.clearActiveSceneColorTarget();
@@ -878,6 +882,7 @@ class World3D({
           outputTarget: ownedOutputTarget,
           hdrEnabled: _hdrEnabled,
           renderDebugMode: _renderDebugMode3D,
+          visibleFrame: visibleFrame,
         );
       }
 
@@ -932,6 +937,7 @@ class World3D({
         outputTarget: ownedOutputTarget,
         hdrEnabled: _hdrEnabled,
         renderDebugMode: _renderDebugMode3D,
+        visibleFrame: visibleFrame,
       );
     }
 

@@ -172,6 +172,10 @@ class GraphicsDevice({
 
   /// Applies GPU [BloomSettings] (and optional [PostProcessSettings]) to
   /// [sceneTarget] inside the active frame and returns the composited [Image].
+  ///
+  /// [visibleFrame] is the part of the target that is seen, in its pixels
+  /// (it may reach outside the target): the vignette of [postProcess] is
+  /// centered on it. It is the whole target when `null`.
   Image applyBloomFromTarget(
     GpuTextureTarget sceneTarget,
     BloomSettings? settings, {
@@ -180,6 +184,7 @@ class GraphicsDevice({
     GpuRenderTarget? outputTarget,
     bool hdrEnabled = false,
     RenderDebugMode3D renderDebugMode = RenderDebugMode3D.none,
+    Rect? visibleFrame,
   }) {
     return _bloom.applyFromTarget(
       sceneTarget,
@@ -189,6 +194,7 @@ class GraphicsDevice({
       outputTarget: outputTarget,
       hdrEnabled: hdrEnabled,
       debugMode: renderDebugMode,
+      visibleFrame: visibleFrame,
     );
   }
 

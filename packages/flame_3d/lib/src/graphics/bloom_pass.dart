@@ -1,6 +1,6 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
-import 'dart:ui' show Color, Image, Size;
+import 'dart:ui' show Color, Image, Rect, Size;
 
 import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
@@ -76,11 +76,16 @@ class BloomPass(final GraphicsDevice _device) {
   final Vector4 _ssao = Vector4.zero();
   final Vector4 _dof = Vector4.zero();
   final Vector4 _lutParams = Vector4.zero();
+  final Vector4 _frame = Vector4.zero();
 
   /// Applies optional [bloom] and optional [postProcess] to [sceneTarget]
   /// (into which the 3D scene pass has just ended via `endTexturePass`),
   /// writing the composited [Image] into [outputTarget] (when given) or a
   /// pooled render target of the same size.
+  ///
+  /// [visibleFrame] is the part of the target that is seen, in its pixels
+  /// (it may reach outside the target), which the vignette is centered on;
+  /// the whole target when `null`.
   Image applyFromTarget(
     GpuTextureTarget sceneTarget,
     BloomSettings? bloom, {
@@ -89,6 +94,7 @@ class BloomPass(final GraphicsDevice _device) {
     GpuRenderTarget? outputTarget,
     bool hdrEnabled = false,
     RenderDebugMode3D debugMode = RenderDebugMode3D.none,
+    Rect? visibleFrame,
   }) {
     final fullWidth = sceneTarget.width;
     final fullHeight = sceneTarget.height;
@@ -208,6 +214,18 @@ class BloomPass(final GraphicsDevice _device) {
       hdrEnabled ? 1.0 : 0.0,
       debugMode.index.toDouble(),
     );
+    if (visibleFrame == null ||
+        !(visibleFrame.width > 0) ||
+        !(visibleFrame.height > 0)) {
+      _frame.setValues(0.5, 0.5, 2, 2);
+    } else {
+      _frame.setValues(
+        visibleFrame.center.dx / fullWidth,
+        visibleFrame.center.dy / fullHeight,
+        2 * fullWidth / visibleFrame.width,
+        2 * fullHeight / visibleFrame.height,
+      );
+    }
 
     _compositeFrag
       ..setTexture('sceneTexture', sceneTexture)
@@ -220,7 +238,8 @@ class BloomPass(final GraphicsDevice _device) {
       ..setVector4('BloomComposite.texel', _texel)
       ..setVector4('BloomComposite.ssao', _ssao)
       ..setVector4('BloomComposite.dof', _dof)
-      ..setVector4('BloomComposite.lutParams', _lutParams);
+      ..setVector4('BloomComposite.lutParams', _lutParams)
+      ..setVector4('BloomComposite.frame', _frame);
 
     if (outputTarget != null) {
       _device.beginOwnedPass(outputTarget);
