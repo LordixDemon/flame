@@ -777,6 +777,65 @@ void main() {
     });
   });
 
+  group('Light indices', () {
+    // A receiver tells the light a shadow belongs to by its index in its
+    // block: the shadow pass must count the lights as the blocks hold them.
+    Light point({double intensity = 1, ShadowSettings? shadows}) => Light(
+      position: Vector3(0, 0, -6),
+      source: PointLight(
+        color: const Color(0xFFFFFFFF),
+        intensity: intensity,
+        range: 10,
+        shadows: shadows,
+      ),
+    );
+    Light spot({double intensity = 1, double z = -6, ShadowSettings? s}) =>
+        Light(
+          position: Vector3(0, 0, z),
+          source: SpotLight(
+            direction: Vector3(0, 0, -1),
+            intensity: intensity,
+            range: 10,
+            shadows: s,
+          ),
+        );
+
+    Float32List render(List<Light> lights) {
+      final material = _Receiver();
+      final surface = triangle(material);
+      frame(lights, () {
+        context.drawSurface(
+          surface,
+          transform: Matrix4.translationValues(0, 0, -10),
+        );
+      });
+      return shadowsMember(material, 'toLight', 4);
+    }
+
+    test('a point light of zero intensity holds no index', () {
+      final material = _Receiver();
+      final surface = triangle(material);
+      frame([point(intensity: 0), point(shadows: ShadowSettings())], () {
+        context.drawSurface(
+          surface,
+          transform: Matrix4.translationValues(0, 0, -10),
+        );
+      });
+      // The block holds the second light first.
+      expect(shadowsMember(material, 'atlas', 4)[3], 0);
+    });
+
+    test('spot lights picked by priority keep their shadows', () {
+      // Five spot lights: the block holds the four of the highest priority,
+      // the brightest first, the one with shadows.
+      final toLight = render([
+        for (var i = 0; i < 4; i++) spot(z: -6.0 - i),
+        spot(intensity: 50, s: ShadowSettings()),
+      ]);
+      expect(toLight[3], 100);
+    });
+  });
+
   group('Point light tiles', () {
     // The main camera sees x and y in [-1, 1]; the point light at
     // (2.5, 0, -3) reaches 10 units around it.

@@ -1421,7 +1421,14 @@ class RenderContext3D(super.device) extends RenderContext {
     return intensity / (1.0 + nx * nx + ny * ny);
   }
 
-  static void writeLightsUniforms(RenderContext3D context, UniformBlock block) {
+  /// Fills [out] with the indices, in [lights], of the point lights the
+  /// [lightsBlock] holds, in the order it holds them, and returns how many:
+  /// those of the pass's `lightMask` and of non-zero intensity among the
+  /// first [maxPointLights], or, with [prioritizeNearestLights] and more of
+  /// them, the [maxPointLights] of the highest priority.
+  ///
+  /// The shadow pass matches its lights to the block with it.
+  static int _selectPointLights(RenderContext3D context, Int32List out) {
     final lights = context.lights;
     var totalPointLights = 0;
     for (var i = 0; i < lights.length; i++) {
@@ -1448,75 +1455,38 @@ class RenderContext3D(super.device) extends RenderContext {
         if (source.intensity == 0) {
           continue;
         }
-        final range = source.range;
-        block
-          ..setVector3('positions', light.position, index: count)
-          ..setColor('colors', source.color, index: count)
-          ..setFloat('intensities', source.intensity, index: count)
-          ..setFloat(
-            'ranges',
-            range != null && range > 0 ? range : 0,
-            index: count,
-          );
-        count++;
+        out[count++] = i;
       }
-    } else {
-      for (var i = 0; i < lights.length; i++) {
-        final light = lights[i];
-        if ((light.lightMask & context.cameraMask) == 0) {
-          continue;
-        }
-        final source = light.source;
-        if (source is! PointLight || source.intensity <= 0) {
-          continue;
-        }
-        final score = _lightPriorityScore(
-          context,
-          light.position,
-          source.intensity,
-        );
-        if (count < maxPointLights) {
-          var pos = count++;
-          while (pos > 0 && _topLightScores[pos - 1] < score) {
-            _topLightScores[pos] = _topLightScores[pos - 1];
-            _topLightIndices[pos] = _topLightIndices[pos - 1];
-            pos--;
-          }
-          _topLightScores[pos] = score;
-          _topLightIndices[pos] = i;
-        } else if (score > _topLightScores[maxPointLights - 1]) {
-          var pos = maxPointLights - 1;
-          while (pos > 0 && _topLightScores[pos - 1] < score) {
-            _topLightScores[pos] = _topLightScores[pos - 1];
-            _topLightIndices[pos] = _topLightIndices[pos - 1];
-            pos--;
-          }
-          _topLightScores[pos] = score;
-          _topLightIndices[pos] = i;
-        }
-      }
-      for (var k = 0; k < count; k++) {
-        final light = lights[_topLightIndices[k]];
-        final source = light.source as PointLight;
-        final range = source.range;
-        block
-          ..setVector3('positions', light.position, index: k)
-          ..setColor('colors', source.color, index: k)
-          ..setFloat('intensities', source.intensity, index: k)
-          ..setFloat(
-            'ranges',
-            range != null && range > 0 ? range : 0,
-            index: k,
-          );
-      }
+      return count;
     }
-    block.setFloat('numLights', count.toDouble());
+    for (var i = 0; i < lights.length; i++) {
+      final light = lights[i];
+      if ((light.lightMask & context.cameraMask) == 0) {
+        continue;
+      }
+      final source = light.source;
+      if (source is! PointLight || source.intensity <= 0) {
+        continue;
+      }
+      count = _insertByScore(
+        out,
+        count,
+        maxPointLights,
+        i,
+        _lightPriorityScore(context, light.position, source.intensity),
+      );
+    }
+    return count;
   }
 
-  static void writeSpotLightsUniforms(
-    RenderContext3D context,
-    UniformBlock block,
-  ) {
+  /// Fills [out] with the indices, in [lights], of the spot lights the
+  /// [spotLightsBlock] holds, in the order it holds them, and returns how
+  /// many: those of the pass's `lightMask` and of non-zero intensity, the
+  /// first [maxSpotLights] when there are no more spot lights than that, the
+  /// [maxSpotLights] of the highest priority otherwise.
+  ///
+  /// The shadow pass matches its lights to the block with it.
+  static int _selectSpotLights(RenderContext3D context, Int32List out) {
     final lights = context.lights;
     var totalSpot = 0;
     for (var i = 0; i < lights.length; i++) {
@@ -1532,48 +1502,86 @@ class RenderContext3D(super.device) extends RenderContext {
         if ((lights[i].lightMask & context.cameraMask) == 0) {
           continue;
         }
-        if (lights[i].source is SpotLight) {
-          final s = lights[i].source as SpotLight;
-          if (s.intensity > 0) {
-            _topLightIndices[count++] = i;
-          }
+        final source = lights[i].source;
+        if (source is SpotLight && source.intensity > 0) {
+          out[count++] = i;
         }
       }
-    } else {
-      for (var i = 0; i < lights.length; i++) {
-        if ((lights[i].lightMask & context.cameraMask) == 0) {
-          continue;
-        }
-        final s = lights[i].source;
-        if (s is! SpotLight || s.intensity <= 0) {
-          continue;
-        }
-        final score = _lightPriorityScore(
-          context,
-          lights[i].position,
-          s.intensity,
-        );
-        if (count < maxSpotLights) {
-          var pos = count++;
-          while (pos > 0 && _topLightScores[pos - 1] < score) {
-            _topLightScores[pos] = _topLightScores[pos - 1];
-            _topLightIndices[pos] = _topLightIndices[pos - 1];
-            pos--;
-          }
-          _topLightScores[pos] = score;
-          _topLightIndices[pos] = i;
-        } else if (score > _topLightScores[maxSpotLights - 1]) {
-          var pos = maxSpotLights - 1;
-          while (pos > 0 && _topLightScores[pos - 1] < score) {
-            _topLightScores[pos] = _topLightScores[pos - 1];
-            _topLightIndices[pos] = _topLightIndices[pos - 1];
-            pos--;
-          }
-          _topLightScores[pos] = score;
-          _topLightIndices[pos] = i;
-        }
-      }
+      return count;
     }
+    for (var i = 0; i < lights.length; i++) {
+      if ((lights[i].lightMask & context.cameraMask) == 0) {
+        continue;
+      }
+      final source = lights[i].source;
+      if (source is! SpotLight || source.intensity <= 0) {
+        continue;
+      }
+      count = _insertByScore(
+        out,
+        count,
+        maxSpotLights,
+        i,
+        _lightPriorityScore(context, lights[i].position, source.intensity),
+      );
+    }
+    return count;
+  }
+
+  /// Inserts light [index] of [score] into the [count] first entries of
+  /// [out], kept by decreasing score in [_topLightScores], at most
+  /// [capacity] of them; returns the new count.
+  static int _insertByScore(
+    Int32List out,
+    int count,
+    int capacity,
+    int index,
+    double score,
+  ) {
+    int pos;
+    if (count < capacity) {
+      pos = count++;
+    } else if (score > _topLightScores[capacity - 1]) {
+      pos = capacity - 1;
+    } else {
+      return count;
+    }
+    while (pos > 0 && _topLightScores[pos - 1] < score) {
+      _topLightScores[pos] = _topLightScores[pos - 1];
+      out[pos] = out[pos - 1];
+      pos--;
+    }
+    _topLightScores[pos] = score;
+    out[pos] = index;
+    return count;
+  }
+
+  static void writeLightsUniforms(RenderContext3D context, UniformBlock block) {
+    final lights = context.lights;
+    final count = _selectPointLights(context, _topLightIndices);
+    for (var k = 0; k < count; k++) {
+      final light = lights[_topLightIndices[k]];
+      final source = light.source as PointLight;
+      final range = source.range;
+      block
+        ..setVector3('positions', light.position, index: k)
+        ..setColor('colors', source.color, index: k)
+        ..setFloat('intensities', source.intensity, index: k)
+        ..setFloat(
+          'ranges',
+          range != null && range > 0 ? range : 0,
+          index: k,
+        );
+    }
+    block.setFloat('numLights', count.toDouble());
+  }
+
+  static void writeSpotLightsUniforms(
+    RenderContext3D context,
+    UniformBlock block,
+  ) {
+    final lights = context.lights;
+    final count = _selectSpotLights(context, _topLightIndices);
 
     final dir = _scratchDirection;
     final val = _scratchVector4;

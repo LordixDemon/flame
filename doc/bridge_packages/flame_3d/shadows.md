@@ -432,9 +432,11 @@ filtered with its `softness` and pushed along the normal by 1.2 texels, whatever
 Every receiver but `WaterMaterial` (which has no spot lights) receives them on both paths. The map
 stores the depth of every pixel of the casters, so large triangles do not shadow themselves.
 
-Only the first two spot lights with settings among the first four lit spot lights of the pass cast
-shadows. With more than four spot lights, the lights are picked by their distance to the camera,
-and the shadow can land on another light's contribution (see [Limitations](#limitations)).
+Only the first two spot lights with settings among the four spot lights the pass lights with cast
+shadows: the first four lit ones, or with more than four the four picked by their distance to the
+camera (see [Selection beyond the limits](lighting.md#selection-beyond-the-limits)). A spot light
+the pass leaves out casts no shadow, and the shadows follow the lights they belong to whatever
+order the pass holds them in.
 
 
 ## Point-light shadows
@@ -459,8 +461,9 @@ world.add(
 The light renders two tiles of the atlas, one for each half of the space around it along the world
 z axis (a dual-paraboloid map): each vertex of a caster is projected onto a paraboloid, and the
 depth is the distance to the light divided by `range` (24 units when `range` is `null`). Only the
-first point light with settings, among the first eight point lights of the pass, casts shadows, and
-every receiver receives them. The receivers push their point by 0.03 units along the normal, use a
+first point light with settings, among the point lights the pass lights with (the lit ones among
+the first eight, or the eight picked with `prioritizeNearestLights`), casts shadows, and every
+receiver receives them. The receivers push their point by 0.03 units along the normal, use a
 depth bias of `depthBias * 0.004` of the range, and filter over a radius of `softness` clamped to 2.
 
 The projection is applied to the vertices only, and the triangles between them are rasterized as
@@ -579,11 +582,10 @@ These are the parts of shadows that are not finished at this point:
 - Every tile of the atlas traverses the scene again (eight traversals at most), unless the atlas
   is cached.
 - Only one point light casts shadows, split along the world z axis.
-- The index of the light a shadow belongs to is counted among the lights in the order they were
-  added. When the pass picks its lights by distance (more than four spot lights, or
-  `prioritizeNearestLights` with more than eight point lights), or when a point light of zero
-  intensity comes before the one that casts, the shadow is applied to another light (see
-  [Selection beyond the limits](lighting.md#selection-beyond-the-limits)).
+- In a `ShadowGroup`, a layer that reuses the map applies its shadows to the lights by the indices
+  the first layer's pass gave them: when the pass picks its lights by distance (more than four spot
+  lights, or `prioritizeNearestLights` with more than eight point lights), another camera can pick
+  them in another order.
 - Spot-light shadows ignore `fit`, `bounds`, `maxDistance` and `stabilize`, and on the atlas their
   `normalBias`.
 - In a shadow pass, `RenderContext3D.cameraPosition` is the position of the light's view: the

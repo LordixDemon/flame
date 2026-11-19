@@ -106,6 +106,7 @@ class _ShadowPass(final RenderContext3D _context) {
   static final Vector4 _vec4Scratch = Vector4.zero();
   static final Matrix4 _identityMat = Matrix4.identity();
   static final Float64List _splits = Float64List(ShadowSettings.maxCascades);
+  static final Int32List _selection = Int32List(RenderContext3D.maxPointLights);
   static final Aabb3 _subBox = Aabb3();
 
   static final Vector4 _packedDecode = Vector4(
@@ -180,52 +181,51 @@ class _ShadowPass(final RenderContext3D _context) {
       return _none();
     }
 
-    // Discover shadow-casting directional, spot, and point lights.
+    // The lights that cast shadows, and their indices in their blocks: the
+    // first directional light with settings among the directional lights
+    // the pass holds, the first two such spot lights and the first such point
+    // light, among the lights the blocks hold, in their order (see
+    // RenderContext3D._selectSpotLights and _selectPointLights).
     final lights = context.lights;
     Light? dirLight;
     ShadowSettings? dirSettings;
     var dirIndex = 0;
     var foundDirIndex = -1;
-
-    _spotCasterCount = 0;
-    var spotIdx = 0;
-
-    _pointCaster = null;
-    var pointIdx = 0;
-
     for (var i = 0; i < lights.length; i++) {
       final l = lights[i];
       if ((l.lightMask & context.cameraMask) == 0) {
         continue;
       }
       final source = l.source;
-      if (source is DirectionalLight) {
-        if (dirIndex < RenderContext3D.maxDirectionalLights) {
-          if (dirLight == null && source.shadows != null) {
-            dirLight = l;
-            dirSettings = source.shadows;
-            foundDirIndex = dirIndex;
-          }
-          dirIndex++;
+      if (source is DirectionalLight &&
+          dirIndex < RenderContext3D.maxDirectionalLights) {
+        if (dirLight == null && source.shadows != null) {
+          dirLight = l;
+          dirSettings = source.shadows;
+          foundDirIndex = dirIndex;
         }
-      } else if (source is SpotLight) {
-        if (source.intensity > 0 && spotIdx < RenderContext3D.maxSpotLights) {
-          if (source.shadows != null && _spotCasterCount < 2) {
-            _spotCasters[_spotCasterCount] = l;
-            _spotCasterIndices[_spotCasterCount++] = spotIdx;
-          }
-          spotIdx++;
-        }
-      } else if (source is PointLight) {
-        if (pointIdx < RenderContext3D.maxPointLights) {
-          if (source.intensity > 0 &&
-              source.shadows != null &&
-              _pointCaster == null) {
-            _pointCaster = l;
-            _pointCasterIndex = pointIdx;
-          }
-          pointIdx++;
-        }
+        dirIndex++;
+      }
+    }
+
+    _spotCasterCount = 0;
+    final spots = RenderContext3D._selectSpotLights(context, _selection);
+    for (var k = 0; k < spots && _spotCasterCount < 2; k++) {
+      final l = lights[_selection[k]];
+      if ((l.source as SpotLight).shadows != null) {
+        _spotCasters[_spotCasterCount] = l;
+        _spotCasterIndices[_spotCasterCount++] = k;
+      }
+    }
+
+    _pointCaster = null;
+    final points = RenderContext3D._selectPointLights(context, _selection);
+    for (var k = 0; k < points; k++) {
+      final l = lights[_selection[k]];
+      if ((l.source as PointLight).shadows != null) {
+        _pointCaster = l;
+        _pointCasterIndex = k;
+        break;
       }
     }
 
