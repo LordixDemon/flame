@@ -759,7 +759,11 @@ class World3D({
   }
 
   /// Renders this world once at [size] physical pixels from [view] and
-  /// [projection] into an independent [Image].
+  /// [projection] into an independent [Image], which the caller disposes.
+  ///
+  /// The world need not be mounted: the lights of an unmounted world are
+  /// gathered from its tree for the render. Each call renders into a render
+  /// target of its own, so the image stays valid however long it is kept.
   Image renderToImage(
     Size size, {
     required Matrix4 view,
@@ -768,6 +772,30 @@ class World3D({
     Color clearValue = const Color(0x00000000),
     GraphicsDevice? device,
     RenderContext3D? context,
+  }) => renderToImageInto(
+    size,
+    view: view,
+    projection: projection,
+    msaa: msaa,
+    clearValue: clearValue,
+    device: device,
+    context: context,
+  );
+
+  /// [renderToImage] into [target] when given, a render target the caller
+  /// keeps from frame to frame instead of a new one per call; the image is
+  /// then only valid until the target renders into its color texture again
+  /// (two frames later), so it must be drawn in the current frame.
+  @internal
+  Image renderToImageInto(
+    Size size, {
+    required Matrix4 view,
+    required Matrix4 projection,
+    Msaa msaa = Msaa.off,
+    Color clearValue = const Color(0x00000000),
+    GraphicsDevice? device,
+    RenderContext3D? context,
+    GpuRenderTarget? target,
   }) {
     final width = math.max(1, size.width.round());
     final height = math.max(1, size.height.round());
@@ -798,46 +826,47 @@ class World3D({
 
     final dummyRecorder = PictureRecorder();
     final dummyCanvas = Canvas(dummyRecorder);
-    final prevHost = _host;
-    _host = _SnapshotHost(resolvedDevice, resolvedContext, msaa);
 
     try {
-      resolvedContext
-        ..lights = _lights
-        ..fog = _fog
-        ..setCamera(view, projection);
-      syncContextOptions(resolvedContext);
-      renderShadows(dummyCanvas, overrideContext: resolvedContext);
-      renderDepthNormals(
-        dummyCanvas,
-        width,
-        height,
-        overrideContext: resolvedContext,
-      );
-
-      final usePost = needsPostCompositePass(resolvedDevice);
-      final ownedTarget = resolvedDevice.backend.createRenderTarget(
-        width: width,
-        height: height,
-        clearValue: usePost ? const Color(0x00000000) : clearValue,
-        msaaSampleCount: usePost ? 1 : msaa.sampleCount,
-      );
-
-      return executeWorldRenderPipeline(
-        device: resolvedDevice,
-        renderContext: resolvedContext,
-        width: width,
-        height: height,
-        msaaSampleCount: msaa.sampleCount,
-        clearValue: clearValue,
-        ownedOutputTarget: ownedTarget,
-        recordDraws: () => renderScene(
+      return renderWithHost(resolvedDevice, resolvedContext, msaa: msaa, () {
+        resolvedContext
+          ..lights = _lights
+          ..fog = _fog
+          ..setCamera(view, projection);
+        syncContextOptions(resolvedContext);
+        renderShadows(dummyCanvas, overrideContext: resolvedContext);
+        renderDepthNormals(
           dummyCanvas,
+          width,
+          height,
           overrideContext: resolvedContext,
-        ),
-      );
+        );
+
+        final usePost = needsPostCompositePass(resolvedDevice);
+        final ownedTarget =
+            target ??
+            resolvedDevice.backend.createRenderTarget(
+              width: width,
+              height: height,
+              clearValue: usePost ? const Color(0x00000000) : clearValue,
+              msaaSampleCount: usePost ? 1 : msaa.sampleCount,
+            );
+
+        return executeWorldRenderPipeline(
+          device: resolvedDevice,
+          renderContext: resolvedContext,
+          width: width,
+          height: height,
+          msaaSampleCount: msaa.sampleCount,
+          clearValue: clearValue,
+          ownedOutputTarget: ownedTarget,
+          recordDraws: () => renderScene(
+            dummyCanvas,
+            overrideContext: resolvedContext,
+          ),
+        );
+      });
     } finally {
-      _host = prevHost;
       dummyRecorder.endRecording().dispose();
       if (closeFrame) {
         if (_contextOrNull != null && host is Game3D) {
@@ -846,6 +875,48 @@ class World3D({
           EmbeddedRenderer.of(findGame() ?? this).close();
         }
       }
+    }
+  }
+
+  /// Runs [body] with [device] and [context] as this world's host, so that
+  /// its components record their draws into [context] whatever host the
+  /// world is mounted under (or without one).
+  ///
+  /// For an unmounted world, whose lights are not registered (they register
+  /// when mounted), the lights of its tree are gathered for the duration of
+  /// [body].
+  @internal
+  T renderWithHost<T>(
+    GraphicsDevice device,
+    RenderContext3D context,
+    T Function() body, {
+    Msaa msaa = Msaa.off,
+  }) {
+    final previousHost = _host;
+    _host = _SnapshotHost(device, context, msaa);
+    final gatherLights = !isMounted && _lights.isEmpty;
+    if (gatherLights) {
+      _gatherLights(this);
+    }
+    try {
+      return body();
+    } finally {
+      _host = previousHost;
+      if (gatherLights) {
+        _lights.clear();
+      }
+    }
+  }
+
+  void _gatherLights(flame.Component node) {
+    for (final child in node.children) {
+      if (child is LightComponent) {
+        // The light reads its position and direction from this matrix,
+        // which a mounted light refreshes in its update.
+        child.worldTransformMatrix;
+        _lights.add(child.light);
+      }
+      _gatherLights(child);
     }
   }
 

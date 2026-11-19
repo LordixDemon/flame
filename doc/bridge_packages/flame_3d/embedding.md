@@ -333,18 +333,21 @@ thumbnail.dispose();
 
 Each call creates a render target of the image's size and runs the whole pipeline (its own shadow
 map, not the group's, and the post-processing of the world), so it suits thumbnails and captures,
-not every frame. The image belongs to the caller, who disposes it. A world that is not in a game
-renders too, but its `LightComponent`s have no effect there, since lights register with their world
-when they are mounted: an unmounted world draws lit materials with no lights.
+not every frame. The image belongs to the caller, who disposes it, and stays valid however long it
+is kept. A world that is not in a game renders too, with its lights: the `LightComponent`s of its
+tree are gathered for the render, since lights only register with their world when mounted.
 
 A `RenderTexture3D` keeps a render on the GPU instead, as a `Texture` that materials sample: a
 monitor, a portal, a mirror.
 
 ```dart
 final monitor = RenderTexture3D(width: 256, height: 256);
-final screenMaterial = UnlitMaterial()..renderState = RenderState.opaque;
 final screen = MeshComponent(
-  mesh: PlaneMesh(size: Vector2.all(2), material: screenMaterial),
+  mesh: PlaneMesh(
+    size: Vector2.all(2),
+    material: UnlitMaterial(albedoTexture: monitor.texture)
+      ..renderState = RenderState.opaque,
+  ),
   cameraMask: 0x02, // kept out of the monitor's own view
 );
 
@@ -355,27 +358,25 @@ monitor.renderWorld(
   projection: monitorProjection,
   cameraMask: 0x01,
 );
-if (!identical(screenMaterial.albedoTexture, monitor.texture)) {
-  screenMaterial.albedoTexture = monitor.texture;
-  layer.markDirty();
-}
+layer.markDirty(); // only needed when the layer is retained
 ```
 
 `renderWorld` renders the world into the texture in one pass (plus a shadow pass with
 `renderShadows: true`, a shadow map of its own) with the world's lights and fog, at the texture's
 size, in 8-bit color, without multisampling, bloom or post-processing. Notes:
 
-- Read `texture` after the first `renderWorld` and after each `resize`: until then it is the shared
-  white `Texture.standard`, and the GPU texture created by the first render is a new `Texture`
-  object, so a material given `texture` earlier keeps showing white.
-- Keep the mesh that shows the texture out of the render with `cameraMask`; drawing it into its own
-  texture reads and writes the same texture in one pass. The re-entrancy guard of `renderWorld` only
-  stops a `renderWorld` call made during another one.
-- Call it from `update`, not while the world is being rendered, and only for a world that is in a
-  game: it records the draws into the render context of the world's host, so the optional `device`
-  and `context` arguments must be the host's.
+- `texture` is the same `Texture` object for the life of the render texture, so a material can take
+  it at setup. Until the first `renderWorld`, and after a `resize` until the next one, it shows a
+  single white pixel.
+- Inside its own `renderWorld`, `texture` also shows a white pixel, so a mesh that shows the texture
+  and is drawn into it never samples the texture being written; keep such a mesh out of the render
+  with `cameraMask` anyway, or it appears white in its own picture. A `renderWorld` call made during
+  another one returns `false`.
+- Call it from `update`, not while the world is being rendered. The draws are recorded into the
+  optional `context` on `device` when both are given, otherwise into those of the world's game (or
+  of a renderer of its own for a world in no game, whose lights are then gathered from its tree).
 - A retained layer that shows the texture does not notice new content: call `markDirty()`.
-- `dispose()` drops the texture.
+- `dispose()` drops the GPU texture; `texture` shows white again until the next `renderWorld`.
 
 
 ## Hosts

@@ -262,6 +262,7 @@ game, or a `World3D` added directly to a 2D world without a `Scene3DComponent`).
 In a `Game3D` game, the world and all its `Scene3DComponent`s share the game's device and context.
 In other games, the layers of a game share a device of their own, created on first use; its device
 frame opens with the first pass of a Flutter frame and closes after the frame is painted.
-`World3D.renderToImage` renders with a temporary host, so it also works for a world that is not in
-a game; its `LightComponent`s are then not registered, since lights register when they are mounted
-(see [Embedding 3D in a 2D Game](embedding.md)).
+`World3D.renderToImage` and `RenderTexture3D.renderWorld` render with a temporary host, so they also
+work for a world that is not in a game; the `LightComponent`s of such a world, which only register
+when mounted, are gathered from its tree for the render (see
+[Embedding 3D in a 2D Game](embedding.md)).

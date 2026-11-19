@@ -1,5 +1,6 @@
 import 'dart:math' as math;
-import 'dart:ui' show Canvas, Color, PictureRecorder;
+import 'dart:typed_data';
+import 'dart:ui' show Canvas, Color, PictureRecorder, PixelFormat;
 
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/game.dart';
@@ -15,6 +16,12 @@ import 'package:flame_3d/src/embedding/embedded_renderer.dart';
 /// on the GPU as a sampleable [texture] with **zero CPU readback** and **zero
 /// `dart:ui.Image` round-trips**, making it ideal for live 3D security
 /// monitors, portals, rear-view mirrors, and planar floor reflections.
+///
+/// [texture] is one [Texture] object for the whole life of the render
+/// texture: give it to a material once, at setup. Until the first
+/// [renderWorld] (and after [resize] until the next one) it shows a single
+/// white pixel, and so does it inside the passes of [renderWorld] itself,
+/// so that a mesh showing it never samples the texture being rendered.
 /// {@endtemplate}
 class RenderTexture3D({
   int width = 512,
@@ -24,15 +31,19 @@ class RenderTexture3D({
 }) {
   /// {@macro render_texture_3d}
   this {
-    _resizeIfNeeded(width, height, sampler);
+    _width = math.max(1, width);
+    _height = math.max(1, height);
+    _texture = _RenderTextureHandle(this, sampler);
   }
 
-  int _width = 0;
-  int _height = 0;
+  int _width = 1;
+  int _height = 1;
   GpuTextureTarget? _target;
-  Texture? _texture;
+  late final _RenderTextureHandle _texture;
   int _renderCount = 0;
   bool _isRendering = false;
+  final Matrix4 _savedView = Matrix4.zero();
+  final Matrix4 _savedProjection = Matrix4.zero();
 
   /// Width of the backing GPU texture, in pixels.
   int get width => _width;
@@ -43,55 +54,46 @@ class RenderTexture3D({
   /// Number of offscreen passes rendered into this texture.
   int get renderCount => _renderCount;
 
-  /// Sampleable [Texture] handle bindable on any [Material] (`albedoTexture`,
-  /// `emissiveTexture`, etc.).
-  Texture get texture => _texture!;
+  /// Sampleable [Texture] bindable on any [Material] (`albedoTexture`,
+  /// `emissiveTexture`, etc.): the same object from construction on, see
+  /// [RenderTexture3D].
+  Texture get texture => _texture;
 
   /// Resizes the offscreen target on the next [renderWorld] call.
   void resize(int width, int height) {
-    _resizeIfNeeded(width, height, _texture?.sampler ?? TextureSampler.linear);
-  }
-
-  void _resizeIfNeeded(int w, int h, TextureSampler sampler) {
-    final clampedW = math.max(1, w);
-    final clampedH = math.max(1, h);
-    if (clampedW == _width && clampedH == _height && _texture != null) {
+    final clampedWidth = math.max(1, width);
+    final clampedHeight = math.max(1, height);
+    if (clampedWidth == _width && clampedHeight == _height) {
       return;
     }
-    _width = clampedW;
-    _height = clampedH;
+    _width = clampedWidth;
+    _height = clampedHeight;
     _target = null;
-    _texture = Texture.standard;
-    _pendingSampler = sampler;
+    _texture.recreateResource = true;
   }
-
-  TextureSampler _pendingSampler = TextureSampler.linear;
 
   void _ensureTarget(GraphicsDevice device) {
     if (_target != null) {
       return;
     }
-    final owned = device.backend.createTextureTarget(
+    _target = device.backend.createTextureTarget(
       width: _width,
       height: _height,
       format: GpuPixelFormat.rgba8888,
       clearValue: clearValue,
     );
-    _target = owned;
-    _texture = Texture(
-      null,
-      width: _width,
-      height: _height,
-      sampler: _pendingSampler,
-      gpuTexture: owned.texture,
-    );
+    _texture.recreateResource = true;
   }
 
   /// Renders [world] from [view] and [projection] (filtering by [cameraMask])
   /// directly into this GPU [texture].
   ///
-  /// Includes a re-entrancy guard so a mesh inside [world] displaying this
-  /// [texture] never triggers infinite recursion during its own capture pass.
+  /// The draws are recorded into [context] on [device] when both are given,
+  /// otherwise into those of the game [world] is in (or of a renderer of its
+  /// own when it is in none, for example an unmounted world, whose lights
+  /// are gathered from its tree). Returns `false` without rendering when
+  /// called from within its own [renderWorld] or when the device cannot
+  /// render into textures.
   bool renderWorld(
     World3D world, {
     required Matrix4 view,
@@ -107,6 +109,7 @@ class RenderTexture3D({
     GraphicsDevice resolvedDevice;
     RenderContext3D resolvedContext;
     var closeFrame = false;
+    EmbeddedRenderer? embedded;
     var closeEmbedded = false;
 
     if (device != null && context != null) {
@@ -122,7 +125,7 @@ class RenderTexture3D({
           closeFrame = true;
         }
       } else {
-        final embedded = EmbeddedRenderer.of(game ?? world);
+        embedded = EmbeddedRenderer.of(game ?? world);
         resolvedDevice = embedded.device;
         resolvedContext = embedded.context;
         closeEmbedded = embedded.open();
@@ -133,7 +136,7 @@ class RenderTexture3D({
       if (closeFrame) {
         resolvedDevice.end();
       } else if (closeEmbedded) {
-        EmbeddedRenderer.of(world.findGame() ?? world).close();
+        embedded!.close();
       }
       return false;
     }
@@ -143,44 +146,82 @@ class RenderTexture3D({
     final recorder = PictureRecorder();
     final dummyCanvas = Canvas(recorder);
 
-    final savedView = resolvedContext.view.clone();
-    final savedProj = resolvedContext.projection.clone();
+    _savedView.setFrom(resolvedContext.view);
+    _savedProjection.setFrom(resolvedContext.projection);
     final savedMask = resolvedContext.cameraMask;
 
     _isRendering = true;
     try {
-      resolvedContext
-        ..cameraMask = cameraMask
-        ..setCamera(view, projection);
-      if (renderShadows) {
-        world.renderShadows(dummyCanvas, overrideContext: resolvedContext);
-      }
-      resolvedDevice.beginTexturePass(
-        target,
-        frontFace: resolvedContext.frontFace,
-      );
-      world.renderScene(dummyCanvas, overrideContext: resolvedContext);
-      resolvedContext.flush();
-      resolvedDevice.endTexturePass();
+      world.renderWithHost(resolvedDevice, resolvedContext, () {
+        resolvedContext
+          ..cameraMask = cameraMask
+          ..setCamera(view, projection);
+        if (renderShadows) {
+          world.renderShadows(dummyCanvas, overrideContext: resolvedContext);
+        }
+        resolvedDevice.beginTexturePass(
+          target,
+          frontFace: resolvedContext.frontFace,
+        );
+        world.renderScene(dummyCanvas, overrideContext: resolvedContext);
+        resolvedContext.flush();
+        resolvedDevice.endTexturePass();
+      });
       _renderCount++;
       return true;
     } finally {
       _isRendering = false;
       resolvedContext
         ..cameraMask = savedMask
-        ..setCamera(savedView, savedProj);
+        ..setCamera(_savedView, _savedProjection);
       recorder.endRecording().dispose();
       if (closeFrame) {
         resolvedDevice.end();
       } else if (closeEmbedded) {
-        EmbeddedRenderer.of(world.findGame() ?? world).close();
+        embedded!.close();
       }
     }
   }
 
-  /// Releases the underlying GPU texture resource.
+  /// Releases the GPU texture: [texture] shows a white pixel again until the
+  /// next [renderWorld], which creates a new one.
   void dispose() {
-    _texture?.dispose();
     _target = null;
+    _texture.dispose();
+  }
+}
+
+/// The [RenderTexture3D.texture]: the texture of the current target, or a
+/// white pixel when there is none or while the owner renders into it.
+class _RenderTextureHandle(
+  final RenderTexture3D _owner,
+  TextureSampler sampler,
+) extends Texture {
+  this
+    : super(
+        ByteData(4),
+        width: 1,
+        height: 1,
+        format: PixelFormat.bgra8888,
+        sampler: sampler,
+      );
+
+  @override
+  int get width => _owner._width;
+
+  @override
+  int get height => _owner._height;
+
+  @override
+  GpuTexture get resource {
+    if (_owner._isRendering) {
+      return Texture.standard.resource;
+    }
+    return super.resource;
+  }
+
+  @override
+  GpuTexture createResource() {
+    return _owner._target?.texture ?? Texture.standard.resource;
   }
 }
