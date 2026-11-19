@@ -245,18 +245,19 @@ What it costs:
   shader that only writes depth and normal, into a quarter of the scene's pixels;
 - one quarter-size 8-bit target (and its transient depth buffer).
 
-Translucent draws and draws without depth writes are left out. Every surface is drawn at its rest
+Translucent draws, draws without depth writes and draws of materials whose instances do not hold
+model matrices (`Material.instancesHoldModelMatrices` is `false`: particles, billboards, ribbons,
+camera-facing text) are left out. Every surface is drawn at its rest
 position: vertex animation done in a material's vertex shader (the wind of `StylizedMaterial`) is
 not seen, skinning is. Shaders read the texture through the `depthNormalTexture` sampler and the
 `DepthNormal` block (`params.x` is `1` when the texture is valid, `params.yz` its texel size); the
 depth is decoded as `(r * 255 * 256 + g * 255) / 65535`.
 
-The depth is the normalized device depth `z / w`, in `[0, 1]`. With an orthographic or affine
-projection (the projections of `Scene3DComponent`) it is linear in distance. With a perspective
-camera it is not: it crowds towards `1` with distance, reaching `0.999` at about 1000 times the
-near plane distance, and the thresholds of the effects below then mean different distances at
-different depths. See also [Limitations](#limitations) for large triangles under a perspective
-camera.
+The depth is the normalized device depth `z / w` the GPU computes for each pixel, in `[0, 1]`.
+With an orthographic or affine projection (the projections of `Scene3DComponent`) it is linear in
+distance. With a perspective camera it is not: it crowds towards `1` with distance, reaching
+`0.999` at about 1000 times the near plane distance, and the thresholds of the effects below then
+mean different distances at different depths.
 
 
 ### Ambient occlusion (SSAO)
@@ -384,17 +385,9 @@ The pipeline is the same; what differs is the image it runs on.
 ## Limitations
 
 - HDR falls back to 8 bits on OpenGL ES, where colors above `1` clip (see [HDR](#hdr)).
-- Under a perspective camera, the depth of a triangle that reaches behind the camera is wrong over
-  the whole triangle in the depth-normal texture (it reads as `0`, the nearest depth), and large
-  triangles in front of the camera get an approximate depth: the prepass interpolates the
-  per-vertex `z / w` across the triangle instead of using the depth the GPU computes per pixel. A
-  ground plane made of one quad that extends behind the camera breaks SSAO, depth of field, soft
-  particles and shoreline foam over all of it. Subdivide large ground surfaces, or use an
-  orthographic projection.
-- The prepass draws particles of an opaque `ParticleMaterial` (cut-out billboards) as if their
-  instance data were model matrices, which leaves stray triangles in the depth-normal texture.
-  Opaque billboards and camera-facing font text store other data there too and are missing from
-  the texture at their place (see [Depth and sorting](ui_3d.md#depth-and-sorting)).
+- Opaque particles, billboards and camera-facing text are missing from the depth-normal texture:
+  their instances do not hold model matrices, so the prepass leaves them out (see
+  [Depth and sorting](ui_3d.md#depth-and-sorting)).
 - SSAO and depth of field work in normalized depth with fixed thresholds and a screen-space radius:
   they do not scale with the world, and under a perspective camera they fade out with distance.
 - The composite runs on premultiplied colors: tone mapping, which is not linear, is slightly off at

@@ -1,16 +1,19 @@
 #ifndef FLAME_DEPTH_NORMAL_FRAGMENT_GLSL_
 #define FLAME_DEPTH_NORMAL_FRAGMENT_GLSL_
 
-// Encodes clip-space depth [0..1] in 16 bits across RG and view-space geometric
-// normal XY in BA of an RGBA8888 target (clear value 0xFFFF8080 -> depth 1.0).
+// Encodes the depth of the fragment [0..1] in 16 bits across RG and the
+// view-space geometric normal XY in BA of an RGBA8888 target (clear value
+// 0xFFFF8080 -> depth 1.0). The depth is the one the GPU computes for the
+// pixel (`gl_FragCoord.z`): `z / w` interpolated from the vertices would be
+// wrong across large triangles under a perspective camera, and meaningless
+// for triangles that reach behind the camera.
 
-in float fragDepth;
 in vec3 fragViewPos;
 
 out vec4 outColor;
 
 void main() {
-  float d = floor(clamp(fragDepth, 0.0, 1.0) * 65535.0 + 0.5);
+  float d = floor(clamp(gl_FragCoord.z, 0.0, 1.0) * 65535.0 + 0.5);
   float hi = floor(d / 256.0);
   float lo = d - hi * 256.0;
 

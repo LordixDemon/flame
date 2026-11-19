@@ -164,6 +164,11 @@ class ParticleMaterial({
   /// dependent way, so that the system sorts them back to front.
   bool get needsSorting => blendsInOrder(renderState);
 
+  /// Particle instances hold a center, a size and a velocity, not model
+  /// matrices.
+  @override
+  bool get instancesHoldModelMatrices => false;
+
   /// Whether draws with [state] blend in an order dependent way (alpha or
   /// premultiplied alpha blending), so that their particles are sorted back
   /// to front.

@@ -103,7 +103,9 @@ class _DepthNormalPass(final RenderContext3D _context) {
     _CasterPipeline? pipe;
     for (var i = 0; i < count; i++) {
       final mat = context._materials[i]!;
-      if (mat.renderState.translucent || !mat.renderState.depthWrite) {
+      if (mat.renderState.translucent ||
+          !mat.renderState.depthWrite ||
+          !mat.instancesHoldModelMatrices) {
         continue;
       }
       final surface = context._surfaces[i]!;

@@ -1,8 +1,10 @@
+import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
+import 'package:flame_3d/particles.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -96,6 +98,39 @@ void main() {
 
       expect(backend.textureTargetsCreated, isEmpty);
       expect(backend.countCommands('setBlendState wboit'), 0);
+    });
+  });
+
+  group('depth-normal prepass', () {
+    test('leaves out draws whose instances are not model matrices', () {
+      final backend = FakeGpuBackend(textureTargets: true);
+      final device = GraphicsDevice(backend: backend);
+      final context = RenderContext3D(device)
+        ..setCamera(Matrix4.identity(), Matrix4.identity());
+      final particles = ParticleSystem3D(
+        capacity: 2,
+        material: ParticleMaterial(renderState: RenderState.opaque),
+      )..spawn(position: Vector3.zero(), size: 1);
+      final instances = Float32List(VertexLayout.instanceStrideInFloats);
+      Matrix4.identity().copyIntoArray(instances);
+      final cube = CuboidMesh(
+        size: Vector3.all(1),
+        material: SpatialMaterial(),
+      );
+
+      device.begin();
+      expect(context.beginDepthNormalPass(64, 64), isTrue);
+      particles.draw(context);
+      context.drawInstances(
+        cube.surfaces.first,
+        instances: instances,
+        count: 1,
+      );
+      context.endDepthNormalPass();
+      device.end();
+
+      // The cube, not the particle billboard.
+      expect(backend.countCommands('drawIndexed'), 1);
     });
   });
 }

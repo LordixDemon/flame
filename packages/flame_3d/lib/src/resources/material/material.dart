@@ -97,6 +97,17 @@ abstract class Material({
   @internal
   static int get castsShadowsRevision => _castsShadowsRevision;
 
+  /// Whether the per-instance inputs of this material's draws hold model
+  /// matrices (`instanceModel0` to `instanceModel3`), as `drawSurface` and
+  /// `InstancedGroup3D` write them.
+  ///
+  /// Materials whose vertex shader reads other data from those inputs
+  /// (camera-facing billboards and particles store a center and a size)
+  /// return `false`, so passes that draw the positions with a generic shader
+  /// (the depth-normal prepass) leave their draws out instead of drawing
+  /// stray triangles.
+  bool get instancesHoldModelMatrices => true;
+
   /// The pipeline this material drew with last, managed by the
   /// [RenderContext3D].
   @internal

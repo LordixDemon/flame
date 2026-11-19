@@ -60,6 +60,11 @@ class RibbonMaterial3D({
   final Vector4 _right = Vector4.zero();
   final Vector4 _params = Vector4.zero();
 
+  /// Ribbon instances hold the end points and widths of a segment, not model
+  /// matrices.
+  @override
+  bool get instancesHoldModelMatrices => false;
+
   @override
   void apply(RenderContext context) {
     final c = context as RenderContext3D;

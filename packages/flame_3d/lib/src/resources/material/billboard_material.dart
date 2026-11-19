@@ -64,6 +64,11 @@ class BillboardMaterial3D({
   static final Vector3 _back = Vector3.zero();
   static final Vector4 _vec = Vector4.zero();
 
+  /// Billboard instances hold a center, an up axis and a size, not model
+  /// matrices.
+  @override
+  bool get instancesHoldModelMatrices => false;
+
   @override
   void apply(RenderContext context) {
     final ctx3d = context as RenderContext3D;
