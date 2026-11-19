@@ -174,7 +174,8 @@ final rock = LodMeshComponent(
   of the viewport height the bounding box covers, is drawn; the last level is the fallback whatever
   its thresholds.
 - In a shadow pass it draws `shadowMesh` when set, otherwise the last level when
-  `lowestLodInShadowPass` is `true`, otherwise the level chosen by the previous main pass.
+  `lowestLodInShadowPass` is `true`, otherwise the level the main camera of the frame selects
+  (from `RenderContext3D.viewerPosition` and `viewerViewProjection`).
 - `lastSelectedLevel` tells which level the last main pass drew. Raycasts test that level.
 - `color` and `instanceData` work as on `MeshComponent`; it has no joint matrices, so it does not
   draw skinned meshes.

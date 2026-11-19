@@ -615,11 +615,11 @@ These are the parts of shadows that are not finished at this point:
   `softness` and `normalBias`.
 - In a shadow pass, `RenderContext3D.cameraPosition` is the position of the light's view, which
   for a sun is the world origin (for the tiles of a point light, it is left over from the tile
-  before them, or from the main camera). Components that pick what they draw from it pick it as
-  seen from there: `ChunkedTerrain3D` casts from its coarsest chunks and `FoliageSystem3D` casts
-  only near the world origin (see [Large Worlds](world_scale.md#limitations)). `LodMeshComponent`
-  handles the shadow pass itself, with its `shadowMesh`, its lowest level, or the level last picked
-  by the camera.
+  before them, or from the main camera). Components that pick their level of detail should use
+  `RenderContext3D.viewerPosition` and `viewerViewProjection`, which stay those of the main camera
+  while a shadow pass records: `ChunkedTerrain3D`, `FoliageSystem3D` and `LodMeshComponent` (when
+  it has no `shadowMesh` and `lowestLodInShadowPass` is off) cast from the detail the camera of the
+  frame selects (see [Large Worlds](world_scale.md#frustum-culling-and-bounds)).
 - The sun's map is fitted to `World3D.sceneBounds`, the union of the bounds of every component of
   the world, whether it casts shadows or not. A component with huge bounds spreads the map over
   them until the shadows vanish: a `DebugRenderer3D`, whose bounds reach ±100000 units, removes

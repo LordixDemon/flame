@@ -193,6 +193,14 @@ class RenderContext3D(super.device) extends RenderContext {
       _shadows.recording ? _shadowViewerPosition : _cameraPosition;
   final Vector3 _shadowViewerPosition = Vector3.zero();
 
+  /// The `projection * view` matrix of the viewer of [viewerPosition]: the
+  /// same as [viewProjection] in a camera pass, the main camera's while a
+  /// shadow pass records. Use it to measure the screen size of an object for
+  /// level of detail.
+  Matrix4 get viewerViewProjection =>
+      _shadows.recording ? _shadowViewerViewProjection : _viewProjectionMatrix;
+  final Matrix4 _shadowViewerViewProjection = Matrix4.identity();
+
   /// The view frustum of the current pass, in world space.
   Frustum get frustum => _frustum;
   final Frustum _frustum = Frustum();
@@ -560,6 +568,7 @@ class RenderContext3D(super.device) extends RenderContext {
     Object? castersKey,
   }) {
     _shadowViewerPosition.setFrom(_cameraPosition);
+    _shadowViewerViewProjection.setFrom(_viewProjectionMatrix);
     return _shadows.begin(projection, sceneBounds, castersKey: castersKey);
   }
 
@@ -578,6 +587,7 @@ class RenderContext3D(super.device) extends RenderContext {
   /// Begins recording shadow casters for the far cascade of a 2-cascade atlas.
   void beginShadowCascade1() {
     _shadowViewerPosition.setFrom(_cameraPosition);
+    _shadowViewerViewProjection.setFrom(_viewProjectionMatrix);
     _shadows.beginCascade1();
   }
 

@@ -33,10 +33,11 @@ Objects whose `cameraMask` does not match the camera's are skipped first, and ob
 `visible == false` (or a hidden ancestor) are skipped in every pass, shadows included.
 
 A component that chooses its own level of detail or thins itself out with distance should measure
-the distance from `RenderContext3D.viewerPosition`, not `cameraPosition`: in a shadow pass
-`cameraPosition` is the origin of the light's view (the world origin for a directional light),
-while `viewerPosition` stays the main camera, so the shadow casters match what the camera shows.
-The terrain and the foliage on this page do so.
+the distance from `RenderContext3D.viewerPosition`, not `cameraPosition`, and its screen size with
+`viewerViewProjection`: in a shadow pass `cameraPosition` is the origin of the light's view (the
+world origin for a directional light), while the viewer values stay those of the main camera, so
+the shadow casters match what the camera shows. The terrain and the foliage on this page do so,
+as does `LodMeshComponent`.
 
 Only `Object3D`s are tested. A `Group3D` or another plain `Component3D` is never culled itself:
 its `Object3D` children are tested one by one, so grouping objects under a `Group3D` does not

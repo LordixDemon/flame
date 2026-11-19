@@ -1,6 +1,8 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' show Size;
 
+import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
@@ -62,6 +64,30 @@ Future<void> _renderBothPasses({
   image.dispose();
 }
 
+/// A mesh of [count] separate unit cubes side by side, each its own surface.
+Mesh _cubes(int count) {
+  final material = SpatialMaterial();
+  final mesh = Mesh();
+  for (var i = 0; i < count; i++) {
+    final cube = CuboidMesh(size: Vector3.all(0.5), material: material);
+    final surface = cube.surfaces.single;
+    final stride = surface.layout.strideInFloats;
+    final vertices = Float32List.fromList(surface.vertexData);
+    for (var v = 0; v < surface.vertexCount; v++) {
+      vertices[v * stride] += i * 0.6;
+    }
+    mesh.addSurface(
+      Surface.fromBuffers(
+        vertices: vertices,
+        indices: surface.indices,
+        layout: surface.layout,
+        material: material,
+      ),
+    );
+  }
+  return mesh;
+}
+
 void main() {
   setUpGpu();
 
@@ -120,6 +146,55 @@ void main() {
       expect(shadowChunks, greaterThan(4));
       expect(shadowChunks, expectedShadowChunks);
       terrain.onRemove();
+    });
+
+    testGpuEngine('LodMeshComponent casts from the level the current camera '
+        'selects', () async {
+      final lod = LodMeshComponent(
+        levels: [
+          MeshLodLevel(mesh: _cubes(3), maxDistance: 20),
+          MeshLodLevel(mesh: _cubes(1)),
+        ],
+        position: Vector3(1000, 0, 1000),
+      );
+      final bounds = Aabb3.minMax(
+        Vector3(990, -5, 990),
+        Vector3(1010, 5, 1010),
+      );
+      final target = Vector3(1000, 0, 1000);
+      final device = GraphicsDevice();
+      final context = RenderContext3D(device);
+      final projection = makePerspectiveMatrix(math.pi / 3, 1, 0.5, 600);
+
+      int shadowDrawsSeenFrom(Vector3 eye) {
+        device.begin();
+        context
+          ..lights = _sun()
+          ..setCamera(
+            makeViewMatrix(eye, target, Vector3(0, 1, 0)),
+            projection,
+          );
+        expect(
+          context.beginShadowPass(
+            projection: DirectionalShadowProjection(),
+            sceneBounds: bounds,
+          ),
+          isTrue,
+        );
+        lod.draw(context);
+        context.endShadowPass();
+        device.beginPass(const Size(64, 64), frontFace: context.frontFace);
+        lod.draw(context);
+        context.flush();
+        device.endPass().dispose();
+        device.end();
+        return device.lastFrameStats.shadowDrawCalls;
+      }
+
+      // Far away: the coarse level, one cube.
+      expect(shadowDrawsSeenFrom(Vector3(1000, 50, 1100)), 1);
+      // The camera came close: the detailed level casts in this very frame.
+      expect(shadowDrawsSeenFrom(Vector3(1000, 3, 1006)), 3);
     });
 
     testGpuEngine('FoliageSystem3D far from the origin casts the blades near '

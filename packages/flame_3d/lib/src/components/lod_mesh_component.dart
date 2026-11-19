@@ -121,11 +121,13 @@ class LodMeshComponent({
   @override
   void draw(covariant RenderContext3D context) {
     if (context.isShadowPass) {
+      // Without a shadow mesh, cast from the level the main camera of this
+      // frame selects (see RenderContext3D.viewerPosition).
       final caster =
           shadowMesh ??
           (lowestLodInShadowPass
               ? levels.last.mesh
-              : levels[_lastSelectedLevel].mesh);
+              : levels[_selectLevel(context)].mesh);
       context.drawMesh(
         caster,
         transform: worldTransformMatrix,
@@ -169,13 +171,15 @@ class LodMeshComponent({
     final cx = 0.5 * (box.min.x + box.max.x);
     final cy = 0.5 * (box.min.y + box.max.y);
     final cz = 0.5 * (box.min.z + box.max.z);
-    final cam = context.cameraPosition;
+    // The viewer, not the pass's camera: in a shadow pass that is the
+    // light's view.
+    final cam = context.viewerPosition;
     final dx = cx - cam.x;
     final dy = cy - cam.y;
     final dz = cz - cam.z;
     final dist = math.sqrt(dx * dx + dy * dy + dz * dz);
 
-    final vp = context.viewProjection.storage;
+    final vp = context.viewerViewProjection.storage;
     var minNdcY = double.infinity;
     var maxNdcY = double.negativeInfinity;
     for (var corner = 0; corner < 8; corner++) {
