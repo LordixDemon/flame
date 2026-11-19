@@ -43,14 +43,14 @@ same on Android, iOS, macOS, the web and in `flutter test` (with or without
 
 ## Collision shapes
 
-| Shape                | Contacts generated            | Mass properties       |
-| -------------------- | ----------------------------- | --------------------- |
-| `SphereShape3D`      | exact, 1 point                | exact                 |
-| `CapsuleShape3D`     | exact, 1 point                | exact                 |
-| `BoxShape3D`         | against a box: up to 4 points | exact                 |
-| `ConvexHullShape3D`  | GJK and EPA, 1 point          | exact, from the hull  |
-| `CompoundShape3D`    | per child, merged             | from the children     |
-| `HeightfieldShape3D` | per grid cell, merged         | none, for static use  |
+| Shape                | Contacts generated                           | Mass properties      |
+| -------------------- | -------------------------------------------- | -------------------- |
+| `SphereShape3D`      | exact, 1 point                               | exact                |
+| `CapsuleShape3D`     | exact, 1 point                               | exact                |
+| `BoxShape3D`         | face on a box or hull face: up to 4 points   | exact                |
+| `ConvexHullShape3D`  | face on a face: up to 4 points, else 1 point | exact, from the hull |
+| `CompoundShape3D`    | per child, merged                            | from the children    |
+| `HeightfieldShape3D` | per grid cell, merged                        | none, for static use |
 
 - `SphereShape3D(radius: r)`.
 - `CapsuleShape3D(radius: r, height: h, axis: Axis3D.y)`: `height` is the total length from tip
@@ -61,9 +61,19 @@ same on Android, iOS, macOS, the web and in `flutter test` (with or without
 - `HeightfieldShape3D(heights: h, columns: c, rows: r, width: w, depth: d, heightScale: 1)`.
 
 Sphere, capsule and box pairs are solved analytically. A box against a box uses the 15 axes of the
-separating axis test and clips the incident face against the reference face, which gives a stable
-manifold of up to four points: a box rests flat and comes to sleep. Every other pair that involves a
-hull goes through GJK and EPA and yields a single contact point per step; see the hull notes below.
+separating axis test; the faces of the first box are preferred to those of the second and face axes
+to edge axes unless clearly worse, so two nearly parallel boxes keep the same reference face from
+step to step. Pairs that involve a hull find their normal and depth with GJK and EPA. When both
+shapes have faces (boxes and hulls) and the normal is within about 5.7 degrees of a face of either
+one, the incident face (the other shape's face most opposed to the normal) is clipped against the
+side planes of that reference face, as for two boxes. Such a manifold has up to four points: a box
+or hull lying on a face rests on its corners and comes to sleep. An edge across an edge, and a hull
+against a sphere or a capsule, give one point. Face points up to 2 mm apart are kept, with a depth
+of `0`, so a face settling onto another does not flicker in and out of contact.
+
+Each `ContactPoint3D` has a `featureId` that names the faces, edges and vertices that produced it.
+It stays the same from one step to the next while the same features touch, and the solver uses it
+to carry each point's impulse over (single-point manifolds use `0`).
 
 `ConvexHullShape3D` takes any point cloud and builds the hull when it is created (a quickhull,
 roughly quadratic in the number of points, so keep hulls to a few hundred points). Coplanar
@@ -501,12 +511,8 @@ Measured with the default settings, on boxes of `0.5 m`, friction `0.6`:
   with the default iterations; `velocityIterations: 20` and `positionIterations: 10` keep five
   standing, but columns of eight (20 iterations) and ten (30 iterations) still collapse. A four-row
   pyramid with small gaps stands. Do not build tall stacks.
-- Bodies that touch through GJK and EPA (a hull against anything) get one contact point per step,
-  which moves between the hull's corners. A hull dropped flat comes to rest, but a tumbling hull
-  keeps rocking on the floor (measured on 0.5 m hulls: 0.07 to 0.15 m/s and 0.25 to 0.6 rad/s,
-  above the default sleep thresholds) and never sleeps; it also rests 5 to 15 mm deep in a box
-  floor. Raise `sleepLinearThreshold` and `sleepAngularThreshold` when hull bodies must settle:
-  with `0.2` and `0.8`, thrown hull cubes and octahedra all slept, after 3.5 to 4 s.
+- Hulls rest on their faces like boxes, on up to four points, and come to sleep with the default
+  settings; they sink no deeper than boxes.
 - There is no gyroscopic term: a free body keeps its angular velocity rather than its angular
   momentum, so an asymmetric body spinning about its intermediate axis does not flip over.
 
@@ -836,11 +842,8 @@ Measured over 3,000 seeded throws of a 0.5 m die on a box floor (friction `0.6`,
 tilted by more than 8 degrees, and the faces came up uniformly (chi-square `5.85`, five degrees of
 freedom).
 
-Other dice are `ConvexHullShape3D`s. A 20-sided die thrown 1,500 times came up uniformly too
-(chi-square `21.0`, 19 degrees of freedom), but with the default thresholds none fell asleep: hull
-dice keep rocking, see [Contact quality](#contact-quality). With `sleepLinearThreshold: 0.15` and
-`sleepAngularThreshold: 0.6` they all slept, after 4.9 s on average; hull cubes need `0.2` and
-`0.8`.
+Other dice, and dice with bevelled or rounded edges, are `ConvexHullShape3D`s. They rest on their
+faces like boxes and settle with the default settings, see [Contact quality](#contact-quality).
 Continuous collision detection may stay on, as its default sphere is the hull's inradius.
 
 `throwDice3D` places, orients and launches a list of bodies from a seed:
@@ -1015,8 +1018,6 @@ profiler.
 
 - Rigid bodies collide only with rigid bodies: not with `Collider3D`s, meshes or models. Colliders
   report overlaps and never push anything apart.
-- Contacts that go through GJK and EPA (hulls, and hulls against boxes) have one point: hull bodies
-  rock, do not fall asleep with the default thresholds, and rest 5 to 15 mm deep.
 - Columns of more than four boxes collapse with the default iterations; columns of eight and ten
   boxes collapsed even with 20 to 30 velocity iterations.
 - Kinematic bodies pass through sleeping bodies without waking them. Sleeping is per body, without

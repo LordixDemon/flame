@@ -7,10 +7,16 @@ import 'package:flame_3d/graphics.dart' show VertexLayout;
 import 'package:flame_3d/resources.dart';
 
 /// A single contact point pair inside a [CollisionManifold3D].
+///
+/// [featureId] names the pair of features (face, edge or vertex of each shape)
+/// that produced the point. It stays the same from one step to the next while
+/// the same features touch, which lets a solver carry the point's impulse
+/// over (warm starting). Single-point manifolds use `0`.
 class ContactPoint3D({
   required final Vector3 pointA,
   required final Vector3 pointB,
   required final double penetrationDepth,
+  final int featureId = 0,
 });
 
 /// World-space contact manifold describing an overlap between two 3D shapes
@@ -35,8 +41,8 @@ class CollisionManifold3D({
   /// Deepest witness point on shape `B` in world space.
   final Vector3 contactPointB = contactPointB.clone();
 
-  /// Contact points in this manifold (1 for curved shapes, up to 4 for clipped
-  /// box-box face contacts).
+  /// Contact points in this manifold (1 for curved shapes and edge contacts,
+  /// up to 4 for face contacts between boxes and convex hulls).
   final List<ContactPoint3D> contacts = List.unmodifiable(
     contacts ??
         [
@@ -70,6 +76,7 @@ class CollisionManifold3D({
             pointA: c.pointB.clone(),
             pointB: c.pointA.clone(),
             penetrationDepth: c.penetrationDepth,
+            featureId: c.featureId,
           ),
       ],
     );
@@ -353,7 +360,18 @@ abstract final class Narrowphase3D._() {
     var bestAxisCode = -1;
     final bestNormal = Vector3.zero();
 
-    bool testAxis(double ax, double ay, double az, int code, double bias) {
+    // `bias` and `slack` make an axis win only when clearly better than the
+    // current best: B's faces and the edge axes must beat A's faces by 5 %
+    // plus 0.2 mm, so nearly parallel resting boxes keep the same reference
+    // face (and contact feature ids) from one step to the next.
+    bool testAxis(
+      double ax,
+      double ay,
+      double az,
+      int code,
+      double bias, [
+      double slack = 0.0,
+    ]) {
       final len2 = ax * ax + ay * ay + az * az;
       if (len2 < 1e-10) {
         return true;
@@ -376,7 +394,7 @@ abstract final class Narrowphase3D._() {
       if (overlap < 0.0) {
         return false;
       }
-      if (overlap * bias < minPen) {
+      if (overlap * bias + slack < minPen) {
         minPen = overlap;
         bestAxisCode = code;
         bestNormal.setValues(ux, uy, uz);
@@ -388,14 +406,13 @@ abstract final class Narrowphase3D._() {
     if (!testAxis(_obbA.u0x, _obbA.u0y, _obbA.u0z, 0, 1.0) ||
         !testAxis(_obbA.u1x, _obbA.u1y, _obbA.u1z, 1, 1.0) ||
         !testAxis(_obbA.u2x, _obbA.u2y, _obbA.u2z, 2, 1.0) ||
-        !testAxis(_obbB.u0x, _obbB.u0y, _obbB.u0z, 3, 1.0) ||
-        !testAxis(_obbB.u1x, _obbB.u1y, _obbB.u1z, 4, 1.0) ||
-        !testAxis(_obbB.u2x, _obbB.u2y, _obbB.u2z, 5, 1.0)) {
+        !testAxis(_obbB.u0x, _obbB.u0y, _obbB.u0z, 3, 1.05, 2e-4) ||
+        !testAxis(_obbB.u1x, _obbB.u1y, _obbB.u1z, 4, 1.05, 2e-4) ||
+        !testAxis(_obbB.u2x, _obbB.u2y, _obbB.u2z, 5, 1.05, 2e-4)) {
       return null;
     }
 
-    // 9 edge-edge cross axes (codes 6..14), slight >1 bias so face axes win
-    // ties on aligned stacked boxes.
+    // 9 edge-edge cross axes (codes 6..14).
     for (var i = 0; i < 3; i++) {
       final aUx = _obbA.axisX(i);
       final aUy = _obbA.axisY(i);
@@ -407,7 +424,7 @@ abstract final class Narrowphase3D._() {
         final cx = aUy * bUz - aUz * bUy;
         final cy = aUz * bUx - aUx * bUz;
         final cz = aUx * bUy - aUy * bUx;
-        if (!testAxis(cx, cy, cz, 6 + i * 3 + j, 1.005)) {
+        if (!testAxis(cx, cy, cz, 6 + i * 3 + j, 1.05, 2e-4)) {
           return null;
         }
       }
@@ -423,33 +440,24 @@ abstract final class Narrowphase3D._() {
     }
 
     if (bestAxisCode < 6) {
-      final contacts = _clipObbFaceContacts(
-        _obbA,
-        _obbB,
-        bestAxisCode,
-        bestNormal,
+      // Reference face: the separating face axis; incident face: the most
+      // anti-parallel face of the other box.
+      final nx = bestNormal.x;
+      final ny = bestNormal.y;
+      final nz = bestNormal.z;
+      _writeObbFace(_obbA, nx, ny, nz, _faceA);
+      _writeObbFace(_obbB, -nx, -ny, -nz, _faceB);
+      final faced = _clipSupportFaces(
+        nx,
+        ny,
+        nz,
+        _faceA,
+        _faceB,
+        forceReference: bestAxisCode < 3 ? 1 : 2,
+        depthOverride: minPen,
       );
-      if (contacts.isNotEmpty) {
-        final avgA = Vector3.zero();
-        final avgB = Vector3.zero();
-        var maxDepth = minPen;
-        for (final c in contacts) {
-          avgA.add(c.pointA);
-          avgB.add(c.pointB);
-          if (c.penetrationDepth > maxDepth) {
-            maxDepth = c.penetrationDepth;
-          }
-        }
-        final inv = 1.0 / contacts.length;
-        avgA.scale(inv);
-        avgB.scale(inv);
-        return CollisionManifold3D(
-          normal: bestNormal,
-          penetrationDepth: minPen,
-          contactPointA: avgA,
-          contactPointB: avgB,
-          contacts: contacts,
-        );
+      if (faced != null) {
+        return faced;
       }
     }
 
@@ -495,18 +503,36 @@ abstract final class Narrowphase3D._() {
 
   /// General Convex-Convex narrowphase using GJK + Expanding Polytope Algorithm
   /// (with spherical direction fallback for degenerate simplices).
+  ///
+  /// When both shapes have faces (boxes and non-degenerate hulls) and the EPA
+  /// normal is within about 5.7 degrees of one of their supporting faces, the
+  /// incident face is clipped against the reference face, which gives up to
+  /// four contact points with stable feature ids; otherwise (edge against
+  /// edge, or a curved shape) the manifold has the single EPA point.
   static CollisionManifold3D? convexConvex(
     Shape3D shapeA,
     Matrix4 transformA,
     Shape3D shapeB,
     Matrix4 transformB,
   ) {
-    return _gjkEpa(
+    final epa = _gjkEpa(
       (dir, out) => shapeA.supportPoint(dir, transformA, out),
       (dir, out) => shapeB.supportPoint(dir, transformB, out),
       _centerOf(transformA, _cAScratch),
       _centerOf(transformB, _cBScratch),
     );
+    if (epa == null) {
+      return null;
+    }
+    final n = epa.normal;
+    if (_writeSupportFace(shapeA, transformA, n.x, n.y, n.z, _faceA) &&
+        _writeSupportFace(shapeB, transformB, -n.x, -n.y, -n.z, _faceB)) {
+      final faced = _clipSupportFaces(n.x, n.y, n.z, _faceA, _faceB);
+      if (faced != null) {
+        return faced;
+      }
+    }
+    return epa;
   }
 
   /// Intersects [shape] (under [shapeTransform]) against all triangles of
@@ -1009,12 +1035,47 @@ abstract final class Narrowphase3D._() {
       (v0.y + v1.y + v2.y) * (1.0 / 3.0),
       (v0.z + v1.z + v2.z) * (1.0 / 3.0),
     );
-    return _gjkEpa(
+    final epa = _gjkEpa(
       (dir, out) => shape.supportPoint(dir, shapeTransform, out),
       (dir, out) => _triangleSupport(v0, v1, v2, dir, out),
       _centerOf(shapeTransform, _cAScratch),
       _triCentroid,
     );
+    if (epa == null) {
+      return null;
+    }
+    // A box or hull face lying on the triangle touches it at several points.
+    final n = epa.normal;
+    if (_writeSupportFace(shape, shapeTransform, n.x, n.y, n.z, _faceA)) {
+      final e1x = v1.x - v0.x;
+      final e1y = v1.y - v0.y;
+      final e1z = v1.z - v0.z;
+      final e2x = v2.x - v0.x;
+      final e2y = v2.y - v0.y;
+      final e2z = v2.z - v0.z;
+      var tnx = e1y * e2z - e1z * e2y;
+      var tny = e1z * e2x - e1x * e2z;
+      var tnz = e1x * e2y - e1y * e2x;
+      final len = math.sqrt(tnx * tnx + tny * tny + tnz * tnz);
+      if (len > 1e-20) {
+        // The triangle's face toward the shape (against the A-to-B normal).
+        final flip = tnx * n.x + tny * n.y + tnz * n.z > 0.0 ? -1.0 : 1.0;
+        tnx *= flip / len;
+        tny *= flip / len;
+        tnz *= flip / len;
+        _faceB
+          ..setTriangle(v0, v1, v2)
+          ..nx = tnx
+          ..ny = tny
+          ..nz = tnz
+          ..faceId = 0;
+        final faced = _clipSupportFaces(n.x, n.y, n.z, _faceA, _faceB);
+        if (faced != null) {
+          return faced;
+        }
+      }
+    }
+    return epa;
   }
 
   static final Expando<_SurfaceTriangleAabbTree> _aabbTrees = Expando();
@@ -1615,160 +1676,6 @@ abstract final class Narrowphase3D._() {
   static final Vector3 _candSeg = Vector3.zero();
   static final Vector3 _candTri = Vector3.zero();
 
-  static List<ContactPoint3D> _clipObbFaceContacts(
-    _ObbFrame obbA,
-    _ObbFrame obbB,
-    int axisCode,
-    Vector3 normalAB,
-  ) {
-    final refIsA = axisCode < 3;
-    final refObb = refIsA ? obbA : obbB;
-    final incObb = refIsA ? obbB : obbA;
-    final refAxis = refIsA ? axisCode : axisCode - 3;
-
-    // Outward normal of the reference face (pointing toward incident OBB).
-    final refOutX = refIsA ? normalAB.x : -normalAB.x;
-    final refOutY = refIsA ? normalAB.y : -normalAB.y;
-    final refOutZ = refIsA ? normalAB.z : -normalAB.z;
-
-    final refAxisSign =
-        refObb.axisX(refAxis) * refOutX +
-                refObb.axisY(refAxis) * refOutY +
-                refObb.axisZ(refAxis) * refOutZ >=
-            0.0
-        ? 1.0
-        : -1.0;
-
-    // Pick most anti-parallel face on incident OBB.
-    var incAxis = 0;
-    var bestDot = double.infinity;
-    var incSign = 1.0;
-    for (var k = 0; k < 3; k++) {
-      final d =
-          incObb.axisX(k) * refOutX +
-          incObb.axisY(k) * refOutY +
-          incObb.axisZ(k) * refOutZ;
-      if (d < bestDot) {
-        bestDot = d;
-        incAxis = k;
-        incSign = 1.0;
-      }
-      if (-d < bestDot) {
-        bestDot = -d;
-        incAxis = k;
-        incSign = -1.0;
-      }
-    }
-
-    var poly = incObb.faceVertices(incAxis, incSign);
-
-    // Clip incident quad against the 4 side planes of `refObb`'s face.
-    final sideAxis0 = (refAxis + 1) % 3;
-    final sideAxis1 = (refAxis + 2) % 3;
-    for (final sideAxis in [sideAxis0, sideAxis1]) {
-      final sx = refObb.axisX(sideAxis);
-      final sy = refObb.axisY(sideAxis);
-      final sz = refObb.axisZ(sideAxis);
-      final extent = refObb.extent(sideAxis);
-      final centerProj = refObb.cx * sx + refObb.cy * sy + refObb.cz * sz;
-
-      poly = _clipPolygonHalfspace(poly, sx, sy, sz, centerProj + extent);
-      if (poly.isEmpty) {
-        return const [];
-      }
-      poly = _clipPolygonHalfspace(poly, -sx, -sy, -sz, -centerProj + extent);
-      if (poly.isEmpty) {
-        return const [];
-      }
-    }
-
-    final refExtent = refObb.extent(refAxis);
-    final refFaceCenterX = refObb.cx + refOutX * refExtent;
-    final refFaceCenterY = refObb.cy + refOutY * refExtent;
-    final refFaceCenterZ = refObb.cz + refOutZ * refExtent;
-    // Correct sign if `refOut` was slightly non-collinear (they are identical).
-    final _ = refAxisSign;
-
-    final contacts = <ContactPoint3D>[];
-    for (final pInc in poly) {
-      // Signed distance of `pInc` behind the reference face (`depth >= 0` when
-      // penetrating).
-      final sep =
-          (pInc.x - refFaceCenterX) * refOutX +
-          (pInc.y - refFaceCenterY) * refOutY +
-          (pInc.z - refFaceCenterZ) * refOutZ;
-      if (sep <= 1e-4) {
-        final depth = math.max(0.0, -sep);
-        final pRef = Vector3(
-          pInc.x - refOutX * sep,
-          pInc.y - refOutY * sep,
-          pInc.z - refOutZ * sep,
-        );
-        if (refIsA) {
-          contacts.add(
-            ContactPoint3D(
-              pointA: pRef,
-              pointB: pInc,
-              penetrationDepth: depth,
-            ),
-          );
-        } else {
-          contacts.add(
-            ContactPoint3D(
-              pointA: pInc,
-              pointB: pRef,
-              penetrationDepth: depth,
-            ),
-          );
-        }
-      }
-    }
-
-    // Reduce to at most 4 well-spread contact points if clipping yielded > 4.
-    if (contacts.length <= 4) {
-      return contacts;
-    }
-    return _reduceContactsToFour(contacts, refOutX, refOutY, refOutZ);
-  }
-
-  static List<Vector3> _clipPolygonHalfspace(
-    List<Vector3> poly,
-    double nx,
-    double ny,
-    double nz,
-    double limit,
-  ) {
-    final out = <Vector3>[];
-    final n = poly.length;
-    if (n == 0) {
-      return out;
-    }
-    var prev = poly[n - 1];
-    var prevDist = prev.x * nx + prev.y * ny + prev.z * nz - limit;
-    for (var i = 0; i < n; i++) {
-      final curr = poly[i];
-      final currDist = curr.x * nx + curr.y * ny + curr.z * nz - limit;
-      final prevIn = prevDist <= 1e-7;
-      final currIn = currDist <= 1e-7;
-      if (prevIn != currIn) {
-        final t = prevDist / (prevDist - currDist);
-        out.add(
-          Vector3(
-            prev.x + (curr.x - prev.x) * t,
-            prev.y + (curr.y - prev.y) * t,
-            prev.z + (curr.z - prev.z) * t,
-          ),
-        );
-      }
-      if (currIn) {
-        out.add(curr);
-      }
-      prev = curr;
-      prevDist = currDist;
-    }
-    return out;
-  }
-
   static List<ContactPoint3D> _reduceContactsToFour(
     List<ContactPoint3D> contacts,
     double nx,
@@ -1835,6 +1742,332 @@ abstract final class Narrowphase3D._() {
     }
     final chosen = <int>{i0, i1, i2, i3};
     return [for (final idx in chosen) contacts[idx]];
+  }
+
+  // Supporting-face contact manifolds (box and hull faces).
+
+  /// Largest separation (in world units) at which a clipped face point is
+  /// still reported (with a penetration depth of `0`): points of a face that
+  /// is about to touch stay in the manifold instead of flickering in and out.
+  static const double _faceContactTolerance = 0.002;
+
+  /// Minimum cosine (about 5.7 degrees) between the contact normal and the
+  /// better aligned of the two supporting faces for a face contact. Below it
+  /// the contact is edge against edge and keeps a single point.
+  static const double _faceAlignmentCos = 0.995;
+
+  static final _SupportFace3D _faceA = _SupportFace3D();
+  static final _SupportFace3D _faceB = _SupportFace3D();
+  static final _ClipBuffer3D _clip = _ClipBuffer3D();
+  static final _ObbFrame _obbFace = _ObbFrame();
+  static final Int32List _chosen = Int32List(4);
+
+  /// Mixes two small non-negative integers into a 30-bit feature id.
+  static int _mixId(int a, int b) {
+    var h = (a ^ 0x2545F491) & 0x3FFFFFFF;
+    h = (h * 1031 + (b & 0x3FFFFFFF) * 7 + 0x9E37) & 0x3FFFFFFF;
+    h ^= h >> 13;
+    return (h * 997) & 0x3FFFFFFF;
+  }
+
+  /// Writes into [out] the face of [shape] (under [m]) whose outward normal is
+  /// closest to the world direction `(dx, dy, dz)`, returning `false` for
+  /// shapes without faces (spheres, capsules, degenerate hulls).
+  static bool _writeSupportFace(
+    Shape3D shape,
+    Matrix4 m,
+    double dx,
+    double dy,
+    double dz,
+    _SupportFace3D out,
+  ) {
+    if (shape is BoxShape3D) {
+      _obbFace.extract(shape, m);
+      _writeObbFace(_obbFace, dx, dy, dz, out);
+      return true;
+    }
+    if (shape is ConvexHullShape3D) {
+      return _writeHullFace(shape, m, dx, dy, dz, out);
+    }
+    return false;
+  }
+
+  static void _writeObbFace(
+    _ObbFrame obb,
+    double dx,
+    double dy,
+    double dz,
+    _SupportFace3D out,
+  ) {
+    var axis = 0;
+    var best = -1.0;
+    var sign = 1.0;
+    for (var k = 0; k < 3; k++) {
+      final d = obb.axisX(k) * dx + obb.axisY(k) * dy + obb.axisZ(k) * dz;
+      if (d.abs() > best) {
+        best = d.abs();
+        axis = k;
+        sign = d >= 0.0 ? 1.0 : -1.0;
+      }
+    }
+    final a0 = (axis + 1) % 3;
+    final a1 = (axis + 2) % 3;
+    final nx = sign * obb.axisX(axis);
+    final ny = sign * obb.axisY(axis);
+    final nz = sign * obb.axisZ(axis);
+    final e = obb.extent(axis);
+    final fcx = obb.cx + nx * e;
+    final fcy = obb.cy + ny * e;
+    final fcz = obb.cz + nz * e;
+    final ux = obb.axisX(a0) * obb.extent(a0);
+    final uy = obb.axisY(a0) * obb.extent(a0);
+    final uz = obb.axisZ(a0) * obb.extent(a0);
+    final vx = obb.axisX(a1) * obb.extent(a1) * sign;
+    final vy = obb.axisY(a1) * obb.extent(a1) * sign;
+    final vz = obb.axisZ(a1) * obb.extent(a1) * sign;
+    out
+      ..reset(4)
+      ..nx = nx
+      ..ny = ny
+      ..nz = nz
+      ..faceId = axis * 2 + (sign > 0.0 ? 0 : 1)
+      ..setVertex(0, fcx + ux + vx, fcy + uy + vy, fcz + uz + vz)
+      ..setVertex(1, fcx - ux + vx, fcy - uy + vy, fcz - uz + vz)
+      ..setVertex(2, fcx - ux - vx, fcy - uy - vy, fcz - uz - vz)
+      ..setVertex(3, fcx + ux - vx, fcy + uy - vy, fcz + uz - vz);
+  }
+
+  static bool _writeHullFace(
+    ConvexHullShape3D hull,
+    Matrix4 transform,
+    double dx,
+    double dy,
+    double dz,
+    _SupportFace3D out,
+  ) {
+    final normals = hull.hullFaceNormals;
+    final start = hull.hullFaceStart;
+    final verts = hull.hullFaceVertices;
+    if (normals == null || start == null || verts == null) {
+      return false;
+    }
+    final m = transform.storage;
+    final c0x = m[0];
+    final c0y = m[1];
+    final c0z = m[2];
+    final c1x = m[4];
+    final c1y = m[5];
+    final c1z = m[6];
+    final c2x = m[8];
+    final c2y = m[9];
+    final c2z = m[10];
+    // Columns of the cofactor matrix: world normals are `cof * localNormal`.
+    var k0x = c1y * c2z - c1z * c2y;
+    var k0y = c1z * c2x - c1x * c2z;
+    var k0z = c1x * c2y - c1y * c2x;
+    var k1x = c2y * c0z - c2z * c0y;
+    var k1y = c2z * c0x - c2x * c0z;
+    var k1z = c2x * c0y - c2y * c0x;
+    var k2x = c0y * c1z - c0z * c1y;
+    var k2y = c0z * c1x - c0x * c1z;
+    var k2z = c0x * c1y - c0y * c1x;
+    if (c0x * k0x + c0y * k0y + c0z * k0z < 0.0) {
+      k0x = -k0x;
+      k0y = -k0y;
+      k0z = -k0z;
+      k1x = -k1x;
+      k1y = -k1y;
+      k1z = -k1z;
+      k2x = -k2x;
+      k2y = -k2y;
+      k2z = -k2z;
+    }
+    final faceCount = start.length - 1;
+    var bestFace = 0;
+    var bestDot = double.negativeInfinity;
+    var bnx = 0.0;
+    var bny = 0.0;
+    var bnz = 0.0;
+    for (var f = 0; f < faceCount; f++) {
+      final lx = normals[f * 3];
+      final ly = normals[f * 3 + 1];
+      final lz = normals[f * 3 + 2];
+      final wx = k0x * lx + k1x * ly + k2x * lz;
+      final wy = k0y * lx + k1y * ly + k2y * lz;
+      final wz = k0z * lx + k1z * ly + k2z * lz;
+      final len = math.sqrt(wx * wx + wy * wy + wz * wz);
+      if (len <= 1e-30) {
+        continue;
+      }
+      final d = (wx * dx + wy * dy + wz * dz) / len;
+      if (d > bestDot) {
+        bestDot = d;
+        bestFace = f;
+        bnx = wx / len;
+        bny = wy / len;
+        bnz = wz / len;
+      }
+    }
+    if (bestDot == double.negativeInfinity) {
+      return false;
+    }
+    final coords = hull.hullCoords;
+    final s = start[bestFace];
+    final count = start[bestFace + 1] - s;
+    out
+      ..reset(count)
+      ..nx = bnx
+      ..ny = bny
+      ..nz = bnz
+      ..faceId = bestFace;
+    for (var k = 0; k < count; k++) {
+      final o = verts[s + k] * 3;
+      final lx = coords[o];
+      final ly = coords[o + 1];
+      final lz = coords[o + 2];
+      out.setVertex(
+        k,
+        m[0] * lx + m[4] * ly + m[8] * lz + m[12],
+        m[1] * lx + m[5] * ly + m[9] * lz + m[13],
+        m[2] * lx + m[6] * ly + m[10] * lz + m[14],
+      );
+    }
+    return true;
+  }
+
+  /// Builds a multi-point manifold by clipping the incident face against the
+  /// side planes of the reference face (the supporting face better aligned
+  /// with the A-to-B normal `(nx, ny, nz)`), or returns `null` when the faces
+  /// are not aligned enough for a face contact or nothing survives clipping.
+  ///
+  /// [forceReference] picks the reference face (`1`: A, `2`: B) instead.
+  /// Each contact point gets a feature id built from the two faces and the
+  /// clipped features, stable while the same features stay in contact.
+  static CollisionManifold3D? _clipSupportFaces(
+    double nx,
+    double ny,
+    double nz,
+    _SupportFace3D fA,
+    _SupportFace3D fB, {
+    int forceReference = 0,
+    double depthOverride = -1.0,
+  }) {
+    final alignA = fA.nx * nx + fA.ny * ny + fA.nz * nz;
+    final alignB = -(fB.nx * nx + fB.ny * ny + fB.nz * nz);
+    final bool refIsA;
+    if (forceReference == 0) {
+      if (math.max(alignA, alignB) < _faceAlignmentCos) {
+        return null;
+      }
+      refIsA = alignA >= alignB - 1e-4;
+    } else {
+      refIsA = forceReference == 1;
+    }
+    final ref = refIsA ? fA : fB;
+    final inc = refIsA ? fB : fA;
+    final rnx = ref.nx;
+    final rny = ref.ny;
+    final rnz = ref.nz;
+    final rv = ref.xyz;
+    final rCount = ref.count;
+
+    var ccx = 0.0;
+    var ccy = 0.0;
+    var ccz = 0.0;
+    for (var i = 0; i < rCount; i++) {
+      ccx += rv[i * 3];
+      ccy += rv[i * 3 + 1];
+      ccz += rv[i * 3 + 2];
+    }
+    ccx /= rCount;
+    ccy /= rCount;
+    ccz /= rCount;
+
+    final clip = _clip..load(inc);
+    for (var i = 0; i < rCount; i++) {
+      final j = i + 1 == rCount ? 0 : i + 1;
+      final vix = rv[i * 3];
+      final viy = rv[i * 3 + 1];
+      final viz = rv[i * 3 + 2];
+      final ex = rv[j * 3] - vix;
+      final ey = rv[j * 3 + 1] - viy;
+      final ez = rv[j * 3 + 2] - viz;
+      var sx = ey * rnz - ez * rny;
+      var sy = ez * rnx - ex * rnz;
+      var sz = ex * rny - ey * rnx;
+      final len = math.sqrt(sx * sx + sy * sy + sz * sz);
+      if (len <= 1e-12) {
+        continue;
+      }
+      sx /= len;
+      sy /= len;
+      sz /= len;
+      if (sx * (ccx - vix) + sy * (ccy - viy) + sz * (ccz - viz) > 0.0) {
+        sx = -sx;
+        sy = -sy;
+        sz = -sz;
+      }
+      final limit = sx * vix + sy * viy + sz * viz;
+      if (!clip.clipHalfspace(sx, sy, sz, limit, i + 1)) {
+        return null;
+      }
+    }
+
+    final refD = rnx * rv[0] + rny * rv[1] + rnz * rv[2];
+    final kept = clip.keepBelow(rnx, rny, rnz, refD, _faceContactTolerance);
+    if (kept == 0) {
+      return null;
+    }
+    final pick = kept <= 4 ? kept : clip.selectFour(rnx, rny, rnz, _chosen);
+    final base = _mixId(
+      _mixId(refIsA ? 1 : 2, ref.faceId),
+      inc.faceId,
+    );
+    final contacts = <ContactPoint3D>[];
+    var maxDepth = 0.0;
+    var ax = 0.0;
+    var ay = 0.0;
+    var az = 0.0;
+    var bx = 0.0;
+    var by = 0.0;
+    var bz = 0.0;
+    for (var k = 0; k < pick; k++) {
+      final idx = kept <= 4 ? k : _chosen[k];
+      final px = clip.keptX(idx);
+      final py = clip.keptY(idx);
+      final pz = clip.keptZ(idx);
+      final sep = clip.keptSep(idx);
+      final depth = sep < 0.0 ? -sep : 0.0;
+      if (depth > maxDepth) {
+        maxDepth = depth;
+      }
+      final pInc = Vector3(px, py, pz);
+      final pRef = Vector3(px - rnx * sep, py - rny * sep, pz - rnz * sep);
+      final pa = refIsA ? pRef : pInc;
+      final pb = refIsA ? pInc : pRef;
+      ax += pa.x;
+      ay += pa.y;
+      az += pa.z;
+      bx += pb.x;
+      by += pb.y;
+      bz += pb.z;
+      contacts.add(
+        ContactPoint3D(
+          pointA: pa,
+          pointB: pb,
+          penetrationDepth: depth,
+          featureId: _mixId(base, clip.keptId(idx)),
+        ),
+      );
+    }
+    final inv = 1.0 / pick;
+    return CollisionManifold3D(
+      normal: refIsA ? Vector3(rnx, rny, rnz) : Vector3(-rnx, -rny, -rnz),
+      penetrationDepth: depthOverride >= 0.0 ? depthOverride : maxDepth,
+      contactPointA: Vector3(ax * inv, ay * inv, az * inv),
+      contactPointB: Vector3(bx * inv, by * inv, bz * inv),
+      contacts: contacts,
+    );
   }
 
   static CollisionManifold3D? _gjkEpa(
@@ -2408,30 +2641,6 @@ class _ObbFrame() {
     s[edgeAxis] = e;
     toWorld(s[0], s[1], s[2], out1);
   }
-
-  List<Vector3> faceVertices(int faceAxis, double sign) {
-    final a0 = (faceAxis + 1) % 3;
-    final a1 = (faceAxis + 2) % 3;
-    final eFace = sign * extent(faceAxis);
-    final e0 = extent(a0);
-    final e1 = extent(a1);
-    final coords = Float64List(3);
-    Vector3 corner(double s0, double s1) {
-      coords[faceAxis] = eFace;
-      coords[a0] = s0 * e0;
-      coords[a1] = s1 * e1;
-      final out = Vector3.zero();
-      toWorld(coords[0], coords[1], coords[2], out);
-      return out;
-    }
-
-    return [
-      corner(-1.0, -1.0),
-      corner(1.0, -1.0),
-      corner(1.0, 1.0),
-      corner(-1.0, 1.0),
-    ];
-  }
 }
 
 /// Flat median-split AABB BVH over a [Surface]'s triangles for `O(log T)` local
@@ -2648,5 +2857,234 @@ class _SurfaceTriangleAabbTree._({
         _stack[sp++] = leftOrFirst[node];
       }
     }
+  }
+}
+
+/// A shape's supporting face in world space: a convex polygon and its outward
+/// unit normal (reused between narrowphase calls).
+class _SupportFace3D() {
+  Float64List xyz = Float64List(48);
+  int count = 0;
+  double nx = 0.0;
+  double ny = 0.0;
+  double nz = 0.0;
+  int faceId = 0;
+
+  void reset(int vertexCount) {
+    if (xyz.length < vertexCount * 3) {
+      xyz = Float64List(vertexCount * 3);
+    }
+    count = vertexCount;
+  }
+
+  void setVertex(int i, double x, double y, double z) {
+    xyz[i * 3] = x;
+    xyz[i * 3 + 1] = y;
+    xyz[i * 3 + 2] = z;
+  }
+
+  void setTriangle(Vector3 v0, Vector3 v1, Vector3 v2) {
+    reset(3);
+    setVertex(0, v0.x, v0.y, v0.z);
+    setVertex(1, v1.x, v1.y, v1.z);
+    setVertex(2, v2.x, v2.y, v2.z);
+  }
+}
+
+/// Ping-pong polygon buffers for Sutherland-Hodgman clipping with feature ids
+/// per vertex, growing only when a larger polygon is seen.
+class _ClipBuffer3D() {
+  Float64List _a = Float64List(96);
+  Float64List _b = Float64List(96);
+  Int32List _aId = Int32List(32);
+  Int32List _bId = Int32List(32);
+  int _count = 0;
+  Float64List _kept = Float64List(128);
+  Int32List _keptId = Int32List(32);
+
+  void _ensure(int vertices) {
+    if (_aId.length < vertices) {
+      final cap = vertices * 2;
+      _a = Float64List(cap * 3)..setRange(0, _count * 3, _a);
+      _aId = Int32List(cap)..setRange(0, _count, _aId);
+      _b = Float64List(cap * 3);
+      _bId = Int32List(cap);
+      _kept = Float64List(cap * 4);
+      _keptId = Int32List(cap);
+    }
+  }
+
+  void load(_SupportFace3D face) {
+    _count = 0;
+    _ensure(face.count + 8);
+    for (var i = 0; i < face.count; i++) {
+      _a[i * 3] = face.xyz[i * 3];
+      _a[i * 3 + 1] = face.xyz[i * 3 + 1];
+      _a[i * 3 + 2] = face.xyz[i * 3 + 2];
+      _aId[i] = i;
+    }
+    _count = face.count;
+  }
+
+  /// Keeps the part of the polygon with `n . x <= limit`; returns `false`
+  /// when nothing is left.
+  bool clipHalfspace(double nx, double ny, double nz, double limit, int plane) {
+    _ensure(_count * 2 + 2);
+    var outCount = 0;
+    final n = _count;
+    if (n == 0) {
+      return false;
+    }
+    var prev = n - 1;
+    var prevDist =
+        _a[prev * 3] * nx +
+        _a[prev * 3 + 1] * ny +
+        _a[prev * 3 + 2] * nz -
+        limit;
+    for (var i = 0; i < n; i++) {
+      final currDist =
+          _a[i * 3] * nx + _a[i * 3 + 1] * ny + _a[i * 3 + 2] * nz - limit;
+      // A vertex within 10 micrometres of the plane stays in (with its own
+      // feature id): equal faces stacked edge on edge otherwise flip between
+      // kept and clipped vertices with float noise.
+      final prevIn = prevDist <= 1e-5;
+      final currIn = currDist <= 1e-5;
+      if (prevIn != currIn) {
+        final t = prevDist / (prevDist - currDist);
+        _b[outCount * 3] = _a[prev * 3] + (_a[i * 3] - _a[prev * 3]) * t;
+        _b[outCount * 3 + 1] =
+            _a[prev * 3 + 1] + (_a[i * 3 + 1] - _a[prev * 3 + 1]) * t;
+        _b[outCount * 3 + 2] =
+            _a[prev * 3 + 2] + (_a[i * 3 + 2] - _a[prev * 3 + 2]) * t;
+        _bId[outCount] = Narrowphase3D._mixId(
+          Narrowphase3D._mixId(_aId[prev] + 64, _aId[i] + 64),
+          plane,
+        );
+        outCount++;
+      }
+      if (currIn) {
+        _b[outCount * 3] = _a[i * 3];
+        _b[outCount * 3 + 1] = _a[i * 3 + 1];
+        _b[outCount * 3 + 2] = _a[i * 3 + 2];
+        _bId[outCount] = _aId[i];
+        outCount++;
+      }
+      prev = i;
+      prevDist = currDist;
+    }
+    final t = _a;
+    _a = _b;
+    _b = t;
+    final tId = _aId;
+    _aId = _bId;
+    _bId = tId;
+    _count = outCount;
+    return outCount > 0;
+  }
+
+  /// Keeps the vertices at most [tolerance] above the plane `n . x = d`,
+  /// storing their signed separation; returns how many were kept.
+  int keepBelow(double nx, double ny, double nz, double d, double tolerance) {
+    var kept = 0;
+    for (var i = 0; i < _count; i++) {
+      final x = _a[i * 3];
+      final y = _a[i * 3 + 1];
+      final z = _a[i * 3 + 2];
+      final sep = nx * x + ny * y + nz * z - d;
+      if (sep <= tolerance) {
+        _kept[kept * 4] = x;
+        _kept[kept * 4 + 1] = y;
+        _kept[kept * 4 + 2] = z;
+        _kept[kept * 4 + 3] = sep;
+        _keptId[kept] = _aId[i];
+        kept++;
+      }
+    }
+    _keptCount = kept;
+    return kept;
+  }
+
+  int _keptCount = 0;
+
+  double keptX(int i) => _kept[i * 4];
+  double keptY(int i) => _kept[i * 4 + 1];
+  double keptZ(int i) => _kept[i * 4 + 2];
+  double keptSep(int i) => _kept[i * 4 + 3];
+  int keptId(int i) => _keptId[i];
+
+  double _dist2(int i, int j) {
+    final dx = keptX(i) - keptX(j);
+    final dy = keptY(i) - keptY(j);
+    final dz = keptZ(i) - keptZ(j);
+    return dx * dx + dy * dy + dz * dz;
+  }
+
+  /// Picks four well-spread kept points (the deepest, the farthest from it,
+  /// the one spanning the largest triangle with both, then the farthest from
+  /// those three) into [out]; returns `4`.
+  int selectFour(double nx, double ny, double nz, Int32List out) {
+    final n = _keptCount;
+    var i0 = 0;
+    for (var i = 1; i < n; i++) {
+      if (keptSep(i) < keptSep(i0)) {
+        i0 = i;
+      }
+    }
+    var i1 = i0 == 0 ? 1 : 0;
+    var best = -1.0;
+    for (var i = 0; i < n; i++) {
+      if (i == i0) {
+        continue;
+      }
+      final dx = keptX(i) - keptX(i0);
+      final dy = keptY(i) - keptY(i0);
+      final dz = keptZ(i) - keptZ(i0);
+      final d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 > best) {
+        best = d2;
+        i1 = i;
+      }
+    }
+    var i2 = -1;
+    best = -1.0;
+    final e1x = keptX(i1) - keptX(i0);
+    final e1y = keptY(i1) - keptY(i0);
+    final e1z = keptZ(i1) - keptZ(i0);
+    for (var i = 0; i < n; i++) {
+      if (i == i0 || i == i1) {
+        continue;
+      }
+      final e2x = keptX(i) - keptX(i0);
+      final e2y = keptY(i) - keptY(i0);
+      final e2z = keptZ(i) - keptZ(i0);
+      final cx = e1y * e2z - e1z * e2y;
+      final cy = e1z * e2x - e1x * e2z;
+      final cz = e1x * e2y - e1y * e2x;
+      final area = (cx * nx + cy * ny + cz * nz).abs();
+      if (area > best) {
+        best = area;
+        i2 = i;
+      }
+    }
+    var i3 = -1;
+    best = -1.0;
+    for (var i = 0; i < n; i++) {
+      if (i == i0 || i == i1 || i == i2) {
+        continue;
+      }
+      final dMin = math.min(
+        _dist2(i, i0),
+        math.min(_dist2(i, i1), i2 < 0 ? double.infinity : _dist2(i, i2)),
+      );
+      if (dMin > best) {
+        best = dMin;
+        i3 = i;
+      }
+    }
+    out[0] = i0;
+    out[1] = i1;
+    out[2] = i2;
+    out[3] = i3;
+    return 4;
   }
 }
