@@ -407,23 +407,29 @@ the reflected ray is intersected with the box and the direction from the box cen
 used, so reflections of a room line up with its walls (`parallaxCorrectRay` does the same on the
 CPU).
 
-How the volumes are used, once per pass:
+How the volumes are used, per object:
 
-- One volume is chosen at the camera position (the highest `priority`, then the highest weight),
-  else at the world origin, else the first volume, wherever it is. Its box drives box projection for
-  every `SpatialMaterial` of the pass, and its weight at the chosen point scales all reflections.
-- A `SpatialMaterial` without its own `environmentTexture` or `environmentProbe` takes the
-  reflection texture and the diffuse coefficients of a volume when it is bound. The volume is meant
-  to be the one around the drawn object, but the choice reads `RenderContext3D.model`, which is not
-  the drawn object's transform for instanced draws: in practice all objects of a material share one
-  volume (in a test, two mirror spheres inside a red and a blue volume both reflected red).
-- Volumes do not blend with each other or with a material's own environment. The weight is taken
-  at the camera position: while the camera crosses the `blendDistance` band at the edge of the
-  chosen box every reflection fades, and once it is outside, the volume at the world origin (or the
-  first one) takes over at full weight.
+- Only a `SpatialMaterial` without its own `environmentTexture` or `environmentProbe` uses volumes
+  (`Material.usesReflectionProbes`); a material with an environment of its own is not affected by
+  them.
+- Each draw of such a material gets the volume around it, chosen when the draw is recorded at the
+  center of the drawn surface's bounds in world space: the volume with the highest `priority`
+  whose weight there is above zero, then the one with the highest weight. An instanced draw of
+  your own (`RenderContext3D.drawInstances`, `InstancedGroup3D`) gets one volume for all its
+  instances, chosen at its `center`, or at the camera position when it has none.
+- The drawn object then takes the volume's reflection texture, its diffuse coefficients and its
+  box for box projection, all scaled by the volume's weight at the object: an object crossing the
+  `blendDistance` band at the edge of a box fades out its reflections and diffuse light, and an
+  object outside every volume gets none.
+- Objects of one surface and material are batched only with those that got the same volume and
+  the same weight: objects deep inside one volume (weight `1`) still share a batch, objects in
+  different rooms or in a blend band are drawn apart. The volumes' boxes are read once per pass;
+  choosing a volume costs a pass over the volumes per recorded draw and allocates nothing.
+- Volumes do not blend with each other: in the overlap of two volumes the object takes one of
+  them.
 
-Use volumes for one room in which the camera stays; for several rooms, give the materials of each
-room their own `environmentProbe` instead.
+`RenderContext3D.reflectionProbe` and `reflectionProbeWeight` give the chosen volume to the `apply`
+of a material of your own that overrides `usesReflectionProbes`.
 
 
 ### Light probe grids
@@ -516,7 +522,8 @@ retained `Scene3DComponent` keeps showing the old image until something else cha
   synchronously; the probe's blurred mip levels and the BRDF table are computed on the first frame
   that uses them. Keep panoramas small (the 128 x 64 of `skyDome` is enough for diffuse light and
   rough reflections), or bake them during loading.
-- Reflection probe volumes cost a selection over the volumes per pass and per material bind. Light
+- Reflection probe volumes cost a pass over the volumes per recorded draw of a material that uses
+  them, and can split batches (see [Reflection probe volumes](#reflection-probe-volumes)). Light
   masks cost nothing beyond the selection.
 
 
@@ -558,9 +565,9 @@ material's slots (see [Materials](materials.md#custom-shaders)):
   irradiance divided by `π` as for the direct lights: a uniform sky of brightness `v` adds `π * v`
   times the base color, where a hemisphere light of that color adds `v` times it. Lower
   `EnvironmentProbe3D.intensity` and `LightProbeGrid3D.intensity` to about `1/π` to match.
-- Reflections: one reflection probe volume per pass and one environment per material bind, chosen
-  from a stale model matrix; no blending between volumes; boxes are axis-aligned; `priority` is the
-  component's ordering priority as well.
+- Reflections: one volume per object (one per instanced draw of your own), no blending between
+  overlapping volumes; boxes are axis-aligned; `priority` is the component's ordering priority as
+  well.
 - Probes are 8-bit: the reflection texture keeps the panorama's encoding while the spherical
   harmonics are linearized (with `srgb: true`), so reflections are brighter relative to the diffuse
   light than they would be in linear light; the blurred mip levels are a Gaussian approximation and

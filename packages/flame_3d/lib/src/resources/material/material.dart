@@ -108,6 +108,16 @@ abstract class Material({
   /// stray triangles.
   bool get instancesHoldModelMatrices => true;
 
+  /// Whether the draws of this material read the `ReflectionProbeVolume3D`
+  /// around them, `false` unless overridden.
+  ///
+  /// When it is `true` and the world has volumes, the [RenderContext3D]
+  /// chooses a volume for each draw as it is recorded, keeps draws with
+  /// different volumes in separate batches, and sets
+  /// [RenderContext3D.reflectionProbe] and
+  /// [RenderContext3D.reflectionProbeWeight] before [apply].
+  bool get usesReflectionProbes => false;
+
   /// The pipeline this material drew with last, managed by the
   /// [RenderContext3D].
   @internal

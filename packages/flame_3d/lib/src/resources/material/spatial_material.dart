@@ -220,7 +220,16 @@ class SpatialMaterial({
   static final Vector4 _pbrExtVec = Vector4.zero();
   static final Vector4 _iblParamsVec = Vector4.zero();
   static final Vector4 _shScratch = Vector4.zero();
-  static final Vector3 _originScratch = Vector3.zero();
+  static final Vector4 _probeBoxMinVec = Vector4.zero();
+  static final Vector4 _probeBoxMaxVec = Vector4.zero();
+  static final Vector4 _probeCenterVec = Vector4.zero();
+
+  /// `true` when the material has neither an [environmentTexture] nor an
+  /// [environmentProbe]: it then takes its environment from the
+  /// `ReflectionProbeVolume3D` around each object it draws.
+  @override
+  bool get usesReflectionProbes =>
+      environmentProbe == null && environmentTexture == null;
 
   @override
   void apply(RenderContext context) {
@@ -230,18 +239,19 @@ class SpatialMaterial({
     final emiTex = emissiveTexture;
     final lmTex = lightmapTexture;
 
+    // Without an environment of its own, the material uses the volume the
+    // render context chose for the drawn object, faded by its weight there.
     var probe = environmentProbe;
+    ReflectionProbeVolume3D? volume;
+    var volumeWeight = 1.0;
     if (probe == null &&
         environmentTexture == null &&
-        context is RenderContext3D &&
-        context.reflectionProbes.isNotEmpty) {
-      final m = context.model.storage;
-      _originScratch.setValues(m[12], m[13], m[14]);
-      final local =
-          context.selectReflectionProbe(_originScratch) ??
-          context.selectReflectionProbe(context.cameraPosition) ??
-          (context.reflectionProbes.first, 1.0);
-      probe = local.$1.probe;
+        context is RenderContext3D) {
+      volume = context.reflectionProbe;
+      if (volume != null) {
+        probe = volume.probe;
+        volumeWeight = context.reflectionProbeWeight;
+      }
     }
 
     final envTex = environmentTexture ?? probe?.reflectionTexture;
@@ -283,7 +293,7 @@ class SpatialMaterial({
           normTex != null ? 1.0 : 0.0,
           ormTex != null ? 1.0 : 0.0,
           occTex != null ? 1.0 : 0.0,
-          envTex != null ? environmentIntensity : 0.0,
+          envTex != null ? environmentIntensity * volumeWeight : 0.0,
         ),
       )
       ..setVector4(
@@ -322,15 +332,36 @@ class SpatialMaterial({
             envTex != null ? 1.0 : 0.0,
           ),
         );
+      if (volume != null) {
+        final box = volume.worldBounds;
+        final center = volume.worldCenter;
+        _probeBoxMinVec.setValues(box.min.x, box.min.y, box.min.z, 0);
+        _probeBoxMaxVec.setValues(box.max.x, box.max.y, box.max.z, 0);
+        _probeCenterVec.setValues(
+          center.x,
+          center.y,
+          center.z,
+          volume.boxProjection ? 1.0 : 0.0,
+        );
+      } else {
+        _probeBoxMinVec.setZero();
+        _probeBoxMaxVec.setZero();
+        _probeCenterVec.setZero();
+      }
+      fragmentShader
+        ..setVector4('Material.probeBoxMin', _probeBoxMinVec)
+        ..setVector4('Material.probeBoxMax', _probeBoxMaxVec)
+        ..setVector4('Material.probeCenter', _probeCenterVec);
     }
 
     final matBlock = fragmentShader.block('Material');
     if (probe != null && probe.intensity > 0) {
+      final diffuseScale = probe.intensity * volumeWeight;
       for (var i = 0; i < 9; i++) {
         final c = probe.shCoefficients[i];
         matBlock.setVector4(
           'shCoeffs',
-          _shScratch..setValues(c.x, c.y, c.z, i == 0 ? probe.intensity : 0.0),
+          _shScratch..setValues(c.x, c.y, c.z, i == 0 ? diffuseScale : 0.0),
           index: i,
         );
       }

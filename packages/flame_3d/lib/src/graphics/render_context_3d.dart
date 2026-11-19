@@ -447,6 +447,14 @@ class RenderContext3D(super.device) extends RenderContext {
     final wx = m[0] * cx + m[4] * cy + m[8] * cz + m[12];
     final wy = m[1] * cx + m[5] * cy + m[9] * cz + m[13];
     final wz = m[2] * cx + m[6] * cy + m[10] * cz + m[14];
+    if (!shadowPass &&
+        reflectionProbes.isNotEmpty &&
+        drawMaterial.usesReflectionProbes) {
+      _selectProbeFor(i, wx, wy, wz);
+    } else {
+      _probeSlots[i] = 0;
+      _probeWeights[i] = 0;
+    }
     final d = _depthRow;
     var depth = d[0] * wx + d[1] * wy + d[2] * wz + d[3];
     if (!shadowPass &&
@@ -519,6 +527,15 @@ class RenderContext3D(super.device) extends RenderContext {
     _external[i] = instances;
     _externalCounts[i] = count;
 
+    if (!_shadows.recording &&
+        reflectionProbes.isNotEmpty &&
+        drawMaterial.usesReflectionProbes) {
+      final at = center ?? _cameraPosition;
+      _selectProbeFor(i, at.x, at.y, at.z);
+    } else {
+      _probeSlots[i] = 0;
+      _probeWeights[i] = 0;
+    }
     final d = _depthRow;
     _depths[i] = center == null
         ? d[3]
@@ -681,7 +698,9 @@ class RenderContext3D(super.device) extends RenderContext {
         _sortDepths[i] = _depths[i];
       }
     }
+    _sortByProbe = _anyProbeDraw;
     _sort(_opaque, opaqueCount);
+    _sortByProbe = false;
     _boundMaterial = null;
     _bindingEpoch = -1;
     _depthPrepassOverride = false;
@@ -711,6 +730,121 @@ class RenderContext3D(super.device) extends RenderContext {
     accumTarget: accumTarget,
     revealTarget: revealTarget,
   );
+
+  /// The [ReflectionProbeVolume3D] chosen for the draw [Material.apply] runs
+  /// for, or `null` when its material does not use volumes (see
+  /// [Material.usesReflectionProbes]) or no volume reaches it.
+  ///
+  /// The volume is chosen when the draw is recorded, as
+  /// [selectReflectionProbe] chooses it, at the center of the drawn surface's
+  /// bounds in world space (for [drawInstances], at its `center`, or the
+  /// camera position without one). Draws that get different volumes, or
+  /// different weights, are not batched together.
+  ReflectionProbeVolume3D? get reflectionProbe {
+    final slot = _drawProbeSlot;
+    return slot > 0 && slot <= reflectionProbes.length
+        ? reflectionProbes[slot - 1]
+        : null;
+  }
+
+  /// The weight of [reflectionProbe] at the drawn object, in `(0, 1]`
+  /// (`ReflectionProbeVolume3D.weightAt`), or `0` without one.
+  double get reflectionProbeWeight =>
+      reflectionProbe == null ? 0.0 : _drawProbeWeight;
+
+  int _drawProbeSlot = 0;
+  double _drawProbeWeight = 0;
+  int _boundProbeSlot = 0;
+  double _boundProbeWeight = 0;
+  bool _anyProbeDraw = false;
+  bool _sortByProbe = false;
+
+  // Per pass: the center, half extents, blend distance and priority of each
+  // volume, 8 doubles per volume.
+  Float64List _probeBoxes = Float64List(0);
+  int _probeBoxesPass = -1;
+  List<ReflectionProbeVolume3D>? _probeBoxesOf;
+  int _probeBoxesCount = 0;
+
+  void _ensureProbeBoxes() {
+    final probes = reflectionProbes;
+    if (_probeBoxesPass == _pass &&
+        identical(_probeBoxesOf, probes) &&
+        _probeBoxesCount == probes.length) {
+      return;
+    }
+    if (_probeBoxes.length < probes.length * 8) {
+      _probeBoxes = Float64List(probes.length * 8);
+    }
+    final boxes = _probeBoxes;
+    for (var k = 0; k < probes.length; k++) {
+      final p = probes[k];
+      final box = p.worldBounds;
+      final o = k * 8;
+      boxes
+        ..[o] = (box.min.x + box.max.x) * 0.5
+        ..[o + 1] = (box.min.y + box.max.y) * 0.5
+        ..[o + 2] = (box.min.z + box.max.z) * 0.5
+        ..[o + 3] = (box.max.x - box.min.x) * 0.5
+        ..[o + 4] = (box.max.y - box.min.y) * 0.5
+        ..[o + 5] = (box.max.z - box.min.z) * 0.5
+        ..[o + 6] = math.max(0.0, p.blendDistance)
+        ..[o + 7] = p.priority.toDouble();
+    }
+    _probeBoxesPass = _pass;
+    _probeBoxesOf = probes;
+    _probeBoxesCount = probes.length;
+  }
+
+  @pragma('vm:prefer-inline')
+  static double _probeAxisWeight(double distance, double half, double fade) {
+    final t = ((half + fade - distance) / fade).clamp(0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+  }
+
+  /// Chooses the volume of draw [i] at ([x], [y], [z]), like
+  /// [selectReflectionProbe], without allocating.
+  void _selectProbeFor(int i, double x, double y, double z) {
+    _ensureProbeBoxes();
+    final boxes = _probeBoxes;
+    var best = -1;
+    var bestWeight = 0.0;
+    var bestPriority = 0.0;
+    for (var k = 0; k < _probeBoxesCount; k++) {
+      final o = k * 8;
+      final fade = boxes[o + 6];
+      final dx = (x - boxes[o]).abs();
+      final dy = (y - boxes[o + 1]).abs();
+      final dz = (z - boxes[o + 2]).abs();
+      final hx = boxes[o + 3];
+      final hy = boxes[o + 4];
+      final hz = boxes[o + 5];
+      if (dx > hx + fade || dy > hy + fade || dz > hz + fade) {
+        continue;
+      }
+      final w = fade <= 1e-5
+          ? 1.0
+          : _probeAxisWeight(dx, hx, fade) *
+                _probeAxisWeight(dy, hy, fade) *
+                _probeAxisWeight(dz, hz, fade);
+      if (w <= 1e-4) {
+        continue;
+      }
+      final priority = boxes[o + 7];
+      if (best < 0 ||
+          priority > bestPriority ||
+          (priority == bestPriority && w > bestWeight)) {
+        best = k;
+        bestWeight = w;
+        bestPriority = priority;
+      }
+    }
+    _probeSlots[i] = best + 1;
+    _probeWeights[i] = best < 0 ? 0.0 : bestWeight;
+    if (best >= 0) {
+      _anyProbeDraw = true;
+    }
+  }
 
   /// Selects the highest-priority / highest-weight `ReflectionProbeVolume3D`
   /// influencing [worldPoint], or `null` when none covers it.
@@ -752,73 +886,24 @@ class RenderContext3D(super.device) extends RenderContext {
     context._shadows.writeShadows(block);
   }
 
-  static final Vector3 _probeQueryPt = Vector3.zero();
-
   /// Writes `PassOptions` (HDR linear output flag, `RenderDebugMode3D`,
-  /// `SceneColor` Grab-Pass state, active `ReflectionProbeVolume3D` box, and
-  /// `LightProbeGrid3D` bounds) once per pass.
+  /// `SceneColor` Grab-Pass state and `LightProbeGrid3D` bounds) once per
+  /// pass. The reflection probe volume of a draw is not a pass value: see
+  /// [reflectionProbe].
   static void writePassOptionsUniforms(
     RenderContext3D context,
     UniformBlock block,
   ) {
     final v = _scratchVector4;
-    // Pick dominant ReflectionProbeVolume3D at scene focus / origin (or first
-    // active volume when camera orbits outside the indoor room).
-    (ReflectionProbeVolume3D, double)? selectedProbe;
-    if (context.reflectionProbes.isNotEmpty) {
-      selectedProbe = context.selectReflectionProbe(context.cameraPosition);
-      if (selectedProbe == null) {
-        _probeQueryPt.setZero();
-        selectedProbe = context.selectReflectionProbe(_probeQueryPt);
-      }
-      if (selectedProbe == null) {
-        final first = context.reflectionProbes.first;
-        selectedProbe = (first, 1.0);
-      }
-    }
-
-    final probeActive = selectedProbe != null;
     block.setVector4(
       'flags',
       v..setValues(
         context.hdrEnabled ? 1.0 : 0.0,
         context.renderDebugMode.index.toDouble(),
         context._oitGrab.grabActive ? 1.0 : 0.0,
-        probeActive ? 1.0 : 0.0,
+        0.0,
       ),
     );
-
-    if (selectedProbe != null) {
-      final (vol, weight) = selectedProbe;
-      final box = vol.worldBounds;
-      final center = vol.worldCenter;
-      final tex = vol.probe.reflectionTexture;
-      tex.resource;
-      final maxMip = math.max(0, tex.mipLevelCount - 1).toDouble();
-      block
-        ..setVector4(
-          'probeBoxMin',
-          v..setValues(box.min.x, box.min.y, box.min.z, weight),
-        )
-        ..setVector4(
-          'probeBoxMax',
-          v..setValues(box.max.x, box.max.y, box.max.z, maxMip),
-        )
-        ..setVector4(
-          'probeCenter',
-          v..setValues(
-            center.x,
-            center.y,
-            center.z,
-            vol.boxProjection ? 1.0 : 0.0,
-          ),
-        );
-    } else {
-      block
-        ..setVector4('probeBoxMin', v..setZero())
-        ..setVector4('probeBoxMax', v)
-        ..setVector4('probeCenter', v);
-    }
 
     final grid = context.lightProbeGrid;
     if (grid != null && grid.intensity > 0) {
@@ -883,7 +968,9 @@ class RenderContext3D(super.device) extends RenderContext {
         sortDepths[i] = _depths[i];
       }
     }
+    _sortByProbe = _anyProbeDraw;
     _sort(_opaque, opaqueCount);
+    _sortByProbe = false;
     _sort(_translucent, translucentCount);
     RenderProfile.lap(RenderPhase.sort);
 
@@ -906,6 +993,7 @@ class RenderContext3D(super.device) extends RenderContext {
   }
 
   void _releaseDraws(int count) {
+    _anyProbeDraw = false;
     _surfaces.fillRange(0, count, null);
     _materials.fillRange(0, count, null);
     _pipelines.fillRange(0, count, null);
@@ -963,6 +1051,8 @@ class RenderContext3D(super.device) extends RenderContext {
         identical(_materials[first], _materials[other]) &&
         identical(_pipelines[first], _pipelines[other]) &&
         _mirrored[first] == _mirrored[other] &&
+        _probeSlots[first] == _probeSlots[other] &&
+        _probeWeights[first] == _probeWeights[other] &&
         _joints[other] == null &&
         _external[other] == null;
   }
@@ -1021,7 +1111,9 @@ class RenderContext3D(super.device) extends RenderContext {
 
     final external = _external[first];
     if (external != null) {
-      if (!identical(material, _boundMaterial)) {
+      _drawProbeSlot = _probeSlots[first];
+      _drawProbeWeight = _probeWeights[first];
+      if (!identical(material, _boundMaterial) || _probeChanged) {
         _jointTransforms = null;
         _applyMaterial(material, vertexShader);
       }
@@ -1044,6 +1136,8 @@ class RenderContext3D(super.device) extends RenderContext {
           draw * VertexLayout.instanceStrideInFloats,
         );
         _jointTransforms = _joints[draw];
+        _drawProbeSlot = _probeSlots[draw];
+        _drawProbeWeight = _probeWeights[draw];
         _applyMaterial(material, vertexShader);
         _bindJoints(vertexShader, _joints[draw]);
         device.bindSurface(surface);
@@ -1057,7 +1151,9 @@ class RenderContext3D(super.device) extends RenderContext {
     }
 
     final joints = _joints[first];
-    if (!identical(material, _boundMaterial)) {
+    _drawProbeSlot = _probeSlots[first];
+    _drawProbeWeight = _probeWeights[first];
+    if (!identical(material, _boundMaterial) || _probeChanged) {
       _jointTransforms = joints;
       _applyMaterial(material, vertexShader);
     }
@@ -1081,8 +1177,14 @@ class RenderContext3D(super.device) extends RenderContext {
   final Map<RenderState, RenderState> _prepassShadedStates = {};
   final Map<RenderState, RenderState> _wireframeStates = {};
 
+  bool get _probeChanged =>
+      _drawProbeSlot != _boundProbeSlot ||
+      _drawProbeWeight != _boundProbeWeight;
+
   void _applyMaterial(Material material, Shader vertexShader) {
     RenderProfile.lap(RenderPhase.binding);
+    _boundProbeSlot = _drawProbeSlot;
+    _boundProbeWeight = _drawProbeWeight;
     material.apply(this);
     RenderProfile.lap(RenderPhase.materialApply);
     _bindSlots(vertexShader, _materialScope);
@@ -1618,6 +1720,8 @@ class RenderContext3D(super.device) extends RenderContext {
   Uint8List _mirrored = Uint8List(0);
   Int32List _surfaceKeys = Int32List(0);
   Int32List _prepassGroups = Int32List(0);
+  Int32List _probeSlots = Int32List(0);
+  Float64List _probeWeights = Float64List(0);
   Int32List _opaque = Int32List(0);
   Int32List _translucent = Int32List(0);
   Int32List _sortScratch = Int32List(0);
@@ -1644,6 +1748,10 @@ class RenderContext3D(super.device) extends RenderContext {
     _surfaceKeys = Int32List(capacity);
     _prepassGroups = Int32List(capacity)
       ..setRange(0, _prepassGroups.length, _prepassGroups);
+    _probeSlots = Int32List(capacity)
+      ..setRange(0, _probeSlots.length, _probeSlots);
+    _probeWeights = Float64List(capacity)
+      ..setRange(0, _probeWeights.length, _probeWeights);
     _sortDepths = Float64List(capacity);
     _opaque = Int32List(capacity);
     _translucent = Int32List(capacity);
@@ -1671,6 +1779,18 @@ class RenderContext3D(super.device) extends RenderContext {
     final surfaceB = _surfaceKeys[b];
     if (surfaceA != surfaceB) {
       return surfaceA < surfaceB ? -1 : 1;
+    }
+    if (_sortByProbe) {
+      final probeA = _probeSlots[a];
+      final probeB = _probeSlots[b];
+      if (probeA != probeB) {
+        return probeA < probeB ? -1 : 1;
+      }
+      final weightA = _probeWeights[a];
+      final weightB = _probeWeights[b];
+      if (weightA != weightB) {
+        return weightA < weightB ? -1 : 1;
+      }
     }
     final depthA = _sortDepths[a];
     final depthB = _sortDepths[b];

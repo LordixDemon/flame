@@ -49,20 +49,21 @@ uniform Material {
   vec4 pbrExt;
   // x: hasLightmap, y: lightmapIntensity, z: maxEnvMip, w: hasSplitSumIbl
   vec4 iblParams;
+  // The ReflectionProbeVolume3D the environment comes from, if any.
+  // xyz: box min, w: unused
+  vec4 probeBoxMin;
+  // xyz: box max, w: unused
+  vec4 probeBoxMax;
+  // xyz: box center, w: box projection (1 = on, 0 = off or no volume)
+  vec4 probeCenter;
   // L0..L2 Spherical Harmonics diffuse irradiance (shCoeffs[0].w > 0 enables)
   vec4 shCoeffs[9];
 } material;
 
 uniform PassOptions {
   // x: 1 in a pass into the HDR scene target (output extended-range sRGB),
-  // y: debugMode, z: sceneColorActive, w: probeBoxActive
+  // y: debugMode, z: sceneColorActive, w: unused
   vec4 flags;
-  // xyz: reflection probe box min, w: probe blend weight
-  vec4 probeBoxMin;
-  // xyz: reflection probe box max, w: probe maxMip
-  vec4 probeBoxMax;
-  // xyz: reflection probe world center, w: boxProjection (1=on, 0=off)
-  vec4 probeCenter;
   // xyz: lightProbeGrid bounds min, w: grid intensity (>0 active)
   vec4 gridBoundsMin;
   // xyz: lightProbeGrid 1 / bounds span, w: unused
@@ -182,11 +183,11 @@ vec2 equirectUv(vec3 dir) {
 }
 
 vec3 boxProjectDir(vec3 worldPos, vec3 reflDir) {
-  if (passOptions.flags.w < 0.5 || passOptions.probeCenter.w < 0.5) {
+  if (material.probeCenter.w < 0.5) {
     return reflDir;
   }
-  vec3 bMin = passOptions.probeBoxMin.xyz;
-  vec3 bMax = passOptions.probeBoxMax.xyz;
+  vec3 bMin = material.probeBoxMin.xyz;
+  vec3 bMax = material.probeBoxMax.xyz;
   vec3 invR = vec3(
     abs(reflDir.x) > 1e-5 ? 1.0 / reflDir.x : 1e5,
     abs(reflDir.y) > 1e-5 ? 1.0 / reflDir.y : 1e5,
@@ -200,7 +201,7 @@ vec3 boxProjectDir(vec3 worldPos, vec3 reflDir) {
     return reflDir;
   }
   vec3 hitPos = worldPos + reflDir * tHit;
-  return normalize(hitPos - passOptions.probeCenter.xyz);
+  return normalize(hitPos - material.probeCenter.xyz);
 }
 
 vec3 sampleProbeGrid3D(vec3 worldPos) {
@@ -609,14 +610,12 @@ void main() {
   }
 
   // Split-Sum Specular IBL + Prefiltered Roughness Mip + Kulla-Conty
-  // Multi-Scattering + Box-Projected ReflectionProbeVolume3D.
+  // Multi-Scattering + Box-Projected ReflectionProbeVolume3D (the volume's
+  // weight at the object is part of flags.w).
   if (material.flags.w > 0.0) {
     vec3 refl = reflect(-viewDir, normal);
     vec3 corrRefl = boxProjectDir(fragPosition, refl);
     float maxMip = max(0.0, material.iblParams.z);
-    if (passOptions.flags.w > 0.5) {
-      maxMip = max(maxMip, passOptions.probeBoxMax.w);
-    }
     vec3 envSample = textureLod(
       environmentTexture,
       equirectUv(corrRefl),
@@ -634,10 +633,7 @@ void main() {
       vec3 fAvg = f0 + (1.0 - f0) * (1.0 / 21.0);
       vec3 fms = f0Spec * fAvg / max(vec3(1.0) - ems * fAvg, vec3(1e-4));
       vec3 specBrdf = f0Spec + fms * ems;
-      float probeWeight = passOptions.flags.w > 0.5
-          ? passOptions.probeBoxMin.w
-          : 1.0;
-      vec3 specIbl = specBrdf * envSample * (material.flags.w * probeWeight);
+      vec3 specIbl = specBrdf * envSample * material.flags.w;
 
       if (clearcoat > 1e-4) {
         vec3 ccRefl = boxProjectDir(fragPosition, reflect(-viewDir, geomNormal));
@@ -656,7 +652,7 @@ void main() {
         ).rg;
         vec3 ccSpec = (vec3(0.04) * ccBrdf.x + ccBrdf.y) * clearcoat;
         specIbl = specIbl * (vec3(1.0) - ccSpec) +
-          ccSpec * ccEnv * (material.flags.w * probeWeight);
+          ccSpec * ccEnv * material.flags.w;
       }
       ambient += specIbl;
     } else {

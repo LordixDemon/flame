@@ -6,7 +6,14 @@ import 'package:flame_3d/resources.dart';
 
 /// {@template reflection_probe_volume_3d}
 /// Local box-projected [EnvironmentProbe3D] volume component for spatially
-/// localized indoor/corridor reflections and smooth multi-zone transitions.
+/// localized indoor/corridor reflections.
+///
+/// Every object drawn with a material that uses volumes (see
+/// `Material.usesReflectionProbes`; a `SpatialMaterial` without an
+/// environment of its own) takes the environment of the volume around it,
+/// faded by [weightAt] at its center, so reflections fade out across
+/// [blendDistance] as an object leaves the box. Overlapping volumes are not
+/// blended: the one with the highest priority, then the highest weight, wins.
 ///
 /// When [boxProjection] is `true` (default), reflection rays originating inside
 /// the volume's world AABB `[worldCenter - extents, worldCenter + extents]` are

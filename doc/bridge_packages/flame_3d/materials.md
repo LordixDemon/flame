@@ -1319,8 +1319,7 @@ The texture sampler options, including anisotropy up to 16, work on the web.
 - Shadow casters ignore alpha: `alphaCutoff` cutouts cast the shadow of their whole quad, and
   objects faded with `instanceData.w` or `ditherFade` cast their full shadow.
 - `SpatialMaterial`: the default `metallic` is `0.8`; `uvScale` and `uvOffset` are applied to every
-  map but not to the lightmap, and there is no UV rotation; reflections use one environment per
-  material bind (see [Lighting](lighting.md#reflection-probe-volumes)).
+  map but not to the lightmap, and there is no UV rotation.
 - `StylizedMaterial` is display-referred and clamped to `[0, 1]`; it has no textures besides its
   MatCaps, and no image-based lighting.
 - `WaterMaterial` ignores spot lights, reflects a flat sky color, and needs a subdivided mesh; its
