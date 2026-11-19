@@ -251,13 +251,23 @@ class DecalBatch3D({
     if (_length == 0 || context.isShadowPass) {
       return;
     }
+    // Sorted among the translucent draws at the center of the decals.
+    final local = computeLocalAabb()!;
+    final center = _drawCenter
+      ..setFrom(local.min)
+      ..add(local.max)
+      ..scale(0.5);
+    worldTransformMatrix.transform3(center);
     context.drawInstances(
       _unitQuad,
       instances: _resolvedBuffer(),
       count: _length,
       material: material,
+      center: center,
     );
   }
+
+  final Vector3 _drawCenter = Vector3.zero();
 
   Float32List _resolvedBuffer() {
     final world = worldTransformMatrix;

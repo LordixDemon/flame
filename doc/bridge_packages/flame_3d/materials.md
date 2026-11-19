@@ -1436,9 +1436,10 @@ The texture sampler options, including anisotropy up to 16, work on the web.
 - `StylizedMaterial` is display-referred and clamped to `[0, 1]`; it has no textures besides its
   MatCaps, and no image-based lighting.
 - `WaterMaterial` reflects a flat sky color and needs a subdivided mesh.
-- `DecalBatch3D` is sorted among the translucent draws as if it were at the world origin, so it
-  can be drawn in the wrong order against other translucent objects. Textured decals are
-  multiplied by their alpha a second time, which darkens the soft edges of premultiplied images.
+- A `DecalBatch3D` is one draw: it is sorted among the translucent draws at the center of its
+  decals' bounds, so decals spread far apart can still be drawn in the wrong order against
+  translucent objects between them. Textured decals are multiplied by their alpha a second time,
+  which darkens the soft edges of premultiplied images.
 - Straight-alpha blending of premultiplied textures: translucent `SpatialMaterial` and
   `BillboardMaterial3D` (and so `Text3DComponent`) blend with straight alpha while textures made
   from Flutter images are premultiplied, which darkens their soft edges.
