@@ -3,17 +3,21 @@ import 'dart:io';
 
 /// Build each shader in [names] into a `.shaderbundle` asset in [assets].
 ///
-/// Each name must have a matching `.vert` and `.frag` in [shaders]. Stale
-/// `.shaderbundle` files are removed first and other assets are left untouched.
+/// Each name must have a matching `.vert` and `.frag` in [shaders]. With
+/// [deleteStale], every `.shaderbundle` of [assets] is removed first; other
+/// files are left untouched either way.
 Future<void> build(
   Iterable<String> names,
   Directory shaders,
   Directory assets,
-  List<Directory> packageShaderDirs,
-) async {
-  for (final file in assets.listSync().whereType<File>()) {
-    if (file.path.endsWith('.shaderbundle')) {
-      file.deleteSync();
+  List<Directory> packageShaderDirs, {
+  bool deleteStale = true,
+}) async {
+  if (deleteStale) {
+    for (final file in assets.listSync().whereType<File>()) {
+      if (file.path.endsWith('.shaderbundle')) {
+        file.deleteSync();
+      }
     }
   }
 

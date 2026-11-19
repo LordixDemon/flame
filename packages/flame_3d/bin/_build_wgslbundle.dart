@@ -3,19 +3,23 @@ import 'dart:io';
 
 /// Build each shader in [names] to a `.wgslbundle` asset in [assets].
 ///
-/// Each name must have a matching `.vert` and `.frag` in [shaders]. Stale
-/// `.wgslbundle` files are removed first and other assets are left untouched.
+/// Each name must have a matching `.vert` and `.frag` in [shaders]. With
+/// [deleteStale], every `.wgslbundle` of [assets] is removed first; other
+/// files are left untouched either way.
 ///
 /// Requires `naga` (`cargo install naga-cli`) on PATH.
 void build(
   Iterable<String> names,
   Directory shaders,
   Directory assets,
-  List<Directory> packageShaderDirs,
-) {
-  for (final file in assets.listSync().whereType<File>()) {
-    if (file.path.endsWith('.wgslbundle')) {
-      file.deleteSync();
+  List<Directory> packageShaderDirs, {
+  bool deleteStale = true,
+}) {
+  if (deleteStale) {
+    for (final file in assets.listSync().whereType<File>()) {
+      if (file.path.endsWith('.wgslbundle')) {
+        file.deleteSync();
+      }
     }
   }
 

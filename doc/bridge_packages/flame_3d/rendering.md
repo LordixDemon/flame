@@ -400,17 +400,27 @@ its two MatCap textures and the shadow map).
 ### Building shader bundles
 
 The built-in materials ship compiled bundles. For your own shaders, put a `.vert` and a `.frag`
-with the same base name in a `shaders/` directory of your package and run, from the package root:
+with the same base name in a directory of your project and run, from the project root (the one
+whose `pubspec.yaml` depends on `flame_3d`):
 
 ```sh
-dart run flame_3d:build_shaders
+dart run flame_3d:build_shaders --src shaders/3d --out assets/shaders
 ```
 
-Each pair becomes `assets/shaders/<name>.shaderbundle`, compiled by the `impellerc` of your Flutter
-SDK (or the one the `IMPELLERC` define points to); every existing `.shaderbundle` of that directory
-is deleted first. `#include <package/file.glsl>` resolves against the `shaders/` directory of any
-package in your dependency graph. Add `watch` to rebuild when a source changes. Declare the
-directory as an asset: `GpuBackend.initialize()` loads every `.shaderbundle` the app declares.
+Each `<name>.vert` + `<name>.frag` pair at the top of `--src` becomes `<name>.shaderbundle` in
+`--out`, compiled by the `impellerc` of your Flutter SDK (or the one the `IMPELLERC` define points
+to). Files that are not part of a pair (a lone stage, `#include` chunks, notes) are not compiled,
+and the output directory may hold other files: only the bundles of the pairs found are written.
+A shader can `#include "file.glsl"` from the source directory and `#include <package/file.glsl>`
+from the top-level `shaders/` directory of any package in your dependency graph, so it can use the
+chunks of `flame_3d` (`#include <flame_3d/camera.glsl>`, `<flame_3d/instancing.glsl>`,
+`<flame_3d/fog.glsl>`, ...). `--src=<dir>` and `--out=<dir>` work too; add `watch` to rebuild when
+a source changes. Declare the output directory as an asset: `GpuBackend.initialize()` loads every
+`.shaderbundle` the app declares.
+
+Without `--src` and `--out`, the tool builds the current package's `shaders/` into
+`assets/shaders/` and deletes the bundles of shaders that no longer exist first (this is how
+`flame_3d` builds its own bundles).
 
 `--with-web-gpu` also builds `.wgslbundle` files for the WebGPU backend, through the `naga` CLI
 (`cargo install naga-cli`). Only 8 of the package's 28 shaders have a web bundle (`spatial_material`

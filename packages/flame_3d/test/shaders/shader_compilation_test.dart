@@ -23,7 +23,7 @@ void main() {
       addTearDown(() => outDir.deleteSync(recursive: true));
       final result = await Process.run(
         'dart',
-        ['run', 'bin/build_shaders.dart', '--out-dir=${outDir.path}'],
+        ['run', 'bin/build_shaders.dart', '--out', outDir.path],
         workingDirectory: packageRoot.path,
       );
 
@@ -54,6 +54,6 @@ void main() {
               'Run: dart run bin/build_shaders.dart',
         );
       }
-    });
+    }, timeout: const Timeout(Duration(minutes: 5)));
   });
 }
