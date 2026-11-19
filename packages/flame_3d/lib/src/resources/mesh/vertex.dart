@@ -8,7 +8,7 @@ import 'package:meta/meta.dart';
 /// Represents a vertex in 3D space.
 ///
 /// A vertex consists out of space coordinates, UV/texture coordinates and a
-/// color, plus optional normal, skinning joints/weights, MikkTSpace [tangent]
+/// color, plus optional normal, skinning joints/weights, [tangent]
 /// (`xyz` tangent, `w` bitangent handedness), and secondary [texCoord1] UV.
 /// {@endtemplate}
 @immutable

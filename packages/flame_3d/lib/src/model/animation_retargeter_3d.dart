@@ -470,7 +470,7 @@ abstract final class AnimationRetargeter3D._() {
                 srcRest: srcRest,
                 dstRest: dstRest,
                 parentMapRot: qLeft,
-                scale: bone == HumanoidBone3D.hips ? heightScale : heightScale,
+                scale: heightScale,
               ),
             ),
           );

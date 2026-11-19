@@ -209,9 +209,11 @@ class Surface extends Resource<GpuBuffer> {
       );
   }
 
-  /// Computes MikkTSpace-style Gram-Schmidt orthogonalized `vec4` tangents
-  /// (`[tx, ty, tz, sign, ...]` with `sign` in `{-1.0, +1.0}`) for every vertex
-  /// of this surface.
+  /// Computes per-vertex `vec4` tangents (`[tx, ty, tz, sign, ...]` with
+  /// `sign` in `{-1.0, +1.0}`) for every vertex of this surface, by summing
+  /// the UV-derived tangents of the triangles around each vertex and
+  /// orthogonalizing them against the normal (Gram-Schmidt). This is not
+  /// MikkTSpace: normal maps baked with MikkTSpace can show small seams.
   ///
   /// When [storeInSurface] is `true` (the default), this surface's [layout] and
   /// [vertexData] are upgraded in-place to include `vertexTangent` (and
@@ -286,9 +288,8 @@ class Surface extends Resource<GpuBuffer> {
         if (existingUv1Off == null)
           const VertexAttribute(VertexLayout.texCoord1Attribute, 2),
       ];
-      final newLayout = newAttrs == VertexLayout.pbrStandard.attributes
-          ? VertexLayout.pbrStandard
-          : VertexLayout(newAttrs);
+      // Layouts compare by value: reuse the shared instance when it matches.
+      final newLayout = VertexLayout(newAttrs);
       final resolvedLayout = newLayout == VertexLayout.pbrStandard
           ? VertexLayout.pbrStandard
           : newLayout;
@@ -331,9 +332,10 @@ class Surface extends Resource<GpuBuffer> {
     return tangents;
   }
 
-  /// Computes MikkTSpace-style Gram-Schmidt orthogonalized `vec4` tangents
-  /// (`[tx, ty, tz, handedness]`) from raw [positions] (`3 * N`), [normals]
-  /// (`3 * N`), [texCoords] (`2 * N`), and triangle [indices].
+  /// Computes per-vertex Gram-Schmidt orthogonalized `vec4` tangents
+  /// (`[tx, ty, tz, handedness]`; not MikkTSpace, see [computeTangents]) from
+  /// raw [positions] (`3 * N`), [normals] (`3 * N`), [texCoords] (`2 * N`),
+  /// and triangle [indices].
   static Float32List calculateTangents({
     required Float32List positions,
     required Float32List normals,
