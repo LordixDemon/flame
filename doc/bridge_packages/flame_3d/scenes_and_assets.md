@@ -100,63 +100,74 @@ were children of the world (those are added to the world as well).
 ### What is saved
 
 - World settings: `renderScale`, `spatialIndex3DEnabled`, `prioritizeNearestLights`,
-  `depthPrepassEnabled`, `fog` (all fields), `bloom` (all fields), and `postProcess` except
-  `colorLut` and `colorLutIntensity`.
+  `depthPrepassEnabled`, `hdrEnabled`, `oitMode`, `grabSceneColorEnabled`, `renderDebugMode3D`,
+  `scaledFilterQuality`, `fog` and `bloom` (all fields), and `postProcess` (all fields but
+  `colorLut`).
 - For every `Component3D`: position, rotation, scale, `visible`, `cameraMask`, `priority`,
-  `prefabId`, tags, and its `Component3D` children (other children are skipped).
-- Components with a registered prefab id: a reference to the prefab plus the fields above and, for
-  a `MeshComponent` or `LodMeshComponent`, its color; their children are not saved (the prefab
-  rebuilds them).
-- `MeshComponent`: `castsShadows`, color, instance data and its mesh, as one of:
+  `prefabId`, tags, and its children.
+- Components with a registered prefab id, whatever their type: a reference to the prefab plus the
+  fields above and, for a `MeshComponent` or `LodMeshComponent`, its color; their children are not
+  saved (the prefab rebuilds them).
+- `MeshComponent`: `castsShadows`, color, instance data and its mesh.
+- `LodMeshComponent`: its levels (mesh, `maxDistance`, `minScreenHeightRatio`), `shadowMesh`,
+  `lowestLodInShadowPass`, color, instance data and `castsShadows`.
+- `InstancedGroup3D`: its mesh, `castsShadows`, and the transform, color and instance data of every
+  instance.
+- Meshes, as one of:
   - a key, when the mesh was registered with `registerMesh`;
-  - the parameters of a `CuboidMesh` (size), `SphereMesh` and `CylinderMesh` (radius, height,
-    segments), `ConeMesh` (radius, height, segments), `PlaneMesh` (size), `CapsuleMesh` (radius,
-    height) and `TorusMesh` (radii), with the material of the first surface;
-  - otherwise the raw vertex and index data of every surface, with its material.
-- Materials: `SpatialMaterial` (albedo color and texture, metallic, roughness, normal scale,
-  occlusion strength, emissive color and strength, environment intensity, UV scale and offset,
-  alpha cutoff, `doubleSided`, `ditherFade`), `UnlitMaterial` (albedo color and texture) and
-  `StylizedMaterial` (its colors and lighting parameters); for every material, `castsShadows` and
-  the render state. Textures are saved only as the key they were registered under.
-- `LightComponent`: ambient, hemisphere, directional (with shadow settings), point and spot (with
-  shadow settings) lights, and the light mask.
+  - the parameters of a built-in primitive (`CuboidMesh`, `SphereMesh`, `CylinderMesh`,
+    `ConeMesh`, `PlaneMesh`, `CapsuleMesh`, `TorusMesh`, segment counts included) with its
+    material, when rebuilding the primitive from them gives the same vertices and indices; a
+    primitive changed after it was built is saved raw;
+  - otherwise the raw vertex and index data of every surface, with its vertex layout, topology,
+    index type, bounds, joint map and material.
+- Materials, with `castsShadows` and the whole render state (stencil and polygon mode included):
+  `SpatialMaterial`, `UnlitMaterial`, `StylizedMaterial` (matcaps and wind included) and
+  `ShadowCatcherMaterial`, with all their values. Textures are saved as the key they were
+  registered under with `registerTexture`.
+- `LightComponent`: ambient, hemisphere, directional, point and spot lights, all with their shadow
+  settings (cascade splits included), and the light mask.
 - `CameraComponent3D`: projection, field of view, orthographic height, near and far planes,
   position, target, up, rotation, camera mask and custom matrices.
 - Components handled by a registered codec (see below).
 
+A mesh or a material used by several components (or surfaces) is written once and referenced
+afterwards, so after loading they share one object again.
 
-### What is not saved
 
-- Every other component type (`ModelComponent`, `LodMeshComponent`, `InstancedGroup3D`, particle
-  systems, terrain, batches) is saved as a plain group: it comes back as an empty `Group3D` with
-  the right transform, tags and children. Subclasses of `MeshComponent` come back as plain
-  `MeshComponent`s. Use prefabs or codecs for them.
-- Materials of any other class (`ShadowCatcherMaterial`, `WaterMaterial`, `OutlineMaterial`,
-  `DecalMaterial`, `BillboardMaterial3D`, custom ones) come back as a default `SpatialMaterial`
-  that only keeps `castsShadows` and the render state.
-- Of `SpatialMaterial`: the normal, metallic-roughness, occlusion, emissive, environment and
-  lightmap textures, the environment probe, `lightmapIntensity`, clearcoat, transmission and
-  `ior`. Of `StylizedMaterial`: its matcaps (`matCapTexture`, `gemMatCapTexture` and their
-  strength, threshold and gloss settings). Textures that were not registered are dropped.
-- The shadows of point lights; the segment counts of capsules and tori, `useFaceNormals` of
-  cuboids, and the materials of the second and later surfaces of primitive meshes.
-- Of raw meshes: the vertex layout (they are restored with the standard 20-float layout, so a
-  surface with another layout, such as the 26-float `VertexLayout.pbrStandard` that tangents
-  create, fails to load or loads garbled), joint maps, morph targets and topology.
-- Joint transforms, animation state, effects, behaviors and anything else that is not a
-  `Component3D` field listed above.
-- World settings other than those listed: `hdrEnabled`, `oitMode`, `grabSceneColorEnabled`,
-  `lightProbeGrid`, reflection probes, custom passes, shadow groups.
-- Sharing: every mesh and material that is not registered is written once per use and comes back
-  as a separate copy per component.
+### What cannot be saved
+
+The serializer does not guess. A save of a scene that holds something it cannot represent throws a
+`SceneSerializationException3D` whose `issues` list every such item, each with its path in the
+snapshot (`nodes[2].children[0]`, `nodes[1].mesh.surfaces[0].material.albedoTexture`) and what
+to do about it:
+
+- components of any other type without a codec or a registered prefab id (`ModelComponent`,
+  particle systems, terrain, foliage, batches, decals, text, custom components), and children
+  that are not `Component3D`s (effects, behaviors);
+- subclasses of the built-in types (a `Line3D`, a `ThirdPersonCamera`, a subclass of a material):
+  their own state and type would be lost;
+- materials of other classes (`WaterMaterial`, `OutlineMaterial`, `DecalMaterial`, custom ones),
+  light sources of other classes, unregistered textures, environment probes, the joint transforms
+  of a `MeshComponent`, morph targets;
+- a world's `lightProbeGrid`, custom passes, shadow group and post-processing `colorLut`.
+
+`findIssues(world)` returns the same list without throwing. A serializer built with
+`allowLossy: true` saves anyway: an unknown component becomes a `Group3D` with its transform, tags
+and children, a subclass is saved as its built-in type, an unknown material as a default
+`SpatialMaterial`, an unknown light as an `AmbientLight` of the same color and intensity, and the
+other items are left out; `lastIssues` then lists what was lost.
+
+Not saved in any case: animation state, the viewport of cameras, and anything that is not one of
+the fields listed above.
 
 
 ### Assets and custom components
 
 Register the meshes and textures your game loads from its own assets, so the snapshot stores keys
 and loading reuses your objects: `registerMesh(key, mesh)`, `registerTexture(key, texture)`,
-`lookupMesh`, `lookupTexture`. A snapshot that names a mesh key the serializer does not know fails
-to load; an unknown texture key loads as no texture.
+`lookupMesh`, `lookupTexture`. A snapshot that names a mesh or texture key the serializer does not
+know fails to load.
 
 Components of your own types are saved with a `SceneNodeCodec3D`:
 
@@ -179,13 +190,14 @@ string keys.
 
 ### Loading, versions and errors
 
-- Snapshots carry `schemaVersion` (`SceneSerializer3D.currentSchemaVersion`, currently 1). Loading
-  accepts only that version; there is no migration step yet.
+- Snapshots carry `schemaVersion` (`SceneSerializer3D.currentSchemaVersion`, currently 2).
+  Loading accepts versions from `oldestSupportedSchemaVersion` (1) up to the current one; a
+  version 1 snapshot loads as before (raw meshes in the standard layout).
 - A malformed snapshot, an unknown node type or mesh kind, a bad binary header, a length mismatch
-  or a checksum mismatch throw a `FormatException`; an unregistered prefab id, codec id or mesh key
-  throws a `StateError`.
-- Nodes are added to the target as they are decoded. An error leaves the nodes decoded so far in
-  the target, so decode into a new `World3D` and swap it in once loading succeeded.
+  or a checksum mismatch throw a `FormatException`; an unregistered prefab id, codec id, mesh key
+  or texture key throws a `StateError`.
+- The whole snapshot is decoded before the target is touched: when loading throws, the target
+  keeps its children and settings.
 - By default the nodes are added next to what the target holds; `clearTarget: true` removes the
   target's children first. The world settings of the snapshot are always applied, and a snapshot
   without fog, bloom or post-processing turns them off in the target.
@@ -353,10 +365,10 @@ Loading glTF models and their materials and animations is described in
 
 ## Limitations
 
-- `SceneSerializer3D` round-trips only `MeshComponent`, `LightComponent`, `CameraComponent3D`,
-  groups, prefab references and codec-handled types; other components and materials lose their
-  content as listed above, and raw meshes with a layout other than the standard one do not load.
-  Loading is not atomic, and there is no schema migration.
+- `SceneSerializer3D` has no built-in encoding for `ModelComponent`, particle systems and the
+  components of [Large Worlds](world_scale.md): save them with codecs or prefabs (otherwise the
+  save throws, see [What cannot be saved](#what-cannot-be-saved)). Both encoders build the whole
+  tree in memory.
 - `Component3D.clone()` (and so prototype prefabs) turns unknown types, including
   `ModelComponent`, into empty groups, drops point-light shadows and the per-instance colors and
   data of `InstancedGroup3D`.

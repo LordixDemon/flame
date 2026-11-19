@@ -149,6 +149,30 @@ class InstancedGroup3D({
     return result;
   }
 
+  /// Reads the color of the instance at [index].
+  Color instanceColor(int index) {
+    RangeError.checkValidIndex(index, this, 'index', _length);
+    final base = index * _stride;
+    return Color.from(
+      red: _instances[base + 16],
+      green: _instances[base + 17],
+      blue: _instances[base + 18],
+      alpha: _instances[base + 19],
+    );
+  }
+
+  /// Reads the instance data of [index] into [out] (or a new [Vector4]).
+  Vector4 instanceDataAt(int index, {Vector4? out}) {
+    RangeError.checkValidIndex(index, this, 'index', _length);
+    final base = index * _stride;
+    return (out ?? Vector4.zero())..setValues(
+      _instances[base + 20],
+      _instances[base + 21],
+      _instances[base + 22],
+      _instances[base + 23],
+    );
+  }
+
   @override
   Aabb3? computeLocalAabb() {
     if (_length == 0) {
