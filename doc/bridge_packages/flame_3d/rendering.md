@@ -605,10 +605,10 @@ offscreen MSAA (some OpenGL ES devices), `Msaa.sample4` falls back to one sample
 targets always have one.
 
 `World3D.renderToImage(size, view: ..., projection: ...)` renders a standalone snapshot, even when
-the world is not mounted in a game. Lights register with their world only when they mount,
-however, so an unmounted world renders lit materials without any light. It creates a new render
-target on each call: use it for occasional snapshots, and `RenderTexture3D` for a view rendered
-every frame (see [Materials](materials.md)).
+the world is not mounted in a game: the lights of an unmounted world are gathered from its tree for
+the render. It creates a new render target on each call, so the image stays valid as long as it is
+kept: use it for occasional snapshots, and `RenderTexture3D` for a view rendered every frame (see
+[Materials](materials.md)).
 
 `FlameGame3D.renderStats` holds the statistics of the last rendered frame, and
 `Scene3DComponent.renderStats` those of the layer's last render: render passes, draw calls,

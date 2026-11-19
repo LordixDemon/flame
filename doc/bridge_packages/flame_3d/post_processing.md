@@ -32,12 +32,12 @@ final layer = Scene3DComponent(
 ```
 
 `World3D.bloom`, `postProcess`, `hdrEnabled`, `renderDebugMode3D` and `depthPrepassEnabled` can be
-changed at any time. Assign a new `BloomSettings` or `PostProcessSettings` object to change the
-settings: their fields can be changed in place too and are read every frame, but changing a field
-(or `depthPrepassEnabled`) does not mark the scene as changed, so a game loop that idles until
-something changes does not render again. A retained `Scene3DComponent` compares the bloom and color
-settings by value and does render again, but not for the SSAO and depth-of-field fields or
-`depthPrepassEnabled` (see [Embedding](embedding.md#what-renders-the-layer-again)).
+changed at any time, and changing them marks the scene as changed. Assign a new `BloomSettings` or
+`PostProcessSettings` object to change the settings: their fields can be changed in place too and
+are read every frame, but changing a field does not mark the scene as changed, so a game loop that
+idles until something changes does not render again. A retained `Scene3DComponent` compares the
+bloom and post-processing settings by value, SSAO and depth of field included, and does render
+again (see [Embedding](embedding.md#what-renders-the-layer-again)).
 
 
 ## The composite pass
@@ -373,7 +373,7 @@ The pipeline is the same; what differs is the image it runs on.
 - Each layer runs its own post chain: two layers with bloom pay for two composites and two blurs.
   Prefer one layer with post-processing.
 - A retained layer (`Scene3DCacheMode.retained`) renders again when the bloom and post-processing
-  settings change, except SSAO, depth of field and `depthPrepassEnabled`, which are not in its key.
+  settings change, SSAO and depth of field included, and when `depthPrepassEnabled` changes.
 
 
 ## Platform support
