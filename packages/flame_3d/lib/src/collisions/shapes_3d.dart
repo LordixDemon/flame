@@ -1550,8 +1550,9 @@ class CompoundShape3D(List<CompoundChildShape3D> children) extends Shape3D {
       _childWeights[i] = w;
       totalW += w;
 
-      rotCom.setFrom(c.shape.localCenterOfMass);
-      c.rotation.rotate(rotCom);
+      // `localTransform` rotates like `asRotationMatrix()`; vector_math's
+      // `Quaternion.rotate` would apply the inverse rotation.
+      c.localTransform.rotate3(rotCom..setFrom(c.shape.localCenterOfMass));
       final cx = c.position.x + rotCom.x;
       final cy = c.position.y + rotCom.y;
       final cz = c.position.z + rotCom.z;

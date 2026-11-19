@@ -914,7 +914,6 @@ class XpbdRope3D({
   final Vector3 _normalFrame = Vector3.zero();
   final Vector3 _binormal = Vector3.zero();
   final Vector3 _rotAxis = Vector3.zero();
-  final Quaternion _stepQuat = Quaternion.identity();
 
   /// Underlying GPU-ready tubular [Surface].
   Surface get surface => _surface;
@@ -1166,20 +1165,33 @@ class XpbdRope3D({
     for (var i = 0; i < pCount; i++) {
       _computeRopeTangent(i, pCount, _tangent);
       if (i > 0) {
-        _rotAxis.setFrom(_prevTangent.cross(_tangent));
+        // Parallel transport: turn the frame by the rotation taking the
+        // previous tangent onto this one (Rodrigues; vector_math's
+        // `Quaternion.rotate` would apply the inverse rotation).
+        _prevTangent.crossInto(_tangent, _rotAxis);
         final sinA = _rotAxis.length;
         if (sinA > 1e-6) {
           _rotAxis.scale(1.0 / sinA);
           final cosA = _prevTangent.dot(_tangent).clamp(-1.0, 1.0);
-          _stepQuat.setAxisAngle(_rotAxis, math.atan2(sinA, cosA));
-          _stepQuat.rotate(_normalFrame);
-          _normalFrame.normalize();
+          final kx = _rotAxis.x;
+          final ky = _rotAxis.y;
+          final kz = _rotAxis.z;
+          final vx = _normalFrame.x;
+          final vy = _normalFrame.y;
+          final vz = _normalFrame.z;
+          final kv = kx * vx + ky * vy + kz * vz;
+          _normalFrame
+            ..setValues(
+              vx * cosA + (ky * vz - kz * vy) * sinA + kx * kv * (1 - cosA),
+              vy * cosA + (kz * vx - kx * vz) * sinA + ky * kv * (1 - cosA),
+              vz * cosA + (kx * vy - ky * vx) * sinA + kz * kv * (1 - cosA),
+            )
+            ..normalize();
         }
         _prevTangent.setFrom(_tangent);
       }
-      _binormal
-        ..setFrom(_tangent.cross(_normalFrame))
-        ..normalize();
+      _tangent.crossInto(_normalFrame, _binormal);
+      _binormal.normalize();
 
       final po = i * 3;
       final cx = _pos[po];

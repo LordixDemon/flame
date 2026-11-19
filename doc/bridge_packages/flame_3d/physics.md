@@ -1091,13 +1091,11 @@ and check for collection pauses with the profiler.
   is re-synchronized (a walk over its parent's subtree) every step, and every collision query
   walks it again.
 - `DistanceJoint3D`, `BallSocketJoint3D` and `HingeJoint3D` take lever arms from the body origin
-  rather than the center of mass. The center of mass of a nested `CompoundShape3D` whose child is
-  rotated is mirrored (it uses the inverse rotation).
+  rather than the center of mass.
 - Buoyancy is horizontal in Y. Vehicles ignore `axleDirectionLocal` and compute the minimum tire
   load with a gravity of `9.81` whatever the world's gravity.
 - Cloth does not collide with itself, only with sphere and capsule colliders, and does not affect
-  rigid bodies. The tube of a rope that bends out of a plane is drawn with tilted rings (its frame
-  is rotated the wrong way). Cloth and rope step with the frame time (capped at `1/30` s) unless
-  created with `autoStep: false`.
+  rigid bodies. Cloth and rope step with the frame time (capped at `1/30` s) unless created with
+  `autoStep: false`.
 - Solver tolerances are absolute (`linearSlop`, the sleep thresholds, the 2 mm within which face
   points are kept), tuned for objects of 0.1 m and more.
