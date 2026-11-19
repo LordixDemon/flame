@@ -480,6 +480,8 @@ class KinematicCharacterController3D({
           treadRay,
           maxDistance: bestDist,
           filter: filter,
+          // A collision probe: invisible geometry counts too.
+          includeHidden: true,
         );
         if (wHit != null) {
           sampledNormal = wHit.worldNormal;

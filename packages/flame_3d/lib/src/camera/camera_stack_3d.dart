@@ -307,8 +307,10 @@ class CameraStack3D({
   }
 
   /// Picks the topmost active slot at [screenPoint] and raycasts into that
-  /// slot's [World3D] honoring [CameraComponent3D.cameraMask] and
-  /// [Component3D.isEffectivelyVisible].
+  /// slot's [World3D], hitting only what the slot's camera draws: hidden
+  /// components and components (or ancestors) whose
+  /// [Component3D.cameraMask] shares no bit with the camera's are skipped,
+  /// see [World3D.raycast].
   (CameraSlotPickResult3D, RayHit3D?)? raycastAt(
     Vector2 screenPoint,
     Size canvasSize, {
@@ -326,15 +328,12 @@ class CameraStack3D({
     if (targetWorld == null) {
       return (picked, null);
     }
-    final mask = picked.camera.cameraMask;
     final hit = targetWorld.raycast(
       picked.worldRay,
       maxDistance: maxDistance,
       cullMode: cullMode,
-      filter: (obj) =>
-          (obj.cameraMask & mask) != 0 &&
-          obj.isEffectivelyVisible &&
-          (filter == null || filter(obj)),
+      filter: filter,
+      cameraMask: picked.camera.cameraMask,
     );
     return (picked, hit);
   }

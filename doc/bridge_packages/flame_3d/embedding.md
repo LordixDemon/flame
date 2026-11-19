@@ -103,19 +103,18 @@ void onTapUp(TapUpEvent event) {
   final local = layer.absoluteToLocal(
     camera.globalToLocal(event.canvasPosition),
   );
-  final hit = layer.raycastLocal(
-    local,
-    filter: (object) => object.isEffectivelyVisible,
-  );
+  final hit = layer.raycastLocal(local);
   if (hit != null) {
     // hit.object, hit.worldPoint, hit.worldNormal, hit.distance
   }
 }
 ```
 
-The raycast is `World3D.raycast` on the ray of the local point, and like it ignores visibility and
-camera masks: hidden and masked-out objects are hit unless the `filter` skips them, as above. Back
-faces are skipped where the surface's material culls them; pass `cullMode` to override. See
+The raycast is `World3D.raycast` on the ray of the local point with the layer's `cameraMask`, so it
+hits what the layer draws: hidden components and components (or their ancestors) whose
+`cameraMask` shares no bit with the layer's are skipped. Pass `cameraMask` to pick with another
+mask, `includeHidden: true` to test every object, and a `filter` to skip more. Back faces are
+skipped where the surface's material culls them; pass `cullMode` to override. See
 [Picking with the mouse or a finger](geometry.md#picking-with-the-mouse-or-a-finger) for raycasts
 and [Input and Effects](input_and_effects.md) for pointer callbacks on 3D objects.
 
@@ -411,5 +410,3 @@ game share a device of their own, `layer.device`, whose `lastFrameStats` cover a
   the layer becomes `(64, 64, 64)` across the layer's rendered rectangle), and so do a color LUT
   whose black entry is not black and `ToneMapMode.agx`, which maps black to about `0.43`. On a layer
   drawn over 2D art, keep `contrast` at `1` or above and use `reinhard` or `acesFilmic`.
-- `raycastLocal` and `raycastAllLocal` hit hidden and masked-out objects unless a `filter` skips
-  them.

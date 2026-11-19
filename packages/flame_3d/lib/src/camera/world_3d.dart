@@ -794,13 +794,25 @@ class World3D({
     }
   }
 
-  /// Casts [ray] (in world space) against all [Object3D]s in this world within
-  /// [maxDistance], returning the closest [RayHit3D] or `null` when missed.
+  /// Casts [ray] (in world space) against the [Object3D]s of this world
+  /// within [maxDistance], returning the closest [RayHit3D] or `null` when
+  /// missed.
+  ///
+  /// Only what a render pass could draw is hit: a [Component3D] that is not
+  /// [Component3D.visible], or whose [Component3D.cameraMask] shares no bit
+  /// with [cameraMask], is skipped with its whole subtree, as the passes skip
+  /// it. The default [cameraMask] matches every object some camera draws;
+  /// pass the mask of a camera or of a `Scene3DComponent` to hit only what it
+  /// shows. With [includeHidden], every object is tested, whatever its
+  /// visibility and camera mask (for collision-like probes against invisible
+  /// geometry). [filter], when given, must also accept the object.
   RayHit3D? raycast(
     Ray ray, {
     double maxDistance = double.infinity,
     CullMode? cullMode,
     bool Function(Object3D object)? filter,
+    int cameraMask = 0xFFFFFFFF,
+    bool includeHidden = false,
   }) {
     if (!(maxDistance > 0)) {
       return null;
@@ -820,7 +832,7 @@ class World3D({
         _unitRay,
         maxDistance: maxDistance,
         cullMode: cullMode,
-        filter: filter,
+        filter: _indexFilter(filter, cameraMask, includeHidden),
       );
     }
 
@@ -829,6 +841,9 @@ class World3D({
 
     void visit(flame.Component component) {
       if (component is Component3D) {
+        if (!includeHidden && !_drawnFor(component, cameraMask)) {
+          return;
+        }
         if (!_rayHitsAabb(_unitRay, component.aabb, limit)) {
           return;
         }
@@ -855,13 +870,17 @@ class World3D({
     return best;
   }
 
-  /// Casts [ray] against all [Object3D]s in this world within [maxDistance],
+  /// Casts [ray] against the [Object3D]s of this world within [maxDistance],
   /// returning every hit sorted from nearest to farthest.
+  ///
+  /// Hidden and masked-out objects are skipped as in [raycast].
   List<RayHit3D> raycastAll(
     Ray ray, {
     double maxDistance = double.infinity,
     CullMode? cullMode,
     bool Function(Object3D object)? filter,
+    int cameraMask = 0xFFFFFFFF,
+    bool includeHidden = false,
   }) {
     final hits = <RayHit3D>[];
     if (!(maxDistance > 0)) {
@@ -882,12 +901,15 @@ class World3D({
         _unitRay,
         maxDistance: maxDistance,
         cullMode: cullMode,
-        filter: filter,
+        filter: _indexFilter(filter, cameraMask, includeHidden),
       );
     }
 
     void visit(flame.Component component) {
       if (component is Component3D) {
+        if (!includeHidden && !_drawnFor(component, cameraMask)) {
+          return;
+        }
         if (!_rayHitsAabb(_unitRay, component.aabb, maxDistance)) {
           return;
         }
@@ -912,6 +934,33 @@ class World3D({
     }
     hits.sort((a, b) => a.distance.compareTo(b.distance));
     return hits;
+  }
+
+  /// Whether a render pass with [cameraMask] draws [component] itself (its
+  /// ancestors aside).
+  static bool _drawnFor(Component3D component, int cameraMask) =>
+      component.visible && (component.cameraMask & cameraMask) != 0;
+
+  /// The filter of an indexed ray cast: the index holds every [Object3D]
+  /// flat, so the visibility and masks of the ancestors are checked here.
+  bool Function(Object3D object)? _indexFilter(
+    bool Function(Object3D object)? filter,
+    int cameraMask,
+    bool includeHidden,
+  ) {
+    if (includeHidden) {
+      return filter;
+    }
+    return (object) {
+      flame.Component? cursor = object;
+      while (cursor != null && !identical(cursor, this)) {
+        if (cursor is Component3D && !_drawnFor(cursor, cameraMask)) {
+          return false;
+        }
+        cursor = cursor.parent;
+      }
+      return filter == null || filter(object);
+    };
   }
 
   static bool _rayHitsAabb(Ray ray, Aabb3 box, double maxT) {

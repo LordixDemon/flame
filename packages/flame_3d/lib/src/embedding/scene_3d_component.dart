@@ -169,12 +169,18 @@ class Scene3DComponent({
     return projection.localPointToRay(localPoint, output: output);
   }
 
-  /// Casts a ray from [localPoint] against all [Object3D]s in [world].
+  /// Casts a ray from [localPoint] against the [Object3D]s of [world], see
+  /// [World3D.raycast].
+  ///
+  /// Only what this layer draws is hit: [cameraMask] defaults to the layer's
+  /// own [cameraMask], and hidden objects are skipped unless [includeHidden].
   RayHit3D? raycastLocal(
     Vector2 localPoint, {
     double maxDistance = double.infinity,
     CullMode? cullMode,
     bool Function(Object3D object)? filter,
+    int? cameraMask,
+    bool includeHidden = false,
   }) {
     localPointToRay(localPoint, output: _pickRay);
     return world.raycast(
@@ -182,16 +188,21 @@ class Scene3DComponent({
       maxDistance: maxDistance,
       cullMode: cullMode,
       filter: filter,
+      cameraMask: cameraMask ?? this.cameraMask,
+      includeHidden: includeHidden,
     );
   }
 
-  /// Casts a ray from [localPoint] against all [Object3D]s in [world],
-  /// returning all hits sorted from nearest to farthest.
+  /// Casts a ray from [localPoint] against the [Object3D]s of [world],
+  /// returning all hits sorted from nearest to farthest; objects are selected
+  /// as in [raycastLocal].
   List<RayHit3D> raycastAllLocal(
     Vector2 localPoint, {
     double maxDistance = double.infinity,
     CullMode? cullMode,
     bool Function(Object3D object)? filter,
+    int? cameraMask,
+    bool includeHidden = false,
   }) {
     localPointToRay(localPoint, output: _pickRay);
     return world.raycastAll(
@@ -199,6 +210,8 @@ class Scene3DComponent({
       maxDistance: maxDistance,
       cullMode: cullMode,
       filter: filter,
+      cameraMask: cameraMask ?? this.cameraMask,
+      includeHidden: includeHidden,
     );
   }
 

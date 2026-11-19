@@ -213,8 +213,9 @@ To find what is under a pointer, `pickSlotAndRay(screenPoint, canvasSize)` retur
 enabled slot whose rectangle contains the point (or `null`), with the point in the slot's viewport
 coordinates and the world ray of the slot's camera. `raycastAt` goes on and raycasts that ray into
 the slot's world (the slot's `world`, else the camera's, else `defaultWorld`) and returns the pick
-with the nearest `RayHit3D`, or `null` when no slot is under the point. Unlike `World3D.raycast`,
-it skips components that are hidden or whose `cameraMask` the slot's camera does not share, and
+with the nearest `RayHit3D`, or `null` when no slot is under the point. It hits only what the
+slot's camera draws: it passes the camera's `cameraMask` to `World3D.raycast`, which skips hidden
+components and components (or their ancestors) whose `cameraMask` the camera does not share. It
 takes `maxDistance`, `cullMode` and a `filter` of its own:
 
 ```dart
@@ -346,8 +347,9 @@ game.add(arm);
 ```
 
 It is a single ray, not a swept sphere: the camera can still clip a wall it grazes. The ray tests
-every component of the world (hidden ones too, see [Geometry and Scene Queries](geometry.md)), so
-filter out what should not block the view.
+the visible components of the world, whatever their `cameraMask` (see
+[Geometry and Scene Queries](geometry.md)): a hidden wall does not block the boom, and
+`collisionFilter` can drop what should not block it either.
 
 
 ### CameraDollyTrack3D

@@ -187,9 +187,12 @@ final minimapCamera = CameraComponent3D(cameraMask: 0x02);
 A `Scene3DComponent`'s `cameraMask` is also the 2D component mask that Flame's 2D cameras test, so
 a layer with mask `0x01` is only drawn by 2D cameras whose mask has bit 0 set.
 
-Masks and visibility only affect rendering: `World3D.raycast` and `Scene3DComponent.raycastLocal`
-still hit hidden and masked-out components unless a `filter` excludes them (see
-[Geometry and Scene Queries](geometry.md)).
+Ray casts follow the same rules: `World3D.raycast` and `raycastAll` skip a hidden component and its
+subtree, and a component (with its subtree) whose `cameraMask` shares no bit with the `cameraMask`
+argument (default `0xFFFFFFFF`, so only components no camera draws are skipped by default).
+`Scene3DComponent.raycastLocal` uses the layer's mask and `CameraStack3D.raycastAt` the slot
+camera's. Pass `includeHidden: true` to test every component, for example for a probe against
+invisible collision geometry (see [Geometry and Scene Queries](geometry.md)).
 
 
 ## Resources and disposal
