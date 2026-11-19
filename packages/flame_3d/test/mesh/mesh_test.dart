@@ -1,3 +1,6 @@
+import 'dart:math' as math;
+import 'dart:typed_data';
+
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -10,6 +13,23 @@ Surface _triangle(Vector3 a, Vector3 b, Vector3 c) {
       for (final p in [a, b, c]) Vertex(position: p, texCoord: Vector2.zero()),
     ],
     indices: [0, 1, 2],
+  );
+}
+
+TerrainMesh3D _terrain(TerrainUpAxis upAxis) {
+  const columns = 6;
+  const rows = 5;
+  final heights = Float32List(columns * rows);
+  for (var i = 0; i < heights.length; i++) {
+    heights[i] = math.sin(i * 0.7) * 0.4;
+  }
+  return TerrainMesh3D(
+    columns: columns,
+    rows: rows,
+    width: 4,
+    depth: 3,
+    heights: heights,
+    upAxis: upAxis,
   );
 }
 
@@ -99,6 +119,67 @@ void main() {
               );
             }
           }
+        }
+      });
+    }
+
+    // Meshes that are not convex: the winding must agree with the vertex
+    // normals, which point out of the surface.
+    final curved = {
+      'TorusMesh': () => TorusMesh(majorSegments: 12, minorSegments: 8),
+      'TubeSplineMesh': () => TubeSplineMesh(
+        // Gentle bends: a tube bent tighter than its radius folds over
+        // itself on the inner side, whatever the winding.
+        spline: CatmullRomSpline3D([
+          Vector3.zero(),
+          Vector3(3, 0.5, 0),
+          Vector3(6, 0, 1.5),
+          Vector3(9, 1, 1.5),
+        ]),
+        tubularSegments: 24,
+        radialSegments: 6,
+      ),
+      'CapsuleMesh': () => CapsuleMesh(radius: 0.5, height: 2, segments: 8),
+      'TerrainMesh3D (y up)': () => _terrain(TerrainUpAxis.y),
+      'TerrainMesh3D (z up)': () => _terrain(TerrainUpAxis.z),
+    };
+
+    for (final MapEntry(key: name, value: create) in curved.entries) {
+      test('$name winds every front face along its normals', () {
+        final mesh = create();
+        for (final surface in mesh.surfaces) {
+          final stride = surface.layout.strideInFloats;
+          final data = surface.vertexData;
+          Vector3 position(int i) => Vector3(
+            data[i * stride],
+            data[i * stride + 1],
+            data[i * stride + 2],
+          );
+          Vector3 normal(int i) => Vector3(
+            data[i * stride + 9],
+            data[i * stride + 10],
+            data[i * stride + 11],
+          );
+          var checked = 0;
+          for (var t = 0; t < surface.indexCount; t += 3) {
+            final a = surface.indices[t];
+            final b = surface.indices[t + 1];
+            final c = surface.indices[t + 2];
+            final face = (position(b) - position(a)).cross(
+              position(c) - position(a),
+            );
+            if (face.length < 1e-9) {
+              continue;
+            }
+            final averaged = normal(a) + normal(b) + normal(c);
+            expect(
+              averaged.dot(face),
+              greaterThan(0),
+              reason: 'triangle ${t ~/ 3} is wound against its normals',
+            );
+            checked++;
+          }
+          expect(checked, greaterThan(0));
         }
       });
     }

@@ -79,13 +79,15 @@ class TorusMesh({
         final i1 = i0 + 1;
         final i2 = row1 + j + 1;
         final i3 = row1 + j;
-        // Outward-facing CCW winding in right-handed space.
+        // Counter-clockwise seen from outside: the ring index `j` runs from
+        // the outer equator over the top, so `(i0, i1, i2)` turns along the
+        // outward normal.
         indices[k] = i0;
-        indices[k + 1] = i3;
+        indices[k + 1] = i1;
         indices[k + 2] = i2;
         indices[k + 3] = i0;
         indices[k + 4] = i2;
-        indices[k + 5] = i1;
+        indices[k + 5] = i3;
         k += 6;
       }
     }

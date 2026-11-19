@@ -291,14 +291,10 @@ Notes on individual shapes:
 - `CatmullRomSpline3D(points, closed: false)` needs at least two points. `samplePoint(t)` and
   `sampleTangent(t)` take `t` in `[0, 1]`, split evenly between the segments (not by arc length).
 
-```{note}
-`TorusMesh` and `TubeSplineMesh` are wound inside out: their triangles are
-clockwise seen from outside while their normals point outwards. Lighting is
-right, and with the default render state (no culling) they render correctly,
-but with back-face culling (`CullMode.backFace`, which glTF materials that are
-not double-sided use) the outer surface disappears, and culled ray casts hit
-their far side. See [Limitations](#limitations).
-```
+Every built-in mesh is wound counter-clockwise seen from outside, matching its normals, so
+back-face culling (`CullMode.backFace`) and culled ray casts work with all of them. A
+`TubeSplineMesh` bent tighter than its radius folds over itself on the inner side of the bend;
+keep the bend radius above the tube's radius.
 
 
 ### Terrain heightfields
@@ -525,8 +521,6 @@ component tree and never uses the index.
 
 ## Limitations
 
-- `TorusMesh` and `TubeSplineMesh` have clockwise (inward) winding, see the note above. To cull or
-  cast culled rays against them, build your own surface with the indices of each triangle swapped.
 - Ray casts ignore `Component3D.visible` and `cameraMask`.
 - Skinned surfaces of `ModelComponent` and `SkinnedCrowdBatch3D` are tested in their rest pose,
   placed by their node transforms: the ray does not follow the skinned, animated shape. Use
