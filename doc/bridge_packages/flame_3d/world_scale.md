@@ -77,8 +77,8 @@ not change it: the spatial index speeds up raycasts and other queries, not rende
 Each `MeshComponent` costs at least one draw call per surface. A level made of hundreds of
 different props (rocks, crates, fences, pillars) that share a few materials can be merged into a
 handful of draws with `StaticMeshBatcher3D`: it bakes the instance transforms into the vertices and
-concatenates the surfaces that share a material and a vertex layout into one `Surface` per cell of
-a spatial grid.
+concatenates the surfaces that share a material, a vertex layout and their per-instance values into
+one `Surface` per cell of a spatial grid.
 
 ```dart
 final props = StaticMeshBatcher3D(chunkSize: 48);
@@ -89,7 +89,7 @@ for (final t in treeTransforms) {
   props.addStaticInstance(
     mesh: treeMesh,
     transform: t,
-    color: const Color(0xFFD8E8C0), // multiplies the vertex colors
+    color: const Color(0xFFD8E8C0),
   );
 }
 world.add(props);
@@ -102,9 +102,12 @@ batcher is for many different meshes that never move.
 
 ### What is merged
 
-- Surfaces are grouped by grid cell, by material (the same `Material` object, not an equal one) and
-  by vertex layout (equal layouts). One instance's surfaces all go to the cell that holds the
-  center of the mesh's bounds after `transform`; a large mesh is not split between cells.
+- Surfaces are grouped by grid cell, by material (the same `Material` object, not an equal one),
+  by vertex layout (equal layouts) and by the instance color and instance data they are drawn with
+  (see below). One instance's surfaces all go to the cell that holds the center of the mesh's
+  bounds after `transform`; a large mesh is not split between cells.
+- Only triangle lists can be merged: `addStaticInstance` throws an `ArgumentError` for a surface
+  with another topology.
 - `chunkSize` is the edge of the grid cells in the batcher's local units (32 by default). Larger
   cells mean fewer draws but coarser frustum culling: each merged surface is culled as a whole.
 - `transform` is relative to the batcher; the batcher's own position, rotation and scale apply to
@@ -119,17 +122,23 @@ batcher is for many different meshes that never move.
 
 ### Per-instance data
 
-Kept: the transform, and `color`, which multiplies the `vertexColor` attribute of every vertex
-(the standard layouts have it; with a layout that has no `vertexColor`, the color is ignored).
+Each merged surface is drawn with the `color` and `instanceData` its instances share, so a merged
+instance looks as it would on its own:
+
+- `instanceData` is part of the grouping: instances with different instance data (a fade, a
+  highlight, an emissive boost) end up in different merged surfaces, each drawn with its data.
+- `color`: for a `SpatialMaterial` or an `UnlitMaterial` on a layout with a `vertexColor` attribute
+  (the standard layouts have one), the color is multiplied into the vertex colors, which those
+  materials multiply exactly as they multiply the instance color; instances of different colors
+  then still merge. For any other material (a `StylizedMaterial`, whose instance color tints only
+  the vertices of its tint mask, for instance) the color is drawn as the instance color and is
+  part of the grouping.
 
 Lost:
 
-- `instanceData`: the parameter is accepted but not used; merged draws have zero instance data.
-- The material's own per-instance behavior. With `StylizedMaterial`, for example, the instance
-  color normally tints only the vertices of the tint mask, while the batcher multiplies all vertex
-  colors; the emissive boost, highlight, wind strength and fade of each instance are gone; and
-  wind in `WindSpace.model` or `WindSpace.worldScaled` no longer follows each instance's rotation
-  and scale. Other attributes, such as `vertexWind`, are copied untransformed.
+- Per-instance behavior that depends on the instance's own transform: wind in `WindSpace.model` or
+  `WindSpace.worldScaled` no longer follows each instance's rotation and scale. Other attributes,
+  such as `vertexWind`, are copied untransformed.
 - Skinning and morph targets: the current vertex data is baked as it is, without joint matrices.
 - Separate sorting: a translucent merged surface is sorted as one draw, by its center.
 - Picking a single instance: a raycast hit reports the batcher and the merged surface, not the
@@ -145,9 +154,10 @@ loading to avoid building on the first visible frame).
 - Adding an instance marks its merged surface for a full bake: all the instances of that cell,
   material and layout are transformed again and its buffers rebuilt.
 - `setSlotVisible(slot, visible: false)` and `removeSlot(slot)` do not re-transform anything: they
-  overwrite the slot's indices with degenerate triangles, or restore them. They still create a new
-  `Surface` for that merged surface, so its whole vertex and index buffer is uploaded again; toggle
-  slots occasionally (a destroyed crate), not every frame.
+  overwrite the slot's indices with degenerate triangles, or restore them, and upload only that
+  range of indices (`Surface.updateIndices`). The merged surface's ray-cast BVH is rebuilt on the
+  next raycast. A merged surface whose instances are all hidden is not drawn and adds nothing to
+  the batcher's bounds.
 - A removed slot's vertices stay in the buffer until the next full bake of its merged surface;
   removing the last slot of a merged surface frees it.
 - `clear()` frees everything.
@@ -573,9 +583,9 @@ the streamer: do it in `onChunkEvicted`.
   blade at the edge of a cell can be culled at the edge of the screen. `maxBendAngle` is applied
   as a shear of the blade, not as an angle. `addBlade` does not mark the world dirty, so with
   `windStrength: 0` a retained scene cache does not show new blades until something else changes.
-- `StaticMeshBatcher3D` ignores `instanceData`, assumes triangle lists (surfaces with another
-  topology come out garbled), and re-uploads a whole merged surface when one slot is shown, hidden
-  or removed.
+- `StaticMeshBatcher3D` merges only instances with the same instance data (and, for materials other
+  than `SpatialMaterial` and `UnlitMaterial`, the same color): many distinct values mean many
+  draws.
 - `PortalOcclusionGraph3D` keeps one rectangle per room, so rooms seen through two separate
   portals may be reported visible through the wall between them.
 - Occlusion results applied through `visible` also remove the objects' shadows.

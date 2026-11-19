@@ -476,6 +476,34 @@ class Surface extends Resource<GpuBuffer> {
     }
   }
 
+  /// Uploads the indices `[start, start + count)` of [indices] (all of them
+  /// when [count] is `null`) after they were changed in place, and
+  /// invalidates the cached [bvh].
+  ///
+  /// Only that range of the GPU buffer is written (widened to whole 4-byte
+  /// words), and only when the buffer was already uploaded; otherwise the
+  /// next upload takes the new indices anyway.
+  void updateIndices({int start = 0, int? count}) {
+    final end = count == null ? _indices.length : start + count;
+    RangeError.checkValidRange(start, end, _indices.length);
+    _bvh = null;
+    if (start == end || !hasResource || _resourceSizeInBytes != _sizeInBytes) {
+      return;
+    }
+    final bytesPerIndex = _indexType.bytesPerIndex;
+    var first = start;
+    var last = end;
+    if (bytesPerIndex == 2) {
+      first &= ~1;
+      last = math.min(_indices.length, (last + 1) & ~1);
+    }
+    // The view's range is in elements of the index list.
+    resource.write(
+      ByteData.sublistView(_indices as TypedData, first, last),
+      destinationOffsetInBytes: indicesOffsetInBytes + first * bytesPerIndex,
+    );
+  }
+
   /// Blends [morphTargets] using [weights] onto the rest vertices of this
   /// surface with zero heap allocations and uploads the morphed vertex buffer.
   void applyMorphWeights(List<double> weights) {

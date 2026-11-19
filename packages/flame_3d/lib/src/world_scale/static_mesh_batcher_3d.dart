@@ -31,16 +31,44 @@ class const _BatchGroupKey3D(
   final _ChunkKey3D chunk,
   final Material material,
   final VertexLayout layout,
+
+  /// The instance color the merged surface is drawn with: white when the
+  /// pieces' colors are baked into their vertex colors.
+  final Color color,
+
+  /// The instance data the merged surface is drawn with.
+  final (double, double, double, double) instanceData,
 ) {
+  /// Whether the pieces' colors are multiplied into their vertex colors
+  /// instead of being drawn as the instance color.
+  bool get bakesColor => _bakesColor(material, layout);
+
+  /// Whether [material] multiplies its vertex colors and its instance color
+  /// alike, so that a color baked into the vertex colors of [layout] looks
+  /// the same as the instance color.
+  static bool _bakesColor(Material material, VertexLayout layout) {
+    final type = material.runtimeType;
+    return (type == SpatialMaterial || type == UnlitMaterial) &&
+        layout.offsetOf('vertexColor') != null;
+  }
+
   @override
   bool operator ==(Object other) =>
       other is _BatchGroupKey3D &&
       other.chunk == chunk &&
       identical(other.material, material) &&
-      other.layout == layout;
+      other.layout == layout &&
+      other.color == color &&
+      other.instanceData == instanceData;
 
   @override
-  int get hashCode => Object.hash(chunk, identityHashCode(material), layout);
+  int get hashCode => Object.hash(
+    chunk,
+    identityHashCode(material),
+    layout,
+    color,
+    instanceData,
+  );
 }
 
 class _SlotPiece3D(
@@ -51,7 +79,6 @@ class _SlotPiece3D(
   final double colorG,
   final double colorB,
   final double colorA,
-  final Float32List instanceDataStorage,
   final Aabb3 localBounds,
 ) {
   bool visible = true;
@@ -69,8 +96,16 @@ class _MergedChunkBatch3D(
   List<int>? bakedIndices;
   Surface? surface;
   final Aabb3 localAabb = Aabb3();
+  // Whether any piece is visible, i.e. [localAabb] holds geometry.
+  bool hasVisibleGeometry = false;
   bool needsFullBake = true;
   int activePieceCount = 0;
+  late final Vector4 instanceData = Vector4(
+    key.instanceData.$1,
+    key.instanceData.$2,
+    key.instanceData.$3,
+    key.instanceData.$4,
+  );
 
   void disposeSurface() {
     surface?.dispose();
@@ -85,15 +120,22 @@ class _SlotRecord3D(final int slotId) {
       <(_MergedChunkBatch3D, _SlotPiece3D)>[];
 }
 
-/// Spatial static-geometry batcher merging heterogeneous [Mesh] instances that
-/// share a [Material] and [VertexLayout] into 1 [Surface] per spatial grid
-/// chunk (`chunkSize = 32.0` by default).
+/// Spatial static-geometry batcher merging heterogeneous [Mesh] instances into
+/// 1 [Surface] per spatial grid chunk (`chunkSize = 32.0` by default) and
+/// per [Material], [VertexLayout], instance color and instance data.
 ///
-/// Transforms vertex positions, inverse-transpose normals (preserving outward
-/// CCW winding even on mirrored negative-scale transforms), and per-instance
-/// color tints into merged chunk buffers, while supporting `O(T_slot)` surgical
-/// [setSlotVisible] and [removeSlot] updates without rebuilding untouched
-/// spatial chunks.
+/// Transforms vertex positions, inverse-transpose normals and tangents
+/// (preserving outward CCW winding even on mirrored negative-scale
+/// transforms) into merged chunk buffers. Each merged surface is drawn with
+/// the instance color and instance data its pieces share, so a merged piece
+/// looks as it would drawn on its own. For a [SpatialMaterial] or an
+/// [UnlitMaterial] on a layout with vertex colors, which multiply vertex and
+/// instance colors alike, the color is baked into the vertex colors instead,
+/// so pieces of different colors still merge.
+///
+/// [setSlotVisible] and [removeSlot] rewrite only the slot's indices and
+/// upload only that range of the merged surface's buffer, without rebuilding
+/// any chunk. Surfaces must be triangle lists.
 class StaticMeshBatcher3D({
   final double chunkSize = 32.0,
   super.position,
@@ -116,6 +158,7 @@ class StaticMeshBatcher3D({
 
   final Aabb3 _localAabb = Aabb3();
   bool _localBoundsDirty = true;
+  bool _hasLocalBounds = false;
   final Aabb3 _worldChunkAabbScratch = Aabb3();
 
   /// Number of active (non-removed) static instance slots.
@@ -156,18 +199,38 @@ class StaticMeshBatcher3D({
   /// Adds a static [mesh] with local [transform], [color], and optional
   /// [instanceData], returning a handle `slotId` for [setSlotVisible] or
   /// [removeSlot].
+  ///
+  /// The merged surface is drawn with [color] as its instance color (or with
+  /// [color] baked into the vertex colors, see [StaticMeshBatcher3D]) and
+  /// with [instanceData]: instances that differ in them are merged into
+  /// separate surfaces.
+  ///
+  /// Throws an [ArgumentError] when a surface of [mesh] is not a triangle
+  /// list.
   int addStaticInstance({
     required Mesh mesh,
     required Matrix4 transform,
     Color color = const Color(0xFFFFFFFF),
     Vector4? instanceData,
   }) {
+    for (final surface in mesh.surfaces) {
+      if (surface.topology != PrimitiveTopology.triangles) {
+        throw ArgumentError.value(
+          surface.topology,
+          'mesh',
+          'StaticMeshBatcher3D merges triangle lists only',
+        );
+      }
+    }
     final slotId = _nextSlotId++;
     final record = _SlotRecord3D(slotId);
     final tfStorage = Float32List.fromList(transform.storage);
-    final instStorage = instanceData != null
-        ? Float32List.fromList(instanceData.storage)
-        : Float32List(4);
+    final data = (
+      instanceData?.x ?? 0.0,
+      instanceData?.y ?? 0.0,
+      instanceData?.z ?? 0.0,
+      instanceData?.w ?? 0.0,
+    );
 
     final meshBox = mesh.aabb;
     final centroidLocalX = 0.5 * (meshBox.min.x + meshBox.max.x);
@@ -200,10 +263,16 @@ class StaticMeshBatcher3D({
         continue;
       }
       final pieceBounds = Aabb3.copy(srcSurface.aabb)..transform(transform);
+      final material = srcSurface.material;
+      final layout = srcSurface.layout;
       final groupKey = _BatchGroupKey3D(
         chunkKey,
-        srcSurface.material,
-        srcSurface.layout,
+        material,
+        layout,
+        _BatchGroupKey3D._bakesColor(material, layout)
+            ? const Color(0xFFFFFFFF)
+            : color,
+        data,
       );
       final batch = _batches.putIfAbsent(
         groupKey,
@@ -217,7 +286,6 @@ class StaticMeshBatcher3D({
         color.g,
         color.b,
         color.a,
-        instStorage,
         pieceBounds,
       );
       batch.pieces.add(piece);
@@ -240,7 +308,8 @@ class StaticMeshBatcher3D({
   }
 
   /// Shows or hides [slotId] in `O(T_slot)` by surgically toggling only that
-  /// slot's triangle indices inside its owning spatial chunk(s).
+  /// slot's triangle indices inside its owning spatial chunk(s), and
+  /// uploading only those indices.
   void setSlotVisible(int slotId, {required bool visible}) {
     final record = _slots[slotId];
     if (record == null || record.visible == visible) {
@@ -341,23 +410,22 @@ class StaticMeshBatcher3D({
     bakeDirtyChunks();
     if (_localBoundsDirty) {
       _localBoundsDirty = false;
-      var any = false;
+      _hasLocalBounds = false;
       for (final batch in _batches.values) {
-        if (batch.activePieceCount <= 0 || batch.surface == null) {
+        if (batch.activePieceCount <= 0 ||
+            batch.surface == null ||
+            !batch.hasVisibleGeometry) {
           continue;
         }
-        if (!any) {
+        if (!_hasLocalBounds) {
           _localAabb.setFrom(batch.localAabb);
-          any = true;
+          _hasLocalBounds = true;
         } else {
           _localAabb.hull(batch.localAabb);
         }
       }
-      if (!any) {
-        return null;
-      }
     }
-    return _localAabb;
+    return _hasLocalBounds ? _localAabb : null;
   }
 
   @override
@@ -374,7 +442,9 @@ class StaticMeshBatcher3D({
 
     for (final batch in _batches.values) {
       final surface = batch.surface;
-      if (surface == null || batch.activePieceCount <= 0) {
+      if (surface == null ||
+          batch.activePieceCount <= 0 ||
+          !batch.hasVisibleGeometry) {
         continue;
       }
 
@@ -394,6 +464,8 @@ class StaticMeshBatcher3D({
         surface,
         transform: worldMat,
         material: batch.key.material,
+        color: batch.key.color,
+        instanceData: batch.instanceData,
       );
       _lastDrawnBatchCount++;
     }
@@ -452,14 +524,9 @@ class StaticMeshBatcher3D({
       }
     }
     _recomputeChunkAabb(batch);
-    batch.disposeSurface();
-    batch.surface = Surface.fromBuffers(
-      vertices: batch.bakedVertices!,
-      indices: indices,
-      layout: batch.key.layout,
-      material: batch.key.material,
-      aabb: Aabb3.copy(batch.localAabb),
-    );
+    // The surface shares [indices]: upload only the slot's range (and drop
+    // its ray-cast BVH, built from the old indices).
+    batch.surface?.updateIndices(start: start, count: count);
   }
 
   static void _recomputeChunkAabb(_MergedChunkBatch3D batch) {
@@ -479,6 +546,7 @@ class StaticMeshBatcher3D({
     if (!any) {
       batch.localAabb.setZero();
     }
+    batch.hasVisibleGeometry = any;
   }
 
   void _bakeChunkBatch(_MergedChunkBatch3D batch) {
@@ -499,7 +567,9 @@ class StaticMeshBatcher3D({
     final stride = layout.strideInFloats;
     final posOffset = layout.offsetOf(VertexLayout.positionAttribute);
     final nrmOffset = layout.offsetOf('vertexNormal');
-    final colOffset = layout.offsetOf('vertexColor');
+    final colOffset = batch.key.bakesColor
+        ? layout.offsetOf('vertexColor')
+        : null;
     final tanOffset = layout.offsetOf('vertexTangent');
 
     var totalVertices = 0;
