@@ -121,5 +121,34 @@ void main() {
         expect(world.raycast(targetRay), isNull);
       },
     );
+
+    test('axis-aligned rays starting on a bounds face hit like without '
+        'the index', () async {
+      Future<RayHit3D?> cast({required bool indexed}) async {
+        final world = World3D(spatialIndex3DEnabled: indexed);
+        final game = FlameGame(world: world);
+        // Two unit cubes side by side: x in [0, 1] and [1, 2].
+        final cube = CuboidMesh(size: Vector3.all(1));
+        world.addAll([
+          MeshComponent(mesh: cube, position: Vector3(0.5, 0, 0)),
+          MeshComponent(mesh: cube, position: Vector3(1.5, 0, 0)),
+        ]);
+        game
+          ..onGameResize(Vector2.all(128))
+          ..start();
+        await game.ready();
+        // Straight down onto the seam, from exactly x = 1 (a face of both
+        // bounds) and z = 0.5 (a face of both bounds too).
+        return world.raycast(
+          Ray.originDirection(Vector3(1, 5, 0.5), Vector3(0, -1, 0)),
+        );
+      }
+
+      final plain = await cast(indexed: false);
+      final indexed = await cast(indexed: true);
+      expect(plain, isNotNull);
+      expect(indexed, isNotNull);
+      expect(indexed!.distance, closeTo(plain!.distance, 1e-6));
+    });
   });
 }

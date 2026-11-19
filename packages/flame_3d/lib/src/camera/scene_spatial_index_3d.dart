@@ -596,31 +596,33 @@ class SceneSpatialIndex3D() {
     double invDz,
     double maxDist,
   ) {
-    final tx1 = (b[o] - ox) * invDx;
-    final tx2 = (b[o + 3] - ox) * invDx;
-    var tMin = tx1 < tx2 ? tx1 : tx2;
-    var tMax = tx1 > tx2 ? tx1 : tx2;
-
-    final ty1 = (b[o + 1] - oy) * invDy;
-    final ty2 = (b[o + 4] - oy) * invDy;
-    final tyMin = ty1 < ty2 ? ty1 : ty2;
-    final tyMax = ty1 > ty2 ? ty1 : ty2;
-    if (tyMin > tMin) {
-      tMin = tyMin;
-    }
-    if (tyMax < tMax) {
-      tMax = tyMax;
-    }
-
-    final tz1 = (b[o + 2] - oz) * invDz;
-    final tz2 = (b[o + 5] - oz) * invDz;
-    final tzMin = tz1 < tz2 ? tz1 : tz2;
-    final tzMax = tz1 > tz2 ? tz1 : tz2;
-    if (tzMin > tMin) {
-      tMin = tzMin;
-    }
-    if (tzMax < tMax) {
-      tMax = tzMax;
+    // Bounds are padded like the tree walk of `World3D.raycast`, and an
+    // axis the ray does not move along is a range test: `0 * infinity` would
+    // be NaN for a ray starting exactly on a face.
+    const pad = 1e-5;
+    var tMin = double.negativeInfinity;
+    var tMax = double.infinity;
+    for (var axis = 0; axis < 3; axis++) {
+      final origin = axis == 0 ? ox : (axis == 1 ? oy : oz);
+      final inv = axis == 0 ? invDx : (axis == 1 ? invDy : invDz);
+      final lo = b[o + axis] - pad;
+      final hi = b[o + 3 + axis] + pad;
+      if (inv.isInfinite) {
+        if (origin < lo || origin > hi) {
+          return double.infinity;
+        }
+        continue;
+      }
+      final t1 = (lo - origin) * inv;
+      final t2 = (hi - origin) * inv;
+      final near = t1 < t2 ? t1 : t2;
+      final far = t1 > t2 ? t1 : t2;
+      if (near > tMin) {
+        tMin = near;
+      }
+      if (far < tMax) {
+        tMax = far;
+      }
     }
 
     if (tMax < 0 || tMin > tMax || tMin > maxDist) {
