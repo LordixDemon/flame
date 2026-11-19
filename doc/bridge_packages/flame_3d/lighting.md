@@ -502,8 +502,9 @@ Fog (`World3D.fog`, see [Materials](materials.md#atmospheric-fog)) is applied by
 the end of its fragment shader, after lighting:
 
 - `SpatialMaterial` without HDR fogs the tone-mapped, gamma-encoded color, so the fog color appears
-  as given. With `World3D.hdrEnabled` it fogs the linear color, and the composite then tone-maps and
-  encodes the result: the same fog color looks lighter and less saturated.
+  as given. With `World3D.hdrEnabled` it fogs its extended-range sRGB color (not tone-mapped), which
+  the composite then decodes and tone-maps: the fog color is changed by the tone map, as every
+  material's colors are.
 - `StylizedMaterial` fogs its graded color before multiplying it by its alpha; `WaterMaterial` and
   `BillboardMaterial3D` fog their final color.
 - Fog does not change the light: lights are not dimmed by it, and it adds no light scattering or

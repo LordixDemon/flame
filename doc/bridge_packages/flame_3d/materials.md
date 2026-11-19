@@ -28,7 +28,8 @@ to, image-based lighting and probes are described in [Lighting](lighting.md), sh
 
 - Use `SpatialMaterial` for anything that has textures or comes from a glTF file, and for metals,
   car paint and glass. It is the only material that uses image-based lighting, reflection probes,
-  light probe grids, lightmaps and linear HDR output (see [Lighting](lighting.md)).
+  light probe grids and lightmaps, and that keeps light brighter than white under HDR (see
+  [Lighting](lighting.md)).
 - Use `StylizedMaterial` for flat-shaded or vertex-colored low-poly art: it has no textures, a soft
   look by default, per-vertex masks for tints, accents, glow and gloss, and wind. It is cheaper to
   bind than `SpatialMaterial` and does not depend on physically based light intensities.
@@ -40,13 +41,19 @@ shadow path, and wrong shadows when the scene uses the multi-light shadow atlas 
 [Limitations](#limitations)). "Web" says whether the material has WebGPU shaders and runs in a
 browser; see [Web](#web).
 
-Only `SpatialMaterial` (on native backends) is correct with `World3D.hdrEnabled` at this version:
-it writes linear light, which the post-processing composite tone-maps and encodes to sRGB. Every
+Every material works with `World3D.hdrEnabled`: the HDR scene target holds sRGB-encoded colors
+with the range extended above `1`. The native `SpatialMaterial` shader writes its lighting there
+without its tone curve, so light brighter than white survives for bloom and the tone map; every
 other material (`StylizedMaterial`, `UnlitMaterial`, `WaterMaterial`, `SkyboxMaterial3D`,
 `DecalMaterial`, `OutlineMaterial`, `BillboardMaterial3D`, and the particle and ribbon materials)
-writes display colors that the composite tone-maps and encodes a second time, so they look lighter
-and washed out under HDR: a 50 % gray `UnlitMaterial` or `StylizedMaterial` shows as 81 % (206 of
-255 instead of 128). Keep HDR off in scenes that use these materials.
+writes the display colors it writes without HDR, which look the same until the composite's tone
+map changes them (with `ToneMapMode.none` and an exposure of `1`, exactly the same). See
+[Post-Processing](post_processing.md#hdr).
+
+With `World3D.oitMode` set to `OitMode3D.weightedBlended`, every alpha-blended translucent draw is
+drawn with its own material, unsorted, and blended with the others by a weighted average (see
+[Rendering](rendering.md#order-independent-transparency)): lighting, fog, skinning, accents, rims
+and fades look as they do when sorted.
 
 Vertices built from `Vertex` objects, the built-in meshes and parsed models have white vertex
 colors, so the vertex color only changes the look of meshes that set it. Every built-in material
@@ -201,10 +208,11 @@ the color reaches the screen depends on `World3D.hdrEnabled`:
   186, `2` gives 212 and `4` gives 230: a white surface never reaches white. A white dielectric
   surface facing a directional light of intensity `3` with the default ambient light shows about
   190 of 255.
-- With `World3D.hdrEnabled`, the shader writes the linear color unclamped into a 16-bit float
-  target; the post-processing composite tone-maps it (ACES by default) and encodes it to sRGB, see
-  [Post-Processing](post_processing.md). Only `SpatialMaterial` switches to linear output: see the
-  [Limitations](#limitations).
+- In a pass into the HDR scene target of a world with `World3D.hdrEnabled`, the shader skips its
+  tone curve and writes the color sRGB-encoded with its range extended above `1`, then fogs it;
+  the post-processing composite decodes it to linear light, adds bloom, tone-maps it (ACES by
+  default) and encodes it to sRGB, see [Post-Processing](post_processing.md#hdr). Refraction
+  decodes the grabbed scene color back to linear light first.
 
 `World3D.renderDebugMode3D` shows the normals (`normals`), the roughness and metallic values
 (`roughnessMetallic`) or the unlit albedo (`albedo`) of `SpatialMaterial` surfaces; other materials
@@ -729,9 +737,10 @@ the depth of the whole object first instead, so that only its nearest surface is
 [Rendering](rendering.md#render-state)). `ditherFade: true` fades opaque objects with a 4x4 Bayer
 screen-door pattern instead, without sorting.
 
-With `World3D.oitMode` set to `OitMode3D.weightedBlended`, translucent draws are not drawn with
-their own material: translucent `StylizedMaterial` surfaces in its own layout disappear, see the
-[Limitations](#limitations).
+With `World3D.oitMode` set to `OitMode3D.weightedBlended`, translucent stylized draws are drawn
+with this material too, unsorted (see [Rendering](rendering.md#order-independent-transparency)):
+packed accents, rims and fades decode as when sorted, and their instances batch like opaque ones.
+`singlePieceTranslucent` does not apply there.
 
 
 ### Rim highlight palette
@@ -1414,14 +1423,9 @@ The texture sampler options, including anisotropy up to 16, work on the web.
 
 ## Limitations
 
-- HDR is only right for `SpatialMaterial` on native backends (see
-  [Choosing a material](#choosing-a-material)): with `World3D.hdrEnabled`, every other material is
-  tone-mapped and sRGB-encoded twice, a `0x80` gray showing 206 of 255 instead of 128.
-- Translucent draws with `OitMode3D.weightedBlended` are drawn with a generic shader that keeps
-  only the albedo color and texture of `SpatialMaterial` and `UnlitMaterial` and the shallow color
-  of `WaterMaterial`; every other material is drawn as white at 50 % opacity, and surfaces without
-  `vertexTexCoord` or `vertexColor` (`StylizedMaterial`'s own layout, decals) are not drawn at
-  all. A packed accent index in `instanceData.w` is read there as a full fade.
+- Only `SpatialMaterial` (native) keeps light brighter than white under HDR; the other materials
+  write display colors (see [Choosing a material](#choosing-a-material)), so they bloom only where
+  additive draws stack above white.
 - `StylizedMaterial` and `WaterMaterial` read only the single-light `Shadows` block. When the
   multi-light shadow atlas is in use (3 or 4 cascades, a shadowed point light, or two or more
   lights with shadows), that block describes the last cascade while the bound shadow map is the

@@ -376,6 +376,11 @@ Shaders are GLSL, compiled ahead of time into shader bundles (see
   `applyFog(color, worldPosition, view, projection, cameraPosition)` for distance and height fog.
 - `flame_3d/dither.glsl` declares `bayerDither4x4(gl_FragCoord.xy)`, a threshold for dithered
   fades.
+- `flame_3d/outline.glsl` holds the vertex step of an inverted-hull outline:
+  `outlineWorldNormal(model, normal)` (the normal transformed by the inverse transpose) and
+  `outlineExtrude(...)`, which pushes a vertex out along it. `OutlineMaterial` uses it; a material
+  that moves its vertices in its own vertex shader can use it to draw a matching outline, see
+  [Materials](materials.md#outlines-for-materials-that-move-their-vertices).
 
 Blocks named `CameraMatrices`, `Camera` (`position`, and any of the `CameraMatrices` members),
 `AmbientLight`, `Lights`, `DirectionalLights`, `SpotLights`, `HemisphereLight`, `Shadows`,
