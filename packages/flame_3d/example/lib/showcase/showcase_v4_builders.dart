@@ -2365,6 +2365,7 @@ class ShowcaseV4Builders() {
 
   Future<void> runChecks49To64({
     required ShowcaseGame game,
+    required Future<ByteData?> Function(ui.Image image) readImageBytes,
     required Future<void> Function(int frames) pumpFrames,
     required void Function(
       String id, {
@@ -2389,15 +2390,26 @@ class ShowcaseV4Builders() {
         (idLutSample.y - 0.5).abs() < 0.02 &&
         (idLutSample.z - 0.75).abs() < 0.02;
 
-    const wireframeState = RenderState(polygonMode: PolygonFillMode.wireframe);
-    var debugModesRendered =
-        RenderDebugMode3D.values.length >= 9 &&
-        wireframeState.polygonMode == PolygonFillMode.wireframe;
-    // Exercise shader & additive-blend diagnostic views on the GPU (skipping
-    // `VK_POLYGON_MODE_LINE` rasterization here so headless `flutter_tester`'s
-    // bundled SwiftShader does not hit its `setupWireframeTriangles` bug).
+    // Each diagnostic view must change the picture: an offscreen snapshot
+    // of the lab in each view is compared with the shaded one (the
+    // wireframe view is skipped: headless `flutter_tester`'s bundled
+    // SwiftShader crashes in `setupWireframeTriangles`).
+    Future<Uint8List?> snapshotPixels() async {
+      final bytes = await readImageBytes(
+        game.captureOffscreenSnapshot(size: const ui.Size(64, 64)),
+      );
+      return bytes?.buffer.asUint8List(
+        bytes.offsetInBytes,
+        bytes.lengthInBytes,
+      );
+    }
+
+    final shaded = await snapshotPixels();
+    var debugModesRendered = shaded != null;
+    final changedPixels = <String>[];
     for (final dbgMode in const [
       RenderDebugMode3D.normals,
+      RenderDebugMode3D.depth,
       RenderDebugMode3D.cascadeSplits,
       RenderDebugMode3D.roughnessMetallic,
       RenderDebugMode3D.overdraw,
@@ -2405,7 +2417,20 @@ class ShowcaseV4Builders() {
       game.controller.renderDebugMode = dbgMode;
       game.syncControllerState();
       await pumpFrames(2);
-      if (game.dynamicLayer.renderStats.drawCalls <= 0) {
+      final view = await snapshotPixels();
+      var changed = 0;
+      if (shaded != null && view != null && view.length == shaded.length) {
+        for (var i = 0; i < view.length; i += 4) {
+          if ((view[i] - shaded[i]).abs() > 24 ||
+              (view[i + 1] - shaded[i + 1]).abs() > 24 ||
+              (view[i + 2] - shaded[i + 2]).abs() > 24) {
+            changed++;
+          }
+        }
+      }
+      changedPixels.add('${dbgMode.name}=$changed');
+      // At least 2 % of the 64 x 64 pixels.
+      if (changed < 82) {
         debugModesRendered = false;
       }
     }
@@ -2421,7 +2446,8 @@ class ShowcaseV4Builders() {
           debugModesRendered,
       detail:
           'hdr=${hdrWorld.hdrEnabled}, fp16=$fp16Supported, '
-          'lut=${activeLut?.size}³, debugModes=$debugModesRendered',
+          'lut=${activeLut?.size}³, debugModes=$debugModesRendered '
+          '(changed pixels: ${changedPixels.join(', ')})',
     );
 
     // 50. Split-sum BrdfLut3D + Box-Parallax ReflectionProbeVolume3D + SH9

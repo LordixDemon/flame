@@ -213,12 +213,16 @@ That test (`example/test/showcase_gpu_test.dart`) expects all 64 checks to pass,
 draw at least 2,048 instances, and the final frame to have more than 5,000 pixels that are not
 dark. Without the flags it skips.
 
-Read the results for what they are: most checks assert counters and state (draw calls above a
-threshold, objects mounted, textures of the right size, a physics body that moved, an undo that
-restored a value), and many would pass with wrong pictures. One check reads pixels: it renders a
-64 by 64 snapshot and asks for more than 20 pixels that differ from the background. The render
-debug views, for example, pass when each view records at least one draw call. Pixel-exact checks
-of the rendering live in the package's GPU tests, not in the self-test.
+Read the results for what they are: smoke checks. Most assert counters and state (draw calls
+above a threshold, objects mounted, textures of the right size, a physics body that moved, an undo
+that restored a value), and would pass with wrong pictures; their titles say what they check (for
+example "Color-grading lab: static layer >= 12 draws, >= 1000 triangles"). Two read pixels:
+`fog_bloom_and_offscreen_snapshot` renders a 64 by 64 snapshot and asks for more than 20 pixels
+that differ from the background, and `hdr_float16_color_lut_and_debug_modes` renders the lab in the
+`normals`, `depth`, `cascadeSplits`, `roughnessMetallic` and `overdraw` views and asks each to
+change at least 2 % of the pixels of the shaded snapshot (the wireframe view is skipped, as the
+test's software GPU crashes on it). Pixel-exact checks of the rendering live in the package's GPU
+tests, not in the self-test.
 
 
 ## The benchmark

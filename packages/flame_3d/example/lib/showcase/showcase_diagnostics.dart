@@ -46,12 +46,19 @@ class ShowcaseDiagnosticReport({
   };
 }
 
-/// Automated 64-point functional & rendering health suite for
-/// `package:flame_3d`.
+/// 64 smoke checks of `package:flame_3d` across the showcase.
 ///
 /// Exercises all 20 [ShowcasePreset] feature labs plus [PureCameraLabGame],
 /// both interactively on desktop/mobile and headlessly under
 /// `flutter test --enable-impeller --enable-flutter-gpu`.
+///
+/// Most checks assert state and counters (objects mounted, draw calls above
+/// a threshold, values computed by the engine), which show that a lab runs,
+/// not that it looks right. Two read rendered pixels: the offscreen
+/// snapshot (`fog_bloom_and_offscreen_snapshot`) and the render debug views
+/// (`hdr_float16_color_lut_and_debug_modes`, each view must change the
+/// picture). Pixel-exact checks of the rendering are the package's GPU
+/// tests.
 class ShowcaseDiagnostics() {
   static Future<ShowcaseDiagnosticReport> runAllChecks(
     ShowcaseGame game, {
@@ -345,7 +352,7 @@ class ShowcaseDiagnostics() {
           game.dynamicLayer.renderStats.drawCalls >= 4;
       record(
         'depth_prepass_translucent_fade',
-        'RenderState.depthOnly Prepass + Seamless Translucent Fade',
+        'Translucent-fade lab: both ghosts mounted, >= 4 draws',
         ok: ghostOk,
         detail:
             'ghostFade=${rig.depthPrepassGhost?.fade.toStringAsFixed(2)}, '
@@ -357,7 +364,7 @@ class ShowcaseDiagnostics() {
       final gradingOk = matStats.drawCalls >= 12 && matStats.triangles >= 1000;
       record(
         'stylized_color_grading_and_metallic',
-        'StylizedMaterial Color Grading (Saturation/Overlay/Metallic)',
+        'Color-grading lab: static layer >= 12 draws, >= 1000 triangles',
         ok: gradingOk,
         detail:
             'staticDraws=${matStats.drawCalls}, '
@@ -369,7 +376,7 @@ class ShowcaseDiagnostics() {
           rig.staticExtras.length >= 17 && matStats.renderPasses >= 1;
       record(
         'spatial_pbr_and_samplers',
-        'SpatialMaterial 3x3 PBR & Samplers (repeat/mirror/clamp)',
+        'PBR & sampler lab: >= 17 extra objects, >= 1 render pass',
         ok: samplersOk,
         detail:
             'staticExtras=${rig.staticExtras.length}, '
@@ -382,7 +389,7 @@ class ShowcaseDiagnostics() {
           bannerTex != null && bannerTex.width == 128 && bannerTex.height == 64;
       record(
         'zero_copy_image_texture',
-        'Canvas Picture -> Zero-Copy ImageTexture.create',
+        'Canvas picture texture created at 128 x 64',
         ok: imgTexOk,
         detail:
             'width=${bannerTex?.width ?? 0}, height=${bannerTex?.height ?? 0}',
@@ -1428,6 +1435,7 @@ class ShowcaseDiagnostics() {
       // --- LABS 17-20: Checks 49..64 ---
       await rig.v4.runChecks49To64(
         game: game,
+        readImageBytes: reader,
         pumpFrames: (frames) async {
           for (var f = 0; f < frames; f++) {
             await pumpFrame();
