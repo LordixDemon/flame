@@ -718,16 +718,23 @@ final unit = MeshComponent(
 ```
 
 `packAccentAndFade(index, fade: f)` returns `(index + 1) * 4 + f`, and throws for an index outside
-`0..15`. A `w` below `2` is a plain fade, as before; a `w` of `2` or more is decoded in the fragment
-shader into the palette index and the fade (values from `2` to `4`, which `packAccentAndFade` does
-not produce, decode as a full fade). An index beyond the palette's length falls back to
-`accentColor`. The palette replaces `accentColor` only on the vertices of the accent mask, so it
-does nothing on surfaces in the standard layout (which have no accent mask: vary those with the
-instance color, which tints them whole). It works the same for skinned surfaces in the stylized
-layout (each skinned draw picks its own accent) and for translucent materials, where instances
-with different accents and fades still share one draw call. The shadow pass does not read the
-instance data: a packed accent leaves the shadow unchanged, and an object faded with `w` still
-casts its full shadow if its material casts shadows.
+`0..15`. A `w` below `2` is a plain fade, as before; a `w` of `2` or more is decoded into the
+palette index and the fade (values from `2` to `4`, which `packAccentAndFade` does not produce,
+decode as a full fade). The vertex shader decodes it, where `w` is the exact value of the instance,
+and hands the fragment shader the fade as a plain fade and the index as a whole number, so the
+decoding is exact on every pixel (MSAA edges included), for every index and every packed fade, `0`
+and `1` included: an instance drawn with a palette entry looks exactly like the same instance
+drawn with a material of that one color and the packed fade. Packing rounds the fade to a multiple
+of `1/16384` at most (finer for low indices): fades such as `0`, `0.25` or `1` are kept as they
+are, others such as `0.3` can end up one step of 8-bit alpha away from the same plain fade, at
+most. An index beyond the palette's length falls back to `accentColor`. The palette replaces
+`accentColor` only on the vertices of the accent mask, so it does nothing on surfaces in the
+standard layout (which have no accent mask: vary those with the instance color, which tints them
+whole). It works the same for skinned surfaces in the stylized layout (each skinned draw picks its
+own accent) and for translucent materials, where instances with different accents and fades still
+share one draw call. The shadow pass and the depth-normal prepass do not read the instance data: a
+packed accent leaves the shadow unchanged, and an object faded with `w` still casts its full
+shadow if its material casts shadows.
 
 `StylizedMaterial(translucent: true)` blends its premultiplied output over what is behind it
 (`StylizedMaterial.translucentRenderState`: depth tested, without depth writes), and its draws are
@@ -778,7 +785,9 @@ surfaces in the standard layout (glTF models), skinned or not, and it fades with
 `r'` the indices plus one, or `0` for none; without a rim it equals
 `packAccentAndFade(a, fade: f)`, without either it is `f`. It throws for indices outside the
 palettes' ranges, and an index beyond the length of a palette selects nothing (the `accentColor`,
-no rim). The shadow pass does not read the instance data, so rims do not change shadows.
+no rim). The rim index is decoded with the accent index, as exactly, and the fade is rounded the
+same way (see [above](#batching-accent-palettes-and-translucency)). The shadow pass does not read
+the instance data, so rims do not change shadows.
 
 
 ### Depth bias

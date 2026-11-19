@@ -3,7 +3,8 @@
 // StylizedMaterial for the standard vertex layout: the vertex color is read,
 // the other per-vertex values are neutral (unoccluded, tinted by the instance
 // color, no accent, emissive, gloss nor sway). Skinned surfaces are skinned.
-// The instance data is passed on like in stylized_material.vert.
+// The instance data is decoded and passed on as in stylized_material.vert
+// (see flame_3d/stylized_instance_data.glsl).
 
 in vec3 vertexPosition;
 in vec4 vertexColor;
@@ -12,6 +13,7 @@ in vec3 vertexNormal;
 #include <flame_3d/skinning.glsl>
 #include <flame_3d/instancing.glsl>
 #include <flame_3d/camera.glsl>
+#include <flame_3d/stylized_instance_data.glsl>
 
 // StylizedMaterial.depthBias (the stylized layout keeps it in its Wind block),
 // see flame_3d/stylized_material_vertex.glsl.
@@ -53,5 +55,5 @@ void main() {
   fragMasks = vec4(1.0, 0.0, 0.0, 0.0);
   fragOcclusion = 1.0;
   fragInstanceColor = instanceColor;
-  fragInstanceData = instanceData;
+  fragInstanceData = stylizedFragmentInstanceData(instanceData);
 }

@@ -4,8 +4,8 @@
 // The fragment stage of StylizedMaterial: vertex-colored surfaces lit by the
 // hemisphere, directional and point lights of the scene, with per-vertex
 // masks for the instance tint, the accent color, emission and gloss, and per
-// instance data for an emissive boost, a highlight, wind strength, fade and
-// optional per-instance accent and rim palette indices.
+// instance data for an emissive boost, a highlight, a fade and optional
+// per-instance accent and rim palette indices.
 
 in vec3 fragPosition;
 in vec3 fragNormal;
@@ -13,6 +13,8 @@ in vec4 fragColor;
 in vec4 fragMasks;
 in float fragOcclusion;
 in vec4 fragInstanceColor;
+// x: the emissive boost, y: the highlight, z: the palette slot, w: the fade,
+// decoded by the vertex stage, see flame_3d/stylized_instance_data.glsl.
 in vec4 fragInstanceData;
 
 out vec4 outColor;
@@ -141,27 +143,23 @@ void main() {
   float boost = fragInstanceData.x;
   float highlight = fragInstanceData.y;
 
-  // `instanceData.w` is plain fade in `[0, 1]` unless packed via
-  // `StylizedMaterial.packPaletteAndFade`: `(a + 17 * r) * 4.0 + fade`
-  // (`w >= 2.0`), with `a` and `r` the accent and rim palette indices plus
-  // one (`0`: none), which lets instances pick from `material.accentPalette`
-  // and `material.rimPalette` without breaking instanced batching.
-  float rawW = fragInstanceData.w;
+  // The vertex stage decoded the `instanceData.w` packed by
+  // `StylizedMaterial.packPaletteAndFade` into the palette slot `a + 17 * r`
+  // (z), with `a` and `r` the accent and rim palette indices plus one (`0`:
+  // none), and the fade (w), see flame_3d/stylized_instance_data.glsl: the
+  // instances pick from `material.accentPalette` and `material.rimPalette`
+  // without breaking instanced batching. The slot is a whole number,
+  // interpolated: rounded to the nearest, it is exact.
+  int slot = int(floor(max(fragInstanceData.z, 0.0) + 0.5));
+  int rimSlot = slot / 17;
+  int accentIndex = slot - rimSlot * 17 - 1;
   vec3 instanceAccent = material.accentColor.rgb;
-  int rimIndex = -1;
-  float fade;
-  if (rawW >= 2.0) {
-    int slot = int(floor(rawW * 0.25));
-    fade = clamp(rawW - float(slot) * 4.0, 0.0, 1.0);
-    int rimSlot = slot / 17;
-    int idx = slot - rimSlot * 17 - 1;
-    if (idx >= 0 && idx < int(material.accentPaletteCount) && idx < 16) {
-      instanceAccent = material.accentPalette[idx].rgb;
-    }
-    rimIndex = rimSlot - 1;
-  } else {
-    fade = clamp(rawW, 0.0, 1.0);
+  if (accentIndex >= 0 && accentIndex < int(material.accentPaletteCount) &&
+      accentIndex < 16) {
+    instanceAccent = material.accentPalette[accentIndex].rgb;
   }
+  int rimIndex = rimSlot - 1;
+  float fade = clamp(fragInstanceData.w, 0.0, 1.0);
 
   vec3 base = material.albedoColor.rgb * fragColor.rgb;
   base *= mix(vec3(1.0), fragInstanceColor.rgb, tintMask);

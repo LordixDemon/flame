@@ -481,6 +481,12 @@ class StylizedMaterial({
   /// plus one, or `0` for none: without a [rim] it is [packAccentAndFade]'s,
   /// and without either it is the plain fade. An object without an [accent]
   /// keeps [accentColor]; one without a [rim] gets no palette rim.
+  ///
+  /// The vertex shader decodes the value, exactly, so an object drawn with
+  /// palette entries looks exactly like the same object drawn with a
+  /// material of those colors and the packed fade, on every pixel. Packing
+  /// rounds the [fade] to a multiple of `1 / 16384` at most (finer for low
+  /// indices): `0`, `0.25` or `1` are kept as they are.
   static double packPaletteAndFade({int? accent, int? rim, double fade = 0}) {
     if (accent != null) {
       RangeError.checkValueInInterval(

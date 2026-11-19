@@ -21,6 +21,7 @@ in vec3 vertexWind;
 
 #include <flame_3d/instancing.glsl>
 #include <flame_3d/camera.glsl>
+#include <flame_3d/stylized_instance_data.glsl>
 
 // The wind. A vertex moves by
 //
@@ -68,6 +69,8 @@ out vec4 fragColor;
 out vec4 fragMasks;
 out float fragOcclusion;
 out vec4 fragInstanceColor;
+// The boost, the highlight, the palette slot and the fade, see
+// flame_3d/stylized_instance_data.glsl.
 out vec4 fragInstanceData;
 
 // Transforms normals by the model matrix: its cofactor matrix, which is the
@@ -119,7 +122,7 @@ void emitStylizedVertex(vec3 position, vec3 normal) {
   fragMasks = vertexMasks;
   fragOcclusion = vertexOcclusion;
   fragInstanceColor = instanceColor;
-  fragInstanceData = instanceData;
+  fragInstanceData = stylizedFragmentInstanceData(instanceData);
 }
 
 #endif
