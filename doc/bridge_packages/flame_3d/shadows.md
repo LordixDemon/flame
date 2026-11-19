@@ -69,7 +69,7 @@ Vertices that a material's own vertex shader moves, such as the wind sway of `St
 cast the shadow of their rest position. Draws of one surface are drawn as one instanced draw in the
 shadow pass, whatever their materials. The shadow pass draws every surface with its own depth-only
 shaders, which read the four per-instance model columns as a model matrix: a draw whose instances
-mean something else, such as a cut-out billboard particle, casts a wrong shadow or none (see
+mean something else must skip the shadow pass, as billboard particles and ribbons do (see
 [Particles and Ribbons](particles.md#shadows)).
 
 

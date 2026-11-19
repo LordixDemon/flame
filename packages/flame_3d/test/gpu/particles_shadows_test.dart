@@ -112,8 +112,8 @@ void main() {
       expect(frame.stats.shadowPasses, 1);
       // The ground and the particles.
       expect(frame.stats.shadowDrawCalls, 2);
-      // The particle is drawn into the map and into the picture.
-      expect(frame.stats.particles, 2);
+      // The particle is counted once, for the picture.
+      expect(frame.stats.particles, 1);
     });
 
     testGpuEngine('translucent billboards cast no shadows', () async {
@@ -134,6 +134,56 @@ void main() {
       expect(frame.stats.shadowDrawCalls, 1);
       // The shadow pass skips the particles altogether.
       expect(frame.stats.particles, 1);
+    });
+
+    testGpuEngine('cut-out billboards cast no shadows', () async {
+      // An opaque state with an alpha cutoff writes depth, but the instances
+      // of a billboard are not model matrices: the shadow pass cannot draw
+      // them where they are, so they cast nothing rather than a wrong shadow.
+      final material = StylizedMaterial();
+      final ground = _ground(material);
+      final cutOut = ParticleMaterial(
+        sprite: ParticleSprite.softCircle,
+        alphaCutoff: 0.5,
+        renderState: RenderState.opaque,
+      );
+      expect(cutOut.castsShadows, isFalse);
+      final system = ParticleSystem3D(capacity: 4, material: cutOut)
+        ..spawn(position: Vector3(0, 0, -4), size: 0.4);
+
+      final frame = await _render((context) {
+        context.drawSurface(ground);
+        system.draw(context);
+      });
+
+      expect(_red(frame, 0.5, 0), closeTo(lit, 4));
+      // Only the ground casts.
+      expect(frame.stats.shadowDrawCalls, 1);
+      expect(frame.stats.particles, 1);
+    });
+
+    testGpuEngine('billboards stay out of the depth-normal prepass', () async {
+      final device = GraphicsDevice();
+      final context = RenderContext3D(device);
+      final systems = [
+        for (final state in [RenderState.opaque, RenderState.additive])
+          ParticleSystem3D(
+            capacity: 4,
+            material: ParticleMaterial(alphaCutoff: 0.5, renderState: state),
+          )..spawn(position: Vector3(0, 0, -4), size: 0.4),
+      ];
+      device.begin();
+      context.setCamera(defaultView, defaultProjection);
+      expect(context.beginDepthNormalPass(_size, _size), isTrue);
+      final before = device.stats.drawCalls;
+      for (final system in systems) {
+        system.draw(context);
+      }
+      context.endDepthNormalPass();
+      final prepassDraws = device.stats.drawCalls - before;
+      device.end();
+      expect(prepassDraws, 0);
+      expect(device.lastFrameStats.particles, 0);
     });
   });
 }

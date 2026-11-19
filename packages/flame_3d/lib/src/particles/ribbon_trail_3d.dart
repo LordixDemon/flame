@@ -271,7 +271,11 @@ class StrokeBatch3D({
 
   @override
   void draw(covariant RenderContext3D context) {
-    if (_segmentCount == 0 || context.isShadowPass) {
+    // Its instances are segments, not model matrices: it is drawn into
+    // neither the shadow maps nor the depth-normal prepass.
+    if (_segmentCount == 0 ||
+        context.isShadowPass ||
+        context.isDepthNormalPass) {
       return;
     }
     final wb = aabb;

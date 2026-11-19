@@ -1187,7 +1187,23 @@ class ParticleSystem3D({
   @override
   void draw(covariant RenderContext3D context) {
     final count = particles.length;
-    if (count == 0 || (context.isShadowPass && !_castsShadows)) {
+    if (count == 0) {
+      return;
+    }
+    final material = this.material;
+    final shadowPass = context.isShadowPass;
+    final prepass = context.isDepthNormalPass;
+    // Billboards are never drawn into shadow maps nor into the depth-normal
+    // prepass: those passes read each instance as a model matrix, which the
+    // instances of billboards are not. Mesh particles are, when a material
+    // of their mesh casts shadows (or, for the prepass, is opaque).
+    if ((shadowPass || prepass) && material != null) {
+      return;
+    }
+    if (shadowPass && !_castsShadows) {
+      return;
+    }
+    if (prepass && !_hasOpaqueSurface) {
       return;
     }
     RenderProfile.lap(RenderPhase.recording);
@@ -1195,7 +1211,6 @@ class ParticleSystem3D({
     if (sorted) {
       _sortBackToFront(context.view);
     }
-    final material = this.material;
     if (material != null) {
       _writeBillboards(sorted, material);
     } else {
@@ -1228,7 +1243,21 @@ class ParticleSystem3D({
         );
       }
     }
-    context.device.stats.particles += count;
+    if (!shadowPass && !prepass) {
+      context.device.stats.particles += count;
+    }
+  }
+
+  /// Whether one of the materials of the mesh is opaque, so that the
+  /// depth-normal prepass draws the particles.
+  bool get _hasOpaqueSurface {
+    final mesh = this.mesh!;
+    for (var i = 0; i < mesh.surfaceCount; i++) {
+      if (!mesh.surfaces.elementAt(i).material.renderState.translucent) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /// Whether the material, or one of the materials of the mesh, casts

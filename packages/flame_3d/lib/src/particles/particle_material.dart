@@ -63,10 +63,14 @@ enum ParticleSprite() {
 /// images Flutter decodes do; give them a [TextureSampler.linear] sampler for
 /// smooth particles.
 ///
-/// Soft particles (fading where a particle meets geometry) are not
-/// supported: they need the depth of the scene in the fragment shader, and
-/// Flutter GPU can neither sample a depth attachment in the pass that uses
-/// it nor sample the depth of its depth-stencil textures.
+/// Soft particles fade where a particle meets opaque geometry: see
+/// [softDepthFade], which needs the depth-normal prepass.
+///
+/// Billboards cast no shadows and are not drawn into the depth-normal
+/// prepass, whatever the [renderState] ([castsShadows] is always `false`):
+/// those passes draw every instance with a model matrix, and the instances
+/// of billboards are not model matrices. Use mesh particles
+/// ([ParticleSystem3D.mesh]) for particles that cast shadows.
 ///
 /// Not available on the web yet: there are no WebGPU shaders for it.
 /// {@endtemplate}
@@ -102,8 +106,12 @@ class ParticleMaterial({
   /// particles drawn with an opaque [renderState].
   var double alphaCutoff = 0,
 
-  /// Clip-depth fade span (`> 0` smoothly fades particles near opaque scene
-  /// geometry when `World3D.depthPrepassEnabled` is active).
+  /// How far in front of opaque geometry a particle fades out (soft
+  /// particles), `0` for no fade: a span of the depth of the camera's clip
+  /// space, from `0` at its near plane to `1` at its far plane, so `1` world
+  /// unit is `1 / (far - near)` for an orthographic or affine projection.
+  /// It needs the depth-normal prepass (`World3D.depthPrepassEnabled`, or a
+  /// post effect that uses it); without it particles do not fade.
   var double softDepthFade = 0,
   RenderState renderState = RenderState.premultipliedAlphaBlend,
 }) extends Material {
@@ -176,6 +184,20 @@ class ParticleMaterial({
       state.translucent &&
       (state.blend == BlendState.alpha ||
           state.blend == BlendState.premultipliedAlpha);
+
+  /// Always `false`: billboards cannot be drawn into shadow maps, whose
+  /// shaders read every instance as a model matrix. Setting it to `true`
+  /// fails an assertion.
+  @override
+  bool get castsShadows => false;
+
+  @override
+  set castsShadows(bool? value) {
+    assert(
+      value != true,
+      'ParticleMaterial billboards cannot cast shadows; use mesh particles.',
+    );
+  }
 
   final Vector3 _right = Vector3.zero();
   final Vector3 _up = Vector3.zero();

@@ -160,8 +160,8 @@ The material's `renderState` decides how particles blend:
 - `RenderState.additive`: added to what is behind, depth tested, without depth writes and without
   sorting. Added light covers nothing, so in a `Scene3DComponent` glowing particles over an empty
   part of the scene add their color to the 2D art behind the layer;
-- an opaque state with an `alphaCutoff`: cut-out particles that write depth. Set their material's
-  `castsShadows` to `false` (see [Shadows](#shadows)).
+- an opaque state with an `alphaCutoff`: cut-out particles that write depth. Like every billboard,
+  they cast no shadows (see [Shadows](#shadows)).
 
 `ParticleSystem3D.sort` overrides the sorting. The whole system is ordered among the other
 translucent draws of the scene by the center of its bounds.
@@ -286,20 +286,20 @@ coins.burst(14, at: Vector3(3.5, 4.5, 0.2));
 
 ## Shadows
 
-Particles are drawn into a shadow map (see [Shadows](shadows.md)) only when their material, or one
-of their mesh's materials, casts shadows, and when the system's `castsShadows` is `true`:
+Only mesh particles are drawn into a shadow map (see [Shadows](shadows.md)): when one of their
+mesh's materials casts shadows, and the system's `castsShadows` is `true`, they cast the shadows of
+their meshes.
 
-- mesh particles with an opaque material cast the shadows of their meshes;
-- translucent and additive billboards cast none, and their system skips the shadow pass, sorting
-  nothing;
-- cut-out billboards (an opaque `renderState`) cast shadows by default, but the shadow pass reads
-  their per-instance data as if it were a model matrix: they cast no shadow where they are, and may
-  cast one elsewhere. With the depth-normal prepass turned on, they write wrong depths into it for
-  the same reason. Turn their material's `castsShadows` off.
+Billboards cast no shadows, whatever their `renderState`: the shadow pass draws every instance
+with a model matrix, and the instance data of a billboard is not one. `ParticleMaterial.castsShadows`
+is always `false` (setting it to `true` fails an assertion), and a system of billboards skips the
+shadow pass, sorting nothing. For the same reason billboards are not drawn into the depth-normal
+prepass, even cut-out ones (an opaque `renderState`), so SSAO and depth of field do not see them;
+mesh particles with an opaque material are drawn into it.
 
 A system with mesh particles counts as a moving caster on every frame it has live particles, so it
 keeps `ShadowSettings.cacheWhenStatic` from reusing the shadow map. The system writes its instance
-data again for each map it casts into: once per cascade, or once per tile of the shadow atlas.
+data again for each map it casts into: once per tile of the shadow atlas.
 
 
 ## Bounds and statistics
@@ -309,9 +309,9 @@ they move. The system is culled with it like any `Object3D`, and it is part of t
 world, so a `Scene3DComponent` renders the part of the screen its particles cover.
 
 `RenderStats.particles` (in `FlameGame3D.renderStats` and `Scene3DComponent.renderStats`) adds the
-particles of a system every time it records its draw: once for the main pass, and once more for
-each shadow map it casts into and for the depth-normal prepass when it is on. The draws themselves
-are counted in `drawCalls` and `instances`.
+particles of a system once per frame, when it records its draw for the main pass; the shadow maps
+and the depth-normal prepass do not count them again. The draws themselves are counted in
+`drawCalls` and `instances`, in every pass.
 
 
 ## Ribbons and strokes
@@ -467,7 +467,9 @@ class Swarm extends Object3D {
   ordered as if it stood at the world origin.
 - In a shadow pass, the draw is skipped when the material casts no shadows. The shadow pass and the
   depth-normal prepass draw the surface with their own shaders, which read the four columns as a
-  model matrix: data laid out otherwise must not cast shadows nor write depth.
+  model matrix: data laid out otherwise must not cast shadows nor write depth. Skip the call when
+  `context.isShadowPass` or `context.isDepthNormalPass` is `true`, as particle systems of
+  billboards and stroke batches do.
 
 The vertex shader of `ParticleMaterial` reads the columns as: the center and the width
 (`instanceModel0`), the velocity and the height (`instanceModel1`), the rotation, the flipbook
@@ -482,8 +484,8 @@ opacity at the start (`instanceModel2`) and at the end (`instanceModel3`), the c
 
 - CPU, each frame: the simulation of every live particle (once per step, up to eight steps), a
   radix sort of the particles of blended billboards, and the writing of 24 floats per particle for
-  each pass the system is drawn in (the main pass, each shadow map it casts into, and the
-  depth-normal prepass). A trail rebuilds its segments; a stroke batch only when it changes.
+  each pass the system is drawn in (the main pass, and for mesh particles each shadow map they cast
+  into and the depth-normal prepass). A trail rebuilds its segments; a stroke batch only when it changes.
 - GPU: one draw call per system (per surface of the mesh for mesh particles), per stroke batch and
   per trail, with 96 bytes of instance data uploaded per particle or segment. Billboards are two
   triangles each, drawn without depth writes when blended, so overlapping large particles cost fill
@@ -505,9 +507,7 @@ tests, not on an OpenGL ES device.
 - Particles collide with their ground plane only, not with meshes.
 - Soft particles fade wrongly behind large triangles under a perspective camera, and their fade is
   given in normalized depth rather than in scene units (see [Soft particles](#soft-particles)).
-- Cut-out billboards cast wrong shadows and write wrong depths into the depth-normal prepass; turn
-  their `castsShadows` off.
-- `RenderStats.particles` counts a system once per pass it is drawn in, not once per frame.
+- Billboards cast no shadows and are not in the depth-normal prepass, cut-out ones included.
 - `RibbonTrail3D` ignores its own position when its parent is a `Component3D`; ribbons do not widen
   at sharp turns.
 - `ParticleMaterial` and `RibbonMaterial3D` are not available on the web.
