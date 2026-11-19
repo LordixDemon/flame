@@ -138,7 +138,10 @@ A world counts its changes in two numbers:
 - `castersVersion` increases with the subset of these changes that can move shadows: all of them
   except colors, `instanceData`, intensities and other light fields that move no shadow, the world
   settings, `lightMask`, showing or hiding a light, reflection probes, and the changes of
-  components that cast no shadows.
+  components that cast no shadows. A move counts only when it can move a shadow: when the
+  component has 3D children, is an `Object3D` that casts shadows, or is a light whose source has
+  `shadows`. A moving point light without shadows, collider or sound leaves a cached static shadow
+  map alone.
 
 Assigning a value equal to the current one is not a change: writing an unchanged position,
 rotation or scale (the transform's vectors notify only when their value changes), color or light

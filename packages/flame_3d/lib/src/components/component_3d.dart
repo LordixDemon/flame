@@ -466,7 +466,31 @@ abstract class Component3D({
     } else {
       _boundsOwner?._changed(this);
     }
-    _cachedWorld?.markSceneDirty();
+    _cachedWorld?.markSceneDirty(shadows: _moveCanMoveShadows());
+  }
+
+  /// Whether moving this component can change a shadow map: when it has
+  /// 3D children (they move along), when it is an [Object3D] that casts
+  /// shadows, or when it is a light whose source casts shadows (their maps
+  /// are rendered from the light). A moving collider, sound, or light
+  /// without shadows leaves a cached static shadow map alone.
+  bool _moveCanMoveShadows() {
+    if (_childComponents.isNotEmpty) {
+      return true;
+    }
+    final self = this;
+    if (self is Object3D) {
+      return self.castsShadows;
+    }
+    if (self is LightComponent) {
+      return switch (self.source) {
+        final DirectionalLight light => light.shadows != null,
+        final SpotLight light => light.shadows != null,
+        final PointLight light => light.shadows != null,
+        _ => false,
+      };
+    }
+    return false;
   }
 
   static LightSource _cloneLightSource(LightSource source) {

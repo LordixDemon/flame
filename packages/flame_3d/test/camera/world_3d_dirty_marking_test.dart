@@ -274,6 +274,62 @@ void main() {
       expect(versions.take(), _nothing);
     });
 
+    testWithGame(
+      'moves reach the casters only when they can move shadows',
+      _game,
+      (
+        game,
+      ) async {
+        final world = game.world as World3D;
+        final lamp = LightComponent.point(position: Vector3(1, 1, 1));
+        final spot = LightComponent.spot(shadows: ShadowSettings());
+        final sun = LightComponent.directional(shadows: ShadowSettings());
+        final caster = MeshComponent(mesh: CuboidMesh(size: Vector3.all(1)));
+        final nonCaster = MeshComponent(
+          mesh: CuboidMesh(size: Vector3.all(1)),
+          castsShadows: false,
+        );
+        final probe = Group3D();
+        final parent = Group3D(
+          children: [MeshComponent(mesh: CuboidMesh(size: Vector3.all(1)))],
+        );
+        await world.ensureAddAll([
+          lamp,
+          spot,
+          sun,
+          caster,
+          nonCaster,
+          probe,
+          parent,
+        ]);
+        final versions = _Versions(world);
+
+        lamp.position.x = 2;
+        expect(versions.take(), _sceneOnly);
+        nonCaster.position.x = 2;
+        expect(versions.take(), _sceneOnly);
+        probe.position.x = 2;
+        expect(versions.take(), _sceneOnly);
+
+        spot.position.x = 2;
+        expect(versions.take(), _sceneAndShadows);
+        sun.rotation.setAxisAngle(Vector3(1, 0, 0), 0.3);
+        expect(versions.take(), _sceneAndShadows);
+        caster.position.x = 2;
+        expect(versions.take(), _sceneAndShadows);
+        parent.position.x = 2;
+        expect(versions.take(), _sceneAndShadows);
+
+        // Rewriting the same positions every update costs nothing.
+        for (var i = 0; i < 3; i++) {
+          lamp.position.setValues(2, 1, 1);
+          spot.position.x = 2;
+          caster.position = Vector3(2, 0, 0);
+        }
+        expect(versions.take(), _nothing);
+      },
+    );
+
     testWithGame('writing an unchanged transform marks nothing', _game, (
       game,
     ) async {
