@@ -6,8 +6,9 @@
 // into the 8-bit red, green and blue channels when `packDepth` is 1 (see
 // RenderContext3D.shadowCasterBlock). flame_3d/shadows.glsl decodes both.
 
-// The depth from 0 (the near plane of the light) to 1 (its far plane).
-in float fragDepth;
+// The light's clip-space depth and w: their ratio is the depth from 0 (the
+// near plane of the light) to 1 (its far plane).
+in vec2 fragClipDepth;
 
 out vec4 outColor;
 
@@ -26,10 +27,11 @@ vec4 packShadowDepth(float depth) {
 }
 
 void main() {
+  float depth = fragClipDepth.x / fragClipDepth.y;
   if (caster.packDepth > 0.5) {
-    outColor = packShadowDepth(fragDepth);
+    outColor = packShadowDepth(depth);
   } else {
-    outColor = vec4(fragDepth, 0.0, 0.0, 1.0);
+    outColor = vec4(depth, 0.0, 0.0, 1.0);
   }
 }
 
