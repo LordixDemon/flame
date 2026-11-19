@@ -709,12 +709,15 @@ final unit = MeshComponent(
 
 `packAccentAndFade(index, fade: f)` returns `(index + 1) * 4 + f`, and throws for an index outside
 `0..15`. A `w` below `2` is a plain fade, as before; a `w` of `2` or more is decoded in the fragment
-shader into the palette index and the fade. An index beyond the palette's length falls back to
+shader into the palette index and the fade (values from `2` to `4`, which `packAccentAndFade` does
+not produce, decode as a full fade). An index beyond the palette's length falls back to
 `accentColor`. The palette replaces `accentColor` only on the vertices of the accent mask, so it
-does nothing on surfaces in the standard layout (which have no accent mask), and it works the same
-for skinned surfaces, translucent materials and every vertex shader variant. The shadow pass does
-not read the instance data: an object faded with `w` still casts its full shadow if its material
-casts shadows.
+does nothing on surfaces in the standard layout (which have no accent mask: vary those with the
+instance color, which tints them whole). It works the same for skinned surfaces in the stylized
+layout (each skinned draw picks its own accent) and for translucent materials, where instances
+with different accents and fades still share one draw call. The shadow pass does not read the
+instance data: a packed accent leaves the shadow unchanged, and an object faded with `w` still
+casts its full shadow if its material casts shadows.
 
 `StylizedMaterial(translucent: true)` blends its premultiplied output over what is behind it
 (`StylizedMaterial.translucentRenderState`: depth tested, without depth writes), and its draws are
