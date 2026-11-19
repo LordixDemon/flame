@@ -267,6 +267,22 @@ class StylizedMaterial({
   /// Added to the hemisphere light's sky color for the rim light.
   var Color rimColor = const Color(0xFF000000),
 
+  /// Optional palette of up to [maxRimPaletteSize] (`8`) rim highlight
+  /// colors that individual instances select with [packPaletteAndFade]
+  /// (`rim:`) in `instanceData.w`, without breaking instanced batching: the
+  /// selected color is added on the edges facing away from the viewer, as
+  /// `pow(1 - n·v, rimPalettePower) * color.rgb * color.a *
+  /// rimPaletteStrength`, on every vertex (no mask) and on top of the
+  /// material's own rim light. See "Rim highlight palette".
+  List<Color> rimPalette = const [],
+
+  /// The exponent of the [rimPalette] rims: higher is thinner.
+  var double rimPalettePower = 2,
+
+  /// Multiplies the [rimPalette] rims (whose colors' alpha is their own
+  /// strength), so that they can be brighter than `1`.
+  var double rimPaletteStrength = 1,
+
   /// An optional MatCap texture, a sheen added where vertices have more gloss
   /// than [matCapThreshold] (and no more than [gemThreshold] when there is a
   /// [gemMatCapTexture]).
@@ -424,9 +440,16 @@ class StylizedMaterial({
   /// colors).
   final List<Color> accentPalette = List.of(accentPalette);
 
+  /// Maximum number of entries supported in [rimPalette].
+  static const int maxRimPaletteSize = 8;
+
+  /// Optional per-instance rim highlight palette (up to [maxRimPaletteSize]
+  /// colors), see [packPaletteAndFade].
+  final List<Color> rimPalette = List.of(rimPalette);
+
   /// Encodes an [accentIndex] (`0` to `maxAccentPaletteSize - 1`) into
   /// [accentPalette] together with a [fade] in `[0, 1]` as a single float for
-  /// `instanceData.w`.
+  /// `instanceData.w`: `packPaletteAndFade(accent: accentIndex, fade: fade)`.
   ///
   /// Plain `instanceData.w` values below `2.0` keep their ordinary `[0, 1]`
   /// fade meaning and use [accentColor].
@@ -437,7 +460,37 @@ class StylizedMaterial({
       maxAccentPaletteSize - 1,
       'accentIndex',
     );
-    return (accentIndex + 1) * 4.0 + fade.clamp(0.0, 1.0);
+    return packPaletteAndFade(accent: accentIndex, fade: fade);
+  }
+
+  /// Encodes an index into [accentPalette] ([accent], `0` to
+  /// `maxAccentPaletteSize - 1`), an index into [rimPalette] ([rim], `0` to
+  /// `maxRimPaletteSize - 1`) and a [fade] in `[0, 1]` as a single float for
+  /// `instanceData.w`.
+  ///
+  /// The value is `(a + 17 * r) * 4 + fade`, with `a` and `r` the indices
+  /// plus one, or `0` for none: without a [rim] it is [packAccentAndFade]'s,
+  /// and without either it is the plain fade. An object without an [accent]
+  /// keeps [accentColor]; one without a [rim] gets no palette rim.
+  static double packPaletteAndFade({int? accent, int? rim, double fade = 0}) {
+    if (accent != null) {
+      RangeError.checkValueInInterval(
+        accent,
+        0,
+        maxAccentPaletteSize - 1,
+        'accent',
+      );
+    }
+    if (rim != null) {
+      RangeError.checkValueInInterval(rim, 0, maxRimPaletteSize - 1, 'rim');
+    }
+    final f = fade.clamp(0.0, 1.0);
+    if (accent == null && rim == null) {
+      return f;
+    }
+    final slot =
+        (accent == null ? 0 : accent + 1) + 17 * (rim == null ? 0 : rim + 1);
+    return slot * 4.0 + f;
   }
 
   /// The weight of each channel of the sky fill, see [skyFill].
@@ -560,6 +613,19 @@ class StylizedMaterial({
       ..setFloat('accentPaletteCount', paletteCount.toDouble());
     for (var i = 0; i < paletteCount; i++) {
       matBlock.setColor('accentPalette', accentPalette[i], index: i);
+    }
+    // Fragment shaders of before (in tests) have no rim palette.
+    if (matBlock.hasMember('rimPaletteCount')) {
+      final rimCount = rimPalette.length < maxRimPaletteSize
+          ? rimPalette.length
+          : maxRimPaletteSize;
+      matBlock
+        ..setFloat('rimPaletteCount', rimCount.toDouble())
+        ..setFloat('rimPalettePower', rimPalettePower)
+        ..setFloat('rimPaletteStrength', rimPaletteStrength);
+      for (var i = 0; i < rimCount; i++) {
+        matBlock.setColor('rimPalette', rimPalette[i], index: i);
+      }
     }
     fragmentShader
       ..setTexture('matCapTexture', matCap ?? Texture.empty)

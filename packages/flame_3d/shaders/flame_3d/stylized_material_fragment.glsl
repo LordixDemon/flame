@@ -4,8 +4,8 @@
 // The fragment stage of StylizedMaterial: vertex-colored surfaces lit by the
 // hemisphere, directional and point lights of the scene, with per-vertex
 // masks for the instance tint, the accent color, emission and gloss, and per
-// instance data for an emissive boost, a highlight, wind strength, fade and an
-// optional per-instance accent palette index.
+// instance data for an emissive boost, a highlight, wind strength, fade and
+// optional per-instance accent and rim palette indices.
 
 in vec3 fragPosition;
 in vec3 fragNormal;
@@ -24,6 +24,8 @@ uniform Material {
   vec4 albedoColor;
   vec4 accentColor;
   vec4 accentPalette[16];
+  // rgb: color, a: strength.
+  vec4 rimPalette[8];
   vec4 emissiveColor;
   vec4 emissiveBoostColor;
   vec4 ambientBase;
@@ -48,6 +50,9 @@ uniform Material {
   float saturation;
   float accentPaletteCount;
   float ditherFade;
+  float rimPaletteCount;
+  float rimPalettePower;
+  float rimPaletteStrength;
 } material;
 
 // The camera, the lights, the shadows and the fog of the render pass, filled
@@ -124,19 +129,23 @@ void main() {
   float highlight = fragInstanceData.y;
 
   // `instanceData.w` is plain fade in `[0, 1]` unless packed via
-  // `StylizedMaterial.packAccentAndFade`: `(accentIndex + 1) * 4.0 + fade`
-  // (`w >= 2.0`), which lets instances pick from `material.accentPalette`
-  // without breaking instanced batching.
+  // `StylizedMaterial.packPaletteAndFade`: `(a + 17 * r) * 4.0 + fade`
+  // (`w >= 2.0`), with `a` and `r` the accent and rim palette indices plus
+  // one (`0`: none), which lets instances pick from `material.accentPalette`
+  // and `material.rimPalette` without breaking instanced batching.
   float rawW = fragInstanceData.w;
   vec3 instanceAccent = material.accentColor.rgb;
+  int rimIndex = -1;
   float fade;
   if (rawW >= 2.0) {
     int slot = int(floor(rawW * 0.25));
     fade = clamp(rawW - float(slot) * 4.0, 0.0, 1.0);
-    int idx = slot - 1;
+    int rimSlot = slot / 17;
+    int idx = slot - rimSlot * 17 - 1;
     if (idx >= 0 && idx < int(material.accentPaletteCount) && idx < 16) {
       instanceAccent = material.accentPalette[idx].rgb;
     }
+    rimIndex = rimSlot - 1;
   } else {
     fade = clamp(rawW, 0.0, 1.0);
   }
@@ -268,6 +277,12 @@ void main() {
     min(surface, vec3(1.0)) * reflected,
     material.matCapMetallic
   ) + vec3(specular) + highlight * material.highlightColor.rgb;
+  if (rimIndex >= 0 && rimIndex < int(material.rimPaletteCount) &&
+      rimIndex < 8) {
+    vec4 rimEntry = material.rimPalette[rimIndex];
+    color += pow(1.0 - ndotv, material.rimPalettePower) * rimEntry.rgb *
+      (rimEntry.a * material.rimPaletteStrength);
+  }
   vec3 emissive = mix(
     material.emissiveColor.rgb,
     material.emissiveBoostColor.rgb,

@@ -423,7 +423,7 @@ see [Rendering](rendering.md#per-instance-color-and-data)):
 | `x`       | emissive boost: added to `emissiveStrength`, moves the glow color (see below) |
 | `y`       | highlight: `highlightColor` times it is added to every vertex                 |
 | `z`       | wind strength, added to 1: `-1` stills the object's wind, `1` doubles it      |
-| `w`       | fade: the object's opacity is `1 - w`; or an accent index, see below          |
+| `w`       | fade: the object's opacity is `1 - w`; or packed accent and rim indices       |
 
 From `0` to `1`, the emissive boost also moves the color of the glowing vertices from
 `emissiveColor` towards `emissiveBoostColor` (by default the same color).
@@ -732,6 +732,42 @@ screen-door pattern instead, without sorting.
 With `World3D.oitMode` set to `OitMode3D.weightedBlended`, translucent draws are not drawn with
 their own material: translucent `StylizedMaterial` surfaces in its own layout disappear, see the
 [Limitations](#limitations).
+
+
+### Rim highlight palette
+
+Objects that differ only in a highlight state (hovered, selected, the color of their owner) can
+keep one material and one instanced draw: give the material a `rimPalette` (up to
+`StylizedMaterial.maxRimPaletteSize`, 8 colors; more are ignored) and pick an entry per instance
+with `StylizedMaterial.packPaletteAndFade`, which packs it into `instanceData.w` together with an
+accent index and a fade:
+
+```dart
+final pieces = StylizedMaterial(
+  accentPalette: const [Color(0xFFE53935), Color(0xFF1E88E5)],
+  rimPalette: const [
+    Color(0xFFFFFFFF), // hovered: white
+    Color(0xFFFFC107), // selected: amber
+  ],
+);
+// A red piece, selected:
+piece.instanceData.w = StylizedMaterial.packPaletteAndFade(accent: 0, rim: 1);
+// The same piece, no longer selected:
+piece.instanceData.w = StylizedMaterial.packPaletteAndFade(accent: 0);
+```
+
+The chosen entry adds `pow(1 - n·v, rimPalettePower) * color.rgb * color.a * rimPaletteStrength`
+to the shaded color, on top of the material's own rim light (`rimStrength`, `rimColor`), before
+the emissive glow and the color grade; the alpha of each color is its strength, and
+`rimPaletteStrength` (`1`) scales them all past `1` when needed. `rimPalettePower` (`2`) is broader
+than the default `rimPower` (`3`). The rim needs no mask: it shows on every vertex, also on
+surfaces in the standard layout (glTF models), skinned or not, and it fades with the object.
+
+`packPaletteAndFade(accent: a, rim: r, fade: f)` returns `(a' + 17 * r') * 4 + f`, with `a'` and
+`r'` the indices plus one, or `0` for none; without a rim it equals
+`packAccentAndFade(a, fade: f)`, without either it is `f`. It throws for indices outside the
+palettes' ranges, and an index beyond the length of a palette selects nothing (the `accentColor`,
+no rim). The shadow pass does not read the instance data, so rims do not change shadows.
 
 ```{note}
 `StylizedMaterial` is not available on the web yet: creating one there throws an
