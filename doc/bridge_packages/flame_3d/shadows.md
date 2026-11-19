@@ -21,9 +21,8 @@ How a frame renders them depends on which of these lights cast shadows in the pa
 | A point light                        | Atlas      |
 | Two or more of these lights          | Atlas      |
 
-Every receiver reads both paths: `StylizedMaterial`, `SpatialMaterial`, `ShadowCatcherMaterial`,
-`WaterMaterial` (the sun and point lights; it has no spot lights) and custom shaders that include
-`flame_3d/shadows.glsl`.
+Every receiver reads both paths, for every kind of light: `StylizedMaterial`, `SpatialMaterial`,
+`ShadowCatcherMaterial`, `WaterMaterial` and custom shaders that include `flame_3d/shadows.glsl`.
 
 
 ## Casting shadows
@@ -83,8 +82,9 @@ shadow is lit by the ambient light alone, and with a colored one the shadows are
 cartoon look tints shadows rather than blackening them.
 
 `ShadowCatcherMaterial` is for invisible surfaces that show only the shadows falling on them, see
-[Shadows on 2D art](#shadows-on-2d-art). `WaterMaterial` receives the sun's shadow (see
-[Materials and Textures](materials.md)). `UnlitMaterial` does not receive shadows.
+[Shadows on 2D art](#shadows-on-2d-art). `WaterMaterial` receives the shadows of its sun, spot and
+point lights (see [Materials and Textures](materials.md)). `UnlitMaterial` does not receive
+shadows.
 
 Custom shaders receive shadows by including `flame_3d/shadows.glsl` and listing its `Shadows`
 block and `shadowMap` sampler (`RenderContext3D.shadowsBlock` and
@@ -445,8 +445,8 @@ its `depthBias`, `normalBias` and `softness`, and is cached with `cacheWhenStati
 in texels of the map at about a third of the range, so they are coarse near the light. Two spot
 lights, or a spot light and a sun or a point light, use the atlas; there, each spot light's tile is
 filtered with its `softness` and pushed along the normal by 1.2 texels, whatever its `normalBias`.
-Every receiver but `WaterMaterial` (which has no spot lights) receives them on both paths. The map
-stores the depth of every pixel of the casters, so large triangles do not shadow themselves.
+Every receiver receives them on both paths. The map stores the depth of every pixel of the casters,
+so large triangles do not shadow themselves.
 
 Only the first two spot lights with settings among the four spot lights the pass lights with cast
 shadows: the first four lit ones, or with more than four the four picked by their distance to the
@@ -586,8 +586,6 @@ passes with them (2 of them in the shadow pass).
 
 These are the parts of shadows that are not finished at this point:
 
-- `WaterMaterial` has no spot lights, so it receives the shadows of the sun and of the point light
-  only.
 - The key of `cacheWhenStatic` does not see changes that do not change `World3D.castersVersion`
   (see [Static shadows](#static-shadows)).
 - With an orthographic camera, or `ShadowFit.scene`, the inner cascades are fixed in the middle of

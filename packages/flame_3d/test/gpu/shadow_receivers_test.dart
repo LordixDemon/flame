@@ -473,6 +473,56 @@ void main() {
     }
   });
 
+  for (final (name, lamp) in [('spot', spot), ('point', point)]) {
+    testGpuEngine(
+      'WaterMaterial receives $name shadows from the atlas',
+      () async {
+        WaterMaterial water() => WaterMaterial(
+          upAxis: Vector3(0, 0, 1),
+          waveAmplitude: 0,
+          rippleStrength: 0,
+          opacity: 1,
+        );
+        final cube = CuboidMesh(
+          size: Vector3.all(0.4),
+          material: StylizedMaterial(),
+        );
+        Future<Frame> render({required bool shadows}) {
+          final ground = _ground(water());
+          return renderWithShadows(
+            lights: [
+              _hemisphere(),
+              sunFromTheRight(),
+              lamp(shadows: shadows),
+            ],
+            draw: (context) {
+              context.drawSurface(ground);
+              if (context.isShadowPass) {
+                context.drawMesh(
+                  cube,
+                  transform: Matrix4.translation(_cubeCenter),
+                );
+              }
+            },
+          );
+        }
+
+        final shadowed = await render(shadows: true);
+        final unshadowed = await render(shadows: false);
+      // The lamp's shadow, on the water.
+        expect(
+          _at(unshadowed, 0.35, 0).$3 - _at(shadowed, 0.35, 0).$3,
+          greaterThan(8),
+        );
+        // Lit by the lamp in both.
+        expect(
+          _at(shadowed, 0.75, 0).$3,
+          closeTo(_at(unshadowed, 0.75, 0).$3, 2),
+        );
+      },
+    );
+  }
+
   group('ShadowCatcherMaterial.nearestOnly', () {
     // A ground of catchers at z = -5 and a slab of catchers from x 0 to 0.6
     // at z = -4.3, under the cube: the cube's shadow falls on the slab from

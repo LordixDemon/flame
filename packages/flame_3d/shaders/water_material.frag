@@ -190,10 +190,12 @@ void main() {
         : 1.0 / (dist * dist);
     vec4 col = scene.SpotLights_colors[i];
     float e = col.a * atten * angular;
-    directDiffuse += col.rgb * (e * max(dot(n, l), 0.0));
+    vec3 spotSh = spotShadowFactor(i, fragPosition, geomN);
+    directDiffuse += col.rgb * (e * max(dot(n, l), 0.0)) * spotSh;
     float ndoth = max(dot(n, normalize(l + v)), 0.0);
     specLight += col.rgb *
-      (pow(ndoth, waterMat.params.w) * waterMat.params2.y * spotDir.w * e);
+      (pow(ndoth, waterMat.params.w) * waterMat.params2.y * spotDir.w * e) *
+      spotSh;
   }
 
   vec3 ndc = fragClipPos.xyz / max(fragClipPos.w, 1e-6);
