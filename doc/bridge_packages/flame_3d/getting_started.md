@@ -83,12 +83,16 @@ final fallback = Canvas3DFallbackComponent(
 );
 ```
 
-It draws `MeshComponent`s, the instances of `InstancedGroup3D`s and the nodes of `ModelComponent`s,
-as flat triangles sorted back to front by their average depth. Each vertex gets the base color of
-its material (`albedoColor` of `SpatialMaterial`, `StylizedMaterial` or `UnlitMaterial`) times its
-vertex color times the component's `color`, shaded by one directional light (the last
-`DirectionalLight` of the world with an explicit `direction`) and one ambient light. It does not
-draw:
+It draws the `MeshComponent`s, the instances of `InstancedGroup3D`s and the nodes of
+`ModelComponent`s that a pass of its camera would draw (visible ones whose `cameraMask` shares a bit
+with the camera's), as flat triangles sorted back to front by their average depth. Each vertex gets
+the base color of its material (`albedoColor` of `SpatialMaterial`, `StylizedMaterial` or
+`UnlitMaterial`, white for other materials) times its vertex color times the component's `color`,
+shaded by the last `DirectionalLight` of the world (its `direction`, or its component's rotation)
+and the last ambient light. Surfaces of `ShadowCatcherMaterial` and `OutlineMaterial` are skipped.
+The projection is the camera's: its view (custom or not), and its custom projection or the one built
+from `fovY` or `orthographicHeight`, `near` and `far` for the component's aspect ratio, keeping what
+lies between the near and the far plane. It does not draw:
 
 - textures, specular light, shadows, fog, light colors, point, spot and hemisphere lights;
 - particles, billboards, text, decals, the skybox, `LodMeshComponent`s and custom `Object3D`s;
@@ -96,11 +100,8 @@ draw:
 - post-processing, MSAA or a depth buffer: triangles that intersect are sorted as wholes, and a
   triangle that crosses the near plane is dropped.
 
-It also ignores `visible` and `cameraMask`, draws surfaces of any other material (including
-`ShadowCatcherMaterial`) as opaque white, uses only the camera's `position`, `target`, `up`, `fovY`,
-`orthographicHeight` (10 when `null`), `near` and `far` (not its custom matrices), and allocates
-buffers in proportion to the triangle count on every frame. It suits previews and simple scenes, not
-a full game.
+Its buffers grow with the triangle count and are kept from frame to frame; a frame allocates only
+the `Vertices` it draws. It suits previews and simple scenes, not a full game.
 
 
 ## Project setup
