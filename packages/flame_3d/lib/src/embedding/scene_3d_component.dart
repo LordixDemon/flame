@@ -100,8 +100,9 @@ class Scene3DComponent({
   PostProcessSettings? get postProcess => world.postProcess;
   set postProcess(PostProcessSettings? value) => world.postProcess = value;
 
-  /// Whether this layer renders un-tonemapped linear HDR into `rgbaFloat16`
-  /// before post-processing (forwards to `world.hdrEnabled`).
+  /// Whether this layer renders HDR (extended-range sRGB in `rgbaFloat16`
+  /// where the backend renders into float textures) before post-processing
+  /// (forwards to `world.hdrEnabled`).
   bool get hdrEnabled => world.hdrEnabled;
   set hdrEnabled(bool value) => world.hdrEnabled = value;
 

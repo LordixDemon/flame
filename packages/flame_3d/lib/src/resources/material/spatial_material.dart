@@ -9,7 +9,7 @@ const bool _kIsWeb = identical(0, 0.0);
 
 /// {@template spatial_material}
 /// Physically-based Cook-Torrance metallic-roughness material supporting full
-/// glTF 2.0 maps ([albedoTexture], MikkTSpace or cotangent [normalTexture],
+/// glTF 2.0 maps ([albedoTexture], vertex-tangent or cotangent [normalTexture],
 /// [metallicRoughnessTexture], [occlusionTexture], [emissiveTexture], UV1
 /// [lightmapTexture]), Karis Split-Sum `BrdfLut3D` + prefiltered roughness-mip
 /// + Kulla–Conty multi-scattering IBL reflections ([environmentTexture],
@@ -17,7 +17,8 @@ const bool _kIsWeb = identical(0, 0.0);
 /// `LightProbeGrid3D`), [clearcoat], dielectric [transmission] / [ior]
 /// Grab-Pass refraction, unified 4-Cascade CSM + Multi-Spot + Dual-Paraboloid
 /// Point shadows, [FogSettings], `MASK` [alphaCutoff], `4x4` Bayer
-/// [ditherFade], and linear HDR output.
+/// [ditherFade], and HDR output (extended-range sRGB, see
+/// `World3D.hdrEnabled`).
 /// {@endtemplate}
 class SpatialMaterial({
   /// Base color multiplier (`rgb` and `a`).
@@ -26,7 +27,7 @@ class SpatialMaterial({
   var double metallic = 0.8,
   var double roughness = 0.6,
 
-  /// Optional tangent-space RGB normal map (uses MikkTSpace `vertexTangent`
+  /// Optional tangent-space RGB normal map (uses `vertexTangent`
   /// when present in the surface's `VertexLayout`, or a screen-space cotangent
   /// frame otherwise).
   var Texture? normalTexture,

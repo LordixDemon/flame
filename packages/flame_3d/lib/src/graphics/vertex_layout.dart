@@ -84,7 +84,7 @@ class VertexLayout(List<VertexAttribute> attributes) {
     VertexAttribute('vertexWeights', 4),
   ]);
 
-  /// Extended 26-float PBR layout adding orthogonalized `vec4` MikkTSpace
+  /// Extended 26-float PBR layout adding orthogonalized `vec4`
   /// [tangentAttribute] (`xyz` tangent, `w` bitangent sign) and secondary UV
   /// [texCoord1Attribute] (`TEXCOORD_1` for lightmaps and baked AO).
   static final VertexLayout pbrStandard = VertexLayout(const [

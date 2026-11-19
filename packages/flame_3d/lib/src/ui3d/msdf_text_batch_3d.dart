@@ -44,8 +44,9 @@ class MsdfGlyphMetrics3D({
   required final double height,
 });
 
-/// Procedurally rasterized multi-channel signed-distance glyph atlas for crisp,
-/// resolution-independent 3D text rendering.
+/// Procedurally rasterized signed-distance glyph atlas of a built-in stroke
+/// font (printable ASCII). The GPU texture holds a single distance value per
+/// texel, in alpha; the three-channel distances stay on the CPU.
 class MsdfFontAtlas3D._({
   required final int cellSize,
   required final int atlasWidth,

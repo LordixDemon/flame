@@ -8,9 +8,11 @@ import 'package:flame_3d/game.dart' show NotifyingQuaternion, NotifyingVector3;
 import 'package:flame_3d/physics.dart' show PhysicsWorld3D;
 import 'package:meta/meta.dart';
 
-/// Cross-platform deterministic 32-bit-safe SplitMix/Xoshiro128** PRNG used by
-/// `RigidBody3D` and `PhysicsWorld3D` so identical integer seeds produce
-/// bit-identical 3D dice throws across native VM, AOT, and Web targets.
+/// Deterministic 32-bit-safe SplitMix/Xoshiro128** PRNG used by
+/// `RigidBody3D` and `PhysicsWorld3D`. Its integer sequence is the same on
+/// every platform; the simulation that consumes it uses the platform's `sin`
+/// and `cos`, so identical seeds reproduce a throw bit for bit only on the
+/// same platform and build.
 class SeededRng3D(int seed) {
   /// Initializes the generator state from `seed`.
   this {

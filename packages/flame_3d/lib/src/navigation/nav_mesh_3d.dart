@@ -182,11 +182,12 @@ class NavPathSegment3D({
   bool get isOffMeshLink => offMeshLink != null;
 }
 
-/// 3D triangle navigation mesh built from any [Mesh] or Recast voxel
-/// `NavMeshBuilder3D`, featuring spatial vertex welding, portal adjacency,
-/// weighted polygon area costs, `O(log P)` dynamic [NavMeshObstacle3D]
-/// blocking (of whole polygons), [OffMeshLink3D] connections, A* search, and
-/// 3D Simple Stupid Funnel string-pulling with elevation draping.
+/// 3D triangle navigation mesh built from any [Mesh] or by the voxel
+/// `NavMeshBuilder3D` (the first stages of Recast only), featuring spatial
+/// vertex welding, portal adjacency, weighted polygon area costs, `O(log P)`
+/// dynamic [NavMeshObstacle3D] blocking (of whole polygons), [OffMeshLink3D]
+/// connections, A* search, and 3D Simple Stupid Funnel string-pulling with
+/// elevation draping.
 ///
 /// Queries are not re-entrant: the search state is kept on the mesh and
 /// reused by every query (it is allocated once, `O(P)`).
