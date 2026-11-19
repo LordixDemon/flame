@@ -73,7 +73,6 @@ world.addAll([lamp, sun]);
 // Any time, for instance every frame:
 (lamp.source as PointLight).intensity = 4 + math.sin(time * 9);
 sun.rotation.setAxisAngle(Vector3(1, 0, 0), -math.pi / 4);
-world.markSceneDirty(shadows: false); // only for retained Scene3DComponents
 ```
 
 Colors are used as they are (their alpha is ignored), intensities multiply them, distances are in
@@ -515,12 +514,21 @@ the end of its fragment shader, after lighting:
 
 Every pass writes the current values of the lights, the fog and the probes, so changing them takes
 effect on the next frame. Adding or removing a light, changing its component's transform or its
-`lightMask`, setting `World3D.fog`, `World3D.lightProbeGrid` or adding a reflection probe volume
-also marks the scene changed (`World3D.sceneVersion`), which wakes an idle-throttled game loop and
-invalidates a `Scene3DComponent` that caches its image (`Scene3DCacheMode.retained`).
+`lightMask`, assigning a field of a light source (`color`, `intensity`, `range`, `direction`, the
+cone, `shadows`, a hemisphere light's colors and `up`), setting `World3D.fog`,
+`World3D.lightProbeGrid` or adding a reflection probe volume also marks the scene changed
+(`World3D.sceneVersion`), which wakes an idle-throttled game loop and invalidates a
+`Scene3DComponent` that caches its image (`Scene3DCacheMode.retained`). Changes that cannot move a
+shadow (a color, an intensity) keep a static shadow map cached with
+`ShadowSettings.cacheWhenStatic`; those that can (a direction, a range, a cone, shadow settings)
+render it again.
 
-Changing the fields of a light source (intensity, color, range, cone, shadows), of the current
-`FogSettings`, of a probe or of a material does not: the engine cannot see these changes, and a
+A light source cannot see a change made in place, inside one of its objects: a direction vector
+changed with `setValues`, or a field of its `ShadowSettings`. Call `source.markChanged()` after such
+a change (`markChanged(shadows: false)` when it cannot move a shadow).
+
+The engine cannot see changes to the fields of the current `FogSettings`, of a probe
+(`LightProbeGrid3D.setProbeSh9`, an `EnvironmentProbe3D`'s `intensity`) or of a material: a
 retained `Scene3DComponent` keeps showing the old image until something else changes. Call
 `world.markSceneDirty(shadows: false)` (or `Scene3DComponent.markDirty()`) after such changes, see
 [Embedding](embedding.md#retained-layer-caching) and
@@ -588,4 +596,6 @@ material's slots (see [Materials](materials.md#custom-shaders)):
   of each probe's spherical harmonics (see [Light probe grids](#light-probe-grids)).
 - `StylizedMaterial` and `WaterMaterial` receive wrong shadows when the scene uses the multi-light
   shadow atlas (see [Materials](materials.md#limitations)).
-- Changing a light source's fields does not invalidate a retained `Scene3DComponent` image.
+- Changing the fields of the current `FogSettings` or of a probe in place does not invalidate a
+  retained `Scene3DComponent` image (see
+  [Changing lights at run time](#changing-lights-at-run-time)).
