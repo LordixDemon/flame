@@ -711,8 +711,7 @@ childless skinned-mesh nodes), which for a full rig with fingers and twist bones
 capsules: list the bones you want. The bodies use `collisionLayer` `2` and collide with everything
 (`collisionMask`). The component itself does not move: after a fall, recovery blends the character
 back to where the component is. Move the component to the ragdoll's hips yourself before recovering
-if it should get up where it fell. `dispose()` removes the bodies, the joints and the modifier. In
-`kinematicFollow` the controller allocates a few vectors per body per update.
+if it should get up where it fell. `dispose()` removes the bodies, the joints and the modifier.
 
 
 ## Crowds
@@ -772,8 +771,9 @@ Per animated `ModelComponent` and frame:
 
 - Pose evaluation, when the animation changed: every node is sampled (a binary search per channel)
   and composed with its parent, then every joint matrix is computed. For a 2D blend space the
-  sample weights are recomputed for every node (`O(samples^2)` each). Evaluation uses preallocated
-  matrices; bone modifiers and ragdolls allocate a few small objects per update.
+  sample weights are recomputed for every node (`O(samples^2)` each). Evaluation, the bone
+  modifiers and ragdolls use preallocated scratch objects. Starting a crossfade from a running one
+  or from a blend space takes a pooled state (no allocation once the pool is warm).
 - Morph targets: CPU morphing and a vertex buffer upload per morphed surface (see
   [Geometry and Scene Queries](geometry.md#morph-targets)).
 - Draws: one draw call per surface; skinned surfaces are never batched, unskinned ones batch with

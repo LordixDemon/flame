@@ -97,6 +97,10 @@ class SkinnedCrowdBatch3D({
 
   late Float32List _transforms;
   late Float32List _colorsAndData;
+
+  /// The color of each agent as a [Color], kept beside [_colorsAndData] so
+  /// skinned draws pass it without creating one per agent and frame.
+  final List<Color> _colors = [];
   late Float64List _clocks;
   late Float64List _speeds;
   late Int32List _clipIndices;
@@ -277,6 +281,11 @@ class SkinnedCrowdBatch3D({
       _writeAgentMatrix(idx, _composeScratch);
     }
 
+    if (idx < _colors.length) {
+      _colors[idx] = color;
+    } else {
+      _colors.add(color);
+    }
     final cb = idx * 8;
     _colorsAndData
       ..[cb] = color.r
@@ -340,6 +349,7 @@ class SkinnedCrowdBatch3D({
 
     final cb = index * 8;
     if (color != null) {
+      _colors[index] = color;
       _colorsAndData
         ..[cb] = color.r
         ..[cb + 1] = color.g
@@ -374,6 +384,7 @@ class SkinnedCrowdBatch3D({
         _colorsAndData,
         last * 8,
       );
+      _colors[index] = _colors[last];
       _clocks[index] = _clocks[last];
       _speeds[index] = _speeds[last];
       _clipIndices[index] = _clipIndices[last];
@@ -573,12 +584,7 @@ class SkinnedCrowdBatch3D({
           ..multiply(pose.combinedTransform);
 
         final cb = i * 8;
-        final color = Color.from(
-          alpha: _colorsAndData[cb + 3],
-          red: _colorsAndData[cb],
-          green: _colorsAndData[cb + 1],
-          blue: _colorsAndData[cb + 2],
-        );
+        final color = _colors[i];
         _instanceDataScratch.setValues(
           _colorsAndData[cb + 4],
           _colorsAndData[cb + 5],

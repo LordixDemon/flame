@@ -710,8 +710,8 @@ class FootPlacementIk3D({
     _pMid.setValues(mm.storage[12], mm.storage[13], mm.storage[14]);
     _pTip.setValues(tm.storage[12], tm.storage[13], tm.storage[14]);
 
-    final lenA = (_pMid - _pRoot).length;
-    final lenB = (_pTip - _pMid).length;
+    final lenA = _pMid.distanceTo(_pRoot);
+    final lenB = _pTip.distanceTo(_pMid);
     if (lenA < 1e-5 || lenB < 1e-5) {
       return;
     }
@@ -747,9 +747,9 @@ class FootPlacementIk3D({
     _poleProj.addScaled(_dirTarget, -proj);
     if (_poleProj.length2 < 1e-8) {
       if (_dirTarget.x.abs() < 0.9) {
-        _poleProj.setFrom(_dirTarget.cross(Vector3(1, 0, 0)));
+        _dirTarget.crossInto(_unitXAxis, _poleProj);
       } else {
-        _poleProj.setFrom(_dirTarget.cross(Vector3(0, 1, 0)));
+        _dirTarget.crossInto(_unitYAxis, _poleProj);
       }
     }
     _poleProj.normalize();
@@ -910,6 +910,10 @@ class RagdollController3D({
   final Vector3 _scratchPos = Vector3.zero();
   final Quaternion _scratchRot = Quaternion.identity();
   final Vector3 _scratchScale = Vector3.all(1.0);
+  final Quaternion _bodyRot = Quaternion.identity();
+  final Quaternion _deltaRot = Quaternion.identity();
+  final Vector3 _bodyPos = Vector3.zero();
+  final Vector3 _offsetWorld = Vector3.zero();
   final Vector3 _animLocalT = Vector3.zero();
   final Quaternion _animLocalR = Quaternion.identity();
   final Vector3 _animLocalS = Vector3.all(1.0);
@@ -1148,10 +1152,14 @@ class RagdollController3D({
 
       // `Q_body = Q_bone * Q_boneToCapsule`
       // `P_body = P_bone + Q_bone * localMidOffset`
-      final bodyRot = (_scratchRot * limb.boneToCapsuleRot)..normalize();
-      final offsetWorld = limb.localMidOffset.clone();
+      final bodyRot = _bodyRot;
+      _multiplyQuatInto(_scratchRot, limb.boneToCapsuleRot, bodyRot);
+      bodyRot.normalize();
+      final offsetWorld = _offsetWorld..setFrom(limb.localMidOffset);
       _rotateByQuat(_scratchRot, offsetWorld);
-      final bodyPos = _scratchPos + offsetWorld;
+      final bodyPos = _bodyPos
+        ..setFrom(_scratchPos)
+        ..add(offsetWorld);
 
       if (limb.hasPrev && dt > 1e-6) {
         final invDt = 1.0 / dt;
@@ -1160,9 +1168,11 @@ class RagdollController3D({
           (bodyPos.y - limb.prevBodyPos.y) * invDt,
           (bodyPos.z - limb.prevBodyPos.z) * invDt,
         );
-        var dq = bodyRot * limb.prevBodyRot.conjugated();
+        final dq = _deltaRot..setFrom(limb.prevBodyRot);
+        dq.conjugate();
+        _multiplyQuatInto(bodyRot, dq, dq);
         if (dq.w < 0.0) {
-          dq = dq.scaled(-1.0);
+          dq.scale(-1.0);
         }
         final sinHalf = math.sqrt(dq.x * dq.x + dq.y * dq.y + dq.z * dq.z);
         if (sinHalf > 1e-6) {
@@ -1206,10 +1216,14 @@ class RagdollController3D({
       // Recover world bone transform from simulated capsule body:
       // `Q_boneWorld = Q_body * Q_capsuleToBone`
       // `P_boneWorld = P_body - Q_boneWorld * localMidOffset`
-      final boneRotWorld = (bodyRot * limb.capsuleToBoneRot)..normalize();
-      final midWorld = limb.localMidOffset.clone();
+      final boneRotWorld = _bodyRot;
+      _multiplyQuatInto(bodyRot, limb.capsuleToBoneRot, boneRotWorld);
+      boneRotWorld.normalize();
+      final midWorld = _offsetWorld..setFrom(limb.localMidOffset);
       _rotateByQuat(boneRotWorld, midWorld);
-      final bonePosWorld = bodyPos - midWorld;
+      final bonePosWorld = _bodyPos
+        ..setFrom(bodyPos)
+        ..sub(midWorld);
 
       _boneWorld.setFromTranslationRotationScale(
         bonePosWorld,
@@ -1460,6 +1474,8 @@ class RagdollController3D({
     return configs;
   }
 
+  static final Matrix3 _rotationScratch = Matrix3.zero();
+
   static void _extractWorldPosRot(
     Matrix4 m,
     Vector3 posOut,
@@ -1494,13 +1510,33 @@ class RagdollController3D({
       c2y /= l2;
       c2z /= l2;
     }
-    final rMat = Matrix3(c0x, c0y, c0z, c1x, c1y, c1z, c2x, c2y, c2z);
+    final rMat = _rotationScratch
+      ..setValues(c0x, c0y, c0z, c1x, c1y, c1z, c2x, c2y, c2z);
     rotOut.setFromRotation(rMat);
     if (rotOut.length2 > 1e-12) {
       rotOut.normalize();
     } else {
       rotOut.setValues(0.0, 0.0, 0.0, 1.0);
     }
+  }
+
+  /// Writes `a * b` into [out] (which may be [a] or [b]) without allocating,
+  /// with the convention of `Quaternion.operator *`.
+  static void _multiplyQuatInto(Quaternion a, Quaternion b, Quaternion out) {
+    final x = a.x;
+    final y = a.y;
+    final z = a.z;
+    final w = a.w;
+    final ox = b.x;
+    final oy = b.y;
+    final oz = b.z;
+    final ow = b.w;
+    out.setValues(
+      w * ox + x * ow + y * oz - z * oy,
+      w * oy + y * ow + z * ox - x * oz,
+      w * oz + z * ow + x * oy - y * ox,
+      w * ow - x * ox - y * oy - z * oz,
+    );
   }
 
   static void _rotateByQuat(Quaternion q, Vector3 v) {
@@ -1533,3 +1569,6 @@ class RagdollController3D({
     );
   }
 }
+
+final Vector3 _unitXAxis = Vector3(1, 0, 0);
+final Vector3 _unitYAxis = Vector3(0, 1, 0);

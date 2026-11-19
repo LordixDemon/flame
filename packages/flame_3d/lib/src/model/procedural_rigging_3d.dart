@@ -36,7 +36,8 @@ abstract class BoneModifier3D() {
       ..setFrom(nextCombined)
       ..multiply(_invOld);
 
-    final affected = <int>{modifiedNodeIndex};
+    final affected = _affected..clear();
+    affected.add(modifiedNodeIndex);
     for (final processed in workspace.orderedNodes) {
       final pIdx = processed.node.parentNodeIndex;
       if (pIdx != null && affected.contains(pIdx)) {
@@ -62,7 +63,7 @@ abstract class BoneModifier3D() {
     m[12] = 0;
     m[13] = 0;
     m[14] = 0;
-    _rotMat.setFromTranslationRotation(Vector3.zero(), deltaRot);
+    _rotMat.setFromTranslationRotation(_zero, deltaRot);
     _temp
       ..setFrom(_rotMat)
       ..multiply(combined);
@@ -93,14 +94,10 @@ abstract class BoneModifier3D() {
     }
     angle *= blendWeight.clamp(0.0, 1.0);
 
-    _axis.setFrom(fromDir.cross(toDir));
+    fromDir.crossInto(toDir, _axis);
     if (_axis.length2 < 1e-10) {
       // Anti-parallel fallback axis.
-      if (fromDir.x.abs() < 0.9) {
-        _axis.setFrom(fromDir.cross(Vector3(1, 0, 0)));
-      } else {
-        _axis.setFrom(fromDir.cross(Vector3(0, 1, 0)));
-      }
+      fromDir.crossInto(fromDir.x.abs() < 0.9 ? _unitX : _unitY, _axis);
     }
     _axis.normalize();
     out.setAxisAngle(_axis, angle);
@@ -108,6 +105,10 @@ abstract class BoneModifier3D() {
 
   static final Matrix4 _invOld = Matrix4.identity();
   static final Matrix4 _delta = Matrix4.identity();
+  static final Set<int> _affected = {};
+  static final Vector3 _zero = Vector3.zero();
+  static final Vector3 _unitX = Vector3(1, 0, 0);
+  static final Vector3 _unitY = Vector3(0, 1, 0);
   static final Matrix4 _rotMat = Matrix4.identity();
   static final Matrix4 _temp = Matrix4.identity();
   static final Vector3 _axis = Vector3.zero();
@@ -279,7 +280,7 @@ class SpringBone3D({
     _restTipWorld.setFrom(_restTipModel);
     worldMatrix.transform3(_restTipWorld);
 
-    final rodLen = (_restTipWorld - _pivotWorld).length;
+    final rodLen = _restTipWorld.distanceTo(_pivotWorld);
     if (rodLen < 1e-6) {
       return;
     }
@@ -443,8 +444,8 @@ class TwoBoneIkConstraint3D({
     _pMid.setValues(mm.storage[12], mm.storage[13], mm.storage[14]);
     _pTip.setValues(tm.storage[12], tm.storage[13], tm.storage[14]);
 
-    final lenA = (_pMid - _pRoot).length;
-    final lenB = (_pTip - _pMid).length;
+    final lenA = _pMid.distanceTo(_pRoot);
+    final lenB = _pTip.distanceTo(_pMid);
     if (lenA < 1e-5 || lenB < 1e-5) {
       return;
     }
@@ -483,9 +484,9 @@ class TwoBoneIkConstraint3D({
     if (_poleProj.length2 < 1e-8) {
       // Fallback perpendicular to `dirTarget`.
       if (_dirTarget.x.abs() < 0.9) {
-        _poleProj.setFrom(_dirTarget.cross(Vector3(1, 0, 0)));
+        _dirTarget.crossInto(BoneModifier3D._unitX, _poleProj);
       } else {
-        _poleProj.setFrom(_dirTarget.cross(Vector3(0, 1, 0)));
+        _dirTarget.crossInto(BoneModifier3D._unitY, _poleProj);
       }
     }
     _poleProj.normalize();
