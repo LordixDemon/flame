@@ -677,6 +677,14 @@ class ModelComponent({
       castsShadows: castsShadows,
     );
     copy._hiddenNodes.addAll(_hiddenNodes);
+    // Morph weights are per component: the copy gets its own surfaces with
+    // the same weights.
+    for (final node in _morphNodes) {
+      final weights = _appliedMorphWeights[node.nodeIndex];
+      if (weights != null) {
+        copy._applyMorphWeights(node, weights, weights.length);
+      }
+    }
     return copy;
   }
 

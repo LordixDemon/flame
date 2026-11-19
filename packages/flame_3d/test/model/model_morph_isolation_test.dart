@@ -103,5 +103,16 @@ void main() {
       expect(_surfaceHeight(b), closeTo(0, 1e-5));
       expect(_sharedHeight(model), 0);
     });
+
+    test('a clone keeps the morph weights in surfaces of its own', () {
+      final model = _morphModel();
+      final original = ModelComponent(model: model)..setMorphWeights([1]);
+      final copy = original.clone() as ModelComponent;
+
+      expect(_surfaceHeight(copy), closeTo(5, 1e-5));
+      copy.setMorphWeights([0.2]);
+      expect(_surfaceHeight(copy), closeTo(1, 1e-5));
+      expect(_surfaceHeight(original), closeTo(5, 1e-5));
+    });
   });
 }
