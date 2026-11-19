@@ -1,6 +1,8 @@
 import 'dart:typed_data';
 
 import 'package:flame_3d/physics.dart';
+import 'package:flame_3d/src/physics/physics_world_3d.dart'
+    show WarmContactRecord3D;
 
 /// Binary deterministic rollback snapshot codec for [PhysicsWorld3D] (with
 /// `'P3DS'` magic header and IEEE 802.3 CRC32 integrity verification).
@@ -18,10 +20,15 @@ abstract final class PhysicsSnapshot3D._() {
   static const int magicByte3 = 0x53; // 'S'
 
   /// Current binary wire format version.
-  static const int formatVersion = 1;
+  ///
+  /// Version `2` stores warm-start impulses per contact point by body index
+  /// and feature id, so a snapshot restores into an identically built world.
+  /// Version `1` snapshots are still read, without their warm-start entries.
+  static const int formatVersion = 2;
 
   static const int _bodyRecordBytes = 168;
-  static const int _warmRecordBytes = 28;
+  static const int _warmRecordBytesV1 = 28;
+  static const int _warmRecordBytes = 16 + 8 * WarmContactRecord3D.valueCount;
   static const int _wheelStateBytes = 49;
 
   static final Uint32List _crcTable = _buildCrc32Table();
@@ -80,7 +87,7 @@ abstract final class PhysicsSnapshot3D._() {
   /// into a compact binary [Uint8List] with `'P3DS'` magic and CRC32 footer.
   static Uint8List encodeWorld(PhysicsWorld3D world, {SeededRng3D? rng}) {
     final bodies = world.collectBodies();
-    final warm = world.exportWarmStartEntries();
+    final warm = world.exportWarmStartRecords(bodies);
     final buoyancies = world.buoyancyVolumes;
     final vehicles = world.vehicles;
 
@@ -249,19 +256,25 @@ abstract final class PhysicsSnapshot3D._() {
       o += 8;
     }
 
-    // Warm-start contact impulse cache.
+    // Warm-start contact impulses: body indices into the records above.
     bd.setUint32(o, warm.length, Endian.little);
     o += 4;
     for (var i = 0; i < warm.length; i++) {
-      final (key, jn, jt1, jt2) = warm[i];
-      bd.setUint32(o, key, Endian.little);
+      final r = warm[i];
+      bd.setUint32(o, r.bodyA, Endian.little);
       o += 4;
-      bd.setFloat64(o, jn, Endian.little);
-      o += 8;
-      bd.setFloat64(o, jt1, Endian.little);
-      o += 8;
-      bd.setFloat64(o, jt2, Endian.little);
-      o += 8;
+      bd.setUint32(o, r.bodyB, Endian.little);
+      o += 4;
+      bd.setUint16(o, r.manifold, Endian.little);
+      o += 2;
+      bd.setUint16(o, 0, Endian.little);
+      o += 2;
+      bd.setInt32(o, r.featureId, Endian.little);
+      o += 4;
+      for (var k = 0; k < WarmContactRecord3D.valueCount; k++) {
+        bd.setFloat64(o, r.values[k], Endian.little);
+        o += 8;
+      }
     }
 
     // Optional SeededRng3D state.
@@ -291,10 +304,19 @@ abstract final class PhysicsSnapshot3D._() {
   /// Decodes [bytes] (verifying `'P3DS'` magic and CRC32) and restores [world]
   /// (and optional [rng]) to the exact bit-identical state captured by
   /// [encodeWorld].
+  ///
+  /// Body records are matched to the world's bodies by creation id when the
+  /// world holds every recorded body (the world the snapshot came from), by
+  /// position in creation order when it holds none of them and as many bodies
+  /// (an identically built world), and otherwise by creation id only:
+  /// records of bodies that are gone are skipped and bodies added since keep
+  /// their state. [matchByOrder] forces matching by position, for a world
+  /// rebuilt in another process (creation ids restart with each process).
   static void restoreWorld(
     PhysicsWorld3D world,
     Uint8List bytes, {
     SeededRng3D? rng,
+    bool matchByOrder = false,
   }) {
     _validateHeaderAndCrc(bytes);
     final bd = ByteData.sublistView(bytes);
@@ -373,6 +395,7 @@ abstract final class PhysicsSnapshot3D._() {
       }
     }
 
+    final version = bd.getUint16(4, Endian.little);
     final bodies = world.collectBodies();
     final bodyById = <int, RigidBody3D>{
       for (final b in bodies) b.deterministicId: b,
@@ -380,6 +403,21 @@ abstract final class PhysicsSnapshot3D._() {
 
     final bodyCount = bd.getUint32(o, Endian.little);
     o += 4;
+    final bodyStart = o;
+    // Map records to bodies (see the dartdoc above).
+    var knownIds = 0;
+    for (var i = 0; i < bodyCount; i++) {
+      final detId = bd.getUint32(
+        bodyStart + i * _bodyRecordBytes,
+        Endian.little,
+      );
+      if (bodyById.containsKey(detId)) {
+        knownIds++;
+      }
+    }
+    final byIndex =
+        bodies.length == bodyCount && (matchByOrder || knownIds == 0);
+    final recordBodies = List<RigidBody3D?>.filled(bodyCount, null);
     for (var i = 0; i < bodyCount; i++) {
       final detId = bd.getUint32(o, Endian.little);
       o += 4;
@@ -436,7 +474,8 @@ abstract final class PhysicsSnapshot3D._() {
       final tz = bd.getFloat64(o, Endian.little);
       o += 8;
 
-      final b = bodyById[detId] ?? (i < bodies.length ? bodies[i] : null);
+      final b = byIndex ? bodies[i] : bodyById[detId];
+      recordBodies[i] = b;
       if (b != null) {
         if (typeIdx >= 0 && typeIdx < BodyType3D.values.length) {
           b.bodyType = BodyType3D.values[typeIdx];
@@ -457,17 +496,31 @@ abstract final class PhysicsSnapshot3D._() {
 
     final warmCount = bd.getUint32(o, Endian.little);
     o += 4;
-    final warmEntries = <(int, double, double, double)>[];
-    for (var i = 0; i < warmCount; i++) {
-      final key = bd.getUint32(o, Endian.little);
-      o += 4;
-      final jn = bd.getFloat64(o, Endian.little);
-      o += 8;
-      final jt1 = bd.getFloat64(o, Endian.little);
-      o += 8;
-      final jt2 = bd.getFloat64(o, Endian.little);
-      o += 8;
-      warmEntries.add((key, jn, jt1, jt2));
+    final warmRecords = <WarmContactRecord3D>[];
+    if (version == 1) {
+      // Version 1 keyed impulses by a hash of process-wide ids: unusable.
+      o += warmCount * _warmRecordBytesV1;
+    } else {
+      for (var i = 0; i < warmCount; i++) {
+        final bodyA = bd.getUint32(o, Endian.little);
+        final bodyB = bd.getUint32(o + 4, Endian.little);
+        final manifold = bd.getUint16(o + 8, Endian.little);
+        final featureId = bd.getInt32(o + 12, Endian.little);
+        final values = Float64List(WarmContactRecord3D.valueCount);
+        for (var k = 0; k < values.length; k++) {
+          values[k] = bd.getFloat64(o + 16 + k * 8, Endian.little);
+        }
+        warmRecords.add(
+          WarmContactRecord3D(
+            bodyA: bodyA,
+            bodyB: bodyB,
+            manifold: manifold,
+            featureId: featureId,
+            values: values,
+          ),
+        );
+        o += _warmRecordBytes;
+      }
     }
 
     final hasRng = bd.getUint8(o) != 0;
@@ -487,7 +540,8 @@ abstract final class PhysicsSnapshot3D._() {
     world.restoreInternalState(
       tick: tick,
       accumulator: accumulator,
-      warmEntries: warmEntries,
+      bodies: recordBodies,
+      warmRecords: warmRecords,
     );
   }
 
@@ -507,10 +561,10 @@ abstract final class PhysicsSnapshot3D._() {
     }
     final bd = ByteData.sublistView(bytes);
     final version = bd.getUint16(4, Endian.little);
-    if (version != formatVersion) {
+    if (version < 1 || version > formatVersion) {
       throw FormatException(
         'Unsupported PhysicsSnapshot3D version: $version '
-        '(expected $formatVersion).',
+        '(expected 1 to $formatVersion).',
       );
     }
     final expectedCrc = bd.getUint32(bytes.length - 4, Endian.little);

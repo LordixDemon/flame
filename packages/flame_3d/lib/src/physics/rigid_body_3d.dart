@@ -1,9 +1,12 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flame_3d/collisions.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/game.dart' show NotifyingQuaternion, NotifyingVector3;
+import 'package:flame_3d/physics.dart' show PhysicsWorld3D;
+import 'package:meta/meta.dart';
 
 /// Cross-platform deterministic 32-bit-safe SplitMix/Xoshiro128** PRNG used by
 /// `RigidBody3D` and `PhysicsWorld3D` so identical integer seeds produce
@@ -197,6 +200,11 @@ class RigidBody3D({
   /// Accumulated sleep timer in seconds managed by `PhysicsWorld3D`.
   double sleepTimer = 0.0;
 
+  /// Scratch index used by `PhysicsWorld3D` while grouping bodies into
+  /// sleeping islands (`-1` outside of that pass).
+  @internal
+  int solverIndex = -1;
+
   double _inverseMass = 0.0;
   final Vector3 _localInvInertia = Vector3.zero();
   final Matrix3 _localInvInertiaTensor = Matrix3.zero();
@@ -283,8 +291,82 @@ class RigidBody3D({
 
   /// Computes and returns the current world-space AABB of [shape].
   Aabb3 get bodyWorldAabb {
+    _recordAabbPose();
     _shape.computeWorldAabb(bodyWorldMatrix, _worldAabb);
     return _worldAabb;
+  }
+
+  /// The AABB computed by the last [bodyWorldAabb] or
+  /// [refreshCachedWorldAabb] call.
+  @internal
+  Aabb3 get cachedWorldAabb => _worldAabb;
+
+  /// Recomputes the AABB only when the host's pose, scale or the shape changed
+  /// since it was last computed; returns whether it was recomputed.
+  @internal
+  bool refreshCachedWorldAabb() {
+    final host = hostComponent;
+    final p = host.position;
+    final q = host.rotation;
+    final s = host.scale;
+    final c = _aabbPose;
+    if (identical(_aabbShape, _shape) &&
+        c[0] == p.x &&
+        c[1] == p.y &&
+        c[2] == p.z &&
+        c[3] == q.x &&
+        c[4] == q.y &&
+        c[5] == q.z &&
+        c[6] == q.w &&
+        c[7] == s.x &&
+        c[8] == s.y &&
+        c[9] == s.z) {
+      return false;
+    }
+    bodyWorldAabb;
+    return true;
+  }
+
+  void _recordAabbPose() {
+    final host = hostComponent;
+    final p = host.position;
+    final q = host.rotation;
+    final s = host.scale;
+    _aabbPose
+      ..[0] = p.x
+      ..[1] = p.y
+      ..[2] = p.z
+      ..[3] = q.x
+      ..[4] = q.y
+      ..[5] = q.z
+      ..[6] = q.w
+      ..[7] = s.x
+      ..[8] = s.y
+      ..[9] = s.z;
+    _aabbShape = _shape;
+  }
+
+  final Float64List _aabbPose = Float64List(10);
+  Shape3D? _aabbShape;
+
+  /// The physics worlds this body registered with when it mounted (those whose
+  /// parent is one of its ancestors).
+  @internal
+  final List<PhysicsWorld3D> enclosingPhysicsWorlds = [];
+
+  @override
+  void onMount() {
+    super.onMount();
+    PhysicsWorld3D.attachToEnclosingWorlds(this);
+  }
+
+  @override
+  void onRemove() {
+    for (var i = 0; i < enclosingPhysicsWorlds.length; i++) {
+      enclosingPhysicsWorlds[i].unregisterMountedComponent(this);
+    }
+    enclosingPhysicsWorlds.clear();
+    super.onRemove();
   }
 
   /// Recomputes [worldInvInertia] (`R * I_local^-1 * R^T`) from the current
@@ -582,7 +664,6 @@ class RigidBody3D({
       updateWorldInertia();
       return;
     }
-
 
     _hasOffDiagonalInertia = false;
     final diag = _shape.computeLocalInertiaDiagonal(_mass);

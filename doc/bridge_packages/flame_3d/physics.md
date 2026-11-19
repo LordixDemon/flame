@@ -12,11 +12,11 @@
   floating boats and raycast vehicles live here. `XpbdCloth3D` and `XpbdRope3D` are separate
   position-based simulations in the same library.
 
-Rigid bodies collide only with other rigid bodies. A `Collider3D` floor does not hold up a
-`RigidBody3D` (see [Rigid bodies and colliders](#rigid-bodies-and-colliders)). The only places
-where the two systems meet are continuous collision detection and vehicle wheel rays, which also
-test the colliders of a `CollisionSystem3D`, and cloth, which can be pushed out of sphere and
-capsule colliders.
+The two systems meet in a few places. The static, non-trigger colliders of a `CollisionSystem3D`
+are solid for rigid bodies: they hold them up and stop them, continuous collision detection
+included (see [Rigid bodies and colliders](#rigid-bodies-and-colliders)). Vehicle wheel rays hit
+colliders, and cloth can be pushed out of sphere and capsule colliders. Other colliders (triggers
+and colliders that are not static) only report overlaps.
 
 Everything on this page runs on the CPU in Dart. Nothing needs a GPU backend, so it behaves the
 same on Android, iOS, macOS, the web and in `flutter test` (with or without
@@ -35,10 +35,12 @@ same on Android, iOS, macOS, the web and in `flutter test` (with or without
   `contacts` hold one to four `ContactPoint3D` pairs.
 - Shapes are defined in the local space of their owner, centered on its origin. The owner's scale
   scales the collision shape, but not the mass properties of a rigid body.
-- The solver tolerances are absolute: a resting body sinks about 1.4 mm into what it rests on (the
-  allowed penetration, the slop, is 4 mm), and the sleep thresholds are in `m/s` and `rad/s`. They
-  suit objects from about 0.1 m to a few meters. A box with a 1.6 cm side sinks by 9 % of its size,
-  so model small objects at a larger scale (the dice in the tests are 0.5 m cubes).
+- The solver tolerances are absolute. Penetration up to `linearSlop` (a `PhysicsWorld3D`
+  parameter, default `0.004`) is left alone, so a resting body sinks up to 4 mm into what it rests
+  on (1.4 mm on average for thrown 0.5 m dice), and the sleep thresholds are in `m/s` and `rad/s`.
+  The defaults suit objects from about 0.1 m to a few meters. For small objects, lower
+  `linearSlop` and the sleep thresholds in proportion, or model them at a larger scale (the dice in
+  the tests are 0.5 m).
 
 
 ## Collision shapes
@@ -369,11 +371,13 @@ void addDice(World3D world) {
 }
 ```
 
-Every step the `PhysicsWorld3D` collects the `RigidBody3D` components found anywhere under its
-parent, plus those registered with `addBody`, sorted by creation order. Without a parent, or with
-`autoStep: false`, nothing steps on its own: call `step(dt)`. A world used outside a scene (a
-headless simulation, a test, a preview of a dice throw) is built with `autoStep: false` and
-`addBody`.
+The `PhysicsWorld3D` simulates the bodies registered with `addBody` and every `RigidBody3D` mounted
+anywhere under its parent, in creation order. Mounted bodies register themselves when they mount
+and leave when they are removed, so the world does not search its parent's subtree on every step
+(a world whose parent is not mounted, in a component tree built without a game, does). Without a
+parent, or with `autoStep: false`, nothing steps on its own: call `step(dt)`. A world used outside
+a scene (a headless simulation, a test, a preview of a dice throw) is built with `autoStep: false`
+and `addBody`.
 
 
 ### How bodies drive Object3D transforms
@@ -464,55 +468,80 @@ result depends only on the number of steps, not on the frame rate. Each `step(dt
 1. applies registered buoyancy volumes;
 2. adds gravity and the accumulated forces to the velocities of awake dynamic bodies, then damping;
 3. applies registered vehicles;
-4. updates the broadphase tree and builds a contact constraint for every touching pair with at
-   least one awake dynamic body;
-5. prepares joints and warm-starts resting contacts with 85 % of last step's impulses;
-6. runs `velocityIterations` (default `8`) sequential-impulse passes over joints and contacts:
-   normal impulses, then two-direction Coulomb friction within `friction * normal impulse`;
+4. updates the broadphase tree (for the bodies that moved) and builds a contact constraint for
+   every touching pair with an awake dynamic body or a moving kinematic body, and for every awake
+   dynamic body touching a solid collider;
+5. prepares joints and warm-starts resting contacts: each contact point starts from last step's
+   impulse of the point with the same `featureId`, else of the nearest point within
+   `2 * linearSlop`;
+6. runs `velocityIterations` (default `8`) sequential-impulse passes over joints and contacts: for
+   each contact, two-direction Coulomb friction within `friction * normal impulse`, then the
+   normal impulses (a point that is still apart may close its gap during the step, no more);
 7. moves the bodies (with continuous collision detection where enabled);
-8. runs `positionIterations` (default `3`) passes that push penetrating contacts and drifting
-   joints apart directly, without adding velocity;
-9. updates the sleep timers.
+8. runs `positionIterations` (default `3`) passes that push contacts deeper than `linearSlop` and
+   drifting joints apart directly, without adding velocity;
+9. updates the sleep timers and puts islands to sleep, see [Sleeping](#sleeping).
 
 All of these settings (`gravity`, `fixedTimeStep`, `maxSubSteps`, `velocityIterations`,
-`positionIterations`, the sleep thresholds, `restitutionVelocityThreshold`, `autoStep`) can be
-changed between steps. `tick` counts the steps.
+`positionIterations`, the sleep thresholds, `restitutionVelocityThreshold`, `linearSlop`,
+`autoStep`) can be changed between steps. `tick` counts the steps.
 
 
 ### Sleeping
 
-A dynamic body whose speed stays below `sleepLinearThreshold` (`0.08 m/s`) and whose angular speed
-stays below `sleepAngularThreshold` (`0.12 rad/s`) for `sleepTimeThreshold` (`0.5 s`) falls
-asleep: its velocities are zeroed and it costs almost nothing until woken. Each body sleeps on its
-own; there are no islands. A body wakes when a force or impulse is applied, when a joint partner is
-awake, or when an awake dynamic body hits it faster than twice `sleepLinearThreshold` or more than
-1 cm deep. `canSleep: false` keeps a body awake, `putToSleep()` and `wakeUp()` force the state.
+A dynamic body counts its time below `sleepLinearThreshold` (`0.08 m/s`) and
+`sleepAngularThreshold` (`0.12 rad/s`). Bodies that touch through contacts or joints form an
+island, which falls asleep when every body in it has been that slow for `sleepTimeThreshold`
+(`0.5 s`): their velocities are zeroed and they cost almost nothing until woken. A body with
+`canSleep: false` keeps its island awake; `putToSleep()` and `wakeUp()` force the state.
 
-Kinematic bodies do not wake sleeping bodies: a moving platform passes through a sleeping crate.
-Wake the bodies in its path yourself, or give them `canSleep: false`.
+A sleeping body is immovable for the bodies still awake around it. It wakes when a force or
+impulse is applied, when a joint partner is awake, when a moving kinematic body touches it, and
+when an awake dynamic body touches it while moving (its timer was reset by the last step), faster
+than twice `sleepLinearThreshold`, or more than 1 cm deep. Pushing the bottom box of a sleeping
+pile therefore wakes the pile, and a moving platform carries or pushes the crates it meets.
 
 
 ### Rigid bodies and colliders
 
-The solver only builds contacts between `RigidBody3D` bodies. Level geometry that dynamic bodies
-must stand on is a static `RigidBody3D` (a box, a compound, or a `HeightfieldShape3D`), even when
-the same geometry also has a `Collider3D` for queries and the character controller. A
-`PhysicsWorld3D` given a `collisionSystem` (or finding one among its siblings) uses its colliders
-only for continuous collision detection and vehicle wheel rays; a body falling at normal speed
-passes through a collider floor.
+A `PhysicsWorld3D` given a `collisionSystem` (or finding one among its siblings) treats that
+system's static, non-trigger colliders (`Collider3D(isStatic: true)`) as solid: an awake dynamic
+body gets contacts against them as against a static body, with the collider's `material` (friction
+`0.5` and restitution `0` without one), and continuous collision detection stops at them. Layers
+and masks apply both ways, and a body never touches a collider of its own host (such as the
+collider a die carries to enter triggers).
+
+```dart
+final level = CollisionSystem3D();
+final floor = Collider3D(
+  shape: BoxShape3D(halfExtents: Vector3(10, 0.5, 10)),
+  position: Vector3(0, -0.5, 0),
+  isStatic: true, // solid for rigid bodies
+);
+world.addAll([level, floor, PhysicsWorld3D(collisionSystem: level)]);
+```
+
+Triggers and colliders that are not static (characters, the colliders of moving things) are
+ignored by the solver: an obstacle that moves is a kinematic `RigidBody3D`. Level geometry can
+equally be a static `RigidBody3D` (a box, a compound or a `HeightfieldShape3D`). Every physics step
+re-synchronizes the collision system's tree, a walk over its parent's subtree, so keep that parent
+small too.
 
 
 ### Contact quality
 
-Measured with the default settings, on boxes of `0.5 m`, friction `0.6`:
+Measured with the default settings, on boxes and dice of `0.5 m`, friction `0.6`:
 
-- A box resting on a box sinks about 1.4 mm and falls asleep after 0.5 to 1 s.
-- Columns of up to four boxes stand and sleep. A column of five collapses after about a second
-  with the default iterations; `velocityIterations: 20` and `positionIterations: 10` keep five
-  standing, but columns of eight (20 iterations) and ten (30 iterations) still collapse. A four-row
-  pyramid with small gaps stands. Do not build tall stacks.
-- Hulls rest on their faces like boxes, on up to four points, and come to sleep with the default
-  settings; they sink no deeper than boxes.
+- A box resting on a box sinks 1.4 mm on average (never more than `linearSlop`) and falls asleep
+  after 0.5 s.
+- Columns of up to six boxes, placed touching, stand and fall asleep within a second. A column of
+  eight stands but sways by up to about 15 cm for several seconds before it sleeps; ten and more
+  collapse. With `velocityIterations: 20`, columns of ten and twelve stand (swaying by up to 8 and
+  16 cm) and fall asleep; sixteen still collapse. The solver is sequential impulses: tall stacks
+  need more iterations, and the cost grows with them.
+- Hulls rest on their faces like boxes. Over 2,000 seeded throws of a hull d6 with bevelled edges,
+  every die fell asleep, after 3.4 s on average and 6.4 s at most (a box d6: 3.2 and 5.4 s), and
+  sank 1.3 mm on average, never more than 4 mm.
 - There is no gyroscopic term: a free body keeps its angular velocity rather than its angular
   momentum, so an asymmetric body spinning about its intermediate axis does not flip over.
 
@@ -581,21 +610,21 @@ final bullet = RigidBody3D(
 
 What it does: when a CCD body would move more than half its `ccdSweptSphereRadius` in a step, a
 sphere of that radius centered on its center of mass is swept along the step's displacement
-against the other rigid bodies near the path and against the colliders of the collision system.
-The body is moved to just before the first hit, the impact is resolved with the contact's
-restitution and friction, and the rest of the step is swept again, up to three times.
+against the other rigid bodies near the path and against the solid colliders of the collision
+system (both found through their trees; equal times of impact are resolved in creation order).
+The body is moved to just before the first hit and the impact is resolved like a contact, with
+its restitution, friction and the effective mass at the contact point. The rest of the step is
+swept again; after three impacts in one step the body stops at the next obstacle for what is left
+of the step.
 
 - Only the inscribed sphere is protected. Rotation is not swept, so the corners of a long, fast
   spinning body can still cut into things; the discrete contacts of the next step push them out.
 - The default radius is the shape's `inscribedSphereRadius`, for hulls the distance from the
   center of mass to the nearest face: a face-down octahedron die falling at 15 m/s with CCD stops
   on its face, its center 0.173 m (its inradius) above the floor.
-- Against colliders it only stops fast bodies, see
-  [Rigid bodies and colliders](#rigid-bodies-and-colliders).
-- Cost: for each CCD body above the speed threshold, up to three sweeps per step, each testing the
-  rigid bodies near the path with a GJK sweep and every collider of the collision system one by
-  one. Enable it on the few bodies that need it (projectiles, thrown dice that are boxes), not on
-  everything.
+- Cost: for each CCD body above the speed threshold, up to four sweeps per step, each testing the
+  rigid bodies and colliders near the path with a GJK sweep. Enable it on the bodies that need it
+  (projectiles, fast thrown dice), not on everything.
 
 
 ## Joints
@@ -648,10 +677,10 @@ For all joints:
 - Joints keep no impulses from one step to the next, and are corrected both by a velocity bias and
   by the position passes. Long chains need more iterations (the tests use `12` velocity and `5` or
   `6` position iterations).
-- Two dynamic bodies joined by a joint wake up together.
+- Two dynamic bodies joined by a joint wake up together, and fall asleep together.
 - `DistanceJoint3D`, `BallSocketJoint3D` and `HingeJoint3D` measure their lever arms from the body
-  origin instead of its center of mass, which only differs for compound bodies with an off-center
-  center of mass; the other joints use the center of mass.
+  origin instead of its center of mass, which only differs for bodies with an off-center center of
+  mass (compounds, hulls); the other joints use the center of mass.
 
 The ragdoll controller of the animation system builds on these joints, see
 [Models and Animation](models_and_animation.md).
@@ -660,8 +689,8 @@ The ragdoll controller of the animation system builds on these joints, see
 ## Buoyancy
 
 `BuoyancyVolume3D` pushes submerged dynamic bodies up, drags them and tilts them with the waves.
-It is applied only when registered with `addBuoyancyVolume`; adding it to the scene does nothing
-by itself.
+It is applied when registered with `addBuoyancyVolume`, or when it is mounted anywhere under the
+physics world's parent (it registers itself when it mounts and leaves when it is removed).
 
 ```dart
 final sea = BuoyancyVolume3D(
@@ -791,9 +820,10 @@ constraints times `substeps * solverIterations`, plus a vertex upload of the sur
 
 ## Snapshots and determinism
 
-`saveSnapshot()` encodes the state of a physics world into bytes (`'P3DS'`, format version `1`,
+`saveSnapshot()` encodes the state of a physics world into bytes (`'P3DS'`, format version `2`,
 CRC32 at the end) and `restoreSnapshot(bytes)` puts it back, throwing a `FormatException` when the
-header, version or checksum is wrong. A ring buffer keeps the last snapshots for rollback:
+header, version or checksum is wrong. Version `1` snapshots are still read, without their
+warm-start impulses. A ring buffer keeps the last snapshots for rollback:
 
 ```dart
 final history = PhysicsSnapshotRingBuffer3D(capacity: 240);
@@ -809,22 +839,28 @@ final old = history.snapshotForTick(1190); // Uint8List?
 A snapshot holds the tick, the accumulator, gravity, each body's type, sleep and CCD flags, pose,
 velocities, sleep timer and pending forces, the warm-start impulses of the contacts, the elapsed
 time of buoyancy volumes and the inputs and wheel states of vehicles, and optionally the state of
-a `SeededRng3D` (`PhysicsSnapshot3D.encodeWorld(world, rng: rng)`). It is 69 bytes plus 168 per
-body and 28 per warm-started contact point. It does not hold shapes, masses or materials, cloth or
-rope, collision-system pairs, or the joints (which carry no state from one step to the next).
-Bodies are matched by their creation id, else by position in the creation order; restore into a
-world with the same bodies.
+a `SeededRng3D` (`PhysicsSnapshot3D.encodeWorld(world, rng: rng)`). The warm-start impulses are
+stored per contact point, with the two bodies given by their position among the snapshot's bodies
+(a static collider by its position in the collision system's `collectColliders()`) and the point
+by its `featureId`. It is 69 bytes plus 168 per body and 72 per warm-started contact point. It
+does not hold shapes, masses or materials, cloth or rope, collision-system pairs, the colliders
+themselves, or the joints (which carry no state from one step to the next).
+
+Body records are matched to the world's bodies by creation id when the world holds every recorded
+body (the world the snapshot came from), by position in creation order when it holds none of them
+and as many bodies (a world built again), and otherwise by creation id only: records of removed
+bodies are skipped and bodies added since keep their state. Creation ids restart with each
+process, so a world rebuilt in another process restores with `restoreSnapshot(bytes,
+matchByOrder: true)`.
 
 What is reproducible, as measured and tested:
 
 - The same world, stepped the same way from the same state, gives bit-identical results; so does
-  restoring a snapshot into the world it came from and stepping again (both are covered by tests).
-- A fresh world built with the same bodies in the same order and thrown with the same seed
-  reproduces a throw bit for bit (measured on the Dart VM).
-- Restoring a snapshot into a **different** world instance, even one built identically, does not
-  reproduce: the warm-start impulses are keyed by the bodies' process-wide creation ids, which
-  differ, and the trajectories diverge (by meters after two seconds in the measurement).
-  Rollback works within one world.
+  restoring a snapshot into the world it came from and stepping again.
+- Restoring a snapshot into another world built the same way (the same bodies, colliders, joints
+  and settings, created in the same order) and stepping it gives bit-identical results too.
+- A fresh world built the same way and thrown with the same seed reproduces a throw bit for bit.
+- These hold on one platform and build (tested on the Dart VM).
 - Across platforms nothing is guaranteed and nothing was tested. The arithmetic is IEEE double
   precision with values stored as 32-bit floats everywhere, but body rotation calls `sin` and
   `cos`, which come from the platform's math library on native targets and from the JavaScript
@@ -836,14 +872,25 @@ What is reproducible, as measured and tested:
 
 ## Throwing dice
 
-A six-sided die is a `BoxShape3D`: its contacts are exact, it settles flat and falls asleep.
-Measured over 3,000 seeded throws of a 0.5 m die on a box floor (friction `0.6`, restitution
-`0.35`, defaults otherwise): every die slept within 350 steps (5.8 s, 3.3 s on average), one ended
-tilted by more than 8 degrees, and the faces came up uniformly (chi-square `5.85`, five degrees of
-freedom).
+A six-sided die with sharp edges is a `BoxShape3D`: its contacts are exact, it settles flat and
+falls asleep. Measured over 2,000 seeded throws of a 0.5 m die onto a large box floor (friction
+`0.6`, restitution `0.35`, defaults otherwise): every die slept, within 5.4 s (3.2 s on average),
+two ended tilted by more than 8 degrees, and the faces came up uniformly (chi-square `6.9`, five
+degrees of freedom). A fast-spinning die can hop a long way: on a floor 16 m across, about 1 in
+16 throws left it, so give the dice walls or a tray.
 
 Other dice, and dice with bevelled or rounded edges, are `ConvexHullShape3D`s. They rest on their
-faces like boxes and settle with the default settings, see [Contact quality](#contact-quality).
+faces like boxes and settle with the default settings. Measured on 0.5 m dice in the same setting:
+
+| Die                               | Throws | All asleep | Mean / longest | Chi-square (df) |
+| --------------------------------- | ------ | ---------- | -------------- | --------------- |
+| box d6                            | 2,000  | yes        | 3.2 s / 5.4 s  | 6.9 (5)         |
+| hull d6, edges bevelled by 8 %    | 2,000  | yes        | 3.4 s / 6.4 s  | 4.5 (5)         |
+| hull d8 (octahedron)              | 300    | yes        | 2.8 s / 4.9 s  | 2.7 (7)         |
+| hull d20 (icosahedron)            | 300    | yes        | 3.7 s / 6.2 s  | 25.1 (19)       |
+
+A bevel strip is a narrow face of its own, and a die can come to rest on it: 10 of the 2,000
+bevelled d6 did (59 of 2,000 with bevels of 16 %). Count such a throw as cocked and throw again.
 Continuous collision detection may stay on, as its default sphere is the hull's inradius.
 
 `throwDice3D` places, orients and launches a list of bodies from a seed:
@@ -902,8 +949,28 @@ above) or with a `Matrix4` built from the rotation: these agree with the
 physics.
 ```
 
-For other dice, list the outward normals of their faces with their values. Give the settle check a
-timeout as well (a die can come to rest leaning on a wall).
+For a hull die, its own faces give the normals; map each face index to the value printed on it:
+
+```dart
+/// The index of the hull face pointing up (Y-up world).
+int topHullFace(RigidBody3D die) {
+  final hull = die.shape as ConvexHullShape3D;
+  final r = die.bodyRotation.asRotationMatrix();
+  var best = 0;
+  var bestUp = -2.0;
+  for (var f = 0; f < hull.faceCount; f++) {
+    final up = r.transformed(hull.faceNormal(f)).y;
+    if (up > bestUp) {
+      bestUp = up;
+      best = f;
+    }
+  }
+  return best;
+}
+```
+
+Give the settle check a timeout as well (a die can come to rest leaning on a wall), and treat a
+top face tilted by more than a few degrees as cocked.
 
 Since a throw is deterministic, its result can be known before it is shown: play it headless
 first.
@@ -974,67 +1041,63 @@ bytes step by step between two runs: the first differing step points at the caus
 
 ## Performance
 
-Measured on a desktop computer under `flutter test` (JIT compilation), for 0.5 m box dice thrown
-into a walled box, average and worst step over four seconds:
+Measured on a desktop computer under `flutter test` (JIT compilation, after a warm-up), for 0.5 m
+dice thrown in rows of ten into a walled 12 m tray, average step over four seconds:
 
-| Dice | Average step | Worst step | Asleep after 4 s |
-| ---- | ------------ | ---------- | ---------------- |
-| 1    | 8 us         | 21 us      | 0 of 1           |
-| 5    | 25 us        | 139 us     | 5 of 5           |
-| 20   | 85 us        | 459 us     | 19 of 20         |
-| 50   | 125 us       | 729 us     | 27 of 50         |
-| 100  | 147 us       | 392 us     | 26 of 100        |
+| Dice | Box d6 | Bevelled hull d6 | Asleep after 4.5 s (boxes) |
+| ---- | ------ | ---------------- | -------------------------- |
+| 1    | 1 us   | 2 us             | 1 of 1                     |
+| 5    | 5 us   | 10 us            | 5 of 5                     |
+| 20   | 29 us  | 40 us            | 20 of 20                   |
+| 50   | 127 us |                  | 48 of 50                   |
+| 100  | 283 us |                  | 94 of 100                  |
 
-These numbers show how the cost grows, not what a phone does: measure on the target device in a
-release build.
+Single steps take from tens of microseconds to a few milliseconds when many bodies land at once or
+a garbage collection runs. These numbers show how the cost grows, not what a phone does: measure on
+the target device in a release build.
 
 Where the time goes, per step:
 
-- The `PhysicsWorld3D` walks its parent's whole component subtree to find the bodies, then
-  recomputes the bounds of every body (static and sleeping ones included) and updates the tree.
-  A `CollisionSystem3D` does the same for colliders, and again for every query. Give each system a
-  small parent: put the physics bodies and the `PhysicsWorld3D` under one untransformed
-  `Component3D` instead of the root of a large world (bodies without a mesh in that group need
-  `syncParent: false`).
+- The bodies are registered when they mount; the world updates the bounds and the tree entry of
+  the bodies that moved since the last step only. An attached `CollisionSystem3D` is
+  re-synchronized once per step (a walk over its parent's subtree), and again by every collision
+  query, so give it a small parent.
 - A contact pair costs one narrowphase test and its constraint, solved `velocityIterations` plus
   `positionIterations` times. Pairs of sleeping bodies (or a sleeping body and a static one) cost
   nothing; let dice fall asleep.
-- The narrowphase and the number of contact points set the cost of a pair. Twenty awake bodies
-  resting on a box floor (no other contacts) cost per step, in the same setting as the table
-  above: spheres `25 us`, capsules `27 us`, 12-point hulls `60 us`, 8-point hulls `70 us`, boxes
-  `85 us` (four contact points each) and two-box compounds `92 us`.
+- The narrowphase and the number of contact points set the cost of a pair. A hull pair runs GJK
+  and EPA, then clips two faces; a box pair runs the separating axis test.
 - Continuous collision detection, vehicles (every wheel ray tests every body's bounds) and the
   character controller add their own scans, see their sections.
 
-The step allocates: each touching pair creates its manifold, its constraint, per-point state and
-temporary vectors every step (about 100 to 150 short-lived objects for a resting box on a box,
-several hundred for a pair solved with GJK and EPA, more for compounds), plus closures and a new
-warm-start map. Sleeping pairs allocate nothing. The garbage is short-lived, but on a phone keep
-the number of awake touching pairs to a few dozen and check for collection pauses with the
-profiler.
+Contact constraints, their points and their warm-start history are kept per touching pair and
+reused, and the step creates no closures. What still allocates, per touching pair and step, is the
+narrowphase result: a `CollisionManifold3D` with its contact points (about ten small objects for
+four points) and, for pairs that involve a hull, the working sets of GJK and EPA (a few dozen).
+Sleeping pairs allocate nothing. On a phone keep the number of awake touching pairs to a few dozen
+and check for collection pauses with the profiler.
 
 
 ## Limitations
 
-- Rigid bodies collide only with rigid bodies: not with `Collider3D`s, meshes or models. Colliders
-  report overlaps and never push anything apart.
-- Columns of more than four boxes collapse with the default iterations; columns of eight and ten
-  boxes collapsed even with 20 to 30 velocity iterations.
-- Kinematic bodies pass through sleeping bodies without waking them. Sleeping is per body, without
-  islands.
+- Rigid bodies collide with rigid bodies and with static, non-trigger colliders; not with moving
+  colliders, meshes or models.
+- Tall stacks need more iterations than the default: columns of more than six boxes sway or
+  collapse with `velocityIterations: 8` (ten and twelve stand with 20).
 - No gyroscopic term in the integration of rotations.
-- Continuous collision detection sweeps a sphere and ignores rotation; against colliders it only
-  stops fast bodies.
-- Snapshots restore into the world they came from; nothing is guaranteed across platforms.
-- Every step allocates per contact and walks the subtree of the physics world; every collision
-  query walks the subtree of the collision system.
+- Continuous collision detection sweeps a sphere and ignores rotation.
+- Snapshots reproduce on one platform and build; nothing is guaranteed across platforms.
+- Every step allocates the narrowphase manifolds of touching pairs; an attached collision system
+  is re-synchronized (a walk over its parent's subtree) every step, and every collision query
+  walks it again.
 - `DistanceJoint3D`, `BallSocketJoint3D` and `HingeJoint3D` take lever arms from the body origin
   rather than the center of mass. The center of mass of a nested `CompoundShape3D` whose child is
   rotated is mirrored (it uses the inverse rotation).
-- Buoyancy is horizontal in Y and must be registered with `addBuoyancyVolume`. Vehicles ignore
-  `axleDirectionLocal` and compute the minimum tire load with a gravity of `9.81` whatever the
-  world's gravity.
+- Buoyancy is horizontal in Y. Vehicles ignore `axleDirectionLocal` and compute the minimum tire
+  load with a gravity of `9.81` whatever the world's gravity.
 - Cloth does not collide with itself, only with sphere and capsule colliders, and does not affect
-  rigid bodies. The tube of a rope that bends out of a plane is drawn with tilted rings (its
-  frame is rotated the wrong way).
-- Solver tolerances are absolute, tuned for objects of 0.1 m and more.
+  rigid bodies. The tube of a rope that bends out of a plane is drawn with tilted rings (its frame
+  is rotated the wrong way). Cloth and rope step with the frame time (capped at `1/30` s) unless
+  created with `autoStep: false`.
+- Solver tolerances are absolute (`linearSlop`, the sleep thresholds, the 2 mm within which face
+  points are kept), tuned for objects of 0.1 m and more.

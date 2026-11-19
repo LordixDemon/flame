@@ -5,6 +5,7 @@ import 'package:flame_3d/collisions.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/physics.dart';
+import 'package:meta/meta.dart';
 
 /// Local pontoon sample point used by [BuoyancyVolume3D] to evaluate submerged
 /// Archimedes displacement, water drag, and wave-slope torque on a
@@ -25,8 +26,9 @@ class BuoyancyPontoon3D({
 /// Multi-pontoon Archimedes buoyancy and wave hydrodynamics solver for
 /// submerged [RigidBody3D]s.
 ///
-/// Can be registered on a [PhysicsWorld3D] via
-/// `PhysicsWorld3D.addBuoyancyVolume` (or mounted alongside it in a `World3D`),
+/// Applied by a [PhysicsWorld3D] every step when registered with
+/// `PhysicsWorld3D.addBuoyancyVolume`, or when mounted anywhere under the
+/// world's parent (it registers itself on mount and unregisters on removal);
 /// or invoked manually via [applyToBodies].
 class BuoyancyVolume3D({
   final double Function(double x, double z, double time)? waterSurfaceHeight,
@@ -59,6 +61,25 @@ class BuoyancyVolume3D({
 
   /// Elapsed simulation time (seconds) passed into [sampleWaterHeight].
   double elapsedTime = 0.0;
+
+  /// The physics worlds this volume registered with when it mounted.
+  @internal
+  final List<PhysicsWorld3D> enclosingPhysicsWorlds = [];
+
+  @override
+  void onMount() {
+    super.onMount();
+    PhysicsWorld3D.attachToEnclosingWorlds(this);
+  }
+
+  @override
+  void onRemove() {
+    for (var i = 0; i < enclosingPhysicsWorlds.length; i++) {
+      enclosingPhysicsWorlds[i].unregisterMountedComponent(this);
+    }
+    enclosingPhysicsWorlds.clear();
+    super.onRemove();
+  }
 
   final Map<RigidBody3D, List<BuoyancyPontoon3D>> _customPontoons = {};
   final Map<Shape3D, List<BuoyancyPontoon3D>> _autoPontoonCache = {};
