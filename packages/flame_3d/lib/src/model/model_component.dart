@@ -449,11 +449,25 @@ class ModelComponent({
           // are in the parent's, so the step goes through this component's
           // own rotation and scale (right under any parent transform), and
           // the turn applies about the model's up axis.
-          _rootMotionStep
+          final step = _rootMotionStep
             ..setFrom(extractor.deltaPositionLocal)
             ..multiply(scale);
-          rotation.rotate(_rootMotionStep);
-          position.add(_rootMotionStep);
+          // `rotation * step * conjugate(rotation)`, as the component's
+          // matrix turns it (vector_math's `Quaternion.rotate` turns by the
+          // inverse).
+          final qx = rotation.x;
+          final qy = rotation.y;
+          final qz = rotation.z;
+          final qw = rotation.w;
+          final tx = 2.0 * (qy * step.z - qz * step.y);
+          final ty = 2.0 * (qz * step.x - qx * step.z);
+          final tz = 2.0 * (qx * step.y - qy * step.x);
+          step.setValues(
+            step.x + qw * tx + (qy * tz - qz * ty),
+            step.y + qw * ty + (qz * tx - qx * tz),
+            step.z + qw * tz + (qx * ty - qy * tx),
+          );
+          position.add(step);
           if (extractor.deltaYawRad.abs() > 1e-9) {
             final up = extractor.horizontalPlane == RootMotionPlane3D.xz
                 ? _upY
