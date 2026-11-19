@@ -4,6 +4,8 @@ import 'package:flame/components.dart' show Component;
 import 'package:flame_3d/camera.dart' show CameraComponent3D, Ray, World3D;
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
+import 'package:flame_3d/src/audio/spatial_audio_registry_3d.dart';
+import 'package:meta/meta.dart';
 
 /// Distance-based volume rolloff curve for [SpatialAudioEmitter3D].
 enum AudioAttenuationModel3D() {
@@ -18,8 +20,8 @@ enum AudioAttenuationModel3D() {
   exponential,
 }
 
-/// Evaluated 3D stereo spatial mix parameters ready to feed `flame_audio` or a
-/// custom audio backend.
+/// Evaluated 3D stereo spatial mix parameters (gain, pan, pitch) for an audio
+/// engine of your choice; nothing in this library plays sound.
 class SpatialMix3D({
   required final double volume,
   required final double pan,
@@ -37,6 +39,9 @@ class SpatialMix3D({
 
 /// 3D spatial audio listener tracking a [CameraComponent3D], an arbitrary
 /// [Component3D], or its own [Component3D] transform.
+///
+/// Emitters and mixers without an explicit listener use the first listener
+/// mounted in their [World3D].
 class SpatialAudioListener3D({
   this.camera,
   this.target,
@@ -154,6 +159,20 @@ class SpatialAudioListener3D({
   }
 
   @override
+  void onMount() {
+    super.onMount();
+    if (worldOrNull case final world?) {
+      SpatialAudioRegistry3D.of(world).listeners.add(this);
+    }
+  }
+
+  @override
+  void onRemove() {
+    SpatialAudioRegistry3D.maybeOf(worldOrNull)?.listeners.remove(this);
+    super.onRemove();
+  }
+
+  @override
   void update(double dt) {
     super.update(dt);
     syncFrame();
@@ -172,9 +191,16 @@ class SpatialAudioListener3D({
   }
 }
 
-/// 3D spatial audio emitter attachable to any [Component3D] (including
-/// `BoneSocket3D`), computing stereo `pan`, distance rolloff, directional sound
-/// cones, raycast wall occlusion via `World3D.raycast`, and Doppler `pitch`.
+/// 3D sound source attachable to any [Component3D] (including
+/// `BoneSocket3D`), computing the stereo `pan`, distance rolloff, directional
+/// sound cone, raycast wall occlusion via `World3D.raycast`, and Doppler
+/// `pitch` with which it should be heard.
+///
+/// It plays nothing itself: read [lastMix] or [onMixChanged] and apply the
+/// values to an audio engine, or let a `SpatialAudioMixer3D` hand them to an
+/// `AudioVoiceBackend3D`. While a mixer evaluates the emitter, the emitter
+/// does not evaluate itself again in [update]; the mixer reports the mix to
+/// [onMixChanged] instead.
 class SpatialAudioEmitter3D({
   var String clipId = 'default',
   var double clipDuration = 0.0,
@@ -210,9 +236,14 @@ class SpatialAudioEmitter3D({
   this
     : assert(minDistance > 0, 'minDistance must be positive'),
       assert(maxDistance >= minDistance, 'maxDistance must be >= minDistance'),
-      assert(innerConeRad <= outerConeRad, 'innerConeRad <= outerConeRad') {
-    this.priority = priority;
-  }
+      assert(innerConeRad <= outerConeRad, 'innerConeRad <= outerConeRad');
+
+  /// Importance of this sound when a `SpatialAudioMixer3D` assigns its real
+  /// voices (`priority` in the constructor; a score bonus of `10%` per step).
+  ///
+  /// This is not the component [priority], which orders the component among
+  /// its siblings for updates and rendering.
+  int audioPriority = priority;
 
   /// Local emission axis for directional cones (`(0, 0, -1)` by default).
   final Vector3 localForward =
@@ -243,10 +274,34 @@ class SpatialAudioEmitter3D({
   final Vector3 _toEar = Vector3.zero();
   final Ray _occlusionRay = Ray();
   bool _hasPrevPos = false;
+  int _updateCount = 0;
+  int _mixedAtUpdate = -1000;
+
+  @override
+  void onMount() {
+    super.onMount();
+    if (worldOrNull case final world?) {
+      SpatialAudioRegistry3D.of(world).emitters.add(this);
+    }
+  }
+
+  @override
+  void onRemove() {
+    SpatialAudioRegistry3D.maybeOf(worldOrNull)?.removeEmitter(this);
+    super.onRemove();
+  }
+
+  /// Records that a mixer evaluated this emitter in the current frame, so
+  /// that [update] does not evaluate it a second time.
+  @internal
+  void markMixedByMixer() {
+    _mixedAtUpdate = _updateCount;
+  }
 
   @override
   void update(double dt) {
     super.update(dt);
+    _updateCount++;
     final m = worldTransformMatrix.storage;
     _emitterPos.setValues(m[12], m[13], m[14]);
 
@@ -263,9 +318,14 @@ class SpatialAudioEmitter3D({
       _hasPrevPos = true;
     }
 
+    // A mixer evaluated this emitter in this frame or the previous one (its
+    // update may run before or after this one) and reports the mix itself.
+    if (_mixedAtUpdate >= _updateCount - 2) {
+      return;
+    }
     final activeListener = listener ?? _findListenerInWorld();
     if (activeListener != null) {
-      final mix = evaluateMix(activeListener, world: _findEnclosingWorld());
+      final mix = evaluateMix(activeListener, world: _enclosingWorld());
       onMixChanged?.call(mix);
     }
   }
@@ -276,7 +336,16 @@ class SpatialAudioEmitter3D({
     World3D? world,
   }) {
     activeListener.syncFrame();
-    final earPos = activeListener.earPosition;
+    return evaluateMixSynced(activeListener, world: world);
+  }
+
+  /// [evaluateMix] for a listener whose `syncFrame` already ran this frame.
+  @internal
+  SpatialMix3D evaluateMixSynced(
+    SpatialAudioListener3D activeListener, {
+    World3D? world,
+  }) {
+    final earPos = activeListener._earPos;
     final m = worldTransformMatrix.storage;
     _emitterPos.setValues(m[12], m[13], m[14]);
 
@@ -293,7 +362,7 @@ class SpatialAudioEmitter3D({
     var pan = 0.0;
     if (dist > 1e-6) {
       final invDist = 1.0 / dist;
-      final right = activeListener.right;
+      final right = activeListener._right;
       pan = ((dx * right.x + dy * right.y + dz * right.z) * invDist).clamp(
         -1.0,
         1.0,
@@ -332,7 +401,7 @@ class SpatialAudioEmitter3D({
 
     // 4. Optional raycast wall occlusion via `World3D.raycast`.
     var occluded = false;
-    final resolvedWorld = world ?? _findEnclosingWorld();
+    final resolvedWorld = world ?? _enclosingWorld();
     if (enableOcclusion && resolvedWorld != null && dist > 2e-3) {
       final invDist = 1.0 / dist;
       _toEar.setValues(-dx * invDist, -dy * invDist, -dz * invDist);
@@ -415,18 +484,14 @@ class SpatialAudioEmitter3D({
     }
   }
 
-  World3D? _findEnclosingWorld() {
-    for (final anc in ancestors()) {
-      if (anc is World3D) {
-        return anc;
-      }
-    }
-    return null;
-  }
-
   SpatialAudioListener3D? _findListenerInWorld() {
-    final w = _findEnclosingWorld();
-    if (w == null) {
+    final world = worldOrNull;
+    if (world != null) {
+      return SpatialAudioRegistry3D.maybeOf(world)?.firstListener;
+    }
+    // Not mounted (a tree updated by hand): search the enclosing world.
+    final enclosing = _enclosingWorld();
+    if (enclosing == null) {
       return null;
     }
     SpatialAudioListener3D? found;
@@ -443,8 +508,23 @@ class SpatialAudioEmitter3D({
       }
     }
 
-    visit(w);
+    visit(enclosing);
     return found;
+  }
+
+  /// The world this emitter is mounted in, or for an emitter that is not
+  /// mounted, the [World3D] among its ancestors.
+  World3D? _enclosingWorld() {
+    final world = worldOrNull;
+    if (world != null || isMounted) {
+      return world;
+    }
+    for (final ancestor in ancestors()) {
+      if (ancestor is World3D) {
+        return ancestor;
+      }
+    }
+    return null;
   }
 
   static bool _isSelfOrAncestor(Object3D candidate, Component3D ref) {

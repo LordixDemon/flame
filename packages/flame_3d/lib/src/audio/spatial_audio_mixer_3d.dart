@@ -1,10 +1,12 @@
 import 'dart:math' as math;
 
-import 'package:flame/components.dart' show Component, HasWorldRef;
+import 'package:flame/components.dart' show Component;
 import 'package:flame_3d/camera.dart' show World3D;
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/src/audio/spatial_audio_3d.dart';
+import 'package:flame_3d/src/audio/spatial_audio_registry_3d.dart';
+import 'package:meta/meta.dart';
 
 /// Acoustic reverb impulse/algorithmic preset parameters blended across
 /// [AudioZone3D] volumes by [SpatialAudioMixer3D].
@@ -64,6 +66,10 @@ class const ReverbPreset3D({
 
 /// 3D spatial reverb zone (spherical [radius] or OBB [halfExtents]) with a
 /// smooth outer [fadeDistance] feather margin.
+///
+/// A zone only describes reverb settings; `SpatialAudioMixer3D` blends the
+/// zones' presets at the listener and hands the result to its backend, which
+/// must apply it.
 class AudioZone3D({
   required var ReverbPreset3D preset,
   var double radius = 8.0,
@@ -78,8 +84,28 @@ class AudioZone3D({
 }) extends Component3D {
   this
     : assert(radius >= 0, 'radius must be non-negative'),
-      assert(fadeDistance >= 0, 'fadeDistance must be non-negative') {
-    this.priority = priority;
+      assert(fadeDistance >= 0, 'fadeDistance must be non-negative');
+
+  /// Order of this zone when overlapping zones are blended: zones with a
+  /// higher [audioPriority] are applied later and win (`priority` in the
+  /// constructor).
+  ///
+  /// This is not the component [priority], which orders the component among
+  /// its siblings for updates and rendering.
+  int audioPriority = priority;
+
+  @override
+  void onMount() {
+    super.onMount();
+    if (worldOrNull case final world?) {
+      SpatialAudioRegistry3D.of(world).zones.add(this);
+    }
+  }
+
+  @override
+  void onRemove() {
+    SpatialAudioRegistry3D.maybeOf(worldOrNull)?.zones.remove(this);
+    super.onRemove();
   }
 
   /// Optional local box half-extents; when `null`, uses spherical [radius].
@@ -140,8 +166,11 @@ class AudioVoiceParams3D({
   required final ReverbPreset3D reverb,
 });
 
-/// Pluggable hardware/software audio channel backend driven by
-/// [SpatialAudioMixer3D].
+/// The audio engine behind a [SpatialAudioMixer3D], written by the caller.
+///
+/// The mixer decides which emitters get a real voice and with which
+/// parameters; the backend starts, updates and stops the voices of an actual
+/// audio engine (for example `audioplayers`). The package ships no backend.
 abstract interface class AudioVoiceBackend3D() {
   /// Allocates a real audio channel for [emitter] starting at
   /// `params.playbackPosition` and returns a non-negative voice handle.
@@ -166,16 +195,32 @@ typedef AudioOcclusionQuery3D = double Function(
   Vector3 emitterPos,
 );
 
-class _EvaluatedEmitterEntry({
-  required final SpatialAudioEmitter3D emitter,
-  required var AudioVoiceParams3D params,
-  required var double priorityScore,
-});
+class _EvaluatedEmitterEntry() {
+  SpatialAudioEmitter3D? emitter;
+  AudioVoiceParams3D? params;
+  double priorityScore = 0.0;
+}
 
-/// Priority voice-pooled 3D spatial audio mixer managing unlimited
-/// [SpatialAudioEmitter3D]s across `<= maxRealVoices` real backend channels and
-/// zero-cost virtual voices, with pluggable geometry occlusion, acoustic
-/// low-pass filtering, and smooth [AudioZone3D] reverb crossfading.
+int _byScoreDescending(_EvaluatedEmitterEntry a, _EvaluatedEmitterEntry b) {
+  return b.priorityScore.compareTo(a.priorityScore);
+}
+
+/// Computes, every update, the voice parameters (gain, pan, pitch, low-pass
+/// cutoff, playback position and reverb) of many [SpatialAudioEmitter3D]s and
+/// hands them to an [AudioVoiceBackend3D] that the caller supplies.
+///
+/// It produces no sound and does no signal processing: it ranks the playing
+/// emitters, keeps the `maxRealVoices` most audible ones on real voices of the
+/// backend (`startVoice` / `updateVoice` / `stopVoice`), and tracks the others
+/// as virtual voices, which use no backend voice but are still evaluated every
+/// update (with their occlusion raycast, if any) and keep their playback
+/// position. Occlusion becomes a low-pass cutoff value and [AudioZone3D]
+/// presets are blended into one [currentReverb]; applying both is up to the
+/// backend.
+///
+/// Mounted in a [World3D], it uses the emitters and zones mounted in that
+/// world, which register themselves on mount (no tree walk per update);
+/// [registerEmitter] and [registerZone] add others.
 class SpatialAudioMixer3D({
   required final AudioVoiceBackend3D backend,
   this.listener,
@@ -190,7 +235,7 @@ class SpatialAudioMixer3D({
   List<AudioZone3D> zones = const [],
   this.onReverbChanged,
   super.priority,
-}) extends Component with HasWorldRef<World3D> {
+}) extends Component {
   this : assert(maxRealVoices >= 0, 'maxRealVoices must be >= 0') {
     _registeredEmitters.addAll(emitters);
     _registeredZones.addAll(zones);
@@ -204,20 +249,27 @@ class SpatialAudioMixer3D({
   /// Optional geometry occlusion callback (`0.0` clear .. `1.0` occluded).
   AudioOcclusionQuery3D? occlusionQuery;
 
-  /// Optional listener notified whenever [currentReverb] updates.
+  /// Optional listener notified when [currentReverb] changes (not on
+  /// updates that leave it as it was).
   void Function(ReverbPreset3D reverb)? onReverbChanged;
 
   final List<SpatialAudioEmitter3D> _registeredEmitters = [];
   final List<AudioZone3D> _registeredZones = [];
-  final List<SpatialAudioEmitter3D> _allEmitters = [];
   final List<AudioZone3D> _allZones = [];
+  // Emitters of the world that `unregisterEmitter` excluded.
+  final Set<SpatialAudioEmitter3D> _excluded = {};
 
   final Map<SpatialAudioEmitter3D, int> _realVoiceHandles = {};
   final Map<SpatialAudioEmitter3D, AudioVoiceParams3D> _lastVoiceParams = {};
   int _virtualVoiceCount = 0;
   late ReverbPreset3D _currentReverb;
+  World3D? _world;
 
   final Vector3 _emitterWorldPos = Vector3.zero();
+  final List<_EvaluatedEmitterEntry> _entryPool = [];
+  final List<_EvaluatedEmitterEntry> _candidates = [];
+  final Map<SpatialAudioEmitter3D, AudioVoiceParams3D> _winners = {};
+  final List<SpatialAudioEmitter3D> _scratchEmitters = [];
 
   /// Current smoothly crossfaded global reverb state.
   ReverbPreset3D get currentReverb => _currentReverb;
@@ -225,8 +277,8 @@ class SpatialAudioMixer3D({
   /// Number of emitters currently backed by a real [AudioVoiceBackend3D] voice.
   int get realVoiceCount => _realVoiceHandles.length;
 
-  /// Number of playing emitters currently tracked virtually at zero channel
-  /// cost.
+  /// Number of playing emitters currently tracked as virtual voices (no
+  /// backend voice; still evaluated every update).
   int get virtualVoiceCount => _virtualVoiceCount;
 
   /// Whether [emitter] currently owns a real hardware/backend voice.
@@ -237,16 +289,41 @@ class SpatialAudioMixer3D({
   AudioVoiceParams3D? voiceParamsFor(SpatialAudioEmitter3D emitter) =>
       _lastVoiceParams[emitter];
 
-  /// Registers [emitter] for standalone mixing outside a [World3D].
+  /// Registers [emitter] for mixing when it is not mounted in the mixer's
+  /// [World3D] (or undoes an earlier [unregisterEmitter]).
+  ///
+  /// A registered emitter stays in the mix until [unregisterEmitter] is
+  /// called, wherever it is mounted.
   void registerEmitter(SpatialAudioEmitter3D emitter) {
+    _excluded.remove(emitter);
     if (!_registeredEmitters.contains(emitter)) {
       _registeredEmitters.add(emitter);
     }
   }
 
-  /// Unregisters [emitter] and releases its real voice if active.
+  /// Takes [emitter] out of the mix and releases its real voice if active.
+  ///
+  /// An emitter mounted in the mixer's world stays out of the mix until
+  /// [registerEmitter] is called for it or it is removed from the world.
   void unregisterEmitter(SpatialAudioEmitter3D emitter) {
     _registeredEmitters.remove(emitter);
+    if (_world != null && identical(emitter.worldOrNull, _world)) {
+      _excluded.add(emitter);
+    }
+    _releaseEmitter(emitter);
+  }
+
+  /// Called when [emitter] leaves the mixer's world: stops its voice and
+  /// drops every reference to it, unless it was registered explicitly.
+  @internal
+  void forgetEmitter(SpatialAudioEmitter3D emitter) {
+    _excluded.remove(emitter);
+    if (!_registeredEmitters.contains(emitter)) {
+      _releaseEmitter(emitter);
+    }
+  }
+
+  void _releaseEmitter(SpatialAudioEmitter3D emitter) {
     final handle = _realVoiceHandles.remove(emitter);
     if (handle != null) {
       backend.stopVoice(handle, emitter);
@@ -267,136 +344,98 @@ class SpatialAudioMixer3D({
   }
 
   @override
+  void onMount() {
+    super.onMount();
+    _world = null;
+    for (final ancestor in ancestors()) {
+      if (ancestor is World3D) {
+        _world = ancestor;
+        break;
+      }
+    }
+    if (_world case final world?) {
+      SpatialAudioRegistry3D.of(world).mixers.add(this);
+    }
+  }
+
+  @override
   void update(double dt) {
     super.update(dt);
-    final activeListener = listener ?? _findListener();
+    final registry = SpatialAudioRegistry3D.maybeOf(_world);
+    final activeListener = listener ?? registry?.firstListener;
     if (activeListener == null) {
       return;
     }
-    activeListener.syncFrame();
-    final earPos = activeListener.earPosition;
-
-    _collectSceneItems();
+    final earPos = activeListener.earPosition; // syncs the listener once
 
     // 1. Evaluate & smoothly crossfade AudioZone3D reverb presets at `earPos`.
+    _allZones
+      ..clear()
+      ..addAll(_registeredZones);
+    if (registry != null) {
+      for (final zone in registry.zones) {
+        if (!_registeredZones.contains(zone)) {
+          _allZones.add(zone);
+        }
+      }
+    }
     final targetReverb = _evaluateTargetReverb(earPos);
     final alpha = dt > 0.0 && reverbCrossfadeSpeed > 0.0
         ? (1.0 - math.exp(-reverbCrossfadeSpeed * dt)).clamp(0.0, 1.0)
         : 1.0;
-    _currentReverb = ReverbPreset3D.lerp(_currentReverb, targetReverb, alpha);
-    onReverbChanged?.call(_currentReverb);
+    final previousReverb = _currentReverb;
+    final nextReverb = ReverbPreset3D.lerp(previousReverb, targetReverb, alpha);
+    if (nextReverb.wetMix != previousReverb.wetMix ||
+        nextReverb.decaySeconds != previousReverb.decaySeconds ||
+        nextReverb.preDelayMs != previousReverb.preDelayMs ||
+        nextReverb.name != previousReverb.name) {
+      _currentReverb = nextReverb;
+      onReverbChanged?.call(nextReverb);
+    }
 
     // 2. Evaluate mix, pluggable occlusion, playback cursor, and audibility
-    // priority for every emitter.
-    final candidates = <_EvaluatedEmitterEntry>[];
-    final seenPlaying = <SpatialAudioEmitter3D>{};
-    final enclWorld = _findWorld();
-
-    for (var i = 0; i < _allEmitters.length; i++) {
-      final em = _allEmitters[i];
-      if (!em.playing) {
-        _lastVoiceParams.remove(em);
-        continue;
-      }
-
-      // Evaluate spatial mix ( Temporarily disable built-in binary occlusion if
-      // custom continuous `occlusionQuery` is supplied so we don't double-apply
-      // `occlusionGain`!).
-      final savedOcc = em.enableOcclusion;
-      if (occlusionQuery != null) {
-        em.enableOcclusion = false;
-      }
-      final baseMix = em.evaluateMix(activeListener, world: enclWorld);
-      em.enableOcclusion = savedOcc;
-
-      final m = em.worldTransformMatrix.storage;
-      _emitterWorldPos.setValues(m[12], m[13], m[14]);
-
-      final double occ;
-      if (occlusionQuery != null) {
-        occ = occlusionQuery!(earPos, _emitterWorldPos).clamp(0.0, 1.0);
-      } else {
-        occ = baseMix.occluded ? 1.0 : 0.0;
-      }
-
-      // Advance `playbackPosition` continuously whether virtual or real!
-      if (dt > 0.0) {
-        final nextPos = em.playbackPosition + dt * baseMix.pitch;
-        final dur = em.clipDuration;
-        if (dur > 1e-6) {
-          if (em.looping) {
-            em.playbackPosition = nextPos % dur;
-          } else if (nextPos >= dur) {
-            em
-              ..playbackPosition = dur
-              ..playing = false;
-            _lastVoiceParams.remove(em);
-            continue;
-          } else {
-            em.playbackPosition = nextPos;
-          }
-        } else {
-          em.playbackPosition = nextPos;
+    // priority for every emitter: those mounted in the world, then the
+    // registered ones that are not.
+    _candidates.clear();
+    var playingCount = 0;
+    if (registry != null) {
+      final worldEmitters = registry.emitters;
+      for (var i = 0; i < worldEmitters.length; i++) {
+        final em = worldEmitters[i];
+        if (_excluded.isNotEmpty && _excluded.contains(em)) {
+          continue;
+        }
+        if (_mixEmitter(em, activeListener, earPos, dt)) {
+          playingCount++;
         }
       }
-
-      final gainMult = occlusionQuery != null
-          ? 1.0 - occ * (1.0 - em.occlusionGain.clamp(0.0, 1.0))
-          : 1.0;
-      final finalVolume = (baseMix.volume * gainMult)
-          .clamp(0.0, math.max(1.0, em.baseVolume))
-          .toDouble();
-
-      final maxHz = math.max(100.0, maxLowPassCutoffHz);
-      final minHz = minLowPassCutoffHz.clamp(20.0, maxHz);
-      final cutoffHz = occ <= 1e-6
-          ? maxHz
-          : maxHz * math.pow(minHz / maxHz, occ).toDouble();
-
-      final params = AudioVoiceParams3D(
-        clipId: em.clipId,
-        volume: finalVolume,
-        pan: baseMix.pan,
-        pitch: baseMix.pitch,
-        lowPassCutoffHz: cutoffHz,
-        occlusion: occ,
-        playbackPosition: em.playbackPosition,
-        looping: em.looping,
-        reverb: _currentReverb,
-      );
-      _lastVoiceParams[em] = params;
-      seenPlaying.add(em);
-
-      if (finalVolume >= virtualThresholdVolume && maxRealVoices > 0) {
-        // Hysteresis bonus (`+0.015`) prevents rapid voice-stealing oscillation
-        // between two nearly identical emitters.
-        final alreadyRealBonus = _realVoiceHandles.containsKey(em)
-            ? 0.015
-            : 0.0;
-        final priorityBoost = 1.0 + em.priority * 0.1;
-        final score =
-            finalVolume * math.max(0.1, priorityBoost) + alreadyRealBonus;
-        candidates.add(
-          _EvaluatedEmitterEntry(
-            emitter: em,
-            params: params,
-            priorityScore: score,
-          ),
-        );
+    }
+    for (var i = 0; i < _registeredEmitters.length; i++) {
+      final em = _registeredEmitters[i];
+      if (registry != null && identical(em.worldOrNull, _world)) {
+        continue; // already mixed with the world's emitters
+      }
+      if (_mixEmitter(em, activeListener, earPos, dt)) {
+        playingCount++;
       }
     }
 
     // 3. Rank audible candidates descending by `priorityScore` and pick top
     // `maxRealVoices`.
-    candidates.sort((a, b) => b.priorityScore.compareTo(a.priorityScore));
-    final realWinners = <SpatialAudioEmitter3D, AudioVoiceParams3D>{};
-    final limit = math.min(maxRealVoices, candidates.length);
+    _candidates.sort(_byScoreDescending);
+    final realWinners = _winners..clear();
+    final limit = math.min(maxRealVoices, _candidates.length);
     for (var i = 0; i < limit; i++) {
-      realWinners[candidates[i].emitter] = candidates[i].params;
+      realWinners[_candidates[i].emitter!] = _candidates[i].params!;
+    }
+    for (var i = 0; i < _candidates.length; i++) {
+      _candidates[i]
+        ..emitter = null
+        ..params = null;
     }
 
     // 4. Demote any real voices no longer in `realWinners` -> `stopVoice`.
-    final toDemote = <SpatialAudioEmitter3D>[];
+    final toDemote = _scratchEmitters..clear();
     for (final existing in _realVoiceHandles.keys) {
       if (!realWinners.containsKey(existing)) {
         toDemote.add(existing);
@@ -407,6 +446,7 @@ class SpatialAudioMixer3D({
       final handle = _realVoiceHandles.remove(em)!;
       backend.stopVoice(handle, em);
     }
+    toDemote.clear();
 
     // 5. Update continuing real voices and promote newly selected virtual
     // voices -> `startVoice` at their current `playbackPosition`!
@@ -422,7 +462,116 @@ class SpatialAudioMixer3D({
       }
     }
 
-    _virtualVoiceCount = math.max(0, seenPlaying.length - realWinners.length);
+    _virtualVoiceCount = math.max(0, playingCount - realWinners.length);
+    realWinners.clear();
+  }
+
+  /// Evaluates [em] for this update and adds it to the candidates when it is
+  /// audible. Returns whether it is playing.
+  bool _mixEmitter(
+    SpatialAudioEmitter3D em,
+    SpatialAudioListener3D activeListener,
+    Vector3 earPos,
+    double dt,
+  ) {
+    if (!em.playing) {
+      _lastVoiceParams.remove(em);
+      return false;
+    }
+
+    // Evaluate spatial mix (temporarily disable built-in binary occlusion if
+    // custom continuous `occlusionQuery` is supplied so we don't double-apply
+    // `occlusionGain`!).
+    final query = occlusionQuery;
+    final savedOcc = em.enableOcclusion;
+    if (query != null) {
+      em.enableOcclusion = false;
+    }
+    final baseMix = em.evaluateMixSynced(
+      activeListener,
+      world: em.worldOrNull ?? _world,
+    );
+    em
+      ..enableOcclusion = savedOcc
+      ..markMixedByMixer();
+    em.onMixChanged?.call(baseMix);
+
+    final m = em.worldTransformMatrix.storage;
+    _emitterWorldPos.setValues(m[12], m[13], m[14]);
+
+    final double occ;
+    if (query != null) {
+      occ = query(earPos, _emitterWorldPos).clamp(0.0, 1.0);
+    } else {
+      occ = baseMix.occluded ? 1.0 : 0.0;
+    }
+
+    // Advance `playbackPosition` continuously whether virtual or real!
+    if (dt > 0.0) {
+      final nextPos = em.playbackPosition + dt * baseMix.pitch;
+      final dur = em.clipDuration;
+      if (dur > 1e-6) {
+        if (em.looping) {
+          em.playbackPosition = nextPos % dur;
+        } else if (nextPos >= dur) {
+          em
+            ..playbackPosition = dur
+            ..playing = false;
+          _lastVoiceParams.remove(em);
+          return false;
+        } else {
+          em.playbackPosition = nextPos;
+        }
+      } else {
+        em.playbackPosition = nextPos;
+      }
+    }
+
+    final gainMult = query != null
+        ? 1.0 - occ * (1.0 - em.occlusionGain.clamp(0.0, 1.0))
+        : 1.0;
+    final finalVolume = (baseMix.volume * gainMult)
+        .clamp(0.0, math.max(1.0, em.baseVolume))
+        .toDouble();
+
+    final maxHz = math.max(100.0, maxLowPassCutoffHz);
+    final minHz = minLowPassCutoffHz.clamp(20.0, maxHz);
+    final cutoffHz = occ <= 1e-6
+        ? maxHz
+        : maxHz * math.pow(minHz / maxHz, occ).toDouble();
+
+    final params = AudioVoiceParams3D(
+      clipId: em.clipId,
+      volume: finalVolume,
+      pan: baseMix.pan,
+      pitch: baseMix.pitch,
+      lowPassCutoffHz: cutoffHz,
+      occlusion: occ,
+      playbackPosition: em.playbackPosition,
+      looping: em.looping,
+      reverb: _currentReverb,
+    );
+    _lastVoiceParams[em] = params;
+
+    if (finalVolume >= virtualThresholdVolume && maxRealVoices > 0) {
+      // Hysteresis bonus (`+0.015`) prevents rapid voice-stealing oscillation
+      // between two nearly identical emitters.
+      final alreadyRealBonus = _realVoiceHandles.containsKey(em) ? 0.015 : 0.0;
+      final priorityBoost = 1.0 + em.audioPriority * 0.1;
+      final score =
+          finalVolume * math.max(0.1, priorityBoost) + alreadyRealBonus;
+      final index = _candidates.length;
+      if (index == _entryPool.length) {
+        _entryPool.add(_EvaluatedEmitterEntry());
+      }
+      _candidates.add(
+        _entryPool[index]
+          ..emitter = em
+          ..params = params
+          ..priorityScore = score,
+      );
+    }
+    return true;
   }
 
   /// Stops and releases all active real voices on removal/disposal.
@@ -437,6 +586,9 @@ class SpatialAudioMixer3D({
   @override
   void onRemove() {
     stopAllRealVoices();
+    _lastVoiceParams.clear();
+    SpatialAudioRegistry3D.maybeOf(_world)?.mixers.remove(this);
+    _world = null;
     super.onRemove();
   }
 
@@ -446,7 +598,7 @@ class SpatialAudioMixer3D({
     }
     // Sort zones ascending by priority so higher-priority inner zones override
     // lower-priority outer zones proportionally to their weight `[0..1]`.
-    _allZones.sort((a, b) => a.priority.compareTo(b.priority));
+    _allZones.sort(_byAudioPriority);
     var accum = defaultReverb;
     for (var i = 0; i < _allZones.length; i++) {
       final z = _allZones[i];
@@ -458,63 +610,7 @@ class SpatialAudioMixer3D({
     return accum;
   }
 
-  World3D? _findWorld() {
-    if (!isMounted) {
-      return null;
-    }
-    for (final anc in ancestors()) {
-      if (anc is World3D) {
-        return anc;
-      }
-    }
-    return null;
-  }
-
-  SpatialAudioListener3D? _findListener() {
-    final w = _findWorld();
-    if (w == null) {
-      return null;
-    }
-    SpatialAudioListener3D? found;
-    void visit(Component c) {
-      if (found != null) {
-        return;
-      }
-      if (c is SpatialAudioListener3D) {
-        found = c;
-        return;
-      }
-      for (final child in c.children) {
-        visit(child);
-      }
-    }
-
-    visit(w);
-    return found;
-  }
-
-  void _collectSceneItems() {
-    _allEmitters
-      ..clear()
-      ..addAll(_registeredEmitters);
-    _allZones
-      ..clear()
-      ..addAll(_registeredZones);
-
-    final w = _findWorld();
-    if (w != null) {
-      void visit(Component c) {
-        if (c is SpatialAudioEmitter3D && !_allEmitters.contains(c)) {
-          _allEmitters.add(c);
-        } else if (c is AudioZone3D && !_allZones.contains(c)) {
-          _allZones.add(c);
-        }
-        for (final child in c.children) {
-          visit(child);
-        }
-      }
-
-      visit(w);
-    }
+  static int _byAudioPriority(AudioZone3D a, AudioZone3D b) {
+    return a.audioPriority.compareTo(b.audioPriority);
   }
 }

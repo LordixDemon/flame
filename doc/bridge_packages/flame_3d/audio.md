@@ -61,8 +61,10 @@ world.add(torch);
 
 Each update, an emitter evaluates its mix for its `listener` and calls `onMixChanged` with it;
 `lastMix` keeps the last one, and `evaluateMix(listener)` computes one on demand. Without a
-`listener`, it looks for the first `SpatialAudioListener3D` in its world, walking the whole
-component tree every frame: set `listener` explicitly.
+`listener`, it uses the first `SpatialAudioListener3D` mounted in its world (listeners register
+with their world when they mount, so nothing is searched). When a [mixer](#the-mixer) evaluates
+the emitter, the emitter does not evaluate itself again: the mixer calls `onMixChanged` with its
+own evaluation.
 
 The volume is `baseVolume` times the distance gain, the cone gain and the occlusion gain, clamped
 to `[0, max(1, baseVolume)]`. The pan is the direction of the emitter projected on the listener's
@@ -228,27 +230,34 @@ final mixer = SpatialAudioMixer3D(
 world.add(mixer);
 ```
 
-Mounted in a `World3D`, the mixer finds every `SpatialAudioEmitter3D` and `AudioZone3D` in that
-world each update; `registerEmitter` and `registerZone` add ones that are not in the world (and
-the `emitters` and `zones` constructor lists do the same). Each update it:
+Mounted in a `World3D`, the mixer uses every `SpatialAudioEmitter3D` and `AudioZone3D` mounted
+in that world: they register with their world when they mount and leave when they are removed, so
+the mixer does not walk the component tree. An emitter removed from the world while it plays has
+its voice stopped and is forgotten at once. `registerEmitter` and `registerZone` add emitters and
+zones that are not in the world (the `emitters` and `zones` constructor lists do the same); those
+stay until `unregisterEmitter` or `unregisterZone`. `unregisterEmitter` on an emitter of the world
+stops its voice and keeps it out of the mix until `registerEmitter` is called for it or it is
+removed from the world. Without a `listener`, the mixer uses the first listener mounted in its
+world. Each update it:
 
-1. evaluates the mix of every emitter whose `playing` is `true`;
+1. evaluates the mix of every emitter whose `playing` is `true`, and passes it to the emitter's
+   `onMixChanged`;
 2. advances the emitter's `playbackPosition` by `dt` times its pitch, wrapping around
    `clipDuration` for looping sounds; a sound that is not looping stops (`playing` becomes `false`)
    when it reaches `clipDuration`. A `clipDuration` of `0` (the default) means unknown: the
    position keeps growing and the sound never ends by itself;
 3. scores every emitter whose final volume is at least `virtualThresholdVolume`:
-   `volume * max(0.1, 1 + priority * 0.1)`, plus `0.015` for emitters that already have a real
-   voice, so two equally loud sounds do not swap voices every frame;
+   `volume * max(0.1, 1 + audioPriority * 0.1)`, plus `0.015` for emitters that already have a
+   real voice, so two equally loud sounds do not swap voices every frame;
 4. gives real voices to the `maxRealVoices` best scores: voices that lost their place are stopped
    with `stopVoice`, kept voices get `updateVoice`, and new ones get `startVoice`, starting at the
    emitter's current `playbackPosition`, so a sound that comes back from being virtual resumes
    where it would be.
 
-The other playing emitters are virtual voices: they cost no engine voice, only their evaluation,
-and keep their position. `realVoiceCount`, `virtualVoiceCount`, `isEmitterReal` and
-`voiceParamsFor` tell the state. `stopAllRealVoices` stops everything, and removing the mixer does
-it too.
+The other playing emitters are virtual voices: they use no engine voice but are still evaluated
+every update (with their occlusion raycast, if any), and keep their position. `realVoiceCount`,
+`virtualVoiceCount`, `isEmitterReal` and `voiceParamsFor` tell the state. `stopAllRealVoices`
+stops everything, and removing the mixer does it too.
 
 The mixer tells the backend where the sound should be in the clip, but the engine plays on its own
 clock; a backend that wants to stay in step can seek when the two drift apart.
@@ -262,8 +271,9 @@ clock; a backend that wants to stay in step can seek when the two drift apart.
 | `reverbCrossfadeSpeed`   | `5.0`   | Reverb blend rate per second; `0` switches at once. |
 | `defaultReverb`          | `dry`   | Reverb outside every zone.                          |
 
-`priority` is the emitter's component `priority`, which also orders it among its siblings for
-updates and rendering. With the default `inverseDistance` model a sound never gets quieter than its
+`audioPriority` (the `priority` argument of the emitter's constructor) is separate from the
+component `priority`, which orders a component among its siblings for updates and rendering. With
+the default `inverseDistance` model a sound never gets quieter than its
 gain at `maxDistance`, which is above the default threshold, so every playing emitter competes for
 the real voices however far it is; use `linear`, or a higher threshold, to drop distant sounds.
 
@@ -272,7 +282,8 @@ the real voices however far it is; use `linear`, or a higher threshold, to drop 
 
 Without an `occlusionQuery`, the mixer uses each emitter's own raycast (when `enableOcclusion` is
 on): occlusion is `0` or `1`. With an `occlusionQuery`, a function of the listener and emitter
-positions returning `0` (clear) to `1` (blocked), the emitters' raycasts are skipped and the
+positions returning `0` (clear) to `1` (blocked), the emitters' raycasts are skipped (the mix
+passed to `onMixChanged` is then not occluded; the occlusion is in the voice parameters) and the
 occlusion can be partial, for example the fraction of several rays that hit:
 
 ```dart
@@ -309,11 +320,12 @@ world.add(
 ```
 
 Each update, the mixer starts from `defaultReverb` and, for every enabled zone in ascending
-`priority`, blends toward the zone's preset by the zone's weight at the listener, so a zone with a
+`audioPriority` (the `priority` argument of the zone's constructor, separate from the component
+`priority`), blends toward the zone's preset by the zone's weight at the listener, so a zone with a
 higher priority inside another one wins. The result is approached smoothly (a factor of
 `1 - exp(-reverbCrossfadeSpeed * dt)` per update), stored in `currentReverb`, passed to
-`onReverbChanged` (every update, whether it changed or not) and handed to every voice in its
-`reverb` field.
+`onReverbChanged` on the updates where it changes, and handed to every voice in its `reverb`
+field.
 
 A `ReverbPreset3D` is three numbers for your engine's reverb, `wetMix`, `decaySeconds` and
 `preDelayMs`, plus a `name`. The built-in presets:
@@ -332,19 +344,16 @@ The mixer produces only these numbers; applying a reverb is up to the engine beh
 
 All costs are on the CPU, in the game update.
 
-- Every emitter in a world evaluates its own mix in its `update`, and the mixer evaluates it again:
-  two evaluations per emitter per frame, and two raycasts when `enableOcclusion` is on. Emitters
-  without a `listener`, and a mixer without one, search the world's component tree for a listener
-  every frame.
-- The mixer walks the world's whole component tree every update to collect emitters and zones,
-  and checks each emitter against the ones already collected, which grows with the square of the
-  number of emitters.
-- An evaluation allocates a `SpatialMix3D`, and the mixer allocates its candidate lists and one
-  `AudioVoiceParams3D` per playing emitter every update.
+- Every emitter is evaluated once per frame: by itself in its `update`, or by the mixer when one
+  mixes it. An evaluation costs a few dozen arithmetic operations, plus one raycast when
+  `enableOcclusion` is on, and allocates a small `SpatialMix3D`.
+- The mixer goes through the emitters and zones of its world in a list (no tree walk) and
+  allocates one `AudioVoiceParams3D` per playing emitter per update, the value it hands to the
+  backend; its other working lists are reused.
+- Virtual voices are evaluated like real ones, raycast included.
 
-A few dozen emitters cost little; for hundreds, register them with the mixer outside the world
-tree, give every emitter its `listener`, and prefer an `occlusionQuery` that you can throttle over
-per-emitter raycasts.
+A few dozen emitters cost little; for hundreds, prefer an `occlusionQuery` that you can throttle
+over per-emitter raycasts, and use `linear` rolloff so that distant sounds drop out.
 
 
 ## Limitations
@@ -356,8 +365,3 @@ per-emitter raycasts.
 - The low-pass cutoff and the reverb are parameters only; the engine must provide the filter and
   the reverb.
 - Built-in occlusion is a single all-or-nothing ray that also hits invisible meshes.
-- The mixer keeps the last parameters of an emitter that is removed from the world while playing
-  (and with them the emitter) until `unregisterEmitter` is called for it.
-- `unregisterEmitter` has no lasting effect on an emitter that is in the mixer's world: it is
-  collected again on the next update.
-- `priority` of emitters and zones is the component priority, shared with update and render order.
