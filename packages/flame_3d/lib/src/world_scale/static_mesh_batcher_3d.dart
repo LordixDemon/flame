@@ -297,7 +297,7 @@ class StaticMeshBatcher3D({
     _slots[slotId] = record;
     _localBoundsDirty = true;
     markAabbDirty();
-    worldOrNull?.markSceneDirty();
+    markDrawDirty(shadows: castsShadows);
     return slotId;
   }
 
@@ -332,7 +332,7 @@ class StaticMeshBatcher3D({
 
     _localBoundsDirty = true;
     markAabbDirty();
-    worldOrNull?.markSceneDirty();
+    markDrawDirty(shadows: castsShadows);
   }
 
   /// Removes [slotId] from the batcher, zeroing its indices in its owning
@@ -366,7 +366,7 @@ class StaticMeshBatcher3D({
 
     _localBoundsDirty = true;
     markAabbDirty();
-    worldOrNull?.markSceneDirty();
+    markDrawDirty(shadows: castsShadows);
     return true;
   }
 
@@ -379,7 +379,7 @@ class StaticMeshBatcher3D({
     _slots.clear();
     _localBoundsDirty = true;
     markAabbDirty();
-    worldOrNull?.markSceneDirty();
+    markDrawDirty(shadows: castsShadows);
   }
 
   /// Bakes any spatial chunks marked dirty since the last frame.

@@ -304,7 +304,7 @@ class ChunkedTerrain3D({
     _updateLocalAabb();
     _buildQuadtree();
     markAabbDirty();
-    worldOrNull?.markSceneDirty(shadows: castsShadows);
+    markDrawDirty(shadows: castsShadows);
   }
 
   /// Elevation sample grid (`gridColumns * gridRows`).

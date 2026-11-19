@@ -445,7 +445,7 @@ class VolumeDecalBatch3D({
     _projectedDecalCount = 0;
     _localAabb.setZero();
     markAabbDirty();
-    worldOrNull?.markSceneDirty(shadows: false);
+    markDrawDirty(shadows: false);
   }
 
   /// Clips and projects all [decals] against [targets] using cached per-surface
@@ -939,7 +939,7 @@ class VolumeDecalBatch3D({
     if (_vertCount == 0 || _idxCount < 3) {
       _mergedSurface = null;
       markAabbDirty();
-      worldOrNull?.markSceneDirty(shadows: false);
+      markDrawDirty(shadows: false);
       return;
     }
 
@@ -989,7 +989,7 @@ class VolumeDecalBatch3D({
       aabb: Aabb3.copy(_localAabb),
     );
     markAabbDirty();
-    worldOrNull?.markSceneDirty(shadows: false);
+    markDrawDirty(shadows: false);
   }
 
   _DecalBoxFrame _prepareDecalBoxFrame(ProjectedDecalBox3D decal) {

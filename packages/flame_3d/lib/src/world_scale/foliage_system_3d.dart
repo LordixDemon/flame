@@ -215,7 +215,7 @@ class FoliageSystem3D({
     _cellCount = 0;
     _cellsDirty = true;
     markAabbDirty();
-    worldOrNull?.markSceneDirty(shadows: castsShadows);
+    markDrawDirty(shadows: castsShadows);
   }
 
   /// Appends a single blade/tuft instance and returns its index (`-1` if
@@ -252,7 +252,7 @@ class FoliageSystem3D({
     _crush[i] = 0;
     _cellsDirty = true;
     markAabbDirty();
-    worldOrNull?.markSceneDirty(shadows: castsShadows);
+    markDrawDirty(shadows: castsShadows);
     return i;
   }
 
@@ -356,7 +356,7 @@ class FoliageSystem3D({
     }
 
     _ensureSpatialCells();
-    worldOrNull?.markSceneDirty(shadows: castsShadows);
+    markDrawDirty(shadows: castsShadows);
     return placed;
   }
 
@@ -844,7 +844,7 @@ class FoliageSystem3D({
     }
 
     if (anyChanged || windStrength > 0) {
-      worldOrNull?.markSceneDirty(shadows: castsShadows);
+      markDrawDirty(shadows: castsShadows);
     }
   }
 
