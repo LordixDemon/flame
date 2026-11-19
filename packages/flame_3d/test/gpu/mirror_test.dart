@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
@@ -90,6 +91,45 @@ void main() {
         ),
         (false, false),
       );
+    });
+
+    group('of instanced groups', () {
+      /// Renders an `InstancedGroup3D` of the quad at x = 0.5 and at x = -0.5
+      /// (mirrored by [mirrorRight] and [mirrorLeft]) with [groupScale], and
+      /// returns whether each is visible.
+      Future<(bool, bool)> renderGroup({
+        Vector3? groupScale,
+        bool mirrorRight = false,
+        bool mirrorLeft = false,
+      }) async {
+        final mesh = Mesh()..addSurface(quad(material, halfSize: 0.3));
+        final group = InstancedGroup3D(mesh: mesh, scale: groupScale)
+          ..addInstance(
+            transform: Matrix4.translationValues(0.5, 0, -5)
+              ..scaleByDouble(mirrorRight ? -1 : 1, 1, 1, 1),
+          )
+          ..addInstance(
+            transform: Matrix4.translationValues(-0.5, 0, -5)
+              ..scaleByDouble(1, mirrorLeft ? -1 : 1, 1, 1),
+          );
+        final frame = await renderFrame(draw: group.draw);
+        final (rx, ry) = pixelAt(0.5, 0);
+        final (lx, ly) = pixelAt(-0.5, 0);
+        return (!frame.pixels.isClear(rx, ry), !frame.pixels.isClear(lx, ly));
+      }
+
+      testGpuEngine('keeps the front faces of a mirrored group', () async {
+        // Scaling y by -1 swaps the two instances and mirrors both.
+        expect(await renderGroup(groupScale: Vector3(1, -1, 1)), (true, true));
+      });
+
+      testGpuEngine('keeps the front faces of mirrored instances', () async {
+        expect(await renderGroup(mirrorRight: true), (true, true));
+        expect(
+          await renderGroup(mirrorRight: true, mirrorLeft: true),
+          (true, true),
+        );
+      });
     });
   });
 }

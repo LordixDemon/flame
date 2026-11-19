@@ -106,15 +106,19 @@ Objects that build their own instance data, such as particle systems, record it 
 read from a `Float32List` of 24 floats per instance (the model matrix columns, the color and the
 data, or whatever the material's vertex shader makes of them) when the draws are flushed. Such a
 draw is never batched with others; a translucent one is ordered by the `center` it is given (the
-world origin when it is given none). Its material's vertex shader must read the four
-`instanceModel` columns, or `drawInstances` throws a `StateError`. See [Particles](particles.md).
+world origin when it is given none). Pass `mirrored: true` when the instances' matrices mirror the
+surface (an odd number of negative scales), so that it is drawn with the opposite winding; the
+instances of one draw must agree. Its material's vertex shader must read the four `instanceModel`
+columns, or `drawInstances` throws a `StateError`. See [Particles](particles.md).
 
 
 ### Many copies of a mesh: `InstancedGroup3D`
 
 `InstancedGroup3D` keeps the instances of one `Mesh` in a single `Float32List` instead of one
 component per copy: tiles, props, trees, fence posts. It records one `drawInstances` call per
-surface of the mesh.
+surface of the mesh, flagged as mirrored when its world transform and instance transforms mirror;
+when some instances mirror and others do not, it records two calls per surface from a copy that
+holds each kind together.
 
 ```dart
 final trees = InstancedGroup3D(mesh: treeMesh, initialCapacity: 256);
@@ -216,8 +220,7 @@ final floor = SpatialMaterial()
 Front faces are counter-clockwise on screen. The winding flips automatically when the camera mirrors
 the scene, and for objects whose transform mirrors them (an odd number of negative scales), so
 back-face culling keeps culling the faces that point away from the camera. Draws recorded with
-`drawInstances` (particles, `InstancedGroup3D`) are an exception: their winding is never flipped
-for the transform of the instances, see [Limitations](#limitations).
+`drawInstances` flip it when recorded with `mirrored: true`, as `InstancedGroup3D` does.
 
 `SpatialMaterial` and `StylizedMaterial` are opaque by default. `UnlitMaterial` may output
 translucent colors, so by default it blends with premultiplied alpha and draws as translucent; set
@@ -645,9 +648,6 @@ order-independent transparency, so measure those in your own scene.
 
 ## Limitations
 
-- `drawInstances` draws never flip their winding for mirroring transforms: an `InstancedGroup3D`
-  whose world transform (or an instance's transform) has an odd number of negative scales culls
-  its front faces with `CullMode.backFace`. Mirror the mesh instead, or use `CullMode.none`.
 - `InstancedGroup3D` culls and sorts as one object: the group is drawn whenever its bounding box
   (the union of all instances) is in view, and its translucent instances are neither sorted among
   themselves nor against other draws by their own position. Split large groups into several

@@ -472,12 +472,20 @@ class RenderContext3D(super.device) extends RenderContext {
 
   /// Records one instanced draw of [surface] with its material (or
   /// [material]).
+  ///
+  /// [instances] holds [count] instances of
+  /// [VertexLayout.instanceStrideInFloats] floats. Set [mirrored] when their
+  /// model matrices mirror the surface (an odd number of negative scales), so
+  /// that its front faces stay front faces; the instances of one draw must
+  /// all mirror or all not. [center] is the world-space point the draw is
+  /// sorted by when translucent.
   void drawInstances(
     Surface surface, {
     required Float32List instances,
     required int count,
     Material? material,
     Vector3? center,
+    bool mirrored = false,
   }) {
     if (count <= 0) {
       return;
@@ -507,7 +515,7 @@ class RenderContext3D(super.device) extends RenderContext {
     _materials[i] = drawMaterial;
     _pipelines[i] = pipeline;
     _joints[i] = null;
-    _mirrored[i] = 0;
+    _mirrored[i] = mirrored ? 1 : 0;
     _external[i] = instances;
     _externalCounts[i] = count;
 

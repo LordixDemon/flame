@@ -229,13 +229,109 @@ class InstancedGroup3D({
       return;
     }
     final buffer = _resolvedBuffer();
-    for (final surface in mesh.surfaces) {
-      context.drawInstances(
-        surface,
-        instances: buffer,
-        count: _length,
-      );
+    _updateMirroring(buffer);
+    final mirrored = _mirroredCount;
+    if (mirrored == 0 || mirrored == _length) {
+      for (final surface in mesh.surfaces) {
+        context.drawInstances(
+          surface,
+          instances: buffer,
+          count: _length,
+          mirrored: mirrored > 0,
+        );
+      }
+      return;
     }
+    // Mirrored and unmirrored instances need different front faces: draw
+    // them apart, from a copy holding the unmirrored ones first.
+    final plain = _length - mirrored;
+    for (final surface in mesh.surfaces) {
+      context
+        ..drawInstances(surface, instances: _partitioned!, count: plain)
+        ..drawInstances(
+          surface,
+          instances: _mirroredView!,
+          count: mirrored,
+          mirrored: true,
+        );
+    }
+  }
+
+  // How many instances of the drawn buffer mirror, for the buffer and the
+  // version they were counted for; when some do and some do not,
+  // [_partitioned] holds the unmirrored instances first and [_mirroredView]
+  // starts at the mirrored ones.
+  int _mirroredCount = 0;
+  Float32List? _mirroringBuffer;
+  int _mirroringVersion = -1;
+  final Matrix4 _mirroringWorld = Matrix4.zero();
+  Float32List? _partitioned;
+  Float32List? _mirroredView;
+
+  void _updateMirroring(Float32List buffer) {
+    final world = worldTransformMatrix;
+    if (identical(buffer, _mirroringBuffer) &&
+        _mirroringVersion == _localVersion &&
+        _mirroringWorld == world) {
+      return;
+    }
+    _mirroringBuffer = buffer;
+    _mirroringVersion = _localVersion;
+    _mirroringWorld.setFrom(world);
+
+    var mirrored = 0;
+    for (var i = 0; i < _length; i++) {
+      if (_mirrors(buffer, i * _stride)) {
+        mirrored++;
+      }
+    }
+    _mirroredCount = mirrored;
+    if (mirrored == 0 || mirrored == _length) {
+      return;
+    }
+
+    var partitioned = _partitioned;
+    if (partitioned == null || partitioned.length < _capacity * _stride) {
+      partitioned = _partitioned = Float32List(_capacity * _stride);
+    }
+    var plainAt = 0;
+    var mirroredAt = (_length - mirrored) * _stride;
+    for (var i = 0; i < _length; i++) {
+      final base = i * _stride;
+      if (_mirrors(buffer, base)) {
+        partitioned.setRange(mirroredAt, mirroredAt + _stride, buffer, base);
+        mirroredAt += _stride;
+      } else {
+        partitioned.setRange(plainAt, plainAt + _stride, buffer, base);
+        plainAt += _stride;
+      }
+    }
+    final viewStart = (_length - mirrored) * _stride;
+    final view = _mirroredView;
+    if (view == null ||
+        !identical(view.buffer, partitioned.buffer) ||
+        view.offsetInBytes != viewStart * Float32List.bytesPerElement) {
+      _mirroredView = Float32List.sublistView(partitioned, viewStart);
+    }
+  }
+
+  /// Whether the model matrix at [base] in [buffer] mirrors (its upper 3x3
+  /// has a negative determinant).
+  static bool _mirrors(Float32List buffer, int base) {
+    final m0 = buffer[base];
+    final m1 = buffer[base + 1];
+    final m2 = buffer[base + 2];
+    final m4 = buffer[base + 4];
+    final m5 = buffer[base + 5];
+    final m6 = buffer[base + 6];
+    final m8 = buffer[base + 8];
+    final m9 = buffer[base + 9];
+    final m10 = buffer[base + 10];
+    final determinant =
+        m0 * (m5 * m10 - m6 * m9) -
+        m4 * (m1 * m10 - m2 * m9) +
+        m8 * (m1 * m6 - m2 * m5);
+    return determinant < 0;
   }
 
   @override
