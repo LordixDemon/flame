@@ -452,13 +452,18 @@ whose bounds the ray misses within the current nearest distance, then tests each
 |                       | surfaces                                                           |
 
 Other components document their own ray casts (`ChunkedTerrain3D` and `StaticMeshBatcher3D` in
-[Large Worlds](world_scale.md), `WidgetSurface3D` in [3D UI and Text](ui_3d.md)). The query does not
-look at `Component3D.visible` or `cameraMask`: components hidden with `visible = false`, or shown
-only to another camera, are still hit, and so they also block every system built on
-`World3D.raycast` (pointer picking, audio occlusion, foot placement). Exclude them with `filter`:
+[Large Worlds](world_scale.md), `WidgetSurface3D` in [3D UI and Text](ui_3d.md)). Only what a
+render pass could draw is hit: a component with `visible = false`, or whose `cameraMask` shares no
+bit with the query's `cameraMask` (every bit by default), is skipped with its whole subtree. Pass a
+camera's mask to hit only what that camera shows, `includeHidden: true` to test everything (for
+probes against invisible collision geometry), and `filter` to exclude more:
 
 ```dart
-final hit = world.raycast(ray, filter: (object) => object.isEffectivelyVisible);
+final hit = world.raycast(
+  ray,
+  cameraMask: camera.cameraMask, // only what this camera draws
+  filter: (object) => object != player,
+);
 ```
 
 
@@ -526,7 +531,6 @@ component tree and never uses the index.
 
 ## Limitations
 
-- Ray casts ignore `Component3D.visible` and `cameraMask`.
 - Skinned surfaces of `ModelComponent` and `SkinnedCrowdBatch3D` are tested in their rest pose,
   placed by their node transforms: the ray does not follow the skinned, animated shape. Use
   `SkinnedHitboxRig3D` (see [Collisions and Physics](physics.md)) to hit animated characters.
