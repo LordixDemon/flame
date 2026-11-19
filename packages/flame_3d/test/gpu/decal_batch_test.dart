@@ -97,5 +97,80 @@ void main() {
         expect(ta, 128);
       });
     });
+
+    group('sortByDepth', () {
+      // A half transparent red decal at z = -4, in front of a half
+      // transparent blue one at z = -5, added in that order: over the clear
+      // color, red over blue is (128, 0, 64), blue over red (64, 0, 128).
+      DecalBatch3D overlapping({required bool sortByDepth}) {
+        return DecalBatch3D(sortByDepth: sortByDepth)
+          ..addFlatDecal(
+            center: Vector3(0, 0, -4),
+            width: 1.2,
+            height: 1.2,
+            normal: Vector3(0, 0, 1),
+            color: const Color(0x80FF0000),
+          )
+          ..addFlatDecal(
+            center: Vector3(0.2, 0, -5),
+            width: 1.2,
+            height: 1.2,
+            normal: Vector3(0, 0, 1),
+            color: const Color(0x800000FF),
+          );
+      }
+
+      (int, int, int) middle(Frame frame) {
+        final (x, y) = pixelAt(0.1, 0);
+        final (r, g, b, _) = frame.pixels.at(x, y);
+        return (r, g, b);
+      }
+
+      testGpuEngine(
+        'off, decals are drawn in the order they were added',
+        () async {
+          final frame = await renderFrame(
+            draw: overlapping(sortByDepth: false).draw,
+          );
+          final (r, g, b) = middle(frame);
+          expect(r, closeTo(64, 2));
+          expect(g, 0);
+          expect(b, closeTo(128, 2));
+        },
+      );
+
+      testGpuEngine('on, decals are drawn back to front', () async {
+        final decals = overlapping(sortByDepth: true);
+        final frame = await renderFrame(draw: decals.draw);
+        final (r, g, b) = middle(frame);
+        expect(r, closeTo(128, 2));
+        expect(g, 0);
+        expect(b, closeTo(64, 2));
+        expect(decals.sortCount, 1);
+
+        // The same camera and decals: no new sort.
+        await renderFrame(draw: decals.draw);
+        expect(decals.sortCount, 1);
+
+        // The red decal moves behind the blue one: sorted again.
+        decals.setDecal(
+          0,
+          transform: Matrix4.translationValues(0, 0, -6)
+            ..scaleByDouble(1.2, 1.2, 1, 1),
+        );
+        final moved = await renderFrame(draw: decals.draw);
+        expect(decals.sortCount, 2);
+        final (mr, _, mb) = middle(moved);
+        expect(mr, closeTo(64, 2));
+        expect(mb, closeTo(128, 2));
+
+        // Another camera: sorted again.
+        await renderFrame(
+          draw: decals.draw,
+          view: Matrix4.translationValues(0.1, 0, 0),
+        );
+        expect(decals.sortCount, 3);
+      });
+    });
   });
 }

@@ -15,10 +15,15 @@ import 'package:flame_3d/resources.dart';
 /// oriented and scaled by its 3D transform (or placed with [addFlatDecal] for
 /// ground/floor decals aligned to an arbitrary plane), with its own color and
 /// optional normalized UV sub-rectangle (`0..1`) into an atlas texture.
+///
+/// The decals are drawn in the order they were added, unless
+/// [sortByDepth] is set: overlapping translucent decals then blend back to
+/// front.
 /// {@endtemplate}
 class DecalBatch3D({
   DecalMaterial? material,
   int initialCapacity = 16,
+  bool sortByDepth = false,
   super.position,
   super.scale,
   super.rotation,
@@ -39,6 +44,33 @@ class DecalBatch3D({
 
   /// The material shared by all decals in this batch.
   final DecalMaterial material = material ?? DecalMaterial();
+
+  /// Whether the decals are drawn back to front, from the farthest from the
+  /// camera of the pass to the nearest (by the depth of their centers), so
+  /// that overlapping translucent decals blend in the right order whatever
+  /// order they were added in. With `false` (the default) they are drawn in
+  /// the order they were added.
+  ///
+  /// The order is computed again only when the camera of the pass or the
+  /// decals changed (one sort per change, `O(n log n)`, without allocating
+  /// after the first), into a second instance buffer of the batch's
+  /// capacity. Decals at the same depth keep the order they were added in.
+  bool get sortByDepth => _sortByDepth;
+  set sortByDepth(bool value) {
+    if (value == _sortByDepth) {
+      return;
+    }
+    _sortByDepth = value;
+    _sortedValid = false;
+    worldOrNull?.markSceneDirty(shadows: false);
+  }
+
+  bool _sortByDepth = sortByDepth;
+
+  /// The number of times the decals were sorted by depth, see
+  /// [sortByDepth], for tests and profiling.
+  int get sortCount => _sortCount;
+  int _sortCount = 0;
 
   static const int _stride = VertexLayout.instanceStrideInFloats;
 
@@ -258,9 +290,10 @@ class DecalBatch3D({
       ..add(local.max)
       ..scale(0.5);
     worldTransformMatrix.transform3(center);
+    final buffer = _resolvedBuffer();
     context.drawInstances(
       _unitQuad,
-      instances: _resolvedBuffer(),
+      instances: _sortByDepth ? _sortedBuffer(buffer, context) : buffer,
       count: _length,
       material: material,
       center: center,
@@ -268,6 +301,126 @@ class DecalBatch3D({
   }
 
   final Vector3 _drawCenter = Vector3.zero();
+
+  // The decals of [_resolvedBuffer] back to front, see [sortByDepth], and
+  // what they were sorted for.
+  Float32List? _sorted;
+  Int32List _order = Int32List(0);
+  Int32List _orderScratch = Int32List(0);
+  Float64List _sortDepths = Float64List(0);
+  bool _sortedValid = false;
+  int _sortedVersion = -1;
+  Float32List? _sortedSource;
+  final Float32List _sortedViewProjection = Float32List(16);
+  final Matrix4 _sortedWorld = Matrix4.zero();
+
+  /// The decals of [source] (in world space) from the farthest to the
+  /// nearest for the camera of [context], sorted again only when the camera,
+  /// the decals or the batch's transform changed.
+  Float32List _sortedBuffer(Float32List source, RenderContext3D context) {
+    final count = _length;
+    final viewProjection = context.viewProjection.storage;
+    var sorted = _sorted;
+    if (sorted == null || sorted.length < count * _stride) {
+      sorted = _sorted = Float32List(_capacity * _stride);
+      _order = Int32List(_capacity);
+      _orderScratch = Int32List(_capacity);
+      _sortDepths = Float64List(_capacity);
+      _sortedValid = false;
+    }
+    if (_sortedValid &&
+        _sortedVersion == _localVersion &&
+        identical(_sortedSource, source) &&
+        _sortedWorld == worldTransformMatrix &&
+        _sameMatrix(_sortedViewProjection, viewProjection)) {
+      return sorted;
+    }
+    _sortedValid = true;
+    _sortedVersion = _localVersion;
+    _sortedSource = source;
+    _sortedWorld.setFrom(worldTransformMatrix);
+    _sortedViewProjection.setAll(0, viewProjection);
+    _sortCount++;
+
+    // The depth the render context sorts translucent draws by: clip w under
+    // a perspective projection, clip z otherwise, larger farther.
+    final m = viewProjection;
+    final perspective = m[3] * m[3] + m[7] * m[7] + m[11] * m[11] > 1e-12;
+    final row = perspective ? 3 : 2;
+    final d0 = m[row];
+    final d1 = m[4 + row];
+    final d2 = m[8 + row];
+    final d3 = m[12 + row];
+    final order = _order;
+    final depths = _sortDepths;
+    for (var i = 0; i < count; i++) {
+      final b = i * _stride;
+      // The center of the decal is the translation of its matrix.
+      depths[i] =
+          d0 * source[b + 12] +
+          d1 * source[b + 13] +
+          d2 * source[b + 14] +
+          d3 * source[b + 15];
+      order[i] = i;
+    }
+    _mergeSortFarthestFirst(order, _orderScratch, depths, count);
+    for (var i = 0; i < count; i++) {
+      final from = order[i] * _stride;
+      sorted.setRange(i * _stride, (i + 1) * _stride, source, from);
+    }
+    return sorted;
+  }
+
+  static bool _sameMatrix(Float32List kept, Float32List current) {
+    for (var i = 0; i < 16; i++) {
+      if (kept[i] != current[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// Sorts the first [count] indices of [order] by decreasing [depths],
+  /// keeping the order of equal depths, with [scratch] as the second buffer
+  /// of a bottom-up merge sort.
+  static void _mergeSortFarthestFirst(
+    Int32List order,
+    Int32List scratch,
+    Float64List depths,
+    int count,
+  ) {
+    var from = order;
+    var to = scratch;
+    for (var width = 1; width < count; width *= 2) {
+      for (var left = 0; left < count; left += 2 * width) {
+        final mid = math.min(left + width, count);
+        final right = math.min(left + 2 * width, count);
+        var i = left;
+        var j = mid;
+        var k = left;
+        while (i < mid && j < right) {
+          // Strictly nearer on the right goes after: ties keep their order.
+          if (depths[from[j]] > depths[from[i]]) {
+            to[k++] = from[j++];
+          } else {
+            to[k++] = from[i++];
+          }
+        }
+        while (i < mid) {
+          to[k++] = from[i++];
+        }
+        while (j < right) {
+          to[k++] = from[j++];
+        }
+      }
+      final swap = from;
+      from = to;
+      to = swap;
+    }
+    if (!identical(from, order)) {
+      order.setRange(0, count, from);
+    }
+  }
 
   Float32List _resolvedBuffer() {
     final world = worldTransformMatrix;

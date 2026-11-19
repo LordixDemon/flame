@@ -1107,6 +1107,24 @@ final marks = DecalBatch3D(
 ```
 
 
+### Overlapping decals
+
+The decals of a batch are drawn in the order they were added, in one draw. Overlapping
+translucent decals at different depths (soft shadow layers under marks, splats on top of each
+other) blend correctly only when the farther ones come first. Set `sortByDepth` to draw them back
+to front for the camera of each pass, whatever order they were added in:
+
+```dart
+final floor = DecalBatch3D(material: marksMaterial, sortByDepth: true);
+```
+
+The batch sorts the decals by the depth of their centers (the depth the render context sorts
+translucent draws by), keeping the order of decals at the same depth, into a second instance buffer
+of the batch's capacity. It sorts again only when the camera of the pass, a decal or the batch's
+transform changed, in `O(n log n)` without allocating after the first sort; `sortCount` counts the
+sorts. Without `sortByDepth` (the default), nothing is sorted and the decals keep their order.
+
+
 ## Skybox
 
 `SkyboxComponent3D` fills the background of a `World3D` with a sky: a gradient from `zenithColor`
