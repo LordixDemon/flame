@@ -1,50 +1,233 @@
 # Getting Started
 
-There are a few important things to note before you even start playing with this package.
+`flame_3d` renders real-time 3D with the GPU, through
+[Flutter GPU](https://github.com/flutter/flutter/wiki/Flutter-GPU) on Impeller (and WebGPU in the
+browser), with a depth buffer. It can be used in two ways:
 
-The GPU-powered 3D support depends on the still experimental
-[Flutter GPU](https://github.com/flutter/flutter/wiki/Flutter-GPU), which in turn depends on
-Impeller. This means a few things:
-
-- Since **Flutter GPU** and **Impeller** are still experimental, this package is also considered
-  experimental and may have breaking changes at any time.
-- The only platforms that we have explicitly tested so far for support were Android, iOS, and macOS.
-- You need to enable Impeller, if not already enabled by default (see below).
+- a whole 3D game: a `FlameGame3D` whose world is a `World3D` seen through a `CameraComponent3D`;
+- 3D layers in a 2D game: `Scene3DComponent`s that show 3D scenes among ordinary 2D components,
+  lined up with the 2D camera (see [Embedding 3D in a 2D Game](embedding.md)).
 
 
-## Enabling Impeller
+## Requirements
 
-Then, you need to enable Impeller, if not already enabled by default. For example, for macOS, add
-the following to the generated `macos/runner/Info.plist` directory:
+- Flutter 3.47 or newer and Dart 3.13 or newer.
+- Impeller, which is the default renderer on iOS, macOS and Android, and Flutter GPU, which has to
+  be switched on (see below).
+- A call to `GpuBackend.initialize()` before anything renders.
 
-```xml
-<dict>
-  ...
-  <key>FLTEnableImpeller</key>
-  <true/>
+Flutter GPU and Impeller are experimental, and so is this package: its API may change at any time.
+
+
+## Platform support
+
+| Platform            | Backend                     | Status                                      |
+| ------------------- | --------------------------- | ------------------------------------------- |
+| iOS, macOS          | Flutter GPU on Metal        | Supported                                   |
+| Android             | Flutter GPU on Vulkan       | Supported                                   |
+| Android, older GPUs | Flutter GPU on OpenGL ES    | Supported, with the limits below            |
+| Web                 | WebGPU                      | Partial, see below                          |
+| Windows, Linux      | none (no Flutter GPU)       | Only `Canvas3DFallbackComponent`            |
+
+The package's GPU tests run headless with `flutter test --enable-impeller --enable-flutter-gpu`;
+behavior on Android and iOS devices is not covered by them.
+
+On OpenGL ES, `flame_3d` does not render into floating-point textures (Flutter GPU cannot tell
+whether the device supports it), so `World3D.hdrEnabled` falls back to an 8-bit target and shadow
+depths are packed into 8-bit channels. A device without offscreen multisampling silently renders
+without MSAA.
+
+`GpuBackend.isAvailable` tells whether the GPU backend can run in this process: it is `false` when
+Flutter GPU is not enabled, when Impeller is off, on Windows and Linux, and in browsers without
+WebGPU. Without it, constructing a `FlameGame3D` (or anything else with the `Game3D` mixin) throws,
+and so does the first render of a `Scene3DComponent`.
+
+
+### The web
+
+On the web, `flame_3d` renders through the browser's WebGPU API with WGSL versions of a few shaders.
+The package ships WGSL bundles for `SpatialMaterial` (a simpler shader than the native one, without
+the native-only inputs), `UnlitMaterial`, `SkyboxComponent3D` and the billboard material. The decal,
+outline and ribbon materials have WGSL bundles too, but their constructors still refuse the web.
+Everything else fails:
+
+- these constructors throw an `UnsupportedError` on the web: `StylizedMaterial`,
+  `ShadowCatcherMaterial`, `ParticleMaterial`, `DecalMaterial`, `OutlineMaterial` and
+  `RibbonMaterial3D`;
+- these features have no WGSL shaders and throw a `StateError` the first time they render: shadows
+  (any light with `shadows`), bloom, `postProcess` and `hdrEnabled` (their composite pass), the depth
+  prepass, weighted blended transparency and `WaterMaterial` (see also
+  [Post-Processing](post_processing.md#platform-support));
+- `Texture.toImage()` throws, and the wireframe debug mode draws filled triangles.
+
+Rendered images reach Flutter through a copy into an image bitmap after each pass. Multisampling
+(`Msaa.sample4`) works on the web. The package's tests do not run in a browser: this list comes from
+the code.
+
+
+### Without a GPU backend
+
+`Canvas3DFallbackComponent` draws a `World3D` with `Canvas.drawVertices` on the CPU, for platforms
+where `GpuBackend.isAvailable` is `false`. It is a plain 2D component: add it to an ordinary
+`FlameGame`, give it a `size` (it assumes 320 by 200 when its size is zero) and a
+`CameraComponent3D` to project with.
+
+```dart
+final fallback = Canvas3DFallbackComponent(
+  world: world,
+  size: Vector2(800, 600),
+  camera: CameraComponent3D(
+    position: Vector3(6, 5, 6),
+    target: Vector3.zero(),
+  ),
+);
+```
+
+It draws `MeshComponent`s, the instances of `InstancedGroup3D`s and the nodes of `ModelComponent`s,
+as flat triangles sorted back to front by their average depth. Each vertex gets the base color of
+its material (`albedoColor` of `SpatialMaterial`, `StylizedMaterial` or `UnlitMaterial`) times its
+vertex color times the component's `color`, shaded by one directional light (the last
+`DirectionalLight` of the world with an explicit `direction`) and one ambient light. It does not
+draw:
+
+- textures, specular light, shadows, fog, light colors, point, spot and hemisphere lights;
+- particles, billboards, text, decals, the skybox, `LodMeshComponent`s and custom `Object3D`s;
+- skinning and morph targets (models are drawn in their bind pose);
+- post-processing, MSAA or a depth buffer: triangles that intersect are sorted as wholes, and a
+  triangle that crosses the near plane is dropped.
+
+It also ignores `visible` and `cameraMask`, draws surfaces of any other material (including
+`ShadowCatcherMaterial`) as opaque white, uses only the camera's `position`, `target`, `up`, `fovY`,
+`orthographicHeight` (10 when `null`), `near` and `far` (not its custom matrices), and allocates
+buffers in proportion to the triangle count on every frame. It suits previews and simple scenes, not
+a full game.
+
+
+## Project setup
+
+Add the package to `pubspec.yaml`. Its shaders are assets of the package and need no declaration
+in the app.
+
+```yaml
+dependencies:
+  flame: ^2.0.0-dev.1
+  flame_3d: ^0.4.0-dev.1
+```
+
+Switch Flutter GPU on for each platform:
+
+- iOS and macOS, in `ios/Runner/Info.plist` and `macos/Runner/Info.plist`:
+
+  ```xml
   <key>FLTEnableFlutterGPU</key>
   <true/>
-</dict>
+  ```
+
+  Impeller is on by default there; add `FLTEnableImpeller` set to `true` if your project turned it
+  off.
+
+- Android, in the `<application>` element of `android/app/src/main/AndroidManifest.xml`:
+
+  ```xml
+  <meta-data
+      android:name="io.flutter.embedding.android.EnableFlutterGPU"
+      android:value="true" />
+  ```
+
+- For a quick try without changing the project files, `flutter run --enable-flutter-gpu` (add
+  `--enable-impeller` where Impeller is not the default).
+
+Then initialize the backend before running the app. `initialize()` loads every shader bundle of the
+app and its packages (on native platforms) or acquires the WebGPU device (on the web); without it,
+the first draw fails because its shader is not loaded. It throws when the backend is unavailable,
+so check `isAvailable` first:
+
+```dart
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final gpu = GpuBackend.isAvailable;
+  if (gpu) {
+    await GpuBackend.initialize();
+  }
+  final Game game = gpu ? MyGame() : FallbackGame();
+  runApp(GameWidget(game: game));
+}
 ```
 
-Alternatively, you can run Flutter with this flag instead:
 
-```bash
-flutter run --enable-flutter-gpu
+## A first scene
+
+A `FlameGame3D` creates a `World3D` and a `CameraComponent3D` unless you pass your own. Add lights
+and meshes to the world:
+
+```dart
+class MyGame extends FlameGame3D {
+  MyGame()
+    : super(
+        camera: CameraComponent3D(
+          position: Vector3(4, 3, 5),
+          target: Vector3(0, 0.5, 0),
+        ),
+      );
+
+  late final MeshComponent cube;
+  double _angle = 0;
+
+  @override
+  Future<void> onLoad() async {
+    cube = MeshComponent(
+      mesh: CuboidMesh(
+        size: Vector3.all(1),
+        material: SpatialMaterial(albedoColor: const Color(0xFF3FA7D6)),
+      ),
+      position: Vector3(0, 0.5, 0),
+    );
+    world.addAll([
+      LightComponent.ambient(intensity: 0.4),
+      LightComponent.directional(direction: Vector3(-0.5, -1, -0.3)),
+      MeshComponent(
+        mesh: PlaneMesh(
+          size: Vector2.all(8),
+          material: SpatialMaterial(albedoColor: const Color(0xFF7A8B5C)),
+        ),
+      ),
+      cube,
+    ]);
+  }
+
+  @override
+  void update(double dt) {
+    super.update(dt);
+    _angle += dt;
+    cube.rotation.setAxisAngle(Vector3(0, 1, 0), _angle);
+  }
+}
 ```
 
+The scene is y-up here: the default camera `up` is +y and `PlaneMesh` faces +y. Run it with the
+platform flags above. The imports are `package:flame_3d/camera.dart`, `components.dart`,
+`core.dart`, `game.dart`, `graphics.dart` (for `GpuBackend`) and `resources.dart`,
+`package:flame/game.dart` for `Game` and `GameWidget`, and `package:flutter/widgets.dart` for
+`runApp` and `WidgetsFlutterBinding`. Import only those two from the widgets library (with `show`):
+it also exports the 64-bit `vector_math` types, whose names clash with the ones `flame_3d` uses.
 
-## Playground & Examples
+To test GPU code, run `flutter test --enable-impeller --enable-flutter-gpu`: Flutter GPU then renders
+headless inside the test runner, deterministically. The flags also change how 2D content renders, so
+run 3D tests apart from 2D golden tests.
 
-You can find a "playground"-style example of using `flame_3d` in the `packages/flame_3d/example`
-directory. It contains multiple "setups" that you can switch using the built-in console commands.
 
-You can also find three more complex examples below:
+## Where to go next
 
-- [Defend the Donut](https://github.com/flame-engine/defend_the_donut/) - a simple first-person
-  spaceship game involving a giant space donut.
-- [Collect the Donut](https://github.com/luanpotter/collect_the_donut) - a simple third-person game
-  where you control a low-poly rogue and can attack skeletons and collect donuts.
-- [Flutter & Friends 2025 Workshop](https://github.com/luanpotter/flutter_and_friends_slides) - our
-  talk at Flutter & Friends 2025, which includes a demo showcasing how to setup multiple camera
-  styles.
+- [Basic Concepts](basic_concepts.md): the world, components, transforms, the frame, dirty marking,
+  masks and resources.
+- [Cameras](cameras.md): projections, rays, split screen and camera rigs.
+- [Rendering](rendering.md), [Geometry and Scene Queries](geometry.md),
+  [Materials and Textures](materials.md), [Lighting](lighting.md) and [Shadows](shadows.md).
+- [Embedding 3D in a 2D Game](embedding.md) for 3D layers in a 2D game.
+- The `example` directory of the package has a playground with several scenarios, switched from its
+  built-in console (see [The example app](debugging_and_testing.md#the-example-app)).
+- Larger examples: [Defend the Donut][defend], a first-person game, and
+  [Collect the Donut][collect], a third-person one.
+
+[defend]: https://github.com/flame-engine/defend_the_donut/
+[collect]: https://github.com/luanpotter/collect_the_donut

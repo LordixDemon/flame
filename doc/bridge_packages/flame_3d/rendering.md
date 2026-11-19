@@ -1,7 +1,38 @@
 # Rendering
 
-This page describes how `flame_3d` turns the components of a `World3D` into GPU work, and what
-you can control along the way.
+This page describes how `flame_3d` turns the components of a `World3D` into GPU work: how a frame
+is recorded, sorted and batched, the render state a material draws with, shaders, the optional
+passes (custom passes, order-independent transparency, the scene-color grab pass, HDR targets) and
+how to measure what a frame costs. Tone mapping, bloom, SSAO and the other full-screen effects are
+on [Post-Processing](post_processing.md).
+
+
+## How a frame is rendered
+
+A `FlameGame3D` camera and a `Scene3DComponent` layer (see [Embedding](embedding.md)) both render
+their `World3D` the same way, once per frame, in this order:
+
+1. The shadow passes, when a light casts shadows (see [Shadows](shadows.md)).
+2. The depth-normal prepass, when something needs it (see
+   [Post-Processing](post_processing.md#depth-normal-prepass)).
+3. The `beforeScene` [custom passes](#custom-render-passes-and-rendergraph3d).
+4. The world is traversed once and every visible object records its draws.
+5. The [grab pass](#scene-color-grab-pass), when a material refracts the scene.
+6. The main pass, or the [order-independent transparency](#order-independent-transparency)
+   passes.
+7. The `afterScene` custom passes and the post-processing composite, when enabled.
+
+With none of the options on, a frame is one traversal and one render pass per camera or layer
+(plus the shadow passes), drawn straight into the image Flutter shows. Each option adds passes,
+listed in its section. `RenderStats.renderPasses` counts them (see
+[Frame output and statistics](#frame-output-and-statistics)).
+
+The shadow passes and the depth-normal prepass traverse the world again: their CPU cost (culling,
+recording, particle sorting) is paid once more per pass.
+
+A layer with retained caching skips all of this and reuses its image on frames where nothing
+changed (see [Retained layer caching](embedding.md#retained-layer-caching) and
+[Scene versions and dirty marking](basic_concepts.md#scene-versions-and-dirty-marking)).
 
 
 ## Draws are recorded, then sorted
@@ -10,24 +41,34 @@ While the world is traversed, every visible `Object3D` records its draws into th
 `RenderContext3D` (a `MeshComponent` records one draw per surface of its mesh). Nothing reaches the
 GPU until the end of the render pass, when the recorded draws are submitted:
 
-- Opaque draws are grouped by pipeline, material and surface, then roughly ordered front to back.
-  Consecutive draws of the same `Surface` with the same `Material` instance become a single
+- Opaque draws are grouped by pipeline, material and surface, then ordered front to back within a
+  group. Consecutive draws of the same `Surface` with the same `Material` instance become a single
   instanced draw. Components that share a `Mesh` therefore cost one draw call per surface, however
   many of them there are.
-- Translucent draws come after all the opaque ones, ordered back to front. Consecutive translucent
-  draws of the same `Surface` with the same `Material` instance also become a single instanced draw,
-  whose instances are drawn in that back to front order.
-- Skinned draws are never batched.
+- Translucent draws come after all the opaque ones, ordered back to front by the center of each
+  surface's bounding box. Consecutive translucent draws of the same `Surface` with the same
+  `Material` instance also become a single instanced draw, whose instances are drawn in that back
+  to front order.
+- Skinned draws are never batched, and neither are draws recorded with `drawInstances`.
+- Objects whose transform mirrors them (an odd number of negative scales) batch only with other
+  mirrored objects, since they are drawn with the opposite winding.
 
 Because materials are applied when the draws are submitted, a material must not change its values
 between the draws of one frame to make objects look different: use distinct materials, or the
 per-instance color and data.
 
-When a directional light casts shadows (see [Shadows](shadows.md)), the world is traversed twice
-per frame: first with the light's view as the camera (`RenderContext3D.isShadowPass` is `true`),
-to render the shadow map from the draws of the objects and materials that cast shadows, then for
-the main pass. In the shadow pass, draws of one surface become a single instanced draw whatever
-their materials, drawn with depth-only shaders.
+The only ordering guarantee between materials is that opaque draws come before translucent ones.
+Among opaque draws, groups follow the order in which the device created their pipelines, then the
+order in which their materials were created. Rely on it only when you must (a stencil mask, for
+example, see [Stencil](#stencil)).
+
+When a light casts shadows, the world is traversed first with the light's view as the camera
+(`RenderContext3D.isShadowPass` is `true`) to render the shadow map from the objects and materials
+that cast shadows, then for the main pass. In the shadow pass, draws of one surface become a single
+instanced draw whatever their materials, drawn with depth-only shaders.
+
+The recording buffers start with room for 64 draws and double when full; they are reused from
+frame to frame, so recording allocates nothing once the scene has reached its size.
 
 
 ## Per-instance color and data
@@ -48,7 +89,7 @@ Each draw also carries four floats of per-instance data, `MeshComponent.instance
 default), that materials are free to interpret: a highlight, an emissive strength, an opacity, a
 wind strength... Objects that differ only in their color and data still batch.
 `SpatialMaterial` and `UnlitMaterial` ignore the data; `StylizedMaterial` reads it as described in
-[Materials and Lighting](materials.md#per-instance-data).
+[Materials](materials.md#per-instance-data).
 
 ```dart
 final house = MeshComponent(mesh: houseMesh, instanceData: Vector4.zero());
@@ -64,146 +105,99 @@ Objects that build their own instance data, such as particle systems, record it 
 `RenderContext3D.drawInstances`: one instanced draw of a surface, whatever the number of instances,
 read from a `Float32List` of 24 floats per instance (the model matrix columns, the color and the
 data, or whatever the material's vertex shader makes of them) when the draws are flushed. Such a
-draw is never batched with others; a translucent one is ordered by the `center` it is given. See
-[Particles](particles.md).
-
-For hundreds or thousands of static or semi-static copies of a `Mesh` (tiles, props, trees, fence
-posts), `InstancedGroup3D` stores all instances in a single contiguous `Float32List` (`addInstance`,
-`setTransform`, `setColor`, `setInstanceData`, `removeAtSwapLast`) and submits one `drawInstances`
-call per surface with zero per-instance `Component` overhead, while still supporting BVH raycasting
-returning the exact `instanceIndex`.
-
-`LodMeshComponent` switches automatically between `MeshLodLevel`s by distance from the camera or
-minimum screen-height coverage (`minScreenFraction`), and optionally casts shadows from a cheaper
-`shadowMesh`.
+draw is never batched with others; a translucent one is ordered by the `center` it is given (the
+world origin when it is given none). Its material's vertex shader must read the four
+`instanceModel` columns, or `drawInstances` throws a `StateError`. See [Particles](particles.md).
 
 
-## BVH raycasting and `SceneSpatialIndex3D`
+### Many copies of a mesh: `InstancedGroup3D`
 
-Every `Surface` builds a flat, zero-allocation median-split Bounding Volume Hierarchy on first
-query (`surface.bvh`), supporting `O(log T)` narrowphase ray-triangle intersection
-(`SurfaceBvh.raycastLocal` and `raycastTransform` for arbitrary world transforms including negative
-mirror scales).
+`InstancedGroup3D` keeps the instances of one `Mesh` in a single `Float32List` instead of one
+component per copy: tiles, props, trees, fence posts. It records one `drawInstances` call per
+surface of the mesh.
 
-`World3D.raycast` and `World3D.raycastAll` prune invisible subtrees by world `Aabb3` before testing
-`MeshComponent`, `ModelComponent`, `LodMeshComponent` and `InstancedGroup3D` surfaces, returning
-`RayHit3D` records (`component`, `position`, `normal`, `distance`, `barycentric`, `surfaceIndex`,
-`triangleIndex`, `instanceIndex`).
+```dart
+final trees = InstancedGroup3D(mesh: treeMesh, initialCapacity: 256);
+for (var i = 0; i < 200; i++) {
+  trees.addInstance(
+    transform: Matrix4.translationValues(i * 1.5, 0, 0),
+    color: const Color(0xFF7FBF5F),
+  );
+}
+world.add(trees);
 
-For large scenes with hundreds of `Object3D`s, setting `world.spatialIndex3DEnabled = true`
-maintains a version-tracked flat world-space AABB BVH (`world.spatialIndex3D`) that accelerates
-broadphase frustum queries (`queryFrustum`), box overlap queries (`queryAabb`) and `O(log N)`
-raycasting (`lastRaycastCandidatesTested`).
+// Later: move one tree, recolor another, remove a third.
+trees.setInstance(3, transform: Matrix4.translationValues(4, 0, 2));
+trees.setInstance(4, color: const Color(0xFFBF9F5F));
+trees.removeAtSwapLast(5); // the last instance takes index 5
+```
 
+- `addInstance` returns the index of the new instance; `setInstance` changes its transform, color
+  or data in place; `removeAtSwapLast` removes one in constant time by moving the last instance
+  into its slot, so indices are not stable across removals; `clear` removes them all;
+  `instanceTransform` reads one back. The capacity doubles when full.
+- The instance transforms are relative to the group, which can itself be moved, rotated and scaled
+  like any `Object3D`. When the group's world transform is not the identity, the instances are
+  transformed on the CPU into a second buffer whenever the group or an instance changes.
+- `World3D.raycast` hits the instances one by one; for a hit on a group, `RayHit3D.surfaceIndex`
+  holds the index of the instance, not of the surface (see [Geometry](geometry.md)).
 
-## Models, 64-bone skinning, morph targets, animation layers, and procedural IK
-
-`ModelComponent` evaluates glTF 2.0 models and animations through a zero-allocation `AnimationState`
-and `ModelPoseWorkspace` pipeline with `O(log K)` binary keyframe lookup:
-
-- **64-bone skinning & auto-splitting:** skinned shaders support up to 64 joints per primitive
-  (`JointMatrices`), and `ModelParser` automatically partitions glTF primitives referencing more
-  than 64 joints into sub-surfaces with remapped joint palettes.
-- **CubicSpline & Morph targets (`MorphTargetData`, `MorphWeightsChannel`):** `GltfParser` parses
-  `CUBICSPLINE` Hermite tangents, sampler filter/wrap modes, PBR normal/ORM/AO/emissive maps,
-  `alphaMode` (`OPAQUE`, `MASK`, `BLEND`), `doubleSided`, `COLOR_0`, and blend-shape morph targets
-  (`Surface.applyMorphWeights`, `Surface.updateVertices`, `ModelComponent.setMorphWeights`).
-- **Crossfades & `AnimationLayer3D`:** `playAnimationByName` and `crossFadeToByName` smoothly blend
-  clips; `addOverlayLayer` stacks masked upper-body or additive `AnimationLayer3D`s (`nodeMask`,
-  `weight`, `additive`) over the base locomotion clip, including layered morph weights.
-- **Procedural rigging (`BoneModifier3D`):** `ModelComponent.boneModifiers` runs post-animation
-  constraints in pose space before skinning: `TwoBoneIkConstraint3D` (analytical foot/hand IK),
-  `LookAtConstraint3D` (clamped head/turret tracking) and `SpringBone3D` (inertial hair/cape/tail
-  secondary motion), plus `BoneSocket3D` joint attachments.
-- **Blend spaces, frame events, root motion, offscreen policies, crowd batching & scene streaming:**
-  - `BlendSpace1D` (`playBlendSpace1D`, `blendParameter1D`) and `BlendSpace2D` (`playBlendSpace2D`,
-    `blendParameter2D`) blend locomotion/strafe clips continuously with phase-locked normalized
-    cycles;
-  - `AnimationEvent3D` (`ModelComponent.onAnimationEvent`) dispatches boundary-exact frame events
-    across `loop`, `once` and `pingPong` playback;
-  - `RootMotionExtractor3D` extracts per-tick local/world root bone displacement and yaw without
-    loop-wrap spikes, optionally locking horizontal root motion in place;
-  - `OffscreenAnimationPolicy` (`always`, `tickOnlyEvaluateWhenVisible`, `pauseWhenOffscreen`)
-    eliminates wasted offscreen skeletal matrix evaluations;
-  - `SkinnedCrowdBatch3D` pre-bakes clips into `BakedClipPoseBank3D` tables so dozens or hundreds
-    of animated agents advance in `O(1)` lookup time;
-  - `AsyncModelLoader3D` + ref-counted `AssetScope3D` stream `.glb` / `.obj` geometry, mipmaps and
-    `SurfaceBvh` hierarchies on background isolates via `TransferableTypedData`;
-  - `SceneLoader3D` (`loadAsset`, `loadGlbBytes`, `loadGltfJson`, `fromRoot`) loads complete glTF
-    2.0 scenes including `KHR_lights_punctual`, `KHR_materials_unlit`,
-    `KHR_materials_emissive_strength`, `KHR_texture_transform`, `KHR_mesh_quantization`,
-    `EXT_mesh_gpu_instancing` and `onNodeExtras` gameplay spawn hooks.
-- `ModelParser` precomputes `Model.animatedAabb`, conservative local-space bounds across all
-  animation keyframes, so animated `ModelComponent`s are never frustum-culled prematurely.
+Cost: one draw call per surface per pass, and the whole instance buffer (96 bytes per instance) is
+uploaded for each surface in every pass that draws it, the shadow passes and the depth-normal
+prepass included. Changing an instance's transform recomputes the group's bounds over all its
+instances.
 
 
-## 3D input, effects, physics, navigation, audio, and debug gizmos
+### Levels of detail: `LodMeshComponent`
 
-Beyond rendering, `package:flame_3d` ships modular 3D gameplay libraries:
+`LodMeshComponent` draws one of several meshes depending on how far it is from the camera and how
+much of the screen it covers, and can cast its shadow from a cheaper mesh:
 
-- **`package:flame_3d/input.dart`:** `PointerRouter3D.forScene` and `PointerRouter3D.forCamera`
-  route taps, hover enter/move/exit transitions, ray-plane drags and 1D `dragAxisConstraint` gizmo
-  drags to `Object3D`s mixing in `TapCallbacks3D`, `HoverCallbacks3D` and `DragCallbacks3D`
-  (including `InstancedGroup3D` `instanceIndex` hits).
-- **`package:flame_3d/effects.dart` & `camera.dart`:** `MoveToEffect3D`, `MoveByEffect3D`,
-  `ArcMoveEffect3D`, `SplinePathEffect3D(orientToTangent: true)`, `RotateToEffect3D`,
-  `RotateAroundEffect3D`, `ScaleToEffect3D`, `SquashStretchEffect3D`, `ColorTintEffect3D`,
-  `InstanceDataEffect3D`, `FixedTransformInterpolation3D`, plus `OrbitCameraController3D`
-  (`fitAabb`), raycast-occluded `SpringArmCamera3D`, `CameraDollyTrack3D` and 6-DOF trauma
-  `CameraShake3D`.
-- **`package:flame_3d/collisions.dart` & `physics.dart`:** `DynamicAabbTree3D` (`overlapSphere`,
-  `overlapBox`, `overlapCapsule`, `overlapFrustum`), `SphereShape3D`, `CapsuleShape3D`,
-  `BoxShape3D` (OBB), `ConvexHullShape3D`, `CompoundShape3D` (Huygens–Steiner parallel-axis
-  inertia) and `HeightfieldShape3D`, `PhysicsMaterial3D`, `CollisionSystem3D`, `TriggerVolume3D`,
-  `SkinnedHitboxRig3D` (`BoneHitbox3D`), swept `ShapeCast3D`, `KinematicCharacterController3D`,
-  and Sequential Impulse `PhysicsWorld3D` (`RigidBody3D` with `ccdEnabled` swept TOI anti-tunneling,
-  `DistanceJoint3D`, `BallSocketJoint3D`, `HingeJoint3D`, `FixedJoint3D`, `SliderJoint3D`,
-  `ConeTwistJoint3D`, `Generic6DofJoint3D`, Archimedes `BuoyancyVolume3D`, `RaycastVehicle3D`,
-  3D `XpbdCloth3D` / `XpbdRope3D`, and CRC32 binary `PhysicsSnapshot3D` rollback).
-- **`package:flame_3d/navigation.dart` & `audio.dart`:** `NavMesh3D.fromMesh` plus Recast-style
-  voxel `NavMeshBuilder3D.fromGeometry`, dynamic `NavMeshObstacle3D` carving, `OffMeshLink3D`
-  jumps/ladders, `polygonCosts`, RVO `CrowdSteering3D`, and voice-pooled `SpatialAudioMixer3D`
-  (virtual/real voice promotion, raycast wall occlusion and `AudioZone3D` reverb crossfading).
-- **`package:flame_3d/world_scale.dart`, `scene.dart`, `cinematics.dart` & `ui3d.dart`:**
-  - `LightClusterGrid3D` (`16x8x16` Forward+ clustering for 128+ local lights), Hi-Z software
-    `OcclusionCuller3D` + `PortalOcclusionGraph3D`, spatial `StaticMeshBatcher3D`, 64-bit
-    `FloatingOriginController3D`, quadtree CDLOD `ChunkedTerrain3D`, 10,000+ blade
-    `FoliageSystem3D` (with interactive trample spheres) and `VolumeDecalBatch3D`;
-  - `Component3D.visible` subtree culling, `clone()`, `PrefabRegistry3D`, JSON & `'F3DS'` binary
-    CRC32 `SceneSerializer3D`, `CameraStack3D` split-screen / `depthOnly` overlay compositing, and
-    ref-counted `GpuResourceManager3D` (LRU VRAM budget + device-loss recovery);
-  - `AnimationStateMachine3D` (HFSM), `HumanoidProfile3D` + `AnimationRetargeter3D`, N-bone
-    `FabrikIkConstraint3D`, terrain `FootPlacementIk3D`, `RagdollController3D` (fall & recovery),
-    `Timeline3D` + `VirtualCameraBrain3D`, `MeshoptDecoder3D` (`EXT_meshopt_compression`),
-    `WorldChunkStreamer3D`, 1-draw `MsdfTextBatch3D` and interactive `WidgetSurface3D`;
-  - `World3D.hdrEnabled` (`rgbaFloat16` linear HDR + `ColorLut3D` + `RenderDebugMode3D`),
-    `OitMode3D.weightedBlended`, `grabSceneColorEnabled` refraction, `RenderGraph3D`,
-    `StencilState`, `TextureSampler.anisotropic16x`, `Ktx2TextureLoader`, `BrdfLut3D`,
-    `ReflectionProbeVolume3D`, `LightProbeGrid3D`, and interactive `TransformGizmo3D` +
-    `SceneInspector3D`.
-- **`package:flame_3d/debug.dart`, `RenderTexture3D`, `cameraMask`/`lightMask` & Depth-Normal Prepass:**
-  - `Component3D.cameraMask` and `LightComponent.lightMask` filter visibility and lighting per
-    pass;
-  - `World3D.depthPrepassEnabled` runs a half-resolution clip-depth + view-normal prepass powering
-    8-tap Spiral **SSAO** (`PostProcessSettings.ssaoIntensity`), **3D Depth of Field**
-    (`dofBlurStrength`), **Soft Particles** (`ParticleMaterial.softDepthFade`) and **Shoreline
-    Water Foam** (`WaterMaterial.shoreFoamDepth`);
-  - `RenderTexture3D` renders live 3D portals, security monitors and mirrors directly into a
-    sampleable GPU `Texture` with zero CPU readback;
-  - `GraphicsDevice.warmupMaterial` pre-builds PSOs at load time and `estimatedTargetVramBytes`
-    tracks pooled render-target VRAM;
-  - `DebugRenderer3D` renders scene AABBs, OBBs, bone skeletons, light cones/spheres and custom
-    wireframes in 1 instanced GPU draw call.
+```dart
+final rock = LodMeshComponent(
+  levels: [
+    MeshLodLevel(mesh: rockHigh, maxDistance: 12),
+    MeshLodLevel(
+      mesh: rockMedium,
+      maxDistance: 30,
+      minScreenHeightRatio: 0.05,
+    ),
+    MeshLodLevel(mesh: rockLow),
+  ],
+  shadowMesh: rockLow,
+);
+```
+
+- Levels are ordered from the most detailed. In each main pass the first level whose
+  `maxDistance` (default: infinite) is at least the distance from the camera to the center of the
+  component's bounding box, and whose `minScreenHeightRatio` (default `0`) is at most the fraction
+  of the viewport height the bounding box covers, is drawn; the last level is the fallback whatever
+  its thresholds.
+- In a shadow pass it draws `shadowMesh` when set, otherwise the last level when
+  `lowestLodInShadowPass` is `true`, otherwise the level chosen by the previous main pass.
+- `lastSelectedLevel` tells which level the last main pass drew. Raycasts test that level.
+- `color` and `instanceData` work as on `MeshComponent`; it has no joint matrices, so it does not
+  draw skinned meshes.
 
 
 ## Render state
 
-A material declares how it is drawn with its `renderState`: the blend mode (`BlendState.opaque`,
-`alpha`, `premultipliedAlpha`, `additive` or `depthOnly`), whether the depth test is on and with
-which `CompareFunction`, whether depth is written, the `CullMode`, and whether the material is
-translucent (by default, every blend mode other than opaque is). Additive draws add their color and
-keep the alpha of the target: added light covers nothing, so in a `Scene3DComponent` a glow over an
-empty part of the scene adds its color to the 2D components drawn behind the layer.
+A material declares how it is drawn with its `renderState`, a `RenderState`:
+
+- `blend`: `BlendState.opaque`, `alpha` (straight alpha), `premultipliedAlpha`, `additive` or
+  `depthOnly` (no color written). Two more blend modes exist for the internal use of the
+  [order-independent transparency](#order-independent-transparency) passes.
+- `depthTest` and `depthCompare` (a `CompareFunction`, `less` by default), and `depthWrite`.
+- `cullMode` (`CullMode.none` by default, `backFace` or `frontFace`).
+- `stencil`, a [`StencilState`](#stencil), `null` (off) by default.
+- `polygonMode`, `PolygonFillMode.fill` or [`wireframe`](#wireframe-and-primitive-topology).
+- `translucent`: whether the draws go to the translucent, back-to-front part of the pass. By
+  default every blend mode other than opaque is translucent.
+- `depthPrepass`: see [Single-piece translucency](#single-piece-translucency).
+
+Additive draws add their color and keep the alpha of the target: added light covers nothing, so in
+a `Scene3DComponent` a glow over an empty part of the scene adds its color to the 2D components
+drawn behind the layer.
 
 ```dart
 final glow = UnlitMaterial()..renderState = RenderState.additive;
@@ -218,33 +212,116 @@ final floor = SpatialMaterial()
   ..renderState = const RenderState(cullMode: CullMode.backFace);
 ```
 
-A translucent object drawn with a single translucent material shows its own hidden parts through
-its near ones: an arm in front of a body lets the body show through it. Setting
-`singlePieceTranslucent: true` on `StylizedMaterial` or `SpatialMaterial` (which uses
-`RenderState.singlePiecePremultipliedAlphaBlend` with `depthPrepass: true`) automatically emits a
-depth-only prepass immediately before the color draw — and `ModelComponent` wraps multi-node
-translucent models in `RenderContext3D.beginDepthPrepassGroup()` / `endDepthPrepassGroup()` so every
-limb writes depth before any limb blends color. For opaque zero-sorting fades without translucency,
-enable `ditherFade: true` (`flame_3d/dither.glsl` Bayer 4x4 screen-door discard).
-
 Front faces are counter-clockwise on screen. The winding flips automatically when the camera mirrors
 the scene, and for objects whose transform mirrors them (an odd number of negative scales), so
-back-face culling keeps culling the faces that point away from the camera.
+back-face culling keeps culling the faces that point away from the camera. Draws recorded with
+`drawInstances` (particles, `InstancedGroup3D`) are an exception: their winding is never flipped
+for the transform of the instances, see [Limitations](#limitations).
 
 `SpatialMaterial` and `StylizedMaterial` are opaque by default. `UnlitMaterial` may output
 translucent colors, so by default it blends with premultiplied alpha and draws as translucent; set
 its `renderState` to `RenderState.opaque` for opaque content so that it batches. The built-in
-materials and the lights are described in [Materials and Lighting](materials.md).
+materials are described in [Materials](materials.md).
 
 
-## Surfaces from typed arrays and custom vertex layouts
+### Single-piece translucency
+
+A translucent object drawn with a single translucent material shows its own hidden parts through
+its near ones: an arm in front of a body lets the body show through it. A render state with
+`depthPrepass: true` (`RenderState.singlePieceAlphaBlend` and
+`RenderState.singlePiecePremultipliedAlphaBlend`) draws each such draw twice: first depth only,
+then shaded with `CompareFunction.lessEqual`, so only the nearest surfaces blend.
+`singlePieceTranslucent: true` on `StylizedMaterial` and `SpatialMaterial` selects it. The draws of
+one `drawMesh` call (every surface of a mesh), and of the nodes of a `ModelComponent`, form one
+group: all of them write depth before any of them blends. Custom objects group their own draws with
+`RenderContext3D.beginDepthPrepassGroup()` and `endDepthPrepassGroup()`.
+
+For fades without blending, `ditherFade: true` on `StylizedMaterial` and `SpatialMaterial` discards
+fragments in a 4x4 ordered dither pattern instead (`flame_3d/dither.glsl`), which keeps the object
+opaque and batched.
+
+
+### Stencil
+
+Every render pass has a stencil buffer, cleared to `0` when the pass begins and discarded when it
+ends. A `StencilState` tests each fragment against it and updates it:
+
+```dart
+// Writes 1 wherever the portal frame is drawn.
+final portalMask = UnlitMaterial()
+  ..renderState = const RenderState(
+    blend: BlendState.depthOnly,
+    depthWrite: false,
+    translucent: false,
+    stencil: StencilState.writeReference(1),
+  );
+
+// Drawn only where the mask wrote 1.
+final insidePortal = UnlitMaterial(albedoColor: const Color(0xFF2040C0))
+  ..renderState = const RenderState(
+    stencil: StencilState.testEqual(1),
+    blend: BlendState.premultipliedAlpha,
+  );
+```
+
+`StencilState` takes a `compare` function (`always` by default), the operations applied when the
+stencil test fails (`stencilFail`), when the depth test fails (`depthFail`) and when both pass
+(`pass`), all `StencilOp.keep` by default, a `readMask` and a `writeMask` (`0xFF`) and a
+`referenceValue` (`0`). `StencilState.writeReference`, `testEqual` and `testNotEqual` cover the
+usual cases.
+
+A mask must be drawn before the draws that test it. The example makes the mask opaque
+(`translucent: false`) and the masked material translucent, so the mask comes first whatever the
+creation order of the materials (see
+[Draws are recorded, then sorted](#draws-are-recorded-then-sorted)).
+The stencil does not survive from one pass to the next: a mask drawn in the main pass does not
+affect the shadow passes or the grab pass, and the translucent draws of
+[order-independent transparency](#order-independent-transparency) ignore their stencil state.
+
+
+### Wireframe and primitive topology
+
+`RenderState(polygonMode: PolygonFillMode.wireframe)` rasterizes the edges of the triangles only;
+`RenderDebugMode3D.wireframe` applies it to every draw of a world (see
+[Post-Processing](post_processing.md#debug-views)). It works on Metal and Vulkan; the WebGPU
+backend ignores it, and OpenGL ES has no line polygon mode.
+
+A surface can hold other primitives than triangles: `Surface.topology` is a `PrimitiveTopology`,
+`triangles` by default, or `triangleStrip`, `lines`, `lineStrip` or `points`.
+
+```dart
+final grid = Surface.fromBuffers(
+  vertices: gridLinePositions, // 3 floats per vertex
+  indices: gridLineIndices, // 2 indices per segment
+  layout: VertexLayout(const [VertexAttribute('vertexPosition', 3)]),
+  topology: PrimitiveTopology.lines,
+  material: lineMaterial,
+);
+```
+
+Lines are one pixel wide. The material's vertex shader must declare only the inputs the layout
+provides, see [Surfaces and vertex layouts](#surfaces-and-vertex-layouts). `RenderStats.triangles`
+counts no triangles for lines and points. For thick lines and trails use `StrokeBatch3D` or
+`RibbonTrail3D` (see [Particles](particles.md)); `Line3D` draws a thin cylinder between two points,
+as a mesh of its own (one draw call per line).
+
+
+### Viewport and scissor
+
+`GraphicsDevice.setViewport(x, y, width, height, zNear:, zFar:)` and
+`setScissor(x, y, width, height)` restrict the following draws of the current pass to a rectangle
+of the target, in pixels. They are not part of `RenderState`: the render context never sets them,
+and they last until the end of the pass. They are meant for
+[custom passes](#custom-render-passes-and-rendergraph3d) that draw with the device directly; split
+screens are handled by `CameraStack3D` (see [Cameras](cameras.md)).
+
+
+## Surfaces and vertex layouts
 
 Besides a list of `Vertex` objects, a `Surface` can be built straight from an interleaved
-`Float32List` and a `Uint16List` or `Uint32List` of indices, which avoids creating an object per
-vertex. Surfaces with more than 65,535 vertices use 32-bit indices.
-
-A surface may declare its own vertex layout. Each attribute feeds the vertex shader input with the
-same name, and a material's pipeline is created for the layout of each surface it draws:
+`Float32List` and a list of 16- or 32-bit indices (surfaces with more than 65,535 vertices use
+32-bit indices), with a `VertexLayout` of its own. Each attribute feeds the vertex shader input with
+the same name, and a material's pipeline is created for the layout of each surface it draws:
 
 ```dart
 final surface = Surface.fromBuffers(
@@ -259,14 +336,18 @@ final surface = Surface.fromBuffers(
 ```
 
 A surface must provide every input the material's vertex shader declares, except the per-instance
-inputs, which `flame_3d` feeds itself. The standard layout (`VertexLayout.standard`) has a position,
-texture coordinates, a color, a normal, joints and joint weights. A material can draw several
-layouts with a vertex shader variant per layout, see `Material.vertexShaderFor`.
+inputs, which `flame_3d` feeds itself. `VertexLayout.standard` has a position, texture coordinates,
+a color, a normal, joints and joint weights (20 floats); `VertexLayout.pbrStandard` adds a tangent
+and a second set of texture coordinates (26 floats). A material can draw several layouts with a
+vertex shader variant per layout, see `Material.vertexShaderFor`. Building surfaces, tangents,
+morph targets and the procedural meshes is described in [Geometry](geometry.md).
 
 
 ## Shaders
 
-Custom shaders can include the chunks `flame_3d` ships:
+Shaders are GLSL, compiled ahead of time into shader bundles (see
+[Building shader bundles](#building-shader-bundles)). Custom shaders can include the chunks
+`flame_3d` ships:
 
 - `flame_3d/instancing.glsl` declares the per-instance inputs: the columns of the model matrix
   (`instanceModel0` to `instanceModel3`), `instanceColor` and `instanceData`, and
@@ -279,33 +360,188 @@ Custom shaders can include the chunks `flame_3d` ships:
 - `flame_3d/camera.glsl` declares the `CameraMatrices` block (`view`, `projection`,
   `viewProjection`).
 - `flame_3d/skinning.glsl` handles vertex skinning: it declares the `vertexJoints` and
-  `vertexWeights` inputs and the `JointMatrices` block (16 matrices), and `computeSkinMatrix()`.
-- `flame_3d/lights.glsl` declares the light blocks: `AmbientLight`, `Lights` (point lights),
-  `DirectionalLights` and `HemisphereLight`, see
-  [Materials and Lighting](materials.md#custom-shaders).
+  `vertexWeights` inputs and the `JointMatrices` block (64 matrices), and `computeSkinMatrix()`.
+- `flame_3d/lights.glsl` declares the light blocks: `AmbientLight`, `Lights` (up to 8 point
+  lights), `DirectionalLights` (4), `SpotLights` (4) and `HemisphereLight`, see
+  [Lighting](lighting.md).
 - `flame_3d/shadows.glsl` declares the `Shadows` block and the `shadowMap` sampler, and
   `shadowVisibility()`, `shadowFactor()` and `castsShadows()` to receive shadows, see
   [Shadows](shadows.md#receiving-shadows).
-- `flame_3d/fog.glsl` declares the `Fog` block (`RenderContext3D.fogBlock`, driven by
-  `World3D.fog`) and `applyFog(color, worldPos, cameraPos)` for linear or exponential distance +
-  height fog.
+- `flame_3d/fog.glsl` declares the `Fog` block (driven by `World3D.fog`) and
+  `applyFog(color, worldPosition, view, projection, cameraPosition)` for distance and height fog.
+- `flame_3d/dither.glsl` declares `bayerDither4x4(gl_FragCoord.xy)`, a threshold for dithered
+  fades.
 
 Blocks named `CameraMatrices`, `Camera` (`position`, and any of the `CameraMatrices` members),
-`AmbientLight`, `Lights`, `DirectionalLights` and `HemisphereLight` are filled once per render pass
-by the `RenderContext3D`, for every shader that declares them; the joint matrices of skinned draws
-are filled for each draw, from the `jointTransforms` given to `RenderContext3D.drawSurface` (or to
-`drawMesh`, by surface index, which `MeshComponent.jointTransforms` feeds), whatever the surface:
-a parsed model's or one built with `Surface.fromBuffers`. The `Shadows` block and the `shadowMap`
-sampler are filled once per pass too. Register your own per-pass blocks with
-`RenderContext3D.registerPassUniform`, and per-pass textures with
-`RenderContext3D.registerPassTexture`.
+`AmbientLight`, `Lights`, `DirectionalLights`, `SpotLights`, `HemisphereLight`, `Shadows`,
+`ShadowAtlas`, `Fog`, `DepthNormal`, `SceneColor` and `PassOptions`, and the samplers `shadowMap`,
+`depthNormalTexture`, `sceneColorTexture`, `brdfLutTexture` and `probeGridTexture`, are filled once
+per render pass by the `RenderContext3D`, for every shader that declares them. The joint matrices
+of skinned draws are filled for each draw, from the `jointTransforms` given to
+`RenderContext3D.drawSurface` (or to `drawMesh`, by surface index, which
+`MeshComponent.jointTransforms` feeds), whatever the surface: a parsed model's or one built with
+`Surface.fromBuffers`. Register your own per-pass blocks with `RenderContext3D.registerPassUniform`,
+and per-pass textures with `RenderContext3D.registerPassTexture`. Writing a material around custom
+shaders is described in [Materials](materials.md#custom-shaders).
 
 Flutter GPU binds every uniform block and texture of a pipeline again for each draw call, so each
 resource a shader declares costs CPU time on every draw. `StylizedMaterial`'s fragment shader
-therefore reads the camera, the lights and the shadows of the pass from one internal block, which
-the writers registered for the six blocks above fill, rather than from those six blocks: a draw of
-it binds seven resources (the camera matrices, its wind, its material values, that block, its two
-MatCap textures and the shadow map) instead of twelve.
+therefore reads the camera, the lights, the shadows and the fog of the pass from one internal
+block, which the writers registered for those eight blocks fill, rather than from the eight blocks:
+a draw of it binds seven resources (the camera matrices, its wind, its material values, that block,
+its two MatCap textures and the shadow map).
+
+
+### Building shader bundles
+
+The built-in materials ship compiled bundles. For your own shaders, put a `.vert` and a `.frag`
+with the same base name in a `shaders/` directory of your package and run, from the package root:
+
+```sh
+dart run flame_3d:build_shaders
+```
+
+Each pair becomes `assets/shaders/<name>.shaderbundle`, compiled by the `impellerc` of your Flutter
+SDK (or the one the `IMPELLERC` define points to); every existing `.shaderbundle` of that directory
+is deleted first. `#include <package/file.glsl>` resolves against the `shaders/` directory of any
+package in your dependency graph. Add `watch` to rebuild when a source changes. Declare the
+directory as an asset: `GpuBackend.initialize()` loads every `.shaderbundle` the app declares.
+
+`--with-web-gpu` also builds `.wgslbundle` files for the WebGPU backend, through the `naga` CLI
+(`cargo install naga-cli`). Only 8 of the package's 28 shaders have a web bundle (`spatial_material`
+in its non-PBR variant, `unlit_material`, `skybox_material`, `billboard_material`,
+`decal_material`, `outline_material`, `outline_material_skinned` and `ribbon_material`): on the web,
+anything that needs another shader (`StylizedMaterial`, particles, water, shadows, the depth-normal
+prepass, order-independent transparency, bloom and post-processing) throws a `StateError` when it
+first draws.
+
+
+## Custom render passes and `RenderGraph3D`
+
+`World3D.customPasses` holds `CustomRenderPass3D`s, functions run during the frame with a
+`CustomRenderPassContext3D` (the device, the render context, the size of the scene in pixels, the
+depth-normal texture when the prepass ran, and for `afterScene` passes the scene's texture target):
+
+```dart
+final world = World3D(
+  customPasses: [
+    CustomRenderPass3D(
+      name: 'minimap',
+      stage: CustomRenderPassStage3D.beforeScene,
+      execute: (pass) {
+        final target = pass.device.textureTarget(
+          128,
+          128,
+          GpuPixelFormat.rgba8888,
+          clearValue: const Color(0xFF101820),
+        );
+        pass.device.beginTexturePass(target);
+        // ... bind a pipeline and draw with pass.device ...
+        pass.device.endTexturePass();
+      },
+    ),
+  ],
+);
+```
+
+- `beforeScene` passes run after the shadow passes and the depth-normal prepass, before the scene's
+  draws are recorded. They have no scene target: they render into textures of their own, which the
+  scene's materials can sample (through `RenderContext3D.registerPassTexture`, for example).
+- `afterScene` passes run after the main pass, before the post-processing composite, and get the
+  scene's texture target in `sceneTarget`. Any enabled `afterScene` pass makes the world render
+  through a texture target and a composite pass, as post-processing does (see
+  [Post-Processing](post_processing.md#the-composite-pass)), which turns MSAA off.
+- `enabled` switches a pass off without removing it.
+
+A pass draws with the device directly: `beginTexturePass`, `bindPipeline`, `setRenderState`,
+`bindSurface`, `drawSurface`, `endTexturePass`. Texture targets from `GraphicsDevice.textureTarget`
+are shared by every pass of the frame that asks for the same size, format and clear color, and are
+released 30 frames after their last use; give a target a clear color of its own, or create one with
+`device.backend.createTextureTarget`, when it must not be shared.
+
+`RenderGraph3D` is a separate tool for passes you schedule yourself: you declare transient textures
+(`createTexture`) and imported ones (`importTextureTarget`), and passes that read and write them
+(`addRenderPass`). `compile` orders the passes by their dependencies, throws a `StateError` on a
+cycle, drops the passes whose output nothing uses (unless `hasSideEffects`), and lets transient
+textures with the same descriptor and lifetimes that do not overlap share one target. `execute`
+runs the live passes, each with a `RenderGraphPassContext3D` that resolves handles to targets
+(`targetOf`, `textureOf`); a pass still begins and ends its own render pass:
+
+```dart
+final graph = RenderGraph3D();
+final blurred = graph.createTexture(
+  'blurred',
+  const RenderGraphTextureDesc3D(width: 256, height: 256),
+);
+graph.addRenderPass(
+  name: 'blur',
+  writes: [blurred],
+  hasSideEffects: true,
+  execute: (pass) {
+    pass.device.beginTexturePass(pass.targetOf(blurred));
+    // ... draw ...
+    pass.device.endTexturePass();
+  },
+);
+graph.execute(device, renderContext); // inside an open device frame
+graph.clear(); // before declaring the next frame's passes
+```
+
+`World3D` does not use `RenderGraph3D`: its own passes are fixed. `compile` allocates its plan on
+every call, and the targets a graph creates are pooled by descriptor and never released (a graph
+rebuilt at every new screen size keeps the targets of every size it saw).
+
+
+## Order-independent transparency
+
+`World3D(oitMode: OitMode3D.weightedBlended)` draws the translucent draws of a frame with weighted
+blended order-independent transparency instead of sorting them, so intersecting translucent
+surfaces blend the same whatever their order. It only runs in frames that have translucent draws
+and on backends with texture targets. A frame then renders:
+
+1. the opaque draws into a full-size target of the scene's format;
+2. an accumulation pass into a full-size `rgbaFloat16` target (`rgba8888` where float targets are
+   not supported): the opaque draws again, depth only, then every translucent draw;
+3. a coverage pass into a full-size `rgba8888` target: the opaque draws depth only and the
+   translucent draws once more;
+4. a composite of the three into the output (or into one more target, when post-processing
+   follows).
+
+The opaque geometry is drawn three times, the translucent geometry twice, each translucent draw
+with a draw call of its own. Translucent draws are not drawn with their material: one built-in
+shader draws them with the base color and texture of a `SpatialMaterial` or `UnlitMaterial`, the
+shallow color and opacity of a `WaterMaterial`, or a 50% white for any other material, without
+lighting, specular, fog or skinning, faded by `instanceData.w`. Surfaces without both
+`vertexTexCoord` and `vertexColor` attributes (particle billboards, `StylizedMaterial` surfaces
+built with `buildSurface`) are not drawn at all. The mode is meant for flat, unlit glass and
+overlays; for lit translucent objects, keep the sorted path, with
+[single-piece translucency](#single-piece-translucency) or dithered fades. See
+[Limitations](#limitations) for the cases it renders wrongly.
+
+
+## Scene-color grab pass
+
+A refractive material needs the color of the scene behind it. With
+`World3D.grabSceneColorEnabled` set, or whenever a `SpatialMaterial` with `transmission` above zero
+is drawn, the opaque draws are first drawn into a full-size texture target of the scene's format;
+the main pass then binds that texture as `sceneColorTexture` (and sets `SceneColor.params.x` to
+`1`) for every shader that declares it. `SpatialMaterial.transmission` and `WaterMaterial` (only
+with `grabSceneColorEnabled`) offset their lookup by the surface normal to refract what is behind
+them (see [Materials](materials.md)).
+
+The grab pass is not a copy: every opaque draw is drawn a second time, with its full shading.
+Translucent draws are not in the grabbed image, so glass behind glass does not show.
+
+
+## HDR render targets
+
+`World3D.hdrEnabled` (also on `Scene3DComponent`) renders the scene into a 64-bit
+`GpuPixelFormat.rgbaFloat16` texture target where the backend can render into float textures (Metal,
+Vulkan and WebGPU; not OpenGL ES, where it silently falls back to `rgba8888`), tells the shaders to
+output linear light, without a tone curve, through `PassOptions.flags.x`, and adds the composite
+pass that tone-maps the image and encodes it to sRGB. Only the native `SpatialMaterial` shader reads
+that flag; how it changes the look of the other materials, and what it costs, is described in
+[Post-Processing](post_processing.md#hdr).
 
 
 ## Frame output and statistics
@@ -314,38 +550,54 @@ Each camera renders the world into an image of its viewport size in physical pix
 whole pixels. `World3D.renderScale` renders it at a fraction of that size (or above `1` to
 render more pixels than the viewport covers); the image is scaled to the viewport when drawn.
 
-The render targets of a `GraphicsDevice` are pooled by size: a size that is not used in a frame
-stays pooled for `GraphicsDevice.targetRetainFrames` frames. A render target owns up to three color
-textures, created once, which its passes take turns rendering into; the image of a pass is drawn by
-Flutter straight from its texture. A texture is rendered into again only once Flutter can no longer
-draw its previous image: Flutter rasterizes at most the frame it is building and the one before, so
-two frames later the image has been drawn, and the draws that read it were submitted to the GPU
-before the new pass is. A scene rendered every frame therefore uses two textures; when Flutter draws
-no frames (passes rendered outside of frames), the texture rendered the longest ago of the three is
-reused.
+The render targets of a `GraphicsDevice` are pooled by size and sample count: a size that is not
+used in a frame stays pooled for `GraphicsDevice.targetRetainFrames` (30) frames. A render target
+owns up to three color textures, created once, which its passes take turns rendering into; the image
+of a pass is drawn by Flutter straight from its texture. A texture is rendered into again only once
+Flutter can no longer draw its previous image: Flutter rasterizes at most the frame it is building
+and the one before, so two frames later the image has been drawn, and the draws that read it were
+submitted to the GPU before the new pass is. A scene rendered every frame therefore uses two
+textures; when Flutter draws no frames (passes rendered outside of frames), the texture rendered the
+longest ago of the three is reused. The depth buffer of a pass is transient: it is cleared when the
+pass begins and never written back to memory.
 
-Shadow maps render into textures that later passes sample (`GraphicsDevice.textureTarget`), created
-once for each size and format and kept while they are used.
+Passes whose image later passes sample (shadow maps, the depth-normal prepass, the scene target of
+post-processing) render into texture targets (`GraphicsDevice.textureTarget`), created once for
+each size, format and clear color and kept while they are used.
 
-Setting `World3D.bloom = const BloomSettings(...)` renders the scene into a texture target, extracts
-bright pixels at half resolution with a soft threshold knee, blurs them with a multi-pass 5-tap
-Kawase filter, and composites the additive glow back while preserving target alpha. Calling
-`World3D.renderToImage(size, view: ..., projection: ...)` renders a standalone snapshot into a
-dedicated render target (even when the world is not mounted in a game).
+MSAA (`Game3D.msaa()`, `Scene3DComponent.msaa`) applies to the main pass only when it renders
+straight into the output image: with post-processing, HDR, an `afterScene` custom pass or
+order-independent transparency, the scene renders into a single-sample texture target and MSAA is
+off. Where the device has no offscreen MSAA, `Msaa.sample4` silently falls back to one sample.
 
-`FlameGame3D.renderStats` holds the statistics of the last rendered frame: render passes, draw
-calls, instances, triangles, pipeline changes, render state changes, material changes, uniform
-uploads, uploaded bytes, the particles drawn by particle systems, and how many of the passes and
-draw calls rendered shadow maps (`shadowPasses` and `shadowDrawCalls`).
+`World3D.renderToImage(size, view: ..., projection: ...)` renders a standalone snapshot, even when
+the world is not mounted in a game. Lights register with their world only when they mount,
+however, so an unmounted world renders lit materials without any light. It creates a new render
+target on each call: use it for occasional snapshots, and `RenderTexture3D` for a view rendered
+every frame (see [Materials](materials.md)).
+
+`FlameGame3D.renderStats` holds the statistics of the last rendered frame, and
+`Scene3DComponent.renderStats` those of the layer's last render: render passes, draw calls,
+instances, triangles, pipeline changes, render state changes, material changes, uniform uploads,
+uploaded bytes, the particles drawn by particle systems, and how many of the passes and draw calls
+rendered shadow maps (`shadowPasses` and `shadowDrawCalls`). `GraphicsDevice.cachedPipelineCount`
+counts the pipelines created so far, and `estimatedTargetVramBytes` estimates the memory of the
+pooled render and texture targets.
+
+A pipeline is created the first time a material draws a layout, which can make that frame late.
+`GraphicsDevice.warmupMaterial(material, layout: ...)` creates it ahead of time, for one layout
+(`VertexLayout.standard` by default); call it once per layout the material draws. It does not warm
+the shadow, depth-normal or transparency pipelines.
 
 
 ### Profiling
 
 Built with `--dart-define=FLAME_3D_PROFILE=true`, the renderer times its phases on the CPU into
-`RenderProfile.active`: walking the components, culling, recording draws, particles, sorting,
-batching, render state, `Material.apply`, the uniform blocks of the pass, uploads, bindings,
-gathering instances, draw calls, and beginning and ending passes, the shadow pass apart. Without
-the define, the timing is compiled out.
+`RenderProfile.active`: the host's setup, fitting the shadow map, walking the components, culling,
+recording draws, particles, sorting, batching, render state, `Material.apply`, the uniform blocks of
+the pass, uploads, bindings, gathering instances, draw calls, beginning and ending passes, and
+drawing the image into the canvas, the shadow passes apart. Without the define, the timing is
+compiled out.
 
 ```dart
 final profile = RenderProfile.active = RenderProfile();
@@ -357,6 +609,66 @@ for (final phase in RenderPhase.values) {
 ```
 
 Timing every draw costs a little, so compare its totals with a build without the define. The
-package's `benchmark/` renders a board-like scene (a few hundred instanced objects, skinned
-characters, shadows, particles) and reports these phases, the objects allocated per frame and the
-`RenderStats`, under `flutter test` or in a profile build: see its README.
+package's `benchmark/` renders a board-like `Scene3DComponent` scene (about 200 instanced objects,
+skinned characters, translucent and additive parts, shadows, particles, 4x MSAA) and reports these
+phases, the objects allocated per frame and the `RenderStats`, under `flutter test` or in a profile
+build: see its README. It does not enable HDR, bloom, post-processing, the depth-normal prepass or
+order-independent transparency, so measure those in your own scene.
+
+
+## Platform support
+
+- Metal (iOS, macOS) and Vulkan (Android): everything on this page.
+- OpenGL ES (Android devices without Vulkan): no float texture targets, so HDR and the
+  accumulation target of order-independent transparency fall back to 8 bits per channel without a
+  warning; no wireframe; some devices have no offscreen MSAA.
+- Web (WebGPU): the main pass, render states and stencil; MSAA renders with 4 samples. Wireframe
+  is ignored, `SpatialMaterial` draws with its non-PBR shader (no transmission, so the grab pass
+  has no use there), and the features that need a shader without a web bundle throw (see
+  [Building shader bundles](#building-shader-bundles)). The backend also creates a bind group for
+  every draw call, which costs CPU time per draw that the native backends do not have. Strip
+  topologies are drawn indexed without the strip index format WebGPU requires for that, so expect
+  a validation error with them.
+
+
+## Limitations
+
+- Order-independent transparency renders wrongly in these cases: with `hdrEnabled` (and a
+  transparent clear color, the default of `Scene3DComponent` and `FlameGame3D`), the composite pass
+  renders into the accumulation target it samples, and translucent surfaces come out black or
+  disappear; the opaque target is always cleared to transparent with a blue of 4/255, so the clear
+  color of a `CameraStack3D` slot or of `renderToImage` is lost, and that blue is added to the 2D
+  art behind a `Scene3DComponent`; on OpenGL ES the 8-bit accumulation target clamps the weights.
+  See [Order-independent transparency](#order-independent-transparency) for what it does not draw.
+- `drawInstances` draws never flip their winding for mirroring transforms: an `InstancedGroup3D`
+  whose world transform (or an instance's transform) has an odd number of negative scales culls
+  its front faces with `CullMode.backFace`. Mirror the mesh instead, or use `CullMode.none`.
+- `InstancedGroup3D` culls and sorts as one object: the group is drawn whenever its bounding box
+  (the union of all instances) is in view, and its translucent instances are neither sorted among
+  themselves nor against other draws by their own position. Split large groups into several
+  spatially compact groups.
+- `LodMeshComponent` switches levels at the thresholds without hysteresis, so an object that stays
+  near a threshold can change level every frame.
+- `Line3D.generate` draws a line that points straight down (`end` directly below `start`) upwards
+  from `start`.
+- When the scene clear color is not fully transparent (a `CameraStack3D` slot's `clearColor`, a
+  `renderToImage` clear value), the grab pass and the post-processing scene target are the same
+  texture target, so refractive materials sample the texture the main pass renders into. The
+  result is undefined.
+- An `afterScene` custom pass cannot draw over the scene: beginning a pass on `sceneTarget` clears
+  it. It can only read it.
+- The stencil buffer is per pass and not stored: it cannot carry a mask from one pass to another.
+
+
+## Related pages
+
+- BVH raycasting and `SceneSpatialIndex3D`: [Geometry and Scene Queries](geometry.md).
+- Models, skinning, morph targets and animation: [Models and Animation](models_and_animation.md).
+- 3D input, effects, physics, navigation, audio and debug gizmos:
+  [Input and Effects](input_and_effects.md), [Collisions and Physics](physics.md),
+  [Navigation](navigation.md), [Spatial Audio](audio.md) and
+  [Debugging, Profiling and Testing](debugging_and_testing.md).
+- Large worlds (static batching, occlusion culling, floating origin, terrain, foliage, volume
+  decals, streaming): [Large Worlds](world_scale.md).
+- Prefabs, scene serialization and the GPU resource manager:
+  [Scenes and Assets](scenes_and_assets.md).

@@ -1,9 +1,14 @@
-# Particles
+# Particles and Ribbons
 
-`ParticleSystem3D` (from `package:flame_3d/particles.dart`) is a particle system for the 3D world:
-it spawns particles, simulates them on the CPU and draws all of them with one instanced draw, depth
-tested against the rest of the scene. Sparks, coins, smoke and dust pass behind and in front of
-models as they should, in a `FlameGame3D` as in a `Scene3DComponent` layer of a 2D game.
+`package:flame_3d/particles.dart` holds two kinds of effects for the 3D world:
+
+- `ParticleSystem3D`, a particle system: it spawns particles, simulates them on the CPU and draws
+  all of them with one instanced draw, depth tested against the rest of the scene. Sparks, coins,
+  smoke and dust pass behind and in front of models as they should, in a `FlameGame3D` as in a
+  `Scene3DComponent` layer of a 2D game.
+- Ribbons: `StrokeBatch3D` draws 3D polylines (beams, arcs, paths) and `RibbonTrail3D` a trail
+  behind a moving object, as camera-facing strips drawn with `RibbonMaterial3D`, one instanced draw
+  each.
 
 
 ## A first system
@@ -41,10 +46,10 @@ sparks.burst(40, at: hitPoint);
 ```
 
 All the state lives in struct-of-arrays typed lists allocated with the system, for `capacity`
-particles, so simulating and drawing allocate nothing. Particles spawned while the system is full
-are dropped, or replace live ones in turn with `overflow: ParticleOverflow.recycle`. The system's
-`random` generator is seeded (`seed`), so a system fed the same time steps produces the same
-particles.
+particles (1024 by default, about 200 bytes each), so simulating and drawing allocate nothing.
+Particles spawned while the system is full are dropped, or replace live ones in turn with
+`overflow: ParticleOverflow.recycle`. The system's `random` generator is seeded (`seed`), so a
+system fed the same time steps produces the same particles.
 
 The curves over a particle's life (`ParticleCurve`, `ColorRamp`), the ranges of per-particle values
 (`(min, max)` records) and the bursts (`EmitterBurst`) are the ones of Flame's 2D particles.
@@ -97,7 +102,8 @@ Forces and the ground are in that same space.
 
 Each step, particles are pulled by `gravity` (scaled per particle by the emitter's
 `gravityScale`) and `wind`, swirled by `turbulence`, drawn to `attractors`, and slowed by `drag`.
-Long frames are simulated in steps of at most `maxStep` seconds.
+Long frames are simulated in steps of at most `maxStep` seconds (1/30 by default, eight steps at
+most, and frames longer than 0.25 seconds are cut to 0.25).
 
 - `ParticleTurbulence3D` is curl noise: a smooth, divergence-free flow that swirls particles about
   without gathering them in clumps, changing over time at its `speed`.
@@ -109,7 +115,7 @@ Long frames are simulated in steps of at most `maxStep` seconds.
   simulation step, so the callback can spawn particles (splashes) or play sounds.
 - `ParticleAttractor3D` pulls particles to a `target` (that can move); particles that come within
   its `arrivalRadius` arrive, are removed when `consumeOnArrival`, and are counted to `onArrived`:
-  coins flying into a purse.
+  coins flying into a purse. A system takes 32 attractors at most.
 
 Over its life, a particle's size follows `sizeOverLife`, its color `colorOverLife` (multiplying its
 spawn color) and `opacityOverLife`, its spin `spinOverLife`, and `rotationOverLife` adds to its
@@ -120,6 +126,8 @@ random.
 also restarts its timelines, and `prewarm` simulates some seconds at once, so that a fire is already
 burning when it appears. `isFinished` tells when every emitter finished its timeline and no particle
 is left; with `removeOnFinish` the system then removes itself.
+
+Particles collide with their ground plane only, not with meshes.
 
 
 ## Billboards
@@ -152,14 +160,67 @@ The material's `renderState` decides how particles blend:
 - `RenderState.additive`: added to what is behind, depth tested, without depth writes and without
   sorting. Added light covers nothing, so in a `Scene3DComponent` glowing particles over an empty
   part of the scene add their color to the 2D art behind the layer;
-- an opaque state with an `alphaCutoff`: cut-out particles that write depth.
+- an opaque state with an `alphaCutoff`: cut-out particles that write depth. Set their material's
+  `castsShadows` to `false` (see [Shadows](#shadows)).
 
 `ParticleSystem3D.sort` overrides the sorting. The whole system is ordered among the other
 translucent draws of the scene by the center of its bounds.
 
-When `World3D.depthPrepassEnabled` is `true`, setting `ParticleMaterial(softDepthFade: 0.12)` fades
-billboard alpha smoothly (`smoothstep`) near intersections with opaque walls and floors using the
-half-resolution clip-depth prepass, eliminating hard billboard clipping lines.
+
+## Soft particles
+
+A billboard that crosses a wall or the ground shows a hard line where it enters it. With
+`ParticleMaterial.softDepthFade` above zero, the opacity of a fragment fades to zero as it comes
+near the opaque surface behind it, which hides the line.
+
+The fade needs the depth of the scene, which the world renders in its depth-normal prepass (see
+[Post-Processing](post_processing.md#depth-normal-prepass)): turn it on with
+`World3D.depthPrepassEnabled` (ambient occlusion and depth of field turn it on too). Without the
+prepass, `softDepthFade` does nothing.
+
+```dart
+final layer = Scene3DComponent(projection: boardProjection);
+layer.world.depthPrepassEnabled = true;
+layer.world.add(
+  ParticleSystem3D(
+    material: ParticleMaterial(
+      sprite: ParticleSprite.softBlob,
+      // Fades over 1 unit when the projection's depth runs from
+      // near -100 to far 100 (200 units).
+      softDepthFade: 0.005,
+    ),
+    emitters: [ParticleEmitter3D(rate: 6, lifespan: (2, 3))],
+  ),
+);
+```
+
+`softDepthFade` is a span of normalized depth, the depth of the camera's projection from 0 at its
+near plane to 1 at its far plane, not a distance:
+
+- with an orthographic projection, or the affine projections of `Scene3DComponent`, the fade spans
+  `softDepthFade * (far - near)` units, everywhere; a layer whose projection reaches from -100 to
+  100 fades over 1 unit with `0.005`;
+- with a perspective projection, depth is not linear: the fade spans about
+  `softDepthFade * z² * (far - near) / (near * far)` units at a distance `z` from the camera. With
+  a near plane at 0.1 and a far plane at 100, `0.0005` fades over 0.5 units at 10 units from the
+  camera, 0.005 units at 1 unit, and 12.5 units at 50.
+
+The prepass computes the depth per vertex and interpolates it across each triangle, which is exact
+for orthographic and affine projections. Under a perspective camera it is wrong inside large
+triangles, and inside triangles that reach behind the camera: behind a ground plane made of two
+triangles, particles in front of the ground fade out as if they were inside it (seen in a test with
+a 40 by 40 unit plane 5 to 45 units from the camera, where more than half of a billboard standing
+on the ground faded out). Tessellate large opaque surfaces that soft particles show against, or
+keep `softDepthFade` at `0` with perspective cameras.
+
+The prepass texture has half the width and half the height of the scene, and its 16-bit depth is
+filtered, so the fade is coarse along the edges of opaque objects. Each faded fragment reads it
+once; the prepass itself (one more render pass and one more traversal of the world, in which
+particle systems write their instance data too) runs whenever it is turned on, whether a material
+uses it or not.
+
+Soft particles work in a `FlameGame3D` and in a `Scene3DComponent` layer (the layer renders the
+prepass of its own world). They apply to billboards only, not to mesh particles.
 
 
 ## Mesh particles
@@ -197,10 +258,23 @@ behind buildings and in front of them, lit like the rest of the scene.
 
 ## Presets
 
-`ParticlePresets3D` builds ready-made systems: `sparks`, `smoke`, `dustPuff`, `confetti` and
-`coinBurst` (the last two mesh particles). Each has one emitter that spawns nothing on its own
-unless given a `rate`; `burst` releases particles where the effect happens. Sizes and speeds are in
-meters for a `scale` of 1, and `up` is the scene's up direction:
+`ParticlePresets3D` builds ready-made systems. Each has one emitter that spawns nothing on its own
+unless given a `rate`; `burst` releases particles where the effect happens. Sizes, speeds and
+accelerations are in meters for a `scale` of 1 (pass the number of scene units per meter
+otherwise), `up` is the scene's up direction (`+y` by default), and `groundHeight` places the ground
+plane of the presets that have one along `up` (`null` for none):
+
+- `sparks`: additive billboards stretched along their velocity, falling and bouncing on the ground
+  (512 particles);
+- `smoke`: soft blobs that rise, swell, swirl in turbulence and fade, sorted (256 particles);
+- `dustPuff`: soft blobs thrown sideways along the ground that swell and settle (256 particles);
+- `confetti`: mesh particles, small two-sided cards of an opaque `UnlitMaterial` in six colors that
+  flutter down and settle lying flat (512 particles);
+- `coinBurst`: mesh particles, gold coins (a `CylinderMesh` of radius 1 with a `SpatialMaterial`)
+  that bounce and settle lying flat (128 particles).
+
+`confetti` and `coinBurst` take a `mesh` of your own, `sparks`, `smoke` and `dustPuff` a `color`,
+and all of them a `capacity` and a `seed`.
 
 ```dart
 // A scene measured in cells, with z up.
@@ -210,66 +284,230 @@ coins.burst(14, at: Vector3(3.5, 4.5, 0.2));
 ```
 
 
+## Shadows
+
+Particles are drawn into a shadow map (see [Shadows](shadows.md)) only when their material, or one
+of their mesh's materials, casts shadows, and when the system's `castsShadows` is `true`:
+
+- mesh particles with an opaque material cast the shadows of their meshes;
+- translucent and additive billboards cast none, and their system skips the shadow pass, sorting
+  nothing;
+- cut-out billboards (an opaque `renderState`) cast shadows by default, but the shadow pass reads
+  their per-instance data as if it were a model matrix: they cast no shadow where they are, and may
+  cast one elsewhere. With the depth-normal prepass turned on, they write wrong depths into it for
+  the same reason. Turn their material's `castsShadows` off.
+
+A system with mesh particles counts as a moving caster on every frame it has live particles, so it
+keeps `ShadowSettings.cacheWhenStatic` from reusing the shadow map. The system writes its instance
+data again for each map it casts into: once per cascade, or once per tile of the shadow atlas.
+
+
 ## Bounds and statistics
 
 The world-space `aabb` of a system covers its particles and their size, and is kept up to date as
 they move. The system is culled with it like any `Object3D`, and it is part of the bounds of the
 world, so a `Scene3DComponent` renders the part of the screen its particles cover.
 
-`RenderStats.particles` counts the particles drawn in a frame (in `FlameGame3D.renderStats` and
-`Scene3DComponent.renderStats`), besides their draw calls and instances. Particles are drawn into a
-shadow map only when their material (or one of their mesh's materials) casts shadows: translucent
-and additive billboards are not, and their system skips the shadow pass, sorting nothing.
+`RenderStats.particles` (in `FlameGame3D.renderStats` and `Scene3DComponent.renderStats`) adds the
+particles of a system every time it records its draw: once for the main pass, and once more for
+each shadow map it casts into and for the depth-normal prepass when it is on. The draws themselves
+are counted in `drawCalls` and `instances`.
 
 
-## 3D ribbons and strokes
+## Ribbons and strokes
 
-`RibbonMaterial3D`, `StrokeBatch3D` and `RibbonTrail3D` draw continuous camera-facing 3D polylines
-with shared miter/join tangents in a single instanced GPU draw call (no CPU view-dependent mesh
-rebuild when the camera orbits or pans):
+Ribbons are flat strips that always face the camera, built from a polyline in the vertex shader:
+each segment of the polyline is an instance, a quad that the shader turns about the segment so that
+its face looks at the camera, as wide as the polyline's width at either end. Consecutive segments
+share the tangent of the point between them, so they meet without gaps; the width is measured
+across that tangent, so sharp turns look thinner. Nothing is rebuilt on the CPU when the camera
+moves.
 
-- `StrokeBatch3D` collects one or more static or per-frame 3D polylines (`beginStroke` / `addPoint`
-  / `endStroke`, or `addPolyline`) for laser beams, trajectory arcs, lightning and spell paths.
-- `RibbonTrail3D` samples its own world position (or an explicit `target` component, such as a
-  `BoneSocket3D` on a sword tip or a flying projectile) into a pre-allocated ring buffer over
-  `lifetime` seconds, tapering width and opacity via `widthOverLife` and `opacityOverLife`.
+
+### RibbonMaterial3D
+
+The material of every ribbon:
+
+- `renderState`: `RenderState.additive` by default (glowing beams and trails); any other state
+  works, with premultiplied output unless it is `RenderState.alphaBlend`;
+- `albedoColor`: a tint multiplied by each stroke's color (white by default);
+- `texture`: an optional strip texture, `u` running from 0 at the first point of a stroke to 1 at
+  its last and `v` from one edge to the other;
+- `edgeSoftness`: the share of each half-width that fades to transparent towards the edges (0.35 by
+  default; 0 for hard edges);
+- `alphaCutoff`: fragments whose alpha is lower are discarded (0 by default);
+- `depthBias`: pulls the ribbon towards the camera by this much normalized depth (0 by default),
+  for ribbons drawn on a surface.
+
+It casts no shadows, and is not available on the web: creating one there throws an
+`UnsupportedError`.
+
+
+### StrokeBatch3D
+
+A `StrokeBatch3D` collects polylines and draws all their segments with one instanced draw: laser
+beams, trajectory arcs, lightning, paths on a map.
+
+```dart
+final strokes = StrokeBatch3D(
+  material: RibbonMaterial3D(edgeSoftness: 0.2),
+)..addPolyline(
+  [Vector3(0, 0.1, 0), Vector3(1, 0.6, 0), Vector3(2, 0.1, 0)],
+  width: 0.3,
+  endWidth: 0.1,
+  color: const Color(0xFF30D0FF),
+  endOpacity: 0.8,
+);
+world.add(strokes);
+
+// The same, point by point, with a half-width and an opacity for each:
+strokes
+  ..beginStroke(color: const Color(0xFFFFE070))
+  ..addPoint(0, 0, 1, halfWidth: 0.05)
+  ..addPoint(1, 0.5, 1, halfWidth: 0.08, opacity: 0.6)
+  ..addPoint(2, 0, 1, halfWidth: 0.02, opacity: 0)
+  ..endStroke();
+```
+
+- `addPolyline` takes full widths and interpolates the width and the opacity linearly from the first
+  point to the last. Its defaults taper the stroke: `width` 0.1 to `endWidth` 0, opacity 1 to 0.
+- A stroke has one color; strokes of fewer than two points are dropped. The strokes of a batch are
+  not joined to each other.
+- The points are in the batch's local space and move with it; widths scale with the cube root of
+  the volume its world transform scales by.
+- The strokes stay until `clear()`, which keeps the memory. To animate a stroke, clear the batch and
+  add it again in `update`: that costs one pass over its points on the CPU.
+
+Storage starts at `initialSegmentCapacity` segments (64) and doubles when it fills, which
+allocates. Each segment takes 24 floats; when the batch's world transform is not the identity, a
+second buffer of world-space segments is rebuilt whenever the segments or the transform change. The
+batch is ordered among the translucent draws by the center of its bounds, and is not drawn into
+shadow maps.
+
+
+### RibbonTrail3D
+
+A `RibbonTrail3D` records the positions an object goes through and draws them as a ribbon that
+tapers and fades with their age:
 
 ```dart
 final trail = RibbonTrail3D(
-  target: projectile,
+  target: projectile, // any Component3D
   lifetime: 0.4,
   width: 0.18,
   color: const Color(0xFF40E0FF),
-  material: RibbonMaterial3D(edgeSoftness: 0.35), // additive glow by default
+  material: RibbonMaterial3D(edgeSoftness: 0.35),
 );
 world.add(trail);
 ```
 
+Each `update`, the trail ages its points and drops those older than `lifetime` (0.45 seconds by
+default), then reads the world position of what it tracks and adds a point when it moved
+`minVertexDistance` (0.04) or more from the newest one. It keeps at most `maxPoints` (64) points in
+a ring buffer allocated with the trail, dropping the oldest. The width (`width`, 0.16 by default,
+the full width) and the opacity of `color` follow `widthOverLife` and `opacityOverLife` over the age
+of each point, from 0 (the newest) to 1 (the oldest); both go from 1 to 0 by default.
+
+What it tracks is `target` when set, otherwise its parent when that is a `Component3D`, otherwise
+itself. Its own position counts only in that last case: a trail added as a child of a moving object
+follows the object's origin, whatever its `position`. To trail an offset point, such as the tip of
+a sword, give the point a component of its own and make it the target:
+
+```dart
+final tip = Group3D(position: Vector3(0, 1.2, 0));
+sword.add(tip);
+world.add(RibbonTrail3D(target: tip, width: 0.1));
+```
+
+The points are in world space and drawn as they are. `emitting` stops and resumes adding points,
+`addSample` adds one by hand, and `reset` clears the trail at once, for an object that teleports.
+The newest point lags up to `minVertexDistance` behind the object. Every frame with at least two
+points, the trail rebuilds its segments on the CPU (one pass over its points) and marks the world
+as changed, which keeps a retained `Scene3DComponent` from reusing its image.
+
 
 ## Drawing instances of your own
 
-The systems record their draws with `RenderContext3D.drawInstances`, which other objects that build
-their own instance data can use too: one instanced draw of a surface whose instances are read from
-a `Float32List`, 24 floats each, laid out as the per-instance inputs (see
-`flame_3d/instancing.glsl`). The material's vertex shader must declare the four `instanceModel`
-columns; what they mean is up to it.
+The systems and the ribbons record their draws with `RenderContext3D.drawInstances`, which other
+objects that build their own instance data can use too: one instanced draw of a surface whose
+instances are read from a `Float32List`, 24 floats each (`VertexLayout.instanceStrideInFloats`),
+laid out as the per-instance inputs of `flame_3d/instancing.glsl`: the four `instanceModel`
+columns, `instanceColor` and `instanceData`.
 
-The vertex shader of `ParticleMaterial` reads them as: the center and the width
+```dart
+class Swarm extends Object3D {
+  Swarm(this.surface, this.material) : super(castsShadows: false);
+
+  final Surface surface;
+  final Material material;
+  final Float32List instances = Float32List(
+    256 * VertexLayout.instanceStrideInFloats,
+  );
+  int count = 0;
+  final Vector3 center = Vector3.zero();
+
+  @override
+  void draw(RenderContext context) {
+    (context as RenderContext3D).drawInstances(
+      surface,
+      material: material,
+      instances: instances,
+      count: count,
+      center: center,
+    );
+  }
+}
+```
+
+- The material's vertex shader must declare the four `instanceModel` columns, or `drawInstances`
+  throws a `StateError`; what they mean is up to it.
+- Each call is one draw call, never batched with other draws. The context keeps the list and uploads
+  it when the pass is flushed: do not change it before the end of the pass.
+- `center` (in world space) orders a translucent draw among the others; without it, the draw is
+  ordered as if it stood at the world origin.
+- In a shadow pass, the draw is skipped when the material casts no shadows. The shadow pass and the
+  depth-normal prepass draw the surface with their own shaders, which read the four columns as a
+  model matrix: data laid out otherwise must not cast shadows nor write depth.
+
+The vertex shader of `ParticleMaterial` reads the columns as: the center and the width
 (`instanceModel0`), the velocity and the height (`instanceModel1`), the rotation, the flipbook
 frame, a random seed and the stretch (`instanceModel2`), the life progress (`instanceModel3.x`) and
-the color (`instanceColor`).
+the color (`instanceColor`). Mesh particles write a model matrix. Ribbons write the start point and
+half-width (`instanceModel0`), the end point and half-width (`instanceModel1`), the tangent and the
+opacity at the start (`instanceModel2`) and at the end (`instanceModel3`), the color
+(`instanceColor`), and the `u` texture coordinate at both ends (`instanceData.xy`).
+
+
+## Costs
+
+- CPU, each frame: the simulation of every live particle (once per step, up to eight steps), a
+  radix sort of the particles of blended billboards, and the writing of 24 floats per particle for
+  each pass the system is drawn in (the main pass, each shadow map it casts into, and the
+  depth-normal prepass). A trail rebuilds its segments; a stroke batch only when it changes.
+- GPU: one draw call per system (per surface of the mesh for mesh particles), per stroke batch and
+  per trail, with 96 bytes of instance data uploaded per particle or segment. Billboards are two
+  triangles each, drawn without depth writes when blended, so overlapping large particles cost fill
+  rate.
+- A system, a batch or a trail with live content marks its world as changed every frame.
+
+
+## Platform support
+
+`ParticleMaterial` has no WebGPU build, and `RibbonMaterial3D` refuses the web although a WGSL
+bundle of its shader ships: creating either on the web throws an `UnsupportedError`. Mesh particles
+use the materials of their mesh; no test covers them on the web. Everything above is available on
+the native backends (Metal, Vulkan and OpenGL ES); the GPU tests run on the backend of the headless
+tests, not on an OpenGL ES device.
 
 
 ## Limitations
 
-- Soft particles, which fade where they meet geometry, are not supported: the fragment shader
-  would need the depth of the scene behind each particle, and Flutter GPU offers no cheap way to
-  read it. A texture cannot be sampled in the render pass that uses it as its depth attachment;
-  the depth attachment `flame_3d` uses is transient (never stored to memory); and Flutter GPU only
-  has combined depth-stencil formats, with no depth-only view to sample: a stored depth-stencil
-  texture binds as a sampler without error, but reads zeros on the Vulkan backend of the headless
-  tests. Reading the depth would take an extra color attachment written by every opaque material
-  and a second render pass that stores and reloads the color and depth, which is not cheap on the
-  tile-based GPUs of phones.
-- Particles do not collide with meshes, only with their ground plane.
-- `ParticleMaterial` is not available on the web yet: it has no WebGPU shaders.
+- Particles collide with their ground plane only, not with meshes.
+- Soft particles fade wrongly behind large triangles under a perspective camera, and their fade is
+  given in normalized depth rather than in scene units (see [Soft particles](#soft-particles)).
+- Cut-out billboards cast wrong shadows and write wrong depths into the depth-normal prepass; turn
+  their `castsShadows` off.
+- `RenderStats.particles` counts a system once per pass it is drawn in, not once per frame.
+- `RibbonTrail3D` ignores its own position when its parent is a `Component3D`; ribbons do not widen
+  at sharp turns.
+- `ParticleMaterial` and `RibbonMaterial3D` are not available on the web.

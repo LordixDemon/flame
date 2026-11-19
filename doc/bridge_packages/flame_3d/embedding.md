@@ -92,9 +92,10 @@ Elsewhere, convert further with `layer.positionOf` (to the layer's parent) or
 
 `localPointToRay` goes the other way: it returns the ray of the scene points that land on a local
 point, starting on the near plane and pointing away from the viewer. `raycastLocal` (and
-`raycastAllLocal`) intersects that ray against the triangle BVHs of every visible mesh, model, LOD
-and instanced group in the layer's world, returning the nearest `RayHit3D` with its exact world hit
-point, world normal, surface/triangle index and component:
+`raycastAllLocal`, sorted from nearest to farthest) intersects that ray with the triangles of the
+meshes, models, LOD meshes and instanced groups of the layer's world, and returns the nearest
+`RayHit3D` with the object, the surface and triangle hit, the distance, and the world and local
+hit point and normal:
 
 ```dart
 @override
@@ -102,12 +103,21 @@ void onTapUp(TapUpEvent event) {
   final local = layer.absoluteToLocal(
     camera.globalToLocal(event.canvasPosition),
   );
-  final hit = layer.raycastLocal(local);
+  final hit = layer.raycastLocal(
+    local,
+    filter: (object) => object.isEffectivelyVisible,
+  );
   if (hit != null) {
-    // `hit.component`, `hit.position`, `hit.normal`, `hit.distance`
+    // hit.object, hit.worldPoint, hit.worldNormal, hit.distance
   }
 }
 ```
+
+The raycast is `World3D.raycast` on the ray of the local point, and like it ignores visibility and
+camera masks: hidden and masked-out objects are hit unless the `filter` skips them, as above. Back
+faces are skipped where the surface's material culls them; pass `cullMode` to override. See
+[Picking with the mouse or a finger](geometry.md#picking-with-the-mouse-or-a-finger) for raycasts
+and [Input and Effects](input_and_effects.md) for pointer callbacks on 3D objects.
 
 `Scene3DProjection` also has `depthOf` and `localPointToScene`, which returns the scene point at a
 given depth on a local point.
@@ -115,11 +125,12 @@ given depth on a local point.
 
 ## How a layer renders
 
-Each time the layer renders, it renders the part of the screen it covers in one render pass: the
-canvas's clip (the game's area when nothing clips the canvas), intersected with the picture of the
-bounding box of the scene's components (lights do not count) and, when the component has a
-non-zero `size`, with the rectangle from `(0, 0)` to `size`. Objects outside that part are culled.
-Nothing is rendered when the part is empty, for example when the scene is off screen.
+Each time the layer renders, it renders the part of the screen it covers in one render pass (plus a
+shadow pass, a depth prepass and post-processing passes when those are on): the canvas's clip (the
+game's area when nothing clips the canvas), intersected with the picture of the bounding box of the
+scene's components (lights do not count) and, when the component has a non-zero `size`, with the
+rectangle from `(0, 0)` to `size`. Objects outside that part are culled. Nothing is rendered when
+the part is empty, for example when the scene is off screen.
 
 The bounding box of the scene is `World3D.sceneBounds`, which the world keeps up to date as its
 components move: reading it only visits the components whose bounds changed since the last frame
@@ -131,15 +142,14 @@ per logical pixel, with the image aligned to the device's pixel grid. The camera
 built from the canvas transform, so a scene point lands exactly where the projection puts it. With
 `renderScale` at `1` the image is drawn back unfiltered, one image pixel per device pixel; a lower
 `renderScale` saves fill rate and the image is scaled up with `scaledFilterQuality`. `msaa`
-switches multisample anti-aliasing on.
+switches multisample anti-aliasing on, except while bloom, post-processing or HDR is active.
 
 The render target is rounded up to a multiple of 64 pixels in both directions, and the target of the
 last render is kept while the part fits in it and covers at least half of it, so that panning,
 zooming and moving objects keep using the same target. It is at most `maxTextureSize` pixels wide
 and high (4096 by default); a larger part is rendered at a lower resolution. The image of the pass
 is drawn by Flutter straight from one of the color textures of the target, which are created once
-(see [Rendering](rendering.md#frame-output-and-statistics)): after the first frames, a pass
-allocates nothing on the GPU.
+(see [Rendering](rendering.md)): after the first frames, a pass allocates nothing on the GPU.
 
 The draws are recorded, sorted and batched as in any `World3D` (see [Rendering](rendering.md)):
 components sharing a mesh cost one instanced draw call per surface. `layer.renderStats` holds the
@@ -152,11 +162,13 @@ took on the CPU.
 When a directional light of the scene casts shadows, the layer renders the shadow map first, fitted
 to the part of the scene it renders, and its components receive them (see [Shadows](shadows.md)).
 The shadow map is aligned with its texels as the 2D camera pans, so the edges of the shadows do not
-shimmer.
+shimmer. Each layer only shadows itself; to let the objects of several layers shadow one another,
+put their worlds in one `ShadowGroup` (see [Shadows](shadows.md)).
 
 To cast shadows onto the 2D art below the layer, give the scene an invisible ground of
 `ShadowCatcherMaterial`: it draws only the shadows falling on it, blended over the 2D components
-behind the layer, and leaves them untouched elsewhere.
+behind the layer, and leaves them untouched elsewhere (see
+[Shadows on 2D art](shadows.md#shadows-on-2d-art)).
 
 ```dart
 layer.world.addAll([
@@ -177,51 +189,190 @@ layer.world.addAll([
 ```
 
 
-## Retained layer caching, bloom, post-processing, and offscreen snapshots
+## Retained layer caching
 
 A layer whose 3D objects sit still on most frames (buildings, terrain, idle props) can skip its GPU
-passes altogether while nothing in its scene or camera changes:
+passes while nothing in its scene or its place on screen changes:
 
 ```dart
 final buildings = Scene3DComponent(
   projection: boardProjection,
   cacheMode: Scene3DCacheMode.retained,
-  bloom: const BloomSettings(threshold: 0.75, intensity: 0.6),
-  postProcess: const PostProcessSettings(
+);
+```
+
+With `Scene3DCacheMode.retained` the layer renders into a render target of its own and keeps the
+image. On the next frames it draws the kept image again, without any GPU pass, as long as nothing
+listed below changed: `layer.renderStats.renderPasses` is then `0` and `layer.cacheHitCount`
+counts the frames served from the image. The default, `Scene3DCacheMode.none`, renders every frame.
+
+
+### What renders the layer again
+
+The layer compares, on every frame:
+
+- the world's `sceneVersion`: components added, removed, moved, shown or hidden, lights added,
+  removed or moved, animations that advance, particle systems and ribbons with live particles,
+  running effects, batch changes and world settings assigned a new value (see
+  [Basic Concepts](basic_concepts.md) for the full list);
+- the `castersVersion` of the world, or of its `ShadowGroup` (all the worlds of the group);
+- `layer.markDirty()` calls;
+- the part of the screen the layer covers and where it lands in device pixels: panning, zooming or
+  rotating the 2D camera, moving, scaling or rotating the layer or one of its ancestors, resizing
+  the game, and changing its `projection`;
+- the render target size, the device pixel ratio, `renderScale` and `msaa`;
+- `hdrEnabled`, `oitMode`, `grabSceneColorEnabled` and `renderDebugMode3D`;
+- the values of the `bloom` settings and of the color settings of `postProcess` (`toneMap`,
+  `exposure`, `contrast`, `saturation`, the vignette, `tint`, `fxaa` and the color LUT), compared by
+  value, so changing them in place counts.
+
+These do not render it again, because the engine does not see them; call `layer.markDirty()` after
+them:
+
+- the fields of a light's `source`: `color`, `intensity`, `direction`, `shadows` (a sun that turns by
+  its `direction` leaves the layer stale; turning the `LightComponent` itself counts as a move);
+- material fields, including the animated ones (`StylizedMaterial.windTime`, `WaterMaterial.time`):
+  wind and water freeze while the image is reused;
+- `MeshComponent.color`, `instanceData` and `jointTransforms` changed in place (skinning driven
+  through `jointTransforms` freezes, while `ModelComponent` animations do count);
+- what a custom `Object3D` draws, and textures whose content changes, such as a `RenderTexture3D`
+  shown in the layer;
+- the SSAO and depth-of-field fields of `postProcess`, `depthPrepassEnabled`, `customPasses`, and the
+  layer's `cameraMask`.
+
+`markDirty()` only renders the layer again; `world.markSceneDirty()` does too, and also marks the
+shadow casters as changed (use `shadows: false` when none moved).
+
+Anything that changes on every frame keeps the layer rendering every frame, with the cost of the
+comparison on top: particle systems with live particles, playing animations, a `FoliageSystem3D`
+with a `windStrength` above `0` (it marks the world dirty on every update, see
+[Large Worlds](world_scale.md#limitations)), and components whose transform is written every frame,
+even with an unchanged value. Put such objects in
+a layer of their own without caching, above or below the retained one, and share shadows between the
+two with a `ShadowGroup`.
+
+
+### What it costs
+
+A frame served from the image costs one image draw and the comparison: about thirty values hashed
+into a new list, and the two camera matrices compared. A frame that renders costs what it costs
+without caching. The layer's render target is not taken from the device's pool: it is created on the
+first render and again whenever its size changes, and it keeps up to three color textures of the
+target size (4 bytes per pixel each, two in steady use) and a depth texture, plus a multisampled
+color texture with `msaa`. Setting `cacheMode` back to `none`, or removing the layer, releases them.
+
+While the 2D camera moves, the layer renders on every frame, like a layer without caching.
+
+
+### Shadow groups and on-demand rendering
+
+The layer compares the `castersVersion` of its world's `ShadowGroup`, so a caster that moves in
+another layer of the group renders the retained layer again, with the shadow it now receives; the
+other changes of the other layers do not. While the retained layer reuses its image it renders no
+shadow map, and the next layer of the group that renders draws the group's map instead (see
+[Shadows](shadows.md)): the group still costs one shadow pass per frame while any of its layers
+renders.
+
+`markDirty()` and every scene version change call `Game.notifyVisualMutation()`, so a game whose
+`idleRenderMode` only paints changed frames wakes up for them. The two mechanisms add up: on-demand
+rendering skips whole frames when nothing changed, and a retained layer skips its GPU passes on the
+frames that are painted for other reasons, such as a 2D animation. The changes listed above that the
+engine does not see neither render the layer nor wake the game; `markDirty()` does both.
+
+
+## Bloom and post-processing on a layer
+
+A layer's `bloom`, `postProcess`, `hdrEnabled` and `renderDebugMode3D` are those of its world (the
+constructor parameters set them on the world):
+
+```dart
+final crystals = Scene3DComponent(
+  projection: boardProjection,
+  bloom: BloomSettings(threshold: 0.75, intensity: 0.6),
+  postProcess: PostProcessSettings(
     toneMap: ToneMapMode.acesFilmic,
-    exposure: 1.05,
     vignetteIntensity: 0.18,
     fxaa: true,
   ),
 );
 ```
 
-With `Scene3DCacheMode.retained`, the layer renders into a dedicated GPU target and reuses the
-cached `Image` (`renderPasses == 0`, tracked by `layer.cacheHitCount`) until a component mounts,
-unmounts or moves (`World3D.sceneVersion`), a shadow caster changes, the 2D camera pans or zooms,
-or `layer.markDirty()` is called explicitly (for example after mutating material properties in
-place).
+With `bloom`, an active `postProcess`, `hdrEnabled`, or the `depth` and `ssao` debug modes, the
+scene renders into a texture first, and a composite pass draws the layer's image from it. The
+composite keeps the scene's alpha, so the 2D art behind the layer shows through where the scene is
+empty and the glow is added onto it; the grading, however, also runs on the empty pixels (see
+Limitations). The scene pass then has no multisampling, whatever `msaa` says; use `postProcess.fxaa`
+instead. Each layer runs its own chain. The settings, their costs and what differs in a layer are
+described in
+[Post-Processing](post_processing.md#in-a-scene3dcomponent-and-in-a-flamegame3d).
 
-Setting `bloom` on the layer (or `world.bloom`) runs a half-resolution bright-pass and Kawase blur
-over pixels above `BloomSettings.threshold` and adds the glow back while preserving the scene's
-alpha channel, so glowing 3D embankments and crystals cast soft halos onto the 2D art underneath the
-layer without darkening it. Setting `postProcess` (`world.postProcess`) fuses exposure, color
-grading (`contrast`, `saturation`), `ToneMapMode` (`none`, `reinhard`, `acesFilmic`, `agx`),
-alpha-weighted vignette and single-pass luma `fxaa` directly into the composite pass (or runs a
-single standalone composite pass when `bloom` is `null`).
+For HD-2D standees and labels that 3D objects hide, use `BillboardBatch3D` and `Text3DComponent`
+inside `layer.world` (see [3D UI and Text](ui_3d.md)) rather than 2D components above the layer.
 
-For HD-2D scenes and diegetic world labels that must be depth-occluded by 3D walls and characters,
-use `BillboardBatch3D` (`BillboardMaterial3D` cylindrical/spherical/tilted standees) and
-`Text3DComponent` directly inside `layer.world`.
 
-To capture a standalone `dart:ui` `Image` of the layer (or of an unmounted `World3D`, for inventory
-thumbnails and UI cards), call `layer.renderToImage(logicalSize)` or
-`world.renderToImage(pixelSize, view: ..., projection: ...)`. For live zero-CPU-readback GPU portals,
-monitors and mirrors inside a 3D scene, use `RenderTexture3D` instead. And on desktop/legacy
-environments where Flutter GPU is unavailable (`!GpuBackend.isAvailable`, such as Windows or Linux),
-`Canvas3DFallbackComponent(world: world)` projects, shades, depth-sorts and renders `World3D`
-meshes via `Canvas.drawVertices`. Dispose returned `Image`s and `RenderTexture3D`s when no longer
-needed (`Resource.dispose()` also deterministically releases GPU buffers and textures).
+## Snapshots and render textures
+
+`layer.renderToImage(size)` renders the layer once into a new `Image` of `size` logical pixels times
+`pixelRatio` (default `1`) times `renderScale`. The local point `(x, y)` of the layer lands at
+`origin + zoom * (x, y)` in the image (by default `origin` is `(0, 0)` and `zoom` `1`), and the
+image is cleared to `clearValue` (transparent by default). `World3D.renderToImage` renders a world
+from any `view` and `projection` matrices, at a size given in pixels.
+
+```dart
+final thumbnail = layer.renderToImage(
+  const Size(128, 128),
+  origin: const Offset(64, 96),
+  pixelRatio: 2,
+);
+// ... draw it, then:
+thumbnail.dispose();
+```
+
+Each call creates a render target of the image's size and runs the whole pipeline (its own shadow
+map, not the group's, and the post-processing of the world), so it suits thumbnails and captures,
+not every frame. The image belongs to the caller, who disposes it. A world that is not in a game
+renders too, but its `LightComponent`s have no effect there, since lights register with their world
+when they are mounted: an unmounted world draws lit materials with no lights.
+
+A `RenderTexture3D` keeps a render on the GPU instead, as a `Texture` that materials sample: a
+monitor, a portal, a mirror.
+
+```dart
+final monitor = RenderTexture3D(width: 256, height: 256);
+final screenMaterial = UnlitMaterial()..renderState = RenderState.opaque;
+final screen = MeshComponent(
+  mesh: PlaneMesh(size: Vector2.all(2), material: screenMaterial),
+  cameraMask: 0x02, // kept out of the monitor's own view
+);
+
+// In update():
+monitor.renderWorld(
+  layer.world,
+  view: monitorView,
+  projection: monitorProjection,
+  cameraMask: 0x01,
+);
+if (!identical(screenMaterial.albedoTexture, monitor.texture)) {
+  screenMaterial.albedoTexture = monitor.texture;
+  layer.markDirty();
+}
+```
+
+`renderWorld` renders the world into the texture in one pass (plus a shadow pass with
+`renderShadows: true`, a shadow map of its own) with the world's lights and fog, at the texture's
+size, in 8-bit color, without multisampling, bloom or post-processing. Notes:
+
+- Read `texture` after the first `renderWorld` and after each `resize`: until then it is the shared
+  white `Texture.standard`, and the GPU texture created by the first render is a new `Texture`
+  object, so a material given `texture` earlier keeps showing white.
+- Keep the mesh that shows the texture out of the render with `cameraMask`; drawing it into its own
+  texture reads and writes the same texture in one pass. The re-entrancy guard of `renderWorld` only
+  stops a `renderWorld` call made during another one.
+- Call it from `update`, not while the world is being rendered, and only for a world that is in a
+  game: it records the draws into the render context of the world's host, so the optional `device`
+  and `context` arguments must be the host's.
+- A retained layer that shows the texture does not notice new content: call `markDirty()`.
+- `dispose()` drops the texture.
 
 
 ## Hosts
@@ -242,8 +393,23 @@ game share a device of their own, `layer.device`, whose `lastFrameStats` cover a
 - A layer drawn into an offscreen picture whose transform already includes the device pixel ratio
   (for example by a camera with a `worldRenderScale` other than `1`) renders at a higher
   resolution than needed; lower its `renderScale`.
-- Mutating a material's uniform fields directly does not automatically invalidate a
-  `Scene3DCacheMode.retained` layer; call `layer.markDirty()` (or `world.markSceneDirty()`) when
-  animating material fields on an otherwise static scene.
 - The image is aligned to the device's pixel grid when the game is painted in its own layer at a
   whole number of physical pixels, as a full-screen `GameWidget` is.
+- A retained layer does not see the changes listed under "What renders the layer again" that the
+  engine cannot observe; call `markDirty()` after them.
+- On the first render after a run of reused frames, a retained layer renders into the texture whose
+  image the previous frame showed, without waiting the two frames that the render targets otherwise
+  leave Flutter to finish drawing an image: while the GPU is behind, the new 3D picture can show one
+  frame early, out of step with the 2D art.
+- A retained layer whose render target size changed while `bloom`, `postProcess` or `hdrEnabled`
+  was active, and which then turns them off, renders into its earlier, smaller or larger scene
+  target and shows a cropped picture until its target size changes again. Set `cacheMode` to
+  `none` and back to `retained` after such a switch to recover.
+- `msaa` has no effect while `bloom`, `postProcess` or `hdrEnabled` is active.
+- The `postProcess` grading runs on the layer's premultiplied colors, the empty, fully transparent
+  pixels included: a `contrast` below `1` turns them gray (with `contrast: 0.5`, black 2D art behind
+  the layer becomes `(64, 64, 64)` across the layer's rendered rectangle), and so do a color LUT
+  whose black entry is not black and `ToneMapMode.agx`, which maps black to about `0.43`. On a layer
+  drawn over 2D art, keep `contrast` at `1` or above and use `reinhard` or `acesFilmic`.
+- `raycastLocal` and `raycastAllLocal` hit hidden and masked-out objects unless a `filter` skips
+  them.
