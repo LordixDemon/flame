@@ -255,13 +255,15 @@ decides in which passes they are drawn (see [Cameras](cameras.md)).
 
 ## Clustered light grid
 
-`LightClusterGrid3D` (in `package:flame_3d/world_scale.dart`) assigns point and spot lights to the
-cells of a camera frustum divided into `clustersX * clustersY * clustersZ` clusters (`16 x 8 x 16`
-by default), with depth slices growing exponentially from `near` to `far`. It is a CPU data
-structure: no built-in material reads it and the renderer does not use it, so it does not raise the
-limit of 8 point and 4 spot lights per pass. Use it to find, among many lights, those that reach a
-region of the screen or of the world, for instance to decide which lights to enable or which to
-bake into a light probe grid:
+`LightClusterGrid3D` (in `package:flame_3d/world_scale.dart`) is a CPU helper, not a clustered
+renderer. It assigns point and spot lights to the cells of a camera frustum divided into
+`clustersX * clustersY * clustersZ` clusters (`16 x 8 x 16` by default), with depth slices growing
+exponentially from `near` to `far`. No built-in material or render pass reads it, and lights added
+to it light nothing: whatever it holds, every pass shades at most 8 point and 4 spot lights, chosen
+once per pass as [Selection beyond the limits](#selection-beyond-the-limits) describes, and leaves
+the others out. Use it to find, among many lights, those that reach a region of the screen or of
+the world, for instance to decide which lights to add to the world or which to bake into a light
+probe grid:
 
 ```dart
 final grid = LightClusterGrid3D();
@@ -296,8 +298,9 @@ for (final index in selection.pointLightIndices) {
   strongest lights reaching a box (scored by intensity and distance to its center), allocating the
   result lists.
 - `packClusterDataRgba8` and `createClusterLookupTexture` pack the cluster table into 8-bit texels
-  for a shader of your own: offsets above 65,535, counts above 255 and light indices above 255 do
-  not fit, and no index list texture is provided.
+  for a shader of your own: an offset above 65,535, a count above 255 or a first light index above
+  255 does not fit, and they throw a `StateError` rather than wrap it. No index list texture is
+  provided.
 
 
 ## Image-based lighting

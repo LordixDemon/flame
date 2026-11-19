@@ -151,9 +151,21 @@ class ClusterLightSelection3D(
   final Int32List spotLightIndices,
 );
 
-/// 3D Clustered Forward+ frustum light assignment grid (`16 x 8 x 16` by
-/// default) with exponential depth slicing and zero-allocation per-frame
-/// assignment for up to `512` (or [maxLights]) point and spot lights.
+/// A CPU helper that bins point and spot lights into the clusters of a
+/// camera frustum (`16 x 8 x 16` by default, with exponential depth
+/// slices), without allocating per frame, for up to `512` (or [maxLights])
+/// lights.
+///
+/// It is not part of the renderer: no built-in material or render pass reads
+/// it, and adding lights to it lights nothing. Every render pass still
+/// shades at most `RenderContext3D.maxPointLights` (8) point lights and
+/// `RenderContext3D.maxSpotLights` (4) spot lights, chosen once per pass for
+/// the whole pass (see `World3D.prioritizeNearestLights`); the others are
+/// left out. Use the grid to find, among many lights, those that reach a
+/// region of the screen or of the world ([lightsForCluster],
+/// [gatherTopLightsForAabb]), for instance to decide which lights to add to
+/// the world, or which to bake into a `LightProbeGrid3D`; or pack it
+/// ([packClusterDataRgba8]) for a clustered shader of your own.
 class LightClusterGrid3D({
   /// Horizontal cluster subdivision count across normalized screen X.
   final int clustersX = 16,
@@ -548,6 +560,10 @@ class LightClusterGrid3D({
 
   /// Queries the clusters overlapping [worldAabb] in [view] space and returns
   /// the highest-contributing local point and spot light indices.
+  ///
+  /// It allocates the returned selection and its two lists (unless they are
+  /// empty): call it when the lights change, not for every object of every
+  /// frame.
   ClusterLightSelection3D gatherTopLightsForAabb(
     Aabb3 worldAabb,
     Matrix4 view, {
@@ -702,6 +718,13 @@ class LightClusterGrid3D({
   /// Packs per-cluster `(offsetLo, offsetHi, count, firstLightOrZero)` into an
   /// RGBA8 byte table (`totalClusters * 4` bytes) suitable for GPU texture
   /// upload.
+  ///
+  /// The offset into [lightIndexList] takes 16 bits, the count and the index
+  /// of the cluster's first light 8 bits each: when an offset is above
+  /// 65,535, a count above 255 or a first light index above 255 (with more
+  /// than 256 lights), it throws a [StateError] rather than wrap the value.
+  /// Read [clusterOffsets], [clusterCounts] and [lightIndexList] directly for
+  /// such grids. No index list texture is provided.
   Uint8List packClusterDataRgba8({Uint8List? out}) {
     final bytes = out != null && out.length >= totalClusters * 4
         ? out
@@ -709,19 +732,27 @@ class LightClusterGrid3D({
     for (var c = 0; c < totalClusters; c++) {
       final offset = clusterOffsets[c];
       final count = clusterCounts[c];
-      final first = count > 0 ? (lightIndexList[offset] & 0xFF) : 0;
+      final first = count > 0 ? lightIndexList[offset] : 0;
+      if (offset > 0xFFFF || count > 0xFF || first > 0xFF) {
+        throw StateError(
+          'Cluster $c does not fit in 8-bit texels (offset $offset of at most '
+          '65535, count $count and first light index $first of at most 255)',
+        );
+      }
       final b = c * 4;
       bytes
         ..[b] = offset & 0xFF
         ..[b + 1] = (offset >> 8) & 0xFF
-        ..[b + 2] = count.clamp(0, 255)
+        ..[b + 2] = count
         ..[b + 3] = first;
     }
     return bytes;
   }
 
   /// Builds a 2D RGBA8 lookup [Texture] (`width = clustersX * clustersY`,
-  /// `height = clustersZ`) holding [packClusterDataRgba8].
+  /// `height = clustersZ`) holding [packClusterDataRgba8] (which throws for
+  /// grids whose values do not fit), for a shader of your own: no built-in
+  /// shader reads it.
   Texture createClusterLookupTexture() {
     final data = packClusterDataRgba8();
     return Texture(

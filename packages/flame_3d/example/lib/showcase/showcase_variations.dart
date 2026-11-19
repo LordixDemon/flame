@@ -99,8 +99,8 @@ enum ShowcasePreset(final String label, final String summary) {
         '4-CSM/Spot/Point Sh + WBOIT',
   ),
   clusteredOcclusionCdlodAndFoliage(
-    '18. Clustered 128+, Occlusion & CDLOD',
-    '128+ Clustered Lights + Hi-Z/Portal Occlusion + '
+    '18. Light Binning, Occlusion & CDLOD',
+    'CPU Light Cluster Binning (128) + Hi-Z/Portal Occlusion + '
         'Batcher + CDLOD + 10k Foliage',
   ),
   ccdCompoundClothRecastAndRollback(

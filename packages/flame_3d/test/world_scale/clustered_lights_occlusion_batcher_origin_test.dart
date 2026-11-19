@@ -54,7 +54,7 @@ CameraComponent3D _makePerspectiveCamera({
 void main() {
   _setUpGpu();
 
-  group('LightClusterGrid3D (128+ Clustered Forward+ Lights)', () {
+  group('LightClusterGrid3D (CPU binning of 128+ lights)', () {
     test(
       'slices depth exponentially and assigns 200 point and spot lights',
       () {

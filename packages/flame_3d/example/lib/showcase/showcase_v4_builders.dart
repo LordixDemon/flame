@@ -76,7 +76,7 @@ class ShowcaseV4Builders() {
   RenderGraph3D? labRenderGraph;
   CompiledRenderGraph3D? compiledLabRenderGraph;
 
-  // Lab 18 live state (`Clustered 128+, Occlusion & CDLOD`):
+  // Lab 18 live state (`Light Binning, Occlusion & CDLOD`):
   LightClusterGrid3D? clusterGrid;
   final Matrix4 clusterViewMatrix = Matrix4.identity();
   final Matrix4 clusterProjMatrix = Matrix4.identity();
@@ -588,7 +588,7 @@ class ShowcaseV4Builders() {
   }
 
   // ===========================================================================
-  // Lab 18 — Clustered 128+, Occlusion, Batcher, FloatingOrigin, CDLOD & 10k
+  // Lab 18 — Light binning, Occlusion, Batcher, FloatingOrigin, CDLOD & 10k
   // ===========================================================================
 
   void buildClusteredOcclusionCdlodAndFoliageLab(ShowcaseVariationRig rig) {
@@ -2556,7 +2556,8 @@ class ShowcaseV4Builders() {
           'draws=${shStats.drawCalls}, pool=$poolSlots/$virtCount',
     );
 
-    // 53. Clustered Forward+ 128 Point & Spot lights!
+    // 53. LightClusterGrid3D bins 128 point & spot lights on the CPU (the
+    // renderer still shades at most 8 point and 4 spot lights per pass).
     game.applyPreset(ShowcasePreset.clusteredOcclusionCdlodAndFoliage);
     await pumpFrames(3);
     final grid = clusterGrid;
