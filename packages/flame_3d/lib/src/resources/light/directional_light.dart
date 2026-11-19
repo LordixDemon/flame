@@ -23,15 +23,50 @@ class DirectionalLight({
   super.color = const Color(0xFFFFFFFF),
   super.intensity = 1.0,
 
+  Vector3? direction,
+  double specular = 1.0,
+  ShadowSettings? shadows,
+}) extends LightSource {
   /// The direction the light travels in, in world space (for a sun high in
   /// the sky, pointing down). It need not be normalized. When `null`, the
   /// light's transform orients it.
-  var Vector3? direction,
+  ///
+  /// After changing the vector in place, call [markChanged].
+  Vector3? get direction => _direction;
+  set direction(Vector3? value) {
+    if (identical(value, _direction)) {
+      return;
+    }
+    _direction = value;
+    markChanged(shadows: _shadows != null);
+  }
+
+  Vector3? _direction = direction;
 
   /// How strongly the light makes specular highlights, from `0` (none) to `1`
   /// (fully).
-  var double specular = 1.0,
+  double get specular => _specular;
+  set specular(double value) {
+    if (value == _specular) {
+      return;
+    }
+    _specular = value;
+    markChanged(shadows: false);
+  }
+
+  double _specular = specular;
 
   /// How the light casts shadows, or `null` (the default) when it casts none.
-  var ShadowSettings? shadows,
-}) extends LightSource;
+  ///
+  /// After changing the settings in place, call [markChanged].
+  ShadowSettings? get shadows => _shadows;
+  set shadows(ShadowSettings? value) {
+    if (identical(value, _shadows)) {
+      return;
+    }
+    _shadows = value;
+    markChanged();
+  }
+
+  ShadowSettings? _shadows = shadows;
+}

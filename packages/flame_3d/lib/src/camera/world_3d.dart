@@ -33,14 +33,17 @@ class World3D({
   RenderDebugMode3D renderDebugMode3D = RenderDebugMode3D.none,
   List<CustomRenderPass3D>? customPasses,
   var bool spatialIndex3DEnabled = false,
-  var bool prioritizeNearestLights = false,
-  var bool depthPrepassEnabled = false,
+  bool prioritizeNearestLights = false,
+  bool depthPrepassEnabled = false,
 }) extends flame.World {
   final List<Light> _lights = [];
   final List<ReflectionProbeVolume3D> _reflectionProbes = [];
 
   /// User-defined GPU [CustomRenderPass3D] hooks executed before or after the
   /// main scene pass.
+  ///
+  /// After changing the list or a pass, call [markSceneDirty] so retained
+  /// layers render again.
   final List<CustomRenderPass3D> customPasses = customPasses != null
       ? List.of(customPasses)
       : [];
@@ -49,25 +52,51 @@ class World3D({
   /// [spatialIndex3DEnabled] is `true` (or when queried directly).
   final SceneSpatialIndex3D spatialIndex3D = SceneSpatialIndex3D();
 
-  int _sceneVersion = 0;
-  int _castersVersion = 0;
+  int _ownSceneVersion = 0;
+  int _ownCastersVersion = 0;
 
-  /// Monotonically increasing counter incremented whenever components, lights,
-  /// animations, active particles, [fog], or [bloom] mutate the visual output
-  /// of this world (or when [markSceneDirty] is called manually).
+  // Material.castsShadows is shared by every world that draws the material,
+  // so its changes are counted globally and added here.
+  int get _sceneVersion => _ownSceneVersion + Material.castsShadowsRevision;
+  int get _castersVersion => _ownCastersVersion + Material.castsShadowsRevision;
+
+  /// Monotonically increasing counter that increases whenever the rendered
+  /// output of this world may change: `Scene3DCacheMode.retained` layers
+  /// render again when it differs.
+  ///
+  /// It increases when a component is added, removed, moved, shown, hidden or
+  /// gets another `cameraMask`; when a property of a component that changes
+  /// its draws is assigned (`Object3D.castsShadows`, `MeshComponent.color`,
+  /// `instanceData` and `jointTransforms`, the same on `ModelComponent` and
+  /// `LodMeshComponent`, the instances of an `InstancedGroup3D`); when a
+  /// field of a light source is assigned, a light is added or removed, or
+  /// its `lightMask` changes; when an animation or active particles advance;
+  /// when a `Material.castsShadows` changes; and when a setting of this world
+  /// is assigned ([fog], [bloom], [postProcess], [hdrEnabled],
+  /// [depthPrepassEnabled], ...).
+  ///
+  /// The engine cannot see changes made in place: a field of a material, a
+  /// field of [fog] or of a light's `ShadowSettings`, a vector of a light
+  /// source, joint matrices written into an existing list, the buffers of a
+  /// custom `Object3D.draw`, [customPasses]. Report them with
+  /// `Component3D.markDrawDirty`, `LightSource.markChanged` or
+  /// [markSceneDirty].
   int get sceneVersion => _sceneVersion;
 
-  /// Monotonically increasing counter incremented whenever shadow-casting
-  /// components change, used by [ShadowSettings.cacheWhenStatic].
+  /// Monotonically increasing counter that increases whenever the shadow
+  /// casters of this world may change, used by
+  /// [ShadowSettings.cacheWhenStatic] to keep a static shadow map. Every
+  /// change of [castersVersion] also changes [sceneVersion].
   int get castersVersion => _castersVersion;
 
-  /// Marks this world's rendered output (and optionally its static shadow map)
-  /// as changed, waking idle-throttled game loops and invalidating retained
-  /// `Scene3DComponent` caches.
+  /// Marks this world's rendered output (and, unless [shadows] is `false`,
+  /// its shadow casters) as changed: [sceneVersion] (and [castersVersion])
+  /// increase, invalidating retained `Scene3DComponent` caches and a cached
+  /// static shadow map, and idle-throttled game loops wake up.
   void markSceneDirty({bool shadows = true}) {
-    _sceneVersion++;
+    _ownSceneVersion++;
     if (shadows) {
-      _castersVersion++;
+      _ownCastersVersion++;
     }
     Game.notifyVisualMutation();
   }
@@ -75,6 +104,32 @@ class World3D({
   /// Marks this world's shadow casters as changed so a cached static shadow map
   /// ([ShadowSettings.cacheWhenStatic]) re-renders on the next pass.
   void markShadowsDirty() => markSceneDirty();
+
+  /// Whether the half-resolution clip-depth + view-normal prepass renders
+  /// every frame (soft particles, shoreline foam), see [renderDepthNormals].
+  bool get depthPrepassEnabled => _depthPrepassEnabled;
+  set depthPrepassEnabled(bool value) {
+    if (value == _depthPrepassEnabled) {
+      return;
+    }
+    _depthPrepassEnabled = value;
+    markSceneDirty(shadows: false);
+  }
+
+  bool _depthPrepassEnabled = depthPrepassEnabled;
+
+  /// Whether the lights nearest to the camera are chosen when the scene has
+  /// more lights of a kind than a pass shades.
+  bool get prioritizeNearestLights => _prioritizeNearestLights;
+  set prioritizeNearestLights(bool value) {
+    if (value == _prioritizeNearestLights) {
+      return;
+    }
+    _prioritizeNearestLights = value;
+    markSceneDirty();
+  }
+
+  bool _prioritizeNearestLights = prioritizeNearestLights;
 
   /// Atmospheric distance/height fog applied to materials in this world (`null`
   /// disables fog).
@@ -359,7 +414,7 @@ class World3D({
         _renderDebugMode3D == RenderDebugMode3D.depth ||
         _renderDebugMode3D == RenderDebugMode3D.ssao;
     final needed =
-        depthPrepassEnabled ||
+        _depthPrepassEnabled ||
         debugNeedsDn ||
         (_postProcess?.needsDepthNormal ?? false);
     if (!needed) {
@@ -429,7 +484,7 @@ class World3D({
       ..renderDebugMode = _renderDebugMode3D
       ..lightProbeGrid = _lightProbeGrid
       ..reflectionProbes = _reflectionProbes
-      ..prioritizeNearestLights = prioritizeNearestLights
+      ..prioritizeNearestLights = _prioritizeNearestLights
       ..bumpPassUniforms();
   }
 

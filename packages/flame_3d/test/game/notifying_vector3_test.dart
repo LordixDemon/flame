@@ -74,6 +74,23 @@ void main() {
       expect(vector, Vector3(5, 3, 4));
     });
 
+    test('writing the current value notifies nobody', () {
+      final vector = NotifyingVector3(1, 2, 3);
+      var notifications = 0;
+      vector.addListener(() => notifications++);
+
+      vector
+        ..setValues(1, 2, 3)
+        ..setFrom(Vector3(1, 2, 3))
+        ..x = 1
+        ..yz = Vector2(2, 3)
+        ..xyz = Vector3(1, 2, 3)
+        ..scale(1)
+        ..add(Vector3.zero());
+
+      expect(notifications, 0);
+    });
+
     test('storage is an unmodifiable view, the same object every time', () {
       final vector = NotifyingVector3(1, 2, 3);
 

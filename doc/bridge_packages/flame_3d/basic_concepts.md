@@ -125,40 +125,71 @@ subtrees at once when a parent's bounds are outside.
 A world counts its changes in two numbers:
 
 - `sceneVersion` increases whenever something that changes the picture is reported: a component is
-  added, removed, moved, shown or hidden, a light is added, removed, moved or changes its
-  `lightMask`, a world setting (`fog`, `bloom`, `postProcess`, `hdrEnabled`, `renderScale`,
-  `oitMode`, `grabSceneColorEnabled`, `renderDebugMode3D`, `lightProbeGrid`) is assigned a new
-  value, an animation advances a model's pose, a particle system or ribbon has live particles, an
-  effect runs, or a batch (instances, billboards, decals, text, foliage) changes;
+  added, removed, moved, shown or hidden, or gets another `cameraMask`; a drawing property is
+  assigned (`castsShadows` of an object, `color`, `instanceData` (in place too) and
+  `jointTransforms` of a `MeshComponent`, `ModelComponent` or `LodMeshComponent`, the `shadowMesh`
+  of a `LodMeshComponent`); a light is added, removed or moved, changes its `lightMask`, or a field
+  of its `source` is assigned (`color`, `intensity`, `direction`, `shadows`, `range`, ...); a
+  material's `castsShadows` changes; a world setting (`fog`, `bloom`, `postProcess`,
+  `hdrEnabled`, `renderScale`, `oitMode`, `grabSceneColorEnabled`, `renderDebugMode3D`,
+  `lightProbeGrid`, `depthPrepassEnabled`, `prioritizeNearestLights`) is assigned a new value; an
+  animation advances a model's pose, a particle system or ribbon has live particles, an effect
+  runs, or a batch (instances, billboards, decals, text, foliage) changes;
 - `castersVersion` increases with the subset of these changes that can move shadows: all of them
-  except the world settings, `lightMask`, showing or hiding a light, reflection probes, and the
-  animation and batch changes of components that cast no shadows.
+  except colors, `instanceData`, intensities and other light fields that move no shadow, the world
+  settings, `lightMask`, showing or hiding a light, reflection probes, and the changes of
+  components that cast no shadows.
+
+Assigning a value equal to the current one is not a change: writing an unchanged position,
+rotation or scale (the transform's vectors notify only when their value changes), color or light
+field marks nothing, so a component whose transform is set to the same value every frame does not
+keep its world dirty.
 
 `markSceneDirty()` raises both (pass `shadows: false` to raise only `sceneVersion`), and
 `markShadowsDirty()` is the same as `markSceneDirty()`. Every increase also calls
-`Game.notifyVisualMutation()`, which wakes a game whose `idleRenderMode` skips unchanged frames.
+`Game.notifyVisualMutation()`, which wakes a game whose `idleRenderMode` skips unchanged frames. A
+mounted `CameraComponent3D` is polled by its game before such a frame is skipped, so moving it, in
+place too (`camera.position.x += 1`), renders the next frame; the unmounted cameras of a
+`CameraStack3D` notify from `stack.update`.
 
 The versions drive three caches: a retained `Scene3DComponent` reuses its image while nothing
 changed (see [Embedding 3D in a 2D Game](embedding.md)), `ShadowSettings.cacheWhenStatic` reuses a
 shadow map while the casters did not change (see [Shadows](shadows.md)), and `SceneSpatialIndex3D`
 rebuilds itself when `sceneVersion` changed.
 
-Some changes are not reported, because the engine cannot see them. Call `markSceneDirty` (with
-`shadows: false` when no caster moved) after:
+Changes made in place, to data the engine only reads when it draws, are not seen. Report them,
+with `shadows: false` when no shadow can move:
 
-- changing the fields of a light's `source` (`color`, `intensity`, `direction`, `shadows`): the
-  lights are read at every pass, but nothing records the change;
-- changing a material's fields, including animated ones such as `StylizedMaterial.windTime` and
-  `WaterMaterial.time`, or assigning it a new texture;
-- changing `MeshComponent.color`, `instanceData` or the matrices of `jointTransforms` in place;
-- changing what a custom `Object3D` draws without moving it;
-- toggling `castsShadows` on an object or a material: the static shadow cache
-  (`ShadowSettings.cacheWhenStatic`) does not notice it, so call `markSceneDirty()` with shadows;
-- changing plain world fields such as `depthPrepassEnabled`, `prioritizeNearestLights` or
-  `customPasses`.
+- the matrices of `jointTransforms` written into the existing lists, or what a custom `Object3D`
+  draws without moving (its own buffers, a mesh it swaps in `draw`): call
+  `component.markDrawDirty()` on the component; it costs two integer increments, so a custom object
+  can call it on every frame it changes;
+- a vector of a light source changed in place (`sun.direction!.setValues(...)`,
+  `HemisphereLight.up`), or a field of its `ShadowSettings`: call `source.markChanged()`;
+- a material's fields, including animated ones such as `StylizedMaterial.windTime` and
+  `WaterMaterial.time`, a new texture, or new content in a texture: call
+  `world.markSceneDirty(shadows: false)` on every world that draws the material (or
+  `markDrawDirty(shadows: false)` on a component that draws it);
+- a field of `fog`, of the `bloom` or `postProcess` settings, or `customPasses`: call
+  `world.markSceneDirty(shadows: false)` (a retained layer also compares the `bloom` and
+  `postProcess` values on every frame, see [Embedding 3D in a 2D Game](embedding.md)).
 
-The opposite also holds: writing a transform always counts as a change, even when the new value
-equals the old one. A component whose position is set every frame keeps its world dirty.
+```dart
+// A custom object that draws points it collects itself.
+class Trail() extends Object3D {
+  final List<Vector3> _points = [];
+
+  void push(Vector3 point) {
+    _points.add(point.clone());
+    markDrawDirty(shadows: castsShadows);
+  }
+
+  @override
+  void draw(RenderContext context) {
+    // Record the draws of _points here.
+  }
+}
+```
 
 
 ## Camera masks, light masks and visibility

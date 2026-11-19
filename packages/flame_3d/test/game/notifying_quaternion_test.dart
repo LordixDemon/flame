@@ -41,6 +41,22 @@ void main() {
       });
     }
 
+    test('writing the current value notifies nobody', () {
+      final vector = NotifyingQuaternion(0, 0, 0, 1);
+      var notifications = 0;
+      vector.addListener(() => notifications++);
+
+      vector
+        ..setValues(0, 0, 0, 1)
+        ..setFrom(Quaternion.identity())
+        ..x = 0
+        ..w = 1
+        ..normalize()
+        ..scale(1);
+
+      expect(notifications, 0);
+    });
+
     test('storage is an unmodifiable view, the same object every time', () {
       final quaternion = NotifyingQuaternion(0, 0, 0, 1);
 

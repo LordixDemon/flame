@@ -2,6 +2,7 @@ import 'dart:collection' show UnmodifiableListView;
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flame/game.dart' show Game;
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/game.dart';
@@ -255,12 +256,26 @@ class CameraStack3D({
   }
 
   /// Advances unmounted cameras in this stack by [dt].
+  ///
+  /// When one of them moved (its [CameraComponent3D.version] changed), it
+  /// notifies a visual change so that a game whose `idleRenderMode` skips
+  /// unchanged frames renders the next one.
   void update(double dt) {
+    var moved = false;
     for (final entry in _entries) {
       final slot = entry.slot;
-      if (slot.enabled && !slot.camera.isMounted) {
-        slot.camera.update(dt);
+      final camera = slot.camera;
+      if (slot.enabled && !camera.isMounted) {
+        camera.update(dt);
+        final version = camera.version;
+        if (version != entry.cameraVersion) {
+          entry.cameraVersion = version;
+          moved = true;
+        }
       }
+    }
+    if (moved) {
+      Game.notifyVisualMutation();
     }
   }
 
@@ -560,4 +575,7 @@ class CameraStack3D({
 class _IndexedSlot(this.slot, this.order) {
   final CameraViewportSlot3D slot;
   final int order;
+
+  /// The version of the slot's camera at the last [CameraStack3D.update].
+  int cameraVersion = -1;
 }

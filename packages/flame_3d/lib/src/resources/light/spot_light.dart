@@ -22,24 +22,89 @@ class SpotLight({
   super.color = const Color(0xFFFFFFFF),
   super.intensity = 1.0,
 
+  Vector3? direction,
+  double innerConeAngle = math.pi / 8,
+  double outerConeAngle = math.pi / 4,
+  double? range,
+  double specular = 1.0,
+  ShadowSettings? shadows,
+}) extends LightSource {
   /// Optional world-space direction the cone points towards (need not be
   /// normalized). When `null`, the `-Z` axis of the light's transform is used.
-  var Vector3? direction,
+  ///
+  /// After changing the vector in place, call [markChanged].
+  Vector3? get direction => _direction;
+  set direction(Vector3? value) {
+    if (identical(value, _direction)) {
+      return;
+    }
+    _direction = value;
+    markChanged(shadows: _shadows != null);
+  }
+
+  Vector3? _direction = direction;
 
   /// Inner half-angle of the cone, in radians, within which angular falloff is
   /// `1.0`.
-  var double innerConeAngle = math.pi / 8,
+  double get innerConeAngle => _innerConeAngle;
+  set innerConeAngle(double value) {
+    if (value == _innerConeAngle) {
+      return;
+    }
+    _innerConeAngle = value;
+    markChanged(shadows: false);
+  }
+
+  double _innerConeAngle = innerConeAngle;
 
   /// Outer half-angle of the cone, in radians, at which light reaches `0.0`.
-  var double outerConeAngle = math.pi / 4,
+  double get outerConeAngle => _outerConeAngle;
+  set outerConeAngle(double value) {
+    if (value == _outerConeAngle) {
+      return;
+    }
+    _outerConeAngle = value;
+    markChanged(shadows: _shadows != null);
+  }
+
+  double _outerConeAngle = outerConeAngle;
 
   /// Maximum reach of the light, or `null` (or `<= 0`) for inverse-square
   /// falloff.
-  var double? range,
+  double? get range => _range;
+  set range(double? value) {
+    if (value == _range) {
+      return;
+    }
+    _range = value;
+    markChanged(shadows: _shadows != null);
+  }
+
+  double? _range = range;
 
   /// Specular highlight multiplier (`0` = diffuse only, `1` = full specular).
-  var double specular = 1.0,
+  double get specular => _specular;
+  set specular(double value) {
+    if (value == _specular) {
+      return;
+    }
+    _specular = value;
+    markChanged(shadows: false);
+  }
+
+  double _specular = specular;
 
   /// Optional perspective shadow-map settings for this spotlight cone.
-  var ShadowSettings? shadows,
-}) extends LightSource;
+  ///
+  /// After changing the settings in place, call [markChanged].
+  ShadowSettings? get shadows => _shadows;
+  set shadows(ShadowSettings? value) {
+    if (identical(value, _shadows)) {
+      return;
+    }
+    _shadows = value;
+    markChanged();
+  }
+
+  ShadowSettings? _shadows = shadows;
+}

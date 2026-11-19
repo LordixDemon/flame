@@ -3,6 +3,7 @@ import 'dart:ui' show Color, VoidCallback;
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
+import 'package:flame_3d/game.dart' show NotifyingVector4;
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/src/model/animation_state.dart';
 import 'package:flame_3d/src/model/animation_state_machine_3d.dart';
@@ -36,7 +37,7 @@ enum OffscreenAnimationPolicy() {
 /// children.
 class ModelComponent({
   required final Model model,
-  var Color color = const Color(0xFFFFFFFF),
+  Color color = const Color(0xFFFFFFFF),
   Vector4? instanceData,
   var OffscreenAnimationPolicy offscreenPolicy =
       OffscreenAnimationPolicy.always,
@@ -54,10 +55,28 @@ class ModelComponent({
     if (stateMachine != null) {
       this.stateMachine = stateMachine;
     }
+    this.instanceData.addListener(_onInstanceDataChanged);
   }
 
-  /// Four floats of per-instance data forwarded to materials.
-  final Vector4 instanceData = instanceData?.clone() ?? Vector4.zero();
+  /// The per-instance color forwarded to materials. Changing it marks the
+  /// enclosing `World3D` dirty.
+  Color get color => _color;
+  set color(Color value) {
+    if (value == _color) {
+      return;
+    }
+    _color = value;
+    markDrawDirty(shadows: false);
+  }
+
+  Color _color = color;
+
+  /// Four floats of per-instance data forwarded to materials; every change,
+  /// in place too, marks the enclosing `World3D` dirty.
+  final NotifyingVector4 instanceData = NotifyingVector4.zero()
+    ..setFrom(instanceData ?? Vector4.zero());
+
+  void _onInstanceDataChanged() => markDrawDirty(shadows: false);
 
   final Set<int> _hiddenNodes = {};
   final AnimationState _animation = AnimationState();

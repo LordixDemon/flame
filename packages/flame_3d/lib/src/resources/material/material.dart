@@ -1,5 +1,6 @@
 import 'dart:ui';
 
+import 'package:flame/game.dart' show Game;
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/graphics/material_pipeline_cache.dart';
@@ -74,9 +75,27 @@ abstract class Material({
   /// its vertices have joints and joint weights): vertices that a material's
   /// own vertex shader moves (`StylizedMaterial`'s wind, for instance)
   /// cast the shadow of their rest position.
+  ///
+  /// Changing it marks the shadow casters of every `World3D` dirty (see
+  /// `World3D.castersVersion`), since a material can be drawn in any world.
   bool get castsShadows => _castsShadows ?? !renderState.translucent;
-  set castsShadows(bool? value) => _castsShadows = value;
+  set castsShadows(bool? value) {
+    if (value == _castsShadows) {
+      return;
+    }
+    _castsShadows = value;
+    _castsShadowsRevision++;
+    Game.notifyVisualMutation();
+  }
+
   bool? _castsShadows;
+
+  static int _castsShadowsRevision = 0;
+
+  /// The number of times the [castsShadows] of a material changed, added to
+  /// the versions of every `World3D`.
+  @internal
+  static int get castsShadowsRevision => _castsShadowsRevision;
 
   /// The pipeline this material drew with last, managed by the
   /// [RenderContext3D].

@@ -20,8 +20,7 @@ class HemisphereLight({
   /// The color of the light coming from above.
   Color skyColor = const Color(0xFFFFFFFF),
 
-  /// The color of the light coming from below.
-  var Color groundColor = const Color(0xFF808080),
+  Color groundColor = const Color(0xFF808080),
   super.intensity = 0.5,
 
   /// The direction of the sky, in world space. Defaults to +Y.
@@ -30,8 +29,31 @@ class HemisphereLight({
   /// {@macro hemisphere_light}
   this : super(color: skyColor);
 
+  /// The color of the light coming from below.
+  Color get groundColor => _groundColor;
+  set groundColor(Color value) {
+    if (value == _groundColor) {
+      return;
+    }
+    _groundColor = value;
+    markChanged(shadows: false);
+  }
+
+  Color _groundColor = groundColor;
+
   /// The direction of the sky, in world space. It need not be normalized.
-  Vector3 up = up ?? Vector3(0, 1, 0);
+  ///
+  /// After changing the vector in place, call [markChanged].
+  Vector3 get up => _up;
+  set up(Vector3 value) {
+    if (identical(value, _up)) {
+      return;
+    }
+    _up = value;
+    markChanged(shadows: false);
+  }
+
+  Vector3 _up = up ?? Vector3(0, 1, 0);
 
   /// The color of the light coming from above: the light's [color].
   Color get skyColor => color;

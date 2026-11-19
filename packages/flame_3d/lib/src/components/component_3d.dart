@@ -82,6 +82,40 @@ abstract class Component3D({
     _cachedWorld?.markSceneDirty(shadows: this is! LightComponent);
   }
 
+  /// A 32-bit mask of the render passes that draw this component and its
+  /// subtree, see `Component.cameraMask`.
+  ///
+  /// Changing it marks the enclosing [World3D] dirty, like [visible].
+  @override
+  set cameraMask(int value) {
+    if (value == cameraMask) {
+      return;
+    }
+    super.cameraMask = value;
+    _cachedWorld?.markSceneDirty(shadows: this is! LightComponent);
+  }
+
+  /// Reports that what this component draws changed in a way the engine
+  /// cannot see: data changed in place, such as joint matrices written into
+  /// an existing list, a field of a material or of a light source's vector,
+  /// or the buffers of a custom [Object3D.draw].
+  ///
+  /// Changes made through the setters of the engine's components (transform,
+  /// [visible], [cameraMask], `MeshComponent.color`, `instanceData`, ...) are
+  /// reported by the setters themselves; only call this for the others.
+  ///
+  /// It bumps the enclosing [World3D]'s [World3D.sceneVersion], and its
+  /// [World3D.castersVersion] unless [shadows] is `false`, so that
+  /// `Scene3DCacheMode.retained` layers and a cached static shadow map
+  /// ([ShadowSettings.cacheWhenStatic]) render again, and wakes a game whose
+  /// `idleRenderMode` skips unchanged frames. Pass `shadows: false` when the
+  /// change cannot reach a shadow map (a color, a value only the fragment
+  /// shader reads). It costs two integer increments; it does nothing for a
+  /// component outside a [World3D].
+  void markDrawDirty({bool shadows = true}) {
+    _cachedWorld?.markSceneDirty(shadows: shadows);
+  }
+
   /// Whether this component AND all of its [Component3D] ancestors have
   /// [visible] set to `true`.
   bool get isEffectivelyVisible {

@@ -210,10 +210,11 @@ counts the frames served from the image. The default, `Scene3DCacheMode.none`, r
 
 The layer compares, on every frame:
 
-- the world's `sceneVersion`: components added, removed, moved, shown or hidden, lights added,
-  removed or moved, animations that advance, particle systems and ribbons with live particles,
-  running effects, batch changes and world settings assigned a new value (see
-  [Basic Concepts](basic_concepts.md) for the full list);
+- the world's `sceneVersion`: components added, removed, moved, shown or hidden, drawing
+  properties (`color`, `instanceData`, `jointTransforms`, `castsShadows`) and light source fields
+  assigned, lights added, removed or moved, animations that advance, particle systems and ribbons
+  with live particles, running effects, batch changes and world settings assigned a new value (see
+  [Basic Concepts](basic_concepts.md#scene-versions-and-dirty-marking) for the full list);
 - the `castersVersion` of the world, or of its `ShadowGroup` (all the worlds of the group);
 - `layer.markDirty()` calls;
 - the part of the screen the layer covers and where it lands in device pixels: panning, zooming or
@@ -225,18 +226,17 @@ The layer compares, on every frame:
   `exposure`, `contrast`, `saturation`, the vignette, `tint`, `fxaa` and the color LUT), compared by
   value, so changing them in place counts.
 
-These do not render it again, because the engine does not see them; call `layer.markDirty()` after
-them:
+These do not render it again, because the engine does not see them; report them as described in
+[Basic Concepts](basic_concepts.md#scene-versions-and-dirty-marking), or call `layer.markDirty()`:
 
-- the fields of a light's `source`: `color`, `intensity`, `direction`, `shadows` (a sun that turns by
-  its `direction` leaves the layer stale; turning the `LightComponent` itself counts as a move);
 - material fields, including the animated ones (`StylizedMaterial.windTime`, `WaterMaterial.time`):
   wind and water freeze while the image is reused;
-- `MeshComponent.color`, `instanceData` and `jointTransforms` changed in place (skinning driven
-  through `jointTransforms` freezes, while `ModelComponent` animations do count);
-- what a custom `Object3D` draws, and textures whose content changes, such as a `RenderTexture3D`
-  shown in the layer;
-- the SSAO and depth-of-field fields of `postProcess`, `depthPrepassEnabled`, `customPasses`, and the
+- joint matrices written in place into `jointTransforms` (skinning driven that way freezes until
+  `markDrawDirty()` is called on the component, while `ModelComponent` animations do count), and
+  vectors or `ShadowSettings` of a light source changed in place (`source.markChanged()`);
+- what a custom `Object3D` draws (`markDrawDirty()`), and textures whose content changes, such as a
+  `RenderTexture3D` shown in the layer;
+- the fields of `fog`, the SSAO and depth-of-field fields of `postProcess`, `customPasses`, and the
   layer's `cameraMask`.
 
 `markDirty()` only renders the layer again; `world.markSceneDirty()` does too, and also marks the
@@ -245,10 +245,10 @@ shadow casters as changed (use `shadows: false` when none moved).
 Anything that changes on every frame keeps the layer rendering every frame, with the cost of the
 comparison on top: particle systems with live particles, playing animations, a `FoliageSystem3D`
 with a `windStrength` above `0` (it marks the world dirty on every update, see
-[Large Worlds](world_scale.md#limitations)), and components whose transform is written every frame,
-even with an unchanged value. Put such objects in
-a layer of their own without caching, above or below the retained one, and share shadows between the
-two with a `ShadowGroup`.
+[Large Worlds](world_scale.md#limitations)), and components whose transform or drawing properties
+change every frame (writing an unchanged value is not a change). Put such objects in a layer of
+their own without caching, above or below the retained one, and share shadows between the two with
+a `ShadowGroup`.
 
 
 ### What it costs

@@ -28,14 +28,27 @@ abstract class Object3D({
   super.visible,
   super.tags3D,
   super.prefabId,
-
+  bool castsShadows = true,
+  super.cameraMask,
+}) extends Component3D {
   /// Whether this object casts shadows, when the scene has a light that
   /// casts them (see [ShadowSettings]). It applies to this object's own
   /// draws, not to its children; the surfaces of materials that cast no
   /// shadows (see [Material.castsShadows]) cast none either way.
-  var bool castsShadows = true,
-  super.cameraMask,
-}) extends Component3D {
+  ///
+  /// Changing it marks the shadow casters of the enclosing [World3D] dirty
+  /// (see [World3D.castersVersion]).
+  bool get castsShadows => _castsShadows;
+  set castsShadows(bool value) {
+    if (value == _castsShadows) {
+      return;
+    }
+    _castsShadows = value;
+    markDrawDirty();
+  }
+
+  bool _castsShadows = castsShadows;
+
   /// Whether an ancestor's AABB was fully inside the frustum, meaning
   /// children can skip their own frustum tests.
   static bool _ancestorFullyInside = false;

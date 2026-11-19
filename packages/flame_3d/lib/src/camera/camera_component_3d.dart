@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flame/game.dart' show DirtyVersionSource, Game;
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/game.dart';
 import 'package:flame_3d/src/extensions/clip_space.dart';
@@ -288,12 +289,33 @@ class CameraComponent3D({
   ///
   /// Starts at 0. Compare it with a value read earlier to know whether
   /// anything derived from the camera is stale.
+  ///
+  /// While the camera is mounted, its game polls [version] before each frame
+  /// it might skip (see `Game.idleRenderMode`), so moving the camera, in
+  /// place too, wakes a game that only renders changed frames.
   int get version {
     _sync();
     return _version;
   }
 
   int _version = 0;
+
+  Game? _pollingGame;
+  late final DirtyVersionSource _versionSource = _readVersion;
+  int _readVersion() => version;
+
+  @override
+  void onMount() {
+    super.onMount();
+    _pollingGame = findGame()?..registerDirtyVersionSource(_versionSource);
+  }
+
+  @override
+  void onRemove() {
+    _pollingGame?.unregisterDirtyVersionSource(_versionSource);
+    _pollingGame = null;
+    super.onRemove();
+  }
 
   /// How many times a cached matrix, the eye position or the frustum was
   /// recomputed, for profiling and tests.

@@ -129,6 +129,11 @@ current matrices use changes (not `position` while a `customViewMatrix` is set, 
 data derived from the camera can be kept until the version differs. `matrixUpdateCount` counts the
 recomputations, for profiling and tests.
 
+A mounted camera registers its `version` with its game (`Game.registerDirtyVersionSource`), so a
+game whose `idleRenderMode` skips unchanged frames renders again when the camera moves, whether a
+rig or your code moves it, by assignment or in place. The unmounted cameras of a `CameraStack3D`
+notify from `stack.update` instead.
+
 
 ## Rays and screen points
 
@@ -404,9 +409,6 @@ any rig that sets the camera every frame: add it after the rig, or give it a hig
 
 - The 3D camera ignores the viewfinder: zooming, rotating or moving the viewfinder transforms the
   rendered image as a 2D picture.
-- Moving a `CameraComponent3D` (or a rig moving it) does not mark the game as visually changed. With
-  `IdleRenderMode.onDemand` or `onDemandWhenIdle`, call `Game.notifyVisualMutation()` after moving
-  the camera, or the frame is not repainted until something else changes.
 - `CameraStack3D` renders each slot with `World3D.renderToImage`, which creates a new render target
   for every slot on every frame instead of reusing pooled ones, and it sorts its slots into new
   lists on every `render` and `pickSlotAndRay` call.

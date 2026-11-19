@@ -15,10 +15,33 @@ class PointLight({
   required super.color,
   required super.intensity,
 
+  double? range,
+  ShadowSettings? shadows,
+}) extends LightSource {
   /// The distance at which the light fades out, or `null` (or a value that is
   /// not above zero) for an inverse-square falloff.
-  var double? range,
+  double? get range => _range;
+  set range(double? value) {
+    if (value == _range) {
+      return;
+    }
+    _range = value;
+    markChanged(shadows: _shadows != null);
+  }
+
+  double? _range = range;
 
   /// Optional omnidirectional Dual-Paraboloid shadow settings.
-  var ShadowSettings? shadows,
-}) extends LightSource;
+  ///
+  /// After changing the settings in place, call [markChanged].
+  ShadowSettings? get shadows => _shadows;
+  set shadows(ShadowSettings? value) {
+    if (identical(value, _shadows)) {
+      return;
+    }
+    _shadows = value;
+    markChanged();
+  }
+
+  ShadowSettings? _shadows = shadows;
+}

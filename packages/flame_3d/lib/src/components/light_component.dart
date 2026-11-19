@@ -15,7 +15,8 @@ import 'package:flame_3d/resources.dart';
 /// {@endtemplate}
 class LightComponent({
   /// What kind of light this is, and its color and intensity. Its values may
-  /// be changed at any time.
+  /// be changed at any time; assigning them marks the world dirty, see
+  /// [LightSource.markChanged] for changes made in place.
   required final LightSource source,
   final int _lightMask = 0xFFFFFFFF,
   super.position,
@@ -150,12 +151,18 @@ class LightComponent({
   void onMount() {
     super.onMount();
     worldRef.addLight(_light);
+    source.addChangeListener(_onSourceChanged);
   }
 
   @override
   void onRemove() {
+    source.removeChangeListener(_onSourceChanged);
     worldRef.removeLight(_light);
     super.onRemove();
+  }
+
+  void _onSourceChanged({required bool shadows}) {
+    worldOrNull?.markSceneDirty(shadows: shadows);
   }
 
   @override
