@@ -63,6 +63,17 @@ abstract class Material({
   /// ```
   RenderState renderState = RenderState.opaque;
 
+  /// The depth prepass this material's draws share, when its [renderState]
+  /// is translucent with [RenderState.depthPrepass]: `null` (the default)
+  /// for a prepass of their own (or of their mesh).
+  ///
+  /// The draws of every material with an identical non-null key, in a render
+  /// pass, are ordered together among the translucent draws, all write their
+  /// depth first, and are then shaded with [CompareFunction.lessEqual]: where
+  /// several overlap on screen, only the nearest is shaded. See
+  /// `ShadowCatcherMaterial.nearestOnly`.
+  Object? depthPrepassGroup;
+
   /// Whether the surfaces drawn with this material cast shadows (see
   /// [ShadowSettings]).
   ///

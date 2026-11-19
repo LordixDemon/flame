@@ -43,12 +43,17 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 /// It is translucent (blended with premultiplied alpha, depth tested, without
 /// depth writes, drawn after the opaque draws) and casts no shadows.
 ///
+/// Where catchers overlap on screen (a ground, walls, slabs at different
+/// heights), each darkens what is behind it. With [nearestOnly], only the
+/// nearest catcher surface darkens a pixel: see [nearestOnly].
+///
 /// Not available on the web yet: creating one there throws an
 /// [UnsupportedError].
 /// {@endtemplate}
 class ShadowCatcherMaterial({
   /// The color of the shadows, and their opacity at full strength.
   var Color color = const Color(0x80000000),
+  bool nearestOnly = false,
 }) extends Material {
   /// {@macro shadow_catcher_material}
   this
@@ -72,8 +77,33 @@ class ShadowCatcherMaterial({
         'no WebGPU shaders.',
       );
     }
-    renderState = RenderState.premultipliedAlphaBlend;
+    this.nearestOnly = nearestOnly;
   }
+
+  /// The key of the depth prepass every catcher with [nearestOnly] shares.
+  static final Object _nearestCatchers = Object();
+
+  /// Whether only the nearest catcher surface darkens a pixel, among the
+  /// catchers with this option.
+  ///
+  /// The draws of these catchers write their depth first, all of them, and
+  /// are then shaded where they are the nearest (see
+  /// [Material.depthPrepassGroup]): a slab of catchers over a ground of
+  /// catchers darkens the art once where both are in shadow, and hides the
+  /// ground's shadow under it where it is lit itself. It costs one more
+  /// depth-only draw per catcher. The depth they write stays for the
+  /// translucent draws after them in the pass, which they hide as an
+  /// invisible surface would.
+  bool get nearestOnly => _nearestOnly;
+  set nearestOnly(bool value) {
+    _nearestOnly = value;
+    renderState = value
+        ? RenderState.singlePiecePremultipliedAlphaBlend
+        : RenderState.premultipliedAlphaBlend;
+    depthPrepassGroup = value ? _nearestCatchers : null;
+  }
+
+  bool _nearestOnly = false;
 
   static const _bundle =
       'packages/flame_3d/assets/shaders/shadow_catcher.shaderbundle';

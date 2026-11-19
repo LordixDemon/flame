@@ -335,6 +335,40 @@ class RenderContext3D(super.device) extends RenderContext {
 
   int _activePrepassGroup = 0;
   int _nextPrepassGroupId = 1;
+
+  // The prepass groups of Material.depthPrepassGroup keys in this pass: the
+  // key, the group and the sort depth of each, the first [_sharedGroupCount]
+  // entries in use (the lists are reused from pass to pass).
+  final List<Object?> _sharedGroupKeys = [];
+  final List<int> _sharedGroupIds = [];
+  final List<double> _sharedGroupDepths = [];
+  int _sharedGroupCount = 0;
+
+  /// Puts draw [i] in the prepass group of [key] (made at its first draw in
+  /// the pass) and returns the sort depth the group's draws share, that of
+  /// its first draw ([depth] for it).
+  double _joinSharedPrepassGroup(int i, Object key, double depth) {
+    for (var k = 0; k < _sharedGroupCount; k++) {
+      if (identical(_sharedGroupKeys[k], key)) {
+        _prepassGroups[i] = _sharedGroupIds[k];
+        return _sharedGroupDepths[k];
+      }
+    }
+    final id = _nextPrepassGroupId++;
+    if (_sharedGroupCount == _sharedGroupKeys.length) {
+      _sharedGroupKeys.add(key);
+      _sharedGroupIds.add(id);
+      _sharedGroupDepths.add(depth);
+    } else {
+      _sharedGroupKeys[_sharedGroupCount] = key;
+      _sharedGroupIds[_sharedGroupCount] = id;
+      _sharedGroupDepths[_sharedGroupCount] = depth;
+    }
+    _sharedGroupCount++;
+    _prepassGroups[i] = id;
+    return depth;
+  }
+
   int _prepassGroupNesting = 0;
   double _prepassGroupDepth = double.nan;
   bool _depthPrepassOverride = false;
@@ -462,7 +496,9 @@ class RenderContext3D(super.device) extends RenderContext {
     if (!shadowPass &&
         drawMaterial.renderState.translucent &&
         drawMaterial.renderState.depthPrepass) {
-      if (_activePrepassGroup != 0) {
+      if (drawMaterial.depthPrepassGroup case final key?) {
+        depth = _joinSharedPrepassGroup(i, key, depth);
+      } else if (_activePrepassGroup != 0) {
         if (_prepassGroupDepth.isNaN) {
           _prepassGroupDepth = depth;
         } else {
@@ -542,14 +578,23 @@ class RenderContext3D(super.device) extends RenderContext {
     _depths[i] = center == null
         ? d[3]
         : d[0] * center.x + d[1] * center.y + d[2] * center.z + d[3];
-    _prepassGroups[i] =
-        (!_shadows.recording &&
-            drawMaterial.renderState.translucent &&
-            drawMaterial.renderState.depthPrepass)
-        ? (_activePrepassGroup != 0
-              ? _activePrepassGroup
-              : _nextPrepassGroupId++)
-        : 0;
+    final prepass =
+        !_shadows.recording &&
+        drawMaterial.renderState.translucent &&
+        drawMaterial.renderState.depthPrepass;
+    if (prepass && drawMaterial.depthPrepassGroup != null) {
+      _depths[i] = _joinSharedPrepassGroup(
+        i,
+        drawMaterial.depthPrepassGroup!,
+        _depths[i],
+      );
+    } else {
+      _prepassGroups[i] = prepass
+          ? (_activePrepassGroup != 0
+                ? _activePrepassGroup
+                : _nextPrepassGroupId++)
+          : 0;
+    }
     RenderProfile.lap(RenderPhase.recording);
   }
 
@@ -1016,6 +1061,8 @@ class RenderContext3D(super.device) extends RenderContext {
     _nextPrepassGroupId = 1;
     _activePrepassGroup = 0;
     _prepassGroupNesting = 0;
+    _sharedGroupKeys.fillRange(0, _sharedGroupCount, null);
+    _sharedGroupCount = 0;
     RenderProfile.lap(RenderPhase.release);
   }
 

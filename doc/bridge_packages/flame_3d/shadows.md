@@ -227,6 +227,22 @@ them, on both paths: where several fall on it, the darkest (`color` alpha times 
 sun that circles around it. `ShadowCatcherMaterial` is not available on the web: creating one there
 throws an `UnsupportedError`.
 
+Where catchers overlap on screen (a ground, walls, slabs at different heights), each darkens the art
+behind it, so a pixel in the shadow on two of them is darkened twice. With `nearestOnly`, only the
+nearest catcher surface darkens a pixel, among the catchers that set it:
+
+```dart
+final ground = ShadowCatcherMaterial(nearestOnly: true);
+final slabs = ShadowCatcherMaterial(nearestOnly: true);
+```
+
+Their draws share one depth prepass (`Material.depthPrepassGroup`, with
+`RenderState.singlePiecePremultipliedAlphaBlend`): all of them write their depth first, then each is
+shaded where it is the nearest. A slab over the ground darkens the art once where both are in
+shadow, and hides the ground's shadow under it where it is lit itself, as a real slab would. It
+costs one depth-only draw more per catcher, and the depth the catchers write hides the translucent
+draws after them in the pass that are behind them.
+
 
 ## One shadow map for several layers
 

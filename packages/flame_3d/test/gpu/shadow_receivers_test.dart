@@ -472,4 +472,66 @@ void main() {
       });
     }
   });
+
+  group('ShadowCatcherMaterial.nearestOnly', () {
+    // A ground of catchers at z = -5 and a slab of catchers from x 0 to 0.6
+    // at z = -4.3, under the cube: the cube's shadow falls on the slab from
+    // x -0.15 to 0.45, and on the ground from x 0.2 to 0.8.
+    Surface slab(Material material) {
+      final stride = VertexLayout.standard.strideInFloats;
+      final vertices = Float32List(4 * stride);
+      const corners = [(0.0, -0.5), (0.6, -0.5), (0.6, 0.5), (0.0, 0.5)];
+      for (final (i, (x, y)) in corners.indexed) {
+        vertices
+          ..setRange(i * stride, i * stride + 3, [x, y, -4.3])
+          ..setRange(i * stride + 5, i * stride + 9, [1, 1, 1, 1])
+          ..setRange(i * stride + 9, i * stride + 12, [0, 0, 1]);
+      }
+      return Surface.fromBuffers(
+        vertices: vertices,
+        indices: Uint16List.fromList([0, 1, 2, 2, 3, 0]),
+        material: material,
+      );
+    }
+
+    Future<Frame> render({required bool nearestOnly}) {
+      final ground = _ground(ShadowCatcherMaterial(nearestOnly: nearestOnly));
+      final top = slab(ShadowCatcherMaterial(nearestOnly: nearestOnly));
+      final cube = CuboidMesh(
+        size: Vector3.all(0.4),
+        material: StylizedMaterial(),
+      );
+      return renderWithShadows(
+        lights: [_hemisphere(), _sun(ShadowSettings())],
+        draw: (context) {
+          context
+            ..drawSurface(ground)
+            ..drawSurface(top);
+          if (context.isShadowPass) {
+            context.drawMesh(cube, transform: Matrix4.translation(_cubeCenter));
+          }
+        },
+      );
+    }
+
+    testGpuEngine('off: overlapping catchers each darken', () async {
+      final frame = await render(nearestOnly: false);
+      // Both in shadow: 1 - (1 - 0.5)².
+      expect(_at(frame, 0.32, 0).$4, closeTo(191, 4));
+      // The ground's shadow through the lit slab.
+      expect(_at(frame, 0.53, 0).$4, closeTo(128, 4));
+      // The ground alone.
+      expect(_at(frame, 0.7, 0).$4, closeTo(128, 4));
+      expect(_at(frame, -0.5, 0).$4, 0);
+    });
+
+    testGpuEngine('on: only the nearest catcher darkens', () async {
+      final frame = await render(nearestOnly: true);
+      expect(_at(frame, 0.32, 0).$4, closeTo(128, 4));
+      // The slab hides the ground below it, and it is lit there.
+      expect(_at(frame, 0.53, 0).$4, 0);
+      expect(_at(frame, 0.7, 0).$4, closeTo(128, 4));
+      expect(_at(frame, -0.5, 0).$4, 0);
+    });
+  });
 }
