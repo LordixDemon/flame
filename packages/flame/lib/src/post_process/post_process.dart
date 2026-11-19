@@ -254,12 +254,18 @@ abstract class PostProcess({double? pixelRatio}) {
   /// components can know they are being rendered within a post process.
   ///
   /// While the subtree renders, [RasterScale.current] is [pixelRatio]: the
-  /// canvas the components draw on is in the pixels of the image.
+  /// canvas the components draw on is in the pixels of the image, and it is
+  /// clipped to the image.
   @nonVirtual
   @protected
   ui.Image rasterizeSubtree() {
+    final width = math.max(1, (pixelRatio * _size!.x).ceil());
+    final height = math.max(1, (pixelRatio * _size!.y).ceil());
     final recorder = PictureRecorder();
+    // The clip tells the components the part of the canvas that reaches the
+    // image (`Canvas.getDestinationClipBounds`).
     final innerCanvas = TelemetryCanvas.wrapOffscreenIfActive(Canvas(recorder))
+      ..clipRect(Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()))
       ..scale(pixelRatio);
 
     _rasterizeDepth++;
@@ -274,10 +280,7 @@ abstract class PostProcess({double? pixelRatio}) {
     final picture = recorder.endRecording();
     try {
       debugRasterizeCount++;
-      return picture.toImageSync(
-        math.max(1, (pixelRatio * _size!.x).ceil()),
-        math.max(1, (pixelRatio * _size!.y).ceil()),
-      );
+      return picture.toImageSync(width, height);
     } finally {
       picture.dispose();
     }
@@ -313,7 +316,7 @@ abstract class PostProcess({double? pixelRatio}) {
       final recorder = PictureRecorder();
       final innerCanvas = TelemetryCanvas.wrapOffscreenIfActive(
         Canvas(recorder),
-      );
+      )..clipRect(Rect.fromLTWH(0, 0, imgW.toDouble(), imgH.toDouble()));
       if (effectiveScale != 1.0) {
         innerCanvas.scale(effectiveScale, effectiveScale);
       }

@@ -320,7 +320,8 @@ void render(Canvas canvas) {
 ```
 
 `RasterScale.current` is the scale of the innermost offscreen picture, in its pixels per logical
-pixel, or `null` on screen. `rasterizeSubtree` and `rasterizePass` push it while the subtree
+pixel, or `null` on screen. These pictures also clip their canvas to the image, so
+`canvas.getDestinationClipBounds()` gives the part of the canvas that reaches it. `rasterizeSubtree` and `rasterizePass` push it while the subtree
 renders, and so do the offscreen world of a camera whose `effectiveWorldRenderScale` is not `1`,
 `CameraComponent.renderToImageSync` (with `renderToImage` and `RenderTextureComponent`) and the
 tiles of `renderHighResImageSync`. A post process of your own that records `renderSubtree` into a

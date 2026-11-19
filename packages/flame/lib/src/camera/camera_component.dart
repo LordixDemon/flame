@@ -787,12 +787,11 @@ class CameraComponent({
     _offscreenWorldRenderCount++;
 
     final recorder = ui.PictureRecorder();
-    final innerCanvas = TelemetryCanvas.wrapOffscreenIfActive(
-      ui.Canvas(
-        recorder,
-        ui.Rect.fromLTWH(0, 0, surfW.toDouble(), surfH.toDouble()),
-      ),
-    )..scale(surfW / vSize.x, surfH / vSize.y);
+    final surface = ui.Rect.fromLTWH(0, 0, surfW.toDouble(), surfH.toDouble());
+    final innerCanvas =
+        TelemetryCanvas.wrapOffscreenIfActive(ui.Canvas(recorder, surface))
+          ..clipRect(surface)
+          ..scale(surfW / vSize.x, surfH / vSize.y);
 
     RasterScale.push(surfW / vSize.x);
     try {

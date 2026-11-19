@@ -14,11 +14,13 @@ class _Probe() extends PositionComponent {
 
   final List<double?> scales = [];
   final List<double> canvasScales = [];
+  final List<ui.Rect> clips = [];
 
   @override
   void render(ui.Canvas canvas) {
     scales.add(RasterScale.current);
     canvasScales.add(canvas.getTransform()[0]);
+    clips.add(canvas.getDestinationClipBounds());
   }
 }
 
@@ -76,6 +78,8 @@ void main() {
       );
       expect(probe.scales, [3.0]);
       expect(probe.canvasScales, [3.0]);
+      // The canvas is clipped to the image, in its pixels.
+      expect(probe.clips.single, const ui.Rect.fromLTWH(0, 0, 60, 60));
       expect(RasterScale.isActive, isFalse);
 
       final direct = _DirectPostProcess();
@@ -98,6 +102,7 @@ void main() {
       );
       expect(probe.scales, [1.0]);
       expect(probe.canvasScales, [1.0]);
+      expect(probe.clips.single, const ui.Rect.fromLTWH(0, 0, 20, 20));
     });
 
     test('the scale is popped when the subtree throws', () {
@@ -135,6 +140,7 @@ void main() {
       expect(game.camera.lastWorldSurfaceWidth, 200);
       expect(probe.scales.single, 1.0);
       expect(probe.canvasScales.single, 1.0);
+      expect(probe.clips.single, const ui.Rect.fromLTWH(0, 0, 200, 100));
       expect(RasterScale.isActive, isFalse);
     });
 
@@ -150,6 +156,7 @@ void main() {
       _renderFrame(game);
       expect(probe.scales.single, 2.0);
       expect(probe.canvasScales.single, 2.0);
+      expect(probe.clips.single, const ui.Rect.fromLTWH(0, 0, 400, 200));
     });
 
     testWithFlameGame('renderToImageSync pushes its pixel ratio', (
