@@ -346,13 +346,14 @@ scale are interpolated from the outgoing pose to the incoming one by the fade's 
 real time, not the playback speed. Crossfading to the clip that is already playing starts it
 without a fade unless `allowSelfTransition` is passed to `AnimationState.crossFadeTo`.
 
-The outgoing side of a crossfade is a single clip:
-
-- starting a crossfade while another one is running drops the clip that was fading out, so the pose
-  jumps to the clip that was fading in, then fades from there;
-- crossfading out of a blend space fades from its dominant clip only, not from the blended pose.
-
-Both cause a visible pop; avoid interrupting short fades, or keep fades short.
+The outgoing side of a crossfade is whatever was playing when it started: a clip, a blend space
+with all its samples (at the blend values it had then), or a crossfade still running, which keeps
+advancing and blending underneath the new one. Starting a crossfade therefore never moves the pose,
+however quickly transitions follow each other (`crossFadeToBlendSpace1D` and
+`crossFadeToBlendSpace2D` behave the same). Up to `AnimationState.maxNestedCrossFades` (4) running
+fades are nested; a fifth interruption completes the oldest at once, which moves the pose by that
+fade's remaining weight, usually small. Morph weights fade the same way. The outgoing side fires no
+events and calls no `onComplete`.
 
 
 ### Animation events
@@ -378,8 +379,8 @@ final hero = ModelComponent(
 
 Every event crossed during an update fires once, in order, including across loop wraps, ping-pong
 turns and several wraps in one long update (up to 64 per update). Events of masked layers fire too.
-In a blend space with `syncNormalizedPhase` (the default), the events of the dominant clip fire;
-without phase sync, blend spaces fire no events.
+In a blend space, the events of the dominant clip (the one with the largest weight) fire, with or
+without `syncNormalizedPhase`.
 
 
 ## Blend spaces
@@ -406,7 +407,8 @@ hero.blendParameter1D = velocity.length;
 With `syncNormalizedPhase: true` (the default), all clips share one normalized cycle whose length is
 interpolated between the blended clips, so footfalls stay aligned while walking blends into
 running; the playback rate of each sample can be tuned with `speed`. With `false`, each clip runs on
-its own clock. The blend interpolates translations and scales linearly and rotations spherically,
+its own clock, and the dominant clip gives the state's clock, normalized phase and loop count. The
+blend interpolates translations and scales linearly and rotations spherically,
 and blends morph weights too. Values outside the range of the samples clamp to the first or last
 sample. `playBlendSpace2D(space)` and `blendParameter2D` work the same way with `BlendSample2D`
 (`point`).
@@ -466,14 +468,15 @@ Conditions are `greater`, `less`, `equals`, `notEquals` (on float or int paramet
 tolerance), `ifTrue`, `ifFalse` (bool parameters) and `onTrigger`. Unset parameters read as 0 or
 false. A transition with neither conditions nor `exitTime` never fires. `exitTime` is in normalized
 time of the current state: `1.0` is the end of the first cycle, `2.5` halfway through the third.
-In blend-space states whose space has `syncNormalizedPhase: false`, the normalized time does not
-advance, so an `exitTime` there never passes.
+In blend-space states whose space has `syncNormalizedPhase: false`, the normalized time is that of
+the dominant clip.
 `syncNormalizedPhase: true` on a transition, or the same `syncGroup` on both states, carries the
 normalized phase into the next state, so a walk cycle continues in the run cycle. `forceState(name)`
 jumps to a state from code. `currentStateName`, `activeStatePath`, `stateElapsed` and
 `transitionCount` help debugging.
 
-Crossfades between states have the limitations of [crossfades](#crossfades).
+Transitions crossfade as described in [Crossfades](#crossfades), so quick consecutive transitions
+blend without popping.
 
 
 ## Layers and masks
@@ -772,7 +775,7 @@ the main isolate; `AsyncModelLoader3D` moves the geometry work to an isolate.
 
 - **Meshopt**: only through `ModelParser` and `SceneLoader3D`, decoded on the main isolate;
   `KHR_meshopt_compression` and its `COLOR` filter are not read.
-- **Crossfades** from a running crossfade or from a blend space start from a single clip and pop.
+- **Crossfades**: at most 4 nested interrupted fades; a fifth interruption completes the oldest.
 - **Layers** override only; no additive layers.
 - **glTF**: no sparse accessors, no second UV set, no tangents, at most 4 joint influences per
   vertex, only `KHR_materials_unlit`, `KHR_materials_emissive_strength`, `KHR_texture_transform`

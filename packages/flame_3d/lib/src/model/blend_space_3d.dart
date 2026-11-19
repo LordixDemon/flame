@@ -3,14 +3,24 @@ import 'dart:typed_data';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/src/model/model_animation.dart';
 
+/// A clip of a blend space with its playback rate: a [BlendSample1D] or a
+/// [BlendSample2D].
+abstract interface class BlendSample() {
+  /// The clip.
+  ModelAnimation get animation;
+
+  /// The playback rate of the clip in the blend space.
+  double get speed;
+}
+
 /// A single animation clip positioned along a 1D parameter axis inside a
 /// [BlendSpace1D] (for example `Idle` at `0.0`, `Walk` at `2.0`, `Run` at
 /// `5.5`).
 class BlendSample1D({
-  required final ModelAnimation animation,
+  @override required final ModelAnimation animation,
   required final double position,
-  final double speed = 1.0,
-});
+  @override final double speed = 1.0,
+}) implements BlendSample;
 
 /// Continuous 1D locomotion / pose blend space sorted by
 /// [BlendSample1D.position].
@@ -62,10 +72,10 @@ class BlendSpace1D({
 /// A single animation clip positioned at a 2D parameter [point] inside a
 /// [BlendSpace2D] (such as `(strafeX, forwardY)`).
 class BlendSample2D({
-  required final ModelAnimation animation,
+  @override required final ModelAnimation animation,
   required Vector2 point,
-  final double speed = 1.0,
-}) {
+  @override final double speed = 1.0,
+}) implements BlendSample {
   /// Parameter-space coordinates of this sample.
   final Vector2 point = point.clone();
 }

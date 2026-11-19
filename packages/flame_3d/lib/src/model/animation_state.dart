@@ -62,13 +62,30 @@ class AnimationState() {
   bool _atInitialStart = true;
   int _lastLoopWrapCount = 0;
 
-  // Outgoing clip during a crossfade.
+  // Outgoing side of a crossfade: either the single clip in [_previousRef]
+  // (a crossfade started from a plain clip) or the whole previous state in
+  // [_outgoing] (a crossfade started during another crossfade or from a blend
+  // space), which keeps advancing and blending until the fade ends.
   ModelAnimation? _previousRef;
   double _previousClock = 0.0;
   AnimationPlayMode _previousMode = AnimationPlayMode.loop;
   int _previousPingPongDir = 1;
+  AnimationState? _outgoing;
   double _blendElapsed = 0.0;
   double _blendDuration = 0.0;
+
+  /// How many interrupted crossfades can be nested: starting a crossfade
+  /// while one is running keeps the running one as the outgoing side, up to
+  /// this depth. Deeper, the oldest fade is completed at once (its weight in
+  /// the pose is the smallest).
+  static const int maxNestedCrossFades = 4;
+
+  // Instance scratch for the outgoing side, so nested states can be evaluated
+  // while the caller's results live in the shared static scratch.
+  final Vector3 _fadeT = Vector3.zero();
+  final Quaternion _fadeR = Quaternion.identity();
+  final Vector3 _fadeS = Vector3.all(1.0);
+  final List<double> _fadeMorph = [];
 
   // Active 1D / 2D blend spaces.
   BlendSpace1D? _blendSpace1D;
@@ -168,7 +185,8 @@ class AnimationState() {
   bool get isCompleted => _completed;
 
   /// Whether a crossfade transition is currently in progress.
-  bool get isCrossFading => _previousRef != null && _blendDuration > 0.0;
+  bool get isCrossFading =>
+      (_previousRef != null || _outgoing != null) && _blendDuration > 0.0;
 
   /// Current crossfade blend weight in `[0, 1]` (`1` when not crossfading).
   double get crossFadeProgress => _blendDuration > 0.0
@@ -214,9 +232,21 @@ class AnimationState() {
     AnimationPlayMode mode = AnimationPlayMode.loop,
     VoidCallback? onComplete,
   }) {
-    _previousRef = null;
-    _blendDuration = 0.0;
-    _blendElapsed = 0.0;
+    _cancelCrossFade();
+    _activateClip(
+      animation,
+      resetClock: resetClock,
+      mode: mode,
+      onComplete: onComplete,
+    );
+  }
+
+  void _activateClip(
+    ModelAnimation? animation, {
+    required bool resetClock,
+    required AnimationPlayMode mode,
+    required VoidCallback? onComplete,
+  }) {
     _blendSpace1D = null;
     _blendSpace2D = null;
     animationRef = animation;
@@ -238,10 +268,20 @@ class AnimationState() {
     double initialValue = 0.0,
     bool resetClock = true,
   }) {
+    _cancelCrossFade();
+    _activateBlendSpace1D(
+      space,
+      initialValue: initialValue,
+      resetClock: resetClock,
+    );
+  }
+
+  void _activateBlendSpace1D(
+    BlendSpace1D space, {
+    required double initialValue,
+    required bool resetClock,
+  }) {
     animationRef = null;
-    _previousRef = null;
-    _blendDuration = 0.0;
-    _blendElapsed = 0.0;
     _blendSpace2D = null;
     _blendSpace1D = space;
     blendParameter1D = initialValue;
@@ -262,10 +302,20 @@ class AnimationState() {
     Vector2? initialValue,
     bool resetClock = true,
   }) {
+    _cancelCrossFade();
+    _activateBlendSpace2D(
+      space,
+      initialValue: initialValue,
+      resetClock: resetClock,
+    );
+  }
+
+  void _activateBlendSpace2D(
+    BlendSpace2D space, {
+    required Vector2? initialValue,
+    required bool resetClock,
+  }) {
     animationRef = null;
-    _previousRef = null;
-    _blendDuration = 0.0;
-    _blendElapsed = 0.0;
     _blendSpace1D = null;
     _blendSpace2D = space;
     if (initialValue != null) {
@@ -297,24 +347,123 @@ class AnimationState() {
     }
   }
 
-  ModelAnimation? _captureDominantClip() {
-    if (animationRef case final anim?) {
-      return anim;
-    }
-    if (_blendSpace1D case final s1?) {
-      final b = s1.resolveBracket(blendParameter1D);
-      return s1.samples[b.t < 0.5 ? b.indexA : b.indexB].animation;
-    }
-    if (_blendSpace2D case final s2?) {
-      s2.evaluateWeights(_blendParam2D, _active2DIndices, _active2DWeights);
-      return s2.samples[_active2DIndices[0]].animation;
-    }
-    return null;
+  /// Ends any crossfade at once, dropping its outgoing side.
+  void _cancelCrossFade() {
+    _previousRef = null;
+    _releaseOutgoing();
+    _blendDuration = 0.0;
+    _blendElapsed = 0.0;
   }
 
-  /// Smoothly blends from the current pose/clip to [animation] over [duration]
+  void _releaseOutgoing() {
+    var nested = _outgoing;
+    _outgoing = null;
+    while (nested != null) {
+      final deeper = nested._outgoing;
+      nested
+        .._outgoing = null
+        .._previousRef = null
+        ..animationRef = null
+        .._blendSpace1D = null
+        .._blendSpace2D = null
+        .._blendDuration = 0.0
+        .._blendElapsed = 0.0;
+      if (_spareStates.length < 32) {
+        _spareStates.add(nested);
+      }
+      nested = deeper;
+    }
+  }
+
+  /// Moves what is playing now to the outgoing side of a new crossfade.
+  ///
+  /// A plain clip becomes [_previousRef]; anything else (a running crossfade,
+  /// a blend space) is copied whole into a nested state that keeps advancing
+  /// and blending, so the pose does not jump. Returns `false` when nothing is
+  /// playing.
+  bool _beginOutgoing() {
+    if (!hasActiveEvaluation) {
+      return false;
+    }
+    final plainClip =
+        animationRef != null &&
+        !isCrossFading &&
+        _blendSpace1D == null &&
+        _blendSpace2D == null;
+    if (plainClip) {
+      _releaseOutgoing();
+      _previousRef = animationRef;
+      _previousClock = clock;
+      _previousMode = mode;
+      _previousPingPongDir = _pingPongDirection;
+      return true;
+    }
+    final nested = _spareStates.isNotEmpty
+        ? _spareStates.removeLast()
+        : AnimationState();
+    nested._copyEvaluationFrom(this);
+    // The nested state now owns the previous outgoing chain.
+    _outgoing = nested;
+    _previousRef = null;
+
+    var level = nested;
+    var depth = 1;
+    while (depth < maxNestedCrossFades) {
+      final deeper = level._outgoing;
+      if (deeper == null) {
+        break;
+      }
+      level = deeper;
+      depth++;
+    }
+    if (level._outgoing != null) {
+      level._cancelCrossFade();
+    }
+    return true;
+  }
+
+  /// Copies the evaluation state of [source] (target clip or blend space,
+  /// clocks, parameters and its crossfade) into this state, taking over
+  /// [source]'s outgoing chain.
+  void _copyEvaluationFrom(AnimationState source) {
+    animationRef = source.animationRef;
+    clock = source.clock;
+    mode = source.mode;
+    speed = 1.0;
+    onComplete = null;
+    onEvent = null;
+    _completed = source._completed;
+    _pingPongDirection = source._pingPongDirection;
+    _atInitialStart = false;
+    _lastLoopWrapCount = 0;
+    _previousRef = source._previousRef;
+    _previousClock = source._previousClock;
+    _previousMode = source._previousMode;
+    _previousPingPongDir = source._previousPingPongDir;
+    _outgoing = source._outgoing;
+    source._outgoing = null;
+    _blendElapsed = source._blendElapsed;
+    _blendDuration = source._blendDuration;
+    _blendSpace1D = source._blendSpace1D;
+    _blendSpace2D = source._blendSpace2D;
+    blendParameter1D = source.blendParameter1D;
+    _seenParam1D = source._seenParam1D;
+    _blendParam2D.setFrom(source._blendParam2D);
+    _seenParam2DX = source._seenParam2DX;
+    _seenParam2DY = source._seenParam2DY;
+    _normalizedPhase = source._normalizedPhase;
+    final samples = source._sampleClocks.length;
+    _ensureSampleClocks(samples, reset: true);
+    _sampleClocks.setRange(0, samples, source._sampleClocks);
+  }
+
+  /// Smoothly blends from the current pose to [animation] over [duration]
   /// seconds using allocation-free TRS interpolation (LERP + shortest-arc
   /// SLERP).
+  ///
+  /// The outgoing side is whatever plays now: a clip, a blend space with all
+  /// its samples, or a running crossfade, which keeps blending (up to
+  /// [maxNestedCrossFades] nested fades), so interrupting a fade does not pop.
   void crossFadeTo(
     ModelAnimation? animation, {
     double duration = 0.25,
@@ -323,9 +472,8 @@ class AnimationState() {
     bool allowSelfTransition = false,
     VoidCallback? onComplete,
   }) {
-    final outgoing = _captureDominantClip();
     if (duration <= 0.0 ||
-        outgoing == null ||
+        !hasActiveEvaluation ||
         (!allowSelfTransition && identical(animation, animationRef))) {
       startAnimation(
         animation,
@@ -335,32 +483,19 @@ class AnimationState() {
       );
       return;
     }
-
-    _blendSpace1D = null;
-    _blendSpace2D = null;
-    _previousRef = outgoing;
-    _previousClock = clock;
-    _previousMode = this.mode;
-    _previousPingPongDir = _pingPongDirection;
+    _beginOutgoing();
+    _activateClip(
+      animation,
+      resetClock: resetClock,
+      mode: mode,
+      onComplete: onComplete,
+    );
     _blendElapsed = 0.0;
     _blendDuration = duration;
-
-    animationRef = animation;
-    this.mode = mode;
-    this.onComplete = onComplete;
-    _completed = false;
-    _pingPongDirection = 1;
-    _lastLoopWrapCount = 0;
-    if (resetClock) {
-      clock = 0.0;
-      _atInitialStart = true;
-    } else {
-      _atInitialStart = clock == 0.0;
-    }
   }
 
-  /// Smoothly crossfades from the current clip or blend space into [space]
-  /// over [duration] seconds.
+  /// Smoothly crossfades from the current clip, blend space or crossfade into
+  /// [space] over [duration] seconds (see [crossFadeTo]).
   void crossFadeToBlendSpace1D(
     BlendSpace1D space, {
     double duration = 0.25,
@@ -368,9 +503,8 @@ class AnimationState() {
     bool resetClock = true,
     bool allowSelfTransition = false,
   }) {
-    final outgoing = _captureDominantClip();
     if (duration <= 0.0 ||
-        outgoing == null ||
+        !hasActiveEvaluation ||
         (!allowSelfTransition && identical(space, _blendSpace1D))) {
       playBlendSpace1D(
         space,
@@ -379,24 +513,18 @@ class AnimationState() {
       );
       return;
     }
-    final savedClock = clock;
-    final savedMode = mode;
-    final savedDir = _pingPongDirection;
-    playBlendSpace1D(
+    _beginOutgoing();
+    _activateBlendSpace1D(
       space,
       initialValue: initialValue,
       resetClock: resetClock,
     );
-    _previousRef = outgoing;
-    _previousClock = savedClock;
-    _previousMode = savedMode;
-    _previousPingPongDir = savedDir;
     _blendElapsed = 0.0;
     _blendDuration = duration;
   }
 
-  /// Smoothly crossfades from the current clip or blend space into [space]
-  /// over [duration] seconds.
+  /// Smoothly crossfades from the current clip, blend space or crossfade into
+  /// [space] over [duration] seconds (see [crossFadeTo]).
   void crossFadeToBlendSpace2D(
     BlendSpace2D space, {
     double duration = 0.25,
@@ -404,9 +532,8 @@ class AnimationState() {
     bool resetClock = true,
     bool allowSelfTransition = false,
   }) {
-    final outgoing = _captureDominantClip();
     if (duration <= 0.0 ||
-        outgoing == null ||
+        !hasActiveEvaluation ||
         (!allowSelfTransition && identical(space, _blendSpace2D))) {
       playBlendSpace2D(
         space,
@@ -415,18 +542,12 @@ class AnimationState() {
       );
       return;
     }
-    final savedClock = clock;
-    final savedMode = mode;
-    final savedDir = _pingPongDirection;
-    playBlendSpace2D(
+    _beginOutgoing();
+    _activateBlendSpace2D(
       space,
       initialValue: initialValue,
       resetClock: resetClock,
     );
-    _previousRef = outgoing;
-    _previousClock = savedClock;
-    _previousMode = savedMode;
-    _previousPingPongDir = savedDir;
     _blendElapsed = 0.0;
     _blendDuration = duration;
   }
@@ -452,23 +573,29 @@ class AnimationState() {
       parentSink?.call(event);
     }
 
-    if (_previousRef case final prev?) {
-      final step = _advanceClip(
-        prev,
-        _previousClock,
-        scaledDt,
-        _previousMode,
-        _previousPingPongDir,
-        atStart: false,
-        onEvent: null,
-      );
-      _previousClock = step.clock;
-      _previousPingPongDir = step.direction;
+    if (isCrossFading) {
+      final nested = _outgoing;
+      if (nested != null) {
+        // The outgoing state fires no events and calls no callbacks.
+        nested
+          ..speed = speed
+          .._updateInternal(dt);
+      } else if (_previousRef case final prev?) {
+        final step = _advanceClip(
+          prev,
+          _previousClock,
+          scaledDt,
+          _previousMode,
+          _previousPingPongDir,
+          atStart: false,
+          onEvent: null,
+        );
+        _previousClock = step.clock;
+        _previousPingPongDir = step.direction;
+      }
       _blendElapsed += dt.abs();
       if (_blendElapsed >= _blendDuration) {
-        _previousRef = null;
-        _blendDuration = 0.0;
-        _blendElapsed = 0.0;
+        _cancelCrossFade();
       }
       changed = true;
     }
@@ -569,22 +696,51 @@ class AnimationState() {
         }
       }
     } else {
-      _atInitialStart = false;
-      for (var i = 0; i < space.samples.length; i++) {
-        final s = space.samples[i];
-        final dur = s.animation.lastTime;
-        if (dur > 1e-9) {
-          var next = _sampleClocks[i] + scaledDt * s.speed;
-          next %= dur;
-          if (next < 0.0) {
-            next += dur;
-          }
-          _sampleClocks[i] = next;
-        }
-      }
       final domIdx = t < 0.5 ? bracket.indexA : bracket.indexB;
-      clock = _sampleClocks[domIdx];
+      _advanceUnsyncedSamples(space.samples, domIdx, scaledDt, fire);
     }
+  }
+
+  /// Advances every sample of a blend space without phase sync on its own
+  /// clock. The dominant sample [domIdx] fires its events, counts loop wraps
+  /// and gives [clock] and [normalizedPhase] (so state-machine exit times
+  /// advance).
+  void _advanceUnsyncedSamples(
+    List<BlendSample> samples,
+    int domIdx,
+    double scaledDt,
+    AnimationEventCallback3D fire,
+  ) {
+    final wasStart = _atInitialStart;
+    _atInitialStart = false;
+    for (var i = 0; i < samples.length; i++) {
+      final s = samples[i];
+      final animation = s.animation;
+      final dur = animation.lastTime;
+      if (i == domIdx) {
+        final step = _advanceClip(
+          animation,
+          _sampleClocks[i],
+          scaledDt * s.speed,
+          AnimationPlayMode.loop,
+          1,
+          atStart: wasStart,
+          onEvent: animation.events.isNotEmpty ? fire : null,
+        );
+        _sampleClocks[i] = step.clock;
+        _lastLoopWrapCount = step.wraps;
+      } else if (dur > 1e-9) {
+        var next = _sampleClocks[i] + scaledDt * s.speed;
+        next %= dur;
+        if (next < 0.0) {
+          next += dur;
+        }
+        _sampleClocks[i] = next;
+      }
+    }
+    clock = _sampleClocks[domIdx];
+    final domDur = samples[domIdx].animation.lastTime;
+    _normalizedPhase = domDur > 1e-9 ? (clock / domDur).clamp(0.0, 1.0) : 0.0;
   }
 
   void _advanceBlendSpace2D(
@@ -644,20 +800,12 @@ class AnimationState() {
         }
       }
     } else {
-      _atInitialStart = false;
-      for (var i = 0; i < space.samples.length; i++) {
-        final s = space.samples[i];
-        final dur = s.animation.lastTime;
-        if (dur > 1e-9) {
-          var next = _sampleClocks[i] + scaledDt * s.speed;
-          next %= dur;
-          if (next < 0.0) {
-            next += dur;
-          }
-          _sampleClocks[i] = next;
-        }
-      }
-      clock = _sampleClocks[_active2DIndices[0]];
+      _advanceUnsyncedSamples(
+        space.samples,
+        _active2DIndices[0],
+        scaledDt,
+        fire,
+      );
     }
   }
 
@@ -946,6 +1094,9 @@ class AnimationState() {
     return out;
   }
 
+  /// Evaluates the base pose of [nodeIndex] (target and crossfade, without
+  /// layers) into [outT], [outR] and [outS]; returns `false`, leaving the rest
+  /// pose in the outputs, when nothing animates the node.
   bool _evaluateBaseNodeTrs(
     int nodeIndex,
     Vector3 restTranslation,
@@ -957,6 +1108,81 @@ class AnimationState() {
     double? overrideNormalizedPhase,
     double? overrideClipClock,
   }) {
+    final targetAnimated = _evaluateTargetTrs(
+      nodeIndex,
+      restTranslation,
+      restRotation,
+      restScale,
+      outT,
+      outR,
+      outS,
+      overrideNormalizedPhase: overrideNormalizedPhase,
+      overrideClipClock: overrideClipClock,
+    );
+    if (!isCrossFading ||
+        overrideClipClock != null ||
+        overrideNormalizedPhase != null) {
+      return targetAnimated;
+    }
+
+    // The target is fully evaluated: the static scratch is free for the
+    // outgoing side, which writes into this state's own scratch.
+    final bool outgoingAnimated;
+    final nested = _outgoing;
+    if (nested != null) {
+      outgoingAnimated = nested._evaluateBaseNodeTrs(
+        nodeIndex,
+        restTranslation,
+        restRotation,
+        restScale,
+        _fadeT,
+        _fadeR,
+        _fadeS,
+      );
+    } else {
+      _fadeT.setFrom(restTranslation);
+      _fadeR.setFrom(restRotation);
+      _fadeS.setFrom(restScale);
+      final prevNode = _previousRef?.nodes[nodeIndex];
+      prevNode?.sampleTrsInto(_previousClock, _fadeT, _fadeR, _fadeS);
+      outgoingAnimated = prevNode != null;
+    }
+    if (!targetAnimated && !outgoingAnimated) {
+      return false;
+    }
+
+    final w = crossFadeProgress;
+    outT.setValues(
+      _fadeT.x + (outT.x - _fadeT.x) * w,
+      _fadeT.y + (outT.y - _fadeT.y) * w,
+      _fadeT.z + (outT.z - _fadeT.z) * w,
+    );
+    AnimationInterpolation.slerpQuaternionsInto(_fadeR, outR, w, outR);
+    outS.setValues(
+      _fadeS.x + (outS.x - _fadeS.x) * w,
+      _fadeS.y + (outS.y - _fadeS.y) * w,
+      _fadeS.z + (outS.z - _fadeS.z) * w,
+    );
+    return true;
+  }
+
+  /// Evaluates the current target (clip or blend space, no crossfade) of
+  /// [nodeIndex]; the outputs start from the rest pose.
+  bool _evaluateTargetTrs(
+    int nodeIndex,
+    Vector3 restTranslation,
+    Quaternion restRotation,
+    Vector3 restScale,
+    Vector3 outT,
+    Quaternion outR,
+    Vector3 outS, {
+    double? overrideNormalizedPhase,
+    double? overrideClipClock,
+  }) {
+    outT.setFrom(restTranslation);
+    outR.setFrom(restRotation);
+    outS.setFrom(restScale);
+
     final space1D = _blendSpace1D;
     if (space1D != null) {
       final bracket = space1D.resolveBracket(blendParameter1D);
@@ -964,28 +1190,19 @@ class AnimationState() {
       final sampleB = space1D.samples[bracket.indexB];
       final nodeA = sampleA.animation.nodes[nodeIndex];
       final nodeB = sampleB.animation.nodes[nodeIndex];
-      final crossPrev =
-          isCrossFading &&
-              overrideClipClock == null &&
-              overrideNormalizedPhase == null
-          ? _previousRef?.nodes[nodeIndex]
-          : null;
-      if (nodeA == null && nodeB == null && crossPrev == null) {
+      if (nodeA == null && nodeB == null) {
         return false;
       }
       final phase = overrideNormalizedPhase ?? _normalizedPhase;
-      final timeA =
-          space1D.syncNormalizedPhase || overrideNormalizedPhase != null
+      final synced =
+          space1D.syncNormalizedPhase || overrideNormalizedPhase != null;
+      final timeA = synced
           ? phase * sampleA.animation.lastTime
           : _sampleClocks[bracket.indexA];
-      outT.setFrom(restTranslation);
-      outR.setFrom(restRotation);
-      outS.setFrom(restScale);
       nodeA?.sampleTrsInto(timeA, outT, outR, outS);
 
       if (bracket.indexA != bracket.indexB && bracket.t > 0.0) {
-        final timeB =
-            space1D.syncNormalizedPhase || overrideNormalizedPhase != null
+        final timeB = synced
             ? phase * sampleB.animation.lastTime
             : _sampleClocks[bracket.indexB];
         _t0.setFrom(restTranslation);
@@ -1005,26 +1222,6 @@ class AnimationState() {
           outS.z + (_s0.z - outS.z) * w,
         );
       }
-      if (isCrossFading &&
-          overrideClipClock == null &&
-          overrideNormalizedPhase == null) {
-        _t0.setFrom(restTranslation);
-        _r0.setFrom(restRotation);
-        _s0.setFrom(restScale);
-        crossPrev?.sampleTrsInto(_previousClock, _t0, _r0, _s0);
-        final w = crossFadeProgress;
-        outT.setValues(
-          _t0.x + (outT.x - _t0.x) * w,
-          _t0.y + (outT.y - _t0.y) * w,
-          _t0.z + (outT.z - _t0.z) * w,
-        );
-        AnimationInterpolation.slerpQuaternionsInto(_r0, outR, w, outR);
-        outS.setValues(
-          _s0.x + (outS.x - _s0.x) * w,
-          _s0.y + (outS.y - _s0.y) * w,
-          _s0.z + (outS.z - _s0.z) * w,
-        );
-      }
       return true;
     }
 
@@ -1035,26 +1232,20 @@ class AnimationState() {
         _active2DIndices,
         _active2DWeights,
       );
-      final crossPrev =
-          isCrossFading &&
-              overrideClipClock == null &&
-              overrideNormalizedPhase == null
-          ? _previousRef?.nodes[nodeIndex]
-          : null;
-      var anyAnimated = crossPrev != null;
-      if (!anyAnimated) {
-        for (var k = 0; k < count; k++) {
-          if (space2D.samples[_active2DIndices[k]].animation.nodes[nodeIndex] !=
-              null) {
-            anyAnimated = true;
-            break;
-          }
+      var anyAnimated = false;
+      for (var k = 0; k < count; k++) {
+        if (space2D.samples[_active2DIndices[k]].animation.nodes[nodeIndex] !=
+            null) {
+          anyAnimated = true;
+          break;
         }
       }
       if (!anyAnimated) {
         return false;
       }
       final phase = overrideNormalizedPhase ?? _normalizedPhase;
+      final synced =
+          space2D.syncNormalizedPhase || overrideNormalizedPhase != null;
       var cumW = 0.0;
       for (var k = 0; k < count; k++) {
         final w = _active2DWeights[k];
@@ -1063,8 +1254,7 @@ class AnimationState() {
         }
         final idx = _active2DIndices[k];
         final sample = space2D.samples[idx];
-        final timeK =
-            space2D.syncNormalizedPhase || overrideNormalizedPhase != null
+        final timeK = synced
             ? phase * sample.animation.lastTime
             : _sampleClocks[idx];
         _t0.setFrom(restTranslation);
@@ -1097,73 +1287,19 @@ class AnimationState() {
           );
         }
       }
-      if (isCrossFading &&
-          overrideClipClock == null &&
-          overrideNormalizedPhase == null) {
-        _t0.setFrom(restTranslation);
-        _r0.setFrom(restRotation);
-        _s0.setFrom(restScale);
-        crossPrev?.sampleTrsInto(_previousClock, _t0, _r0, _s0);
-        final w = crossFadeProgress;
-        outT.setValues(
-          _t0.x + (outT.x - _t0.x) * w,
-          _t0.y + (outT.y - _t0.y) * w,
-          _t0.z + (outT.z - _t0.z) * w,
-        );
-        AnimationInterpolation.slerpQuaternionsInto(_r0, outR, w, outR);
-        outS.setValues(
-          _s0.x + (outS.x - _s0.x) * w,
-          _s0.y + (outS.y - _s0.y) * w,
-          _s0.z + (outS.z - _s0.z) * w,
-        );
-      }
       return true;
     }
 
     final currentNode = animationRef?.nodes[nodeIndex];
-    final prevNode =
-        isCrossFading &&
-            overrideClipClock == null &&
-            overrideNormalizedPhase == null
-        ? _previousRef?.nodes[nodeIndex]
-        : null;
-    if (currentNode == null && prevNode == null) {
+    if (currentNode == null) {
       return false;
     }
-
     final clipTime =
         overrideClipClock ??
         (overrideNormalizedPhase != null
             ? overrideNormalizedPhase * (animationRef?.lastTime ?? 0.0)
             : clock);
-
-    outT.setFrom(restTranslation);
-    outR.setFrom(restRotation);
-    outS.setFrom(restScale);
-    currentNode?.sampleTrsInto(clipTime, outT, outR, outS);
-
-    if (prevNode != null ||
-        (isCrossFading &&
-            overrideClipClock == null &&
-            overrideNormalizedPhase == null)) {
-      _t0.setFrom(restTranslation);
-      _r0.setFrom(restRotation);
-      _s0.setFrom(restScale);
-      prevNode?.sampleTrsInto(_previousClock, _t0, _r0, _s0);
-
-      final w = crossFadeProgress;
-      outT.setValues(
-        _t0.x + (outT.x - _t0.x) * w,
-        _t0.y + (outT.y - _t0.y) * w,
-        _t0.z + (outT.z - _t0.z) * w,
-      );
-      AnimationInterpolation.slerpQuaternionsInto(_r0, outR, w, outR);
-      outS.setValues(
-        _s0.x + (outS.x - _s0.x) * w,
-        _s0.y + (outS.y - _s0.y) * w,
-        _s0.z + (outS.z - _s0.z) * w,
-      );
-    }
+    currentNode.sampleTrsInto(clipTime, outT, outR, outS);
     return true;
   }
 
@@ -1288,6 +1424,51 @@ class AnimationState() {
   }
 
   int _sampleBaseMorphWeights(int nodeIndex, List<double> out) {
+    final targetCount = _sampleTargetMorphWeights(nodeIndex, out);
+    if (!isCrossFading) {
+      return targetCount;
+    }
+    // The target is sampled: the static scratch is free for the outgoing
+    // side, which writes into this state's own list.
+    final int outgoingCount;
+    final nested = _outgoing;
+    if (nested != null) {
+      outgoingCount = nested._sampleBaseMorphWeights(nodeIndex, _fadeMorph);
+    } else {
+      final prevMorph = _previousRef?.nodes[nodeIndex]?.morphWeights;
+      outgoingCount = prevMorph?.targetCount ?? 0;
+      if (prevMorph != null) {
+        _ensureZeroedList(_fadeMorph, outgoingCount);
+        prevMorph.sampleInto(_previousClock, _fadeMorph);
+      }
+    }
+    final count = math.max(targetCount, outgoingCount);
+    if (count <= 0) {
+      return 0;
+    }
+    for (var k = targetCount; k < count; k++) {
+      if (k < out.length) {
+        out[k] = 0.0;
+      } else {
+        out.add(0.0);
+      }
+    }
+    while (_fadeMorph.length < count) {
+      _fadeMorph.add(0.0);
+    }
+    for (var k = outgoingCount; k < count; k++) {
+      _fadeMorph[k] = 0.0;
+    }
+    final w = crossFadeProgress;
+    for (var k = 0; k < count; k++) {
+      out[k] = _fadeMorph[k] + (out[k] - _fadeMorph[k]) * w;
+    }
+    return count;
+  }
+
+  /// Samples the morph weights of the current target (clip or blend space, no
+  /// crossfade) of [nodeIndex] into [out]; returns the number of targets.
+  int _sampleTargetMorphWeights(int nodeIndex, List<double> out) {
     final space1D = _blendSpace1D;
     if (space1D != null) {
       final bracket = space1D.resolveBracket(blendParameter1D);
@@ -1371,26 +1552,12 @@ class AnimationState() {
     }
 
     final curMorph = animationRef?.nodes[nodeIndex]?.morphWeights;
-    final prevMorph = isCrossFading
-        ? _previousRef?.nodes[nodeIndex]?.morphWeights
-        : null;
-    final targetCount = math.max(
-      curMorph?.targetCount ?? 0,
-      prevMorph?.targetCount ?? 0,
-    );
-    if (targetCount <= 0) {
+    final targetCount = curMorph?.targetCount ?? 0;
+    if (curMorph == null || targetCount <= 0) {
       return 0;
     }
     _ensureZeroedList(out, targetCount);
-    curMorph?.sampleInto(clock, out);
-    if (isCrossFading) {
-      _ensureZeroedList(_morphBlendScratch, targetCount);
-      prevMorph?.sampleInto(_previousClock, _morphBlendScratch);
-      final w = crossFadeProgress;
-      for (var k = 0; k < targetCount; k++) {
-        out[k] = _morphBlendScratch[k] + (out[k] - _morphBlendScratch[k]) * w;
-      }
-    }
+    curMorph.sampleInto(clock, out);
     return targetCount;
   }
 
@@ -1426,4 +1593,5 @@ class AnimationState() {
   static final Vector3 _ls = Vector3.all(1.0);
   static final List<double> _morphBlendScratch = [];
   static final List<double> _morphLayerScratch = [];
+  static final List<AnimationState> _spareStates = [];
 }
