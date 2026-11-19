@@ -306,12 +306,14 @@ base class GpuBackend._(
     );
   }
 
+  // Texture targets have one sample: `msaaSampleCount` is not supported.
   @override
   GpuTextureTarget createTextureTarget({
     required int width,
     required int height,
     required GpuPixelFormat format,
     required Color clearValue,
+    int msaaSampleCount = 1,
   }) {
     final webFormat = _pixelFormat(format);
     final colorTex = _device.createTexture(

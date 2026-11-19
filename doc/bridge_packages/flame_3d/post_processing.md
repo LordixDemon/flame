@@ -57,9 +57,11 @@ output image, when any of these holds:
 
 Its base cost is one extra full-screen pass and one full-size texture target (4 bytes per pixel,
 or 8 with HDR): on a tile-based phone GPU the scene's colors are written to memory once more and
-read back by the composite, which is the dominant cost of an otherwise empty post chain. The
-texture target has a single sample, so MSAA is off whenever the composite runs; use `fxaa` for
-anti-aliasing. On backends without texture targets nothing of this page runs.
+read back by the composite, which is the dominant cost of an otherwise empty post chain. With
+MSAA (`Game3D.msaa()`, `Scene3DComponent.msaa`), the scene renders into a transient multisampled
+texture resolved into that target at the end of the pass, as it would into the output image; the
+composite and the bloom passes have one sample. On backends without texture targets nothing of
+this page runs.
 
 Everything in `PostProcessSettings` and the final bloom step happen in that one pass, in this
 order, on each pixel:
@@ -187,7 +189,8 @@ the 2D camera pans. Draw a screen vignette in 2D over the whole game instead.
 `fxaa: true` smooths edges with a fast approximate anti-aliasing filter: five reads of the scene per
 pixel, and four more on pixels whose luminance differs from their diagonal neighbors by more than
 `max(0.0312, 0.125 * maximum luminance)`. It runs first, on the scene's colors before tone mapping.
-It is the anti-aliasing that remains once the composite pass turns MSAA off.
+It costs less than MSAA, and also smooths edges inside textures and the edges of translucent
+draws.
 
 
 ## Bloom
@@ -337,7 +340,7 @@ While a debug view is on, the composite skips bloom and color grading.
 For a scene of `W` by `H` pixels:
 
 - Composite (any of the triggers above): +1 full-screen pass, +1 `W x H` target (4 bytes per
-  pixel), MSAA off.
+  pixel).
 - HDR: the scene target and the bloom targets become 8 bytes per pixel.
 - Tone mapping, exposure, contrast, saturation, tint, vignette: arithmetic in the composite.
 - Color LUT: +2 texture reads per pixel. FXAA: +4 to +8.

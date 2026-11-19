@@ -25,6 +25,7 @@ Future<Pixels> _snapshot(
   World3D world, {
   Matrix4? view,
   Color clearValue = const Color(0xFF000000),
+  Msaa msaa = Msaa.off,
 }) async {
   if (!world.isMounted) {
     final game = FlameGame3D(world: world);
@@ -41,6 +42,7 @@ Future<Pixels> _snapshot(
       view: view ?? _view,
       projection: _projection,
       clearValue: clearValue,
+      msaa: msaa,
       device: device,
       context: context,
     );
@@ -222,5 +224,50 @@ void main() {
 
     expect(pixels.at(_size ~/ 2, _size ~/ 2), (0, 192, 0, 255));
     expect(pixels.at(10, _size ~/ 2), (255, 0, 0, 255));
+  });
+
+  group('MSAA applies through', () {
+    final cases = <String, World3D Function(Object3D panel)>{
+      'post-processing': (panel) => World3D(
+        postProcess: PostProcessSettings(saturation: 0.9),
+        children: [panel],
+      ),
+      'HDR': (panel) => World3D(hdrEnabled: true, children: [panel]),
+      'order-independent transparency': (panel) => World3D(
+        oitMode: OitMode3D.weightedBlended,
+        children: [
+          panel,
+          // A red translucent panel at the side (counted out by its green).
+          _panel(
+            UnlitMaterial(albedoColor: const Color(0x40400000)),
+            size: 0.4,
+            x: 1.6,
+          ),
+        ],
+      ),
+    };
+    for (final MapEntry(key: name, value: build) in cases.entries) {
+      testGpu(name, (tester) async {
+        Future<int> partialPixels(Msaa msaa) async {
+          final panel = MeshComponent(
+            rotation: Quaternion.axisAngle(Vector3(0, 0, 1), 0.5),
+            mesh: CuboidMesh(
+              size: Vector3(1.4, 1.4, 0.02),
+              material: opaqueUnlit(const Color(0xFFFFFFFF)),
+            ),
+          );
+          final pixels = await _snapshot(
+            tester,
+            build(panel),
+            clearValue: const Color(0x00000000),
+            msaa: msaa,
+          );
+          return pixels.count((r, g, b, a) => a > 0 && a < 255 && g > 0);
+        }
+
+        expect(await partialPixels(Msaa.off), 0);
+        expect(await partialPixels(Msaa.sample4), greaterThan(20));
+      });
+    }
   });
 }

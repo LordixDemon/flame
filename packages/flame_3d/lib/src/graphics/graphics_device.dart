@@ -206,8 +206,11 @@ class GraphicsDevice({
       total += perTarget * entry.value.length;
     }
     for (final key in _textureTargets.keys) {
-      final (w, h, fmt, _, _) = key;
-      total += w * h * (fmt.bytesPerBlock + 4);
+      final (w, h, fmt, _, _, samples) = key;
+      total +=
+          w *
+          h *
+          (fmt.bytesPerBlock * (samples > 1 ? 1 + samples : 1) + 4 * samples);
     }
     return total;
   }
@@ -269,28 +272,34 @@ class GraphicsDevice({
   /// used in the same frame for different purposes different [role]s (any
   /// object with value equality, such as an enum value or a string), so that
   /// a pass never samples the texture it renders into.
+  ///
+  /// With a [msaaSampleCount] above 1 its passes render with that many
+  /// samples per pixel, resolved into the texture later passes sample (see
+  /// [GpuBackend.createTextureTarget]).
   GpuTextureTarget textureTarget(
     int width,
     int height,
     GpuPixelFormat format, {
     Color clearValue = const Color(0xFFFFFFFF),
     Object? role,
+    int msaaSampleCount = 1,
   }) {
-    final key = (width, height, format, clearValue, role);
+    final key = (width, height, format, clearValue, role, msaaSampleCount);
     final target = _textureTargets[key] ??= backend.createTextureTarget(
       width: width,
       height: height,
       format: format,
       clearValue: clearValue,
+      msaaSampleCount: msaaSampleCount,
     );
     _textureTargetsLastUsed[key] = _frame;
     return target;
   }
 
   final _textureTargets =
-      <(int, int, GpuPixelFormat, Color, Object?), GpuTextureTarget>{};
+      <(int, int, GpuPixelFormat, Color, Object?, int), GpuTextureTarget>{};
   final _textureTargetsLastUsed =
-      <(int, int, GpuPixelFormat, Color, Object?), int>{};
+      <(int, int, GpuPixelFormat, Color, Object?, int), int>{};
 
   /// Marks [target] as used in the current frame so [targetRetainFrames] does
   /// not evict a cached texture target (such as a static shadow map).

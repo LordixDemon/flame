@@ -151,12 +151,19 @@ abstract base class GpuBackend() {
   /// into a texture of [format] that later passes sample, cleared to
   /// [clearValue] (and its depth to the far plane) at the start of each pass.
   ///
+  /// With a [msaaSampleCount] above 1, passes render with that many samples
+  /// per pixel into a transient multisampled texture, resolved into the
+  /// sampled texture at the end of each pass. A backend without multisampled
+  /// texture targets (WebGPU here, OpenGL ES devices without offscreen MSAA)
+  /// uses one sample.
+  ///
   /// Throws an [UnsupportedError] when [supportsTextureTargets] is `false`.
   GpuTextureTarget createTextureTarget({
     required int width,
     required int height,
     required GpuPixelFormat format,
     required Color clearValue,
+    int msaaSampleCount = 1,
   }) {
     throw UnsupportedError('$runtimeType cannot render into textures.');
   }

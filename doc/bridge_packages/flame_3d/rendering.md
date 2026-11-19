@@ -583,10 +583,15 @@ post-processing) render into texture targets (`GraphicsDevice.textureTarget`), c
 each size, format, clear color and role and kept while they are used. Each pass of a frame that
 samples another one has a role of its own, so no pass samples the texture it renders into.
 
-MSAA (`Game3D.msaa()`, `Scene3DComponent.msaa`) applies to the main pass only when it renders
-straight into the output image: with post-processing, HDR, an `afterScene` custom pass or
-order-independent transparency, the scene renders into a single-sample texture target and MSAA is
-off. Where the device has no offscreen MSAA, `Msaa.sample4` silently falls back to one sample.
+MSAA (`Game3D.msaa()`, `Scene3DComponent.msaa`) applies to the main pass, whether it renders
+straight into the output image or into the scene's texture target (post-processing, HDR, an
+`afterScene` custom pass): a multisampled texture target renders into a transient multisampled
+texture resolved into its sampled texture at the end of each pass
+(`GraphicsDevice.textureTarget(msaaSampleCount: ...)`). With order-independent transparency the
+opaque target is multisampled, the accumulation and revealage passes are not. The grab pass, the
+depth-normal prepass, shadow maps and the bloom passes have one sample. Where the device has no
+offscreen MSAA (some OpenGL ES devices), `Msaa.sample4` falls back to one sample, and WebGPU texture
+targets always have one.
 
 `World3D.renderToImage(size, view: ..., projection: ...)` renders a standalone snapshot, even when
 the world is not mounted in a game. Lights register with their world only when they mount,

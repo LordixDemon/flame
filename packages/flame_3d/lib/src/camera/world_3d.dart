@@ -624,6 +624,7 @@ class World3D({
         sceneFormat,
         clearValue: clearValue,
         role: _SceneTarget.oitOpaque,
+        msaaSampleCount: msaaSampleCount,
       );
       device.beginTexturePass(opaqueTarget, frontFace: renderContext.frontFace);
       renderContext.flushOpaquePreview();
@@ -657,6 +658,7 @@ class World3D({
           sceneFormat,
           clearValue: clearValue,
           role: _SceneTarget.scene,
+          msaaSampleCount: msaaSampleCount,
         );
         device.beginTexturePass(
           wboitSceneTarget,
@@ -716,6 +718,7 @@ class World3D({
         sceneFormat,
         clearValue: clearValue,
         role: _SceneTarget.scene,
+        msaaSampleCount: msaaSampleCount,
       );
       device.beginTexturePass(texTarget, frontFace: renderContext.frontFace);
       renderContext.flush();

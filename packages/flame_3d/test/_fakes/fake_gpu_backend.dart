@@ -181,12 +181,16 @@ final class FakeGpuBackend({
   /// Every texture target created, as (width, height, format).
   final List<(int, int, GpuPixelFormat)> textureTargetsCreated = [];
 
+  /// The sample count of every texture target created, in order.
+  final List<int> textureTargetSampleCounts = [];
+
   @override
   GpuTextureTarget createTextureTarget({
     required int width,
     required int height,
     required GpuPixelFormat format,
     required Color clearValue,
+    int msaaSampleCount = 1,
   }) {
     if (!textureTargets) {
       return super.createTextureTarget(
@@ -197,6 +201,7 @@ final class FakeGpuBackend({
       );
     }
     textureTargetsCreated.add((width, height, format));
+    textureTargetSampleCounts.add(msaaSampleCount);
     final texture = FakeTexture(width, height, 1, format);
     textures.add(texture);
     return FakeTextureTarget(width, height, format, texture);

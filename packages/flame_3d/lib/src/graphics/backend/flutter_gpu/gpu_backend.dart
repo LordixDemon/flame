@@ -307,18 +307,36 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
     required int height,
     required GpuPixelFormat format,
     required Color clearValue,
+    int msaaSampleCount = 1,
   }) {
+    final sampleCount = msaaSampleCount > 1 && _context.doesSupportOffscreenMSAA
+        ? msaaSampleCount
+        : 1;
+    final pixelFormat = _pixelFormat(format);
     final texture = _context.createTexture(
       gpu.StorageMode.devicePrivate,
       width,
       height,
-      format: _pixelFormat(format),
+      format: pixelFormat,
     );
+    // Multisampled passes render into a transient texture resolved into the
+    // sampled one.
+    final multisampleTexture = sampleCount > 1
+        ? _context.createTexture(
+            gpu.StorageMode.deviceTransient,
+            width,
+            height,
+            format: pixelFormat,
+            sampleCount: sampleCount,
+            enableShaderReadUsage: false,
+          )
+        : null;
     final depthTexture = _context.createTexture(
       gpu.StorageMode.deviceTransient,
       width,
       height,
       format: _depthStencilFormat,
+      sampleCount: sampleCount,
       enableShaderReadUsage: false,
     );
     return _FlutterGpuTextureTarget(
@@ -327,10 +345,17 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
       format,
       _FlutterGpuTexture(texture),
       gpu.RenderTarget.singleColor(
-        gpu.ColorAttachment(
-          texture: texture,
-          clearValue: Vector4Utils.fromColor(clearValue),
-        ),
+        multisampleTexture == null
+            ? gpu.ColorAttachment(
+                texture: texture,
+                clearValue: Vector4Utils.fromColor(clearValue),
+              )
+            : gpu.ColorAttachment(
+                texture: multisampleTexture,
+                resolveTexture: texture,
+                storeAction: gpu.StoreAction.multisampleResolve,
+                clearValue: Vector4Utils.fromColor(clearValue),
+              ),
         depthStencilAttachment: gpu.DepthStencilAttachment(
           texture: depthTexture,
           depthClearValue: 1.0,
