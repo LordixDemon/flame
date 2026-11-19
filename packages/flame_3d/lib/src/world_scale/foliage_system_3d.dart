@@ -635,8 +635,11 @@ class FoliageSystem3D({
     if (_bladeCount == 0) {
       return;
     }
+    // Distance thinning follows the viewer, also in shadow passes (where the
+    // camera is the light's view, centered on the world origin): the blades
+    // that cast shadows are the ones the main pass shows.
     final count = buildVisibleInstances(
-      cameraPosition: context.cameraPosition,
+      cameraPosition: context.viewerPosition,
       frustum: context.frustum,
     );
     if (count <= 0) {

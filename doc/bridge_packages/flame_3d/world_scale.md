@@ -32,6 +32,12 @@ view) before the object records its draws:
 Objects whose `cameraMask` does not match the camera's are skipped first, and objects with
 `visible == false` (or a hidden ancestor) are skipped in every pass, shadows included.
 
+A component that chooses its own level of detail or thins itself out with distance should measure
+the distance from `RenderContext3D.viewerPosition`, not `cameraPosition`: in a shadow pass
+`cameraPosition` is the origin of the light's view (the world origin for a directional light),
+while `viewerPosition` stays the main camera, so the shadow casters match what the camera shows.
+The terrain and the foliage on this page do so.
+
 Only `Object3D`s are tested. A `Group3D` or another plain `Component3D` is never culled itself:
 its `Object3D` children are tested one by one, so grouping objects under a `Group3D` does not
 save tests. Put them under an `Object3D` if a single test should reject the whole group.
@@ -339,7 +345,6 @@ final terrain = ChunkedTerrain3D(
   gridRows: 257,
   worldWidth: 512,
   worldDepth: 512,
-  castsShadows: false,
 );
 world.add(terrain);
 
@@ -375,10 +380,9 @@ until the terrain is removed; looking around a new terrain for the first time th
 chunks over several frames, and memory grows to every level of every chunk ever seen (about 10 KB
 per chunk on the CPU with the defaults, and as much on the GPU).
 
-Set `castsShadows: false` on terrain for now: in a shadow pass the terrain chooses its chunks from
-the position of the light's view, which is the world origin for a directional light, so it casts
-from the coarsest chunks and shadows itself wrongly (see [Limitations](#limitations)). It still
-receives shadows.
+Shadows: the terrain casts shadows by default. In a shadow pass it culls chunks against the light's
+view but chooses their level from `RenderContext3D.viewerPosition`, the main camera of the frame,
+so it casts from the same chunks the camera shows.
 
 
 ## Foliage
@@ -422,7 +426,9 @@ hero.position.setFrom(heroPosition);
   the state of a blade.
 - Each instance's `instanceData` holds the wind phase, the wind strength, the crush and the tilt,
   for custom shaders.
-- `castsShadows` is `false` by default (see [Limitations](#limitations) before enabling it).
+- `castsShadows` is `false` by default. With `castsShadows: true`, a shadow pass culls cells
+  against the light's view and thins blades by their distance to the main camera
+  (`RenderContext3D.viewerPosition`), so the blades that cast are the ones the camera shows.
 
 Cost: memory is about 160 bytes per blade of `capacity`. `update` checks every cell against every
 interactor and updates the blades of cells that are touched or still bent. Each pass then walks
@@ -544,10 +550,6 @@ the streamer: do it in `onChunkEvicted`.
 
 ## Limitations
 
-- Terrain and foliage in shadow passes: both select what they draw from the pass's camera
-  position, which in a directional light's shadow pass is the world origin. Terrain then casts
-  shadows from its coarsest chunks around the origin (wrong self-shadowing), and foliage with
-  `castsShadows: true` casts only within `maxDrawDistance` of the world origin.
 - `ChunkedTerrain3D` has no geomorphing (levels pop), builds chunks inside the draw on first use,
   and never frees built chunks before removal. Changing `heights` after construction does not
   rebuild chunks that were already built. Its colors are per vertex; there is no texture

@@ -463,7 +463,10 @@ class ChunkedTerrain3D({
 
   @override
   void draw(covariant RenderContext3D context) {
-    _selectNodesInto(_selectedNodes, context.cameraPosition, context.frustum);
+    // Detail follows the viewer, also in shadow passes (where the camera is
+    // the light's view, centered on the world origin): the terrain casts
+    // shadows from the chunks the main pass shows.
+    _selectNodesInto(_selectedNodes, context.viewerPosition, context.frustum);
     _lastDrawnChunkCount = _selectedNodes.length;
     if (_selectedNodes.isEmpty) {
       return;

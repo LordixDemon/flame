@@ -175,8 +175,23 @@ class RenderContext3D(super.device) extends RenderContext {
 
   /// Camera world-space position, computed from the view matrix by
   /// [setCamera].
+  ///
+  /// In a shadow pass this is the origin of the light's view, not a viewer:
+  /// choose level of detail and distance culling from [viewerPosition].
   Vector3 get cameraPosition => _cameraPosition;
   final Vector3 _cameraPosition = Vector3.zero();
+
+  /// The world-space position of the viewer that level of detail and
+  /// distance culling choose detail from.
+  ///
+  /// The same as [cameraPosition] in a camera pass. While a shadow pass
+  /// records ([isShadowPass]), it stays the position of the main camera that
+  /// was set when the shadow pass began, so shadow casters draw the geometry
+  /// the main pass shows instead of geometry chosen around the light's view
+  /// origin.
+  Vector3 get viewerPosition =>
+      _shadows.recording ? _shadowViewerPosition : _cameraPosition;
+  final Vector3 _shadowViewerPosition = Vector3.zero();
 
   /// The view frustum of the current pass, in world space.
   Frustum get frustum => _frustum;
@@ -544,6 +559,7 @@ class RenderContext3D(super.device) extends RenderContext {
     required Aabb3? sceneBounds,
     Object? castersKey,
   }) {
+    _shadowViewerPosition.setFrom(_cameraPosition);
     return _shadows.begin(projection, sceneBounds, castersKey: castersKey);
   }
 
@@ -560,7 +576,10 @@ class RenderContext3D(super.device) extends RenderContext {
   bool get needsShadowCascade1 => _shadows.needsCascade1;
 
   /// Begins recording shadow casters for the far cascade of a 2-cascade atlas.
-  void beginShadowCascade1() => _shadows.beginCascade1();
+  void beginShadowCascade1() {
+    _shadowViewerPosition.setFrom(_cameraPosition);
+    _shadows.beginCascade1();
+  }
 
   /// Flushes the far cascade and packs both cascades into the shadow atlas.
   void endShadowCascade1() => _shadows.endCascade1();
