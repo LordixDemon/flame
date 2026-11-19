@@ -1443,7 +1443,5 @@ The texture sampler options, including anisotropy up to 16, work on the web.
 - Straight-alpha blending of premultiplied textures: translucent `SpatialMaterial` and
   `BillboardMaterial3D` (and so `Text3DComponent`) blend with straight alpha while textures made
   from Flutter images are premultiplied, which darkens their soft edges.
-- `UnlitMaterial`'s dartdoc says its translucent draws are never batched; consecutive translucent
-  draws of one surface are batched, like every material's.
 - KTX2: no supercompression, and no CPU decoder for BC7, ETC2, ASTC and RGBA32F.
 - `ImageTexture` has no color space option: images cannot be sampled as sRGB.

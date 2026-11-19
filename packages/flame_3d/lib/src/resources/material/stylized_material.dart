@@ -45,7 +45,8 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 /// skinning. Build them
 /// with [buildSurface] and its `joints` and `weights`, and give the joint
 /// matrices with every draw (`RenderContext3D.drawSurface(jointTransforms:)`,
-/// or `MeshComponent.jointTransforms`); at most 16 joints per draw. A vertex
+/// or `MeshComponent.jointTransforms`); at most [maxJoints] (64) joints per
+/// draw. A vertex
 /// whose weights are all `0` keeps its position. Skinned draws are never
 /// batched: each is one draw call.
 ///

@@ -17,9 +17,11 @@ import 'package:flame_3d/resources.dart';
 /// - Sky boxes and debug rendering
 ///
 /// Its output may be translucent, so by default it blends with premultiplied
-/// alpha and is drawn as translucent (after the opaque draws, back to front,
-/// never batched) while still writing depth. Set [renderState] to
-/// [RenderState.opaque] for opaque content, so that it is batched.
+/// alpha and is drawn as translucent (after the opaque draws, back to front;
+/// draws of one surface that are consecutive in that order are still
+/// batched) while still writing depth. Set [renderState] to
+/// [RenderState.opaque] for opaque content, so that it is sorted and batched
+/// with the opaque draws.
 /// {@endtemplate}
 class UnlitMaterial({
   /// The material's base color, multiplied with [albedoTexture].
