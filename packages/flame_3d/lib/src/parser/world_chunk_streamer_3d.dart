@@ -5,6 +5,8 @@ import 'package:flame/components.dart' show Component, HasWorldRef;
 import 'package:flame_3d/camera.dart' show CameraComponent3D, World3D;
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
+import 'package:flutter/foundation.dart'
+    show ErrorDescription, FlutterError, FlutterErrorDetails;
 import 'package:meta/meta.dart';
 
 /// Discrete integer grid coordinate of a streamable 3D world cell.
@@ -30,6 +32,14 @@ typedef ChunkLoaderCallback3D = Future<List<Component3D>> Function(
   ChunkCoord3D coord,
 );
 
+/// Called when the [ChunkLoaderCallback3D] of a [WorldChunkStreamer3D] throws
+/// (or returns a failed future) for [coord].
+typedef ChunkLoadFailedCallback3D = void Function(
+  ChunkCoord3D coord,
+  Object error,
+  StackTrace stackTrace,
+);
+
 /// Spatial grid/radius world chunk streamer with hysteresis
 /// (`[loadRadius..unloadRadius]`), `maxConcurrentLoads` throttling,
 /// closest-cell prioritization, and an LRU unloaded chunk cache.
@@ -48,6 +58,12 @@ class WorldChunkStreamer3D({
   this.onChunkMounted,
   this.onChunkUnmounted,
   this.onChunkEvicted,
+  this.onChunkLoadFailed,
+
+  /// Seconds of [update] time before a chunk whose load failed is requested
+  /// again (`double.infinity` never retries it on its own, see
+  /// [retryFailedChunks]).
+  var double failedLoadRetryDelay = 5.0,
   super.priority,
 }) extends Component with HasWorldRef<World3D> {
   this
@@ -97,9 +113,16 @@ class WorldChunkStreamer3D({
   onChunkUnmounted;
 
   /// Optional hook invoked when an unloaded chunk is evicted from the LRU
-  /// cache.
+  /// cache, when a chunk that finished loading after the streamer was removed
+  /// is dropped, and for every active or cached chunk when the streamer is
+  /// removed: release the chunk's resources here.
   void Function(ChunkCoord3D coord, List<Component3D> components)?
   onChunkEvicted;
+
+  /// Optional hook invoked when [chunkLoader] fails for a chunk. Without it,
+  /// the error is reported through `FlutterError.reportError`. Either way the
+  /// chunk is requested again only after [failedLoadRetryDelay].
+  ChunkLoadFailedCallback3D? onChunkLoadFailed;
 
   final Map<ChunkCoord3D, List<Component3D>> _activeChunks = {};
   final Set<ChunkCoord3D> _inFlight = {};
@@ -108,8 +131,13 @@ class WorldChunkStreamer3D({
       LinkedHashMap<ChunkCoord3D, List<Component3D>>();
   final List<Future<void>> _activeTasks = [];
 
+  // Chunks whose load failed, with the [_clock] time they may be retried.
+  final Map<ChunkCoord3D, double> _failedUntil = {};
+  double _clock = 0;
+
   int _cacheHitCount = 0;
   int _totalLoadsCompleted = 0;
+  int _failedLoadCount = 0;
   bool _disposed = false;
   final Vector3 _resolvedFocus = Vector3.zero();
 
@@ -132,6 +160,18 @@ class WorldChunkStreamer3D({
 
   /// Total number of async [chunkLoader] invocations that have completed.
   int get totalLoadsCompleted => _totalLoadsCompleted;
+
+  /// Total number of [chunkLoader] invocations that failed.
+  int get failedLoadCount => _failedLoadCount;
+
+  /// Coordinates whose last load failed and that wait for
+  /// [failedLoadRetryDelay] before being requested again.
+  Set<ChunkCoord3D> get failedChunks =>
+      Set<ChunkCoord3D>.unmodifiable(_failedUntil.keys);
+
+  /// Lets every chunk whose load failed be requested again at the next
+  /// refresh, without waiting for [failedLoadRetryDelay].
+  void retryFailedChunks() => _failedUntil.clear();
 
   /// Returns the active component list for [coord], or `null` if not active.
   List<Component3D>? componentsForChunk(ChunkCoord3D coord) {
@@ -165,6 +205,7 @@ class WorldChunkStreamer3D({
   @override
   void update(double dt) {
     super.update(dt);
+    _clock += dt;
     refreshStreaming();
   }
 
@@ -225,6 +266,13 @@ class WorldChunkStreamer3D({
           if (_distSqToFocus(coord, _resolvedFocus) > loadR2) {
             continue;
           }
+          final retryAt = _failedUntil[coord];
+          if (retryAt != null) {
+            if (_clock < retryAt) {
+              continue;
+            }
+            _failedUntil.remove(coord);
+          }
 
           // Instant LRU cache hit!
           final cached = _lruCache.remove(coord);
@@ -275,13 +323,29 @@ class WorldChunkStreamer3D({
     }
   }
 
+  /// Stops streaming for good: active chunks are unmounted (reported to
+  /// [onChunkUnmounted]), then every active and cached chunk is reported to
+  /// [onChunkEvicted], as are loads that finish later.
   @override
   void onRemove() {
     _disposed = true;
     _pendingQueue.clear();
     final coords = _activeChunks.keys.toList(growable: false);
     for (final c in coords) {
-      _unmountChunk(c);
+      final comps = _activeChunks.remove(c)!;
+      for (var i = 0; i < comps.length; i++) {
+        final component = comps[i];
+        if (component.parent != null) {
+          component.removeFromParent();
+        }
+      }
+      onChunkUnmounted?.call(c, comps);
+      onChunkEvicted?.call(c, comps);
+    }
+    final cached = List.of(_lruCache.entries);
+    _lruCache.clear();
+    for (final entry in cached) {
+      onChunkEvicted?.call(entry.key, entry.value);
     }
     super.onRemove();
   }
@@ -302,7 +366,15 @@ class WorldChunkStreamer3D({
 
   Future<void> _loadChunkAsync(ChunkCoord3D coord) async {
     try {
-      final loaded = await chunkLoader(coord);
+      final List<Component3D> loaded;
+      try {
+        loaded = await chunkLoader(coord);
+      } on Object catch (error, stackTrace) {
+        _failedLoadCount++;
+        _failedUntil[coord] = _clock + failedLoadRetryDelay;
+        _reportLoadFailure(coord, error, stackTrace);
+        return;
+      }
       _inFlight.remove(coord);
       _totalLoadsCompleted++;
       if (_disposed) {
@@ -323,6 +395,26 @@ class WorldChunkStreamer3D({
         _pumpQueue();
       }
     }
+  }
+
+  void _reportLoadFailure(
+    ChunkCoord3D coord,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    final callback = onChunkLoadFailed;
+    if (callback != null) {
+      callback(coord, error, stackTrace);
+      return;
+    }
+    FlutterError.reportError(
+      FlutterErrorDetails(
+        exception: error,
+        stack: stackTrace,
+        library: 'flame_3d',
+        context: ErrorDescription('while loading the world chunk $coord'),
+      ),
+    );
   }
 
   void _mountChunk(ChunkCoord3D coord, List<Component3D> comps) {

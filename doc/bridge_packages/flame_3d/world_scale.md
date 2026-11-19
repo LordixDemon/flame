@@ -540,12 +540,9 @@ final streamer = WorldChunkStreamer3D(
   chunkSize: 64,
   loadRadius: 160,
   camera: camera,
-  chunkLoader: (coord) async {
-    try {
-      return await loadChunkFromDisk(coord);
-    } on Object {
-      return const []; // a failing loader is retried every frame
-    }
+  chunkLoader: loadChunkFromDisk,
+  onChunkLoadFailed: (coord, error, stackTrace) {
+    // Retried after failedLoadRetryDelay seconds.
   },
   onChunkEvicted: (coord, components) {
     // The chunk left the cache: release what it loaded.
@@ -569,6 +566,13 @@ world.add(streamer);
   `onChunkEvicted`, the place to release its resources (see
   [Scenes and Assets](scenes_and_assets.md)). `onChunkMounted` and `onChunkUnmounted` report the
   other transitions.
+- A loader that throws (or returns a failed future) is caught: the error goes to
+  `onChunkLoadFailed`, or to `FlutterError.reportError` without one, and the chunk is requested
+  again only after `failedLoadRetryDelay` seconds of updates (5; `double.infinity` never retries
+  on its own). `failedChunks` lists the chunks waiting, `retryFailedChunks()` lets them load at
+  the next refresh, and `failedLoadCount` counts the failures.
+- Removing the streamer stops it for good: its active chunks are unmounted, and every active and
+  cached chunk is passed to `onChunkEvicted`, as is a chunk whose load finishes afterwards.
 - `activeChunks`, `loadingChunks`, `queuedChunkCount`, `cachedChunkCount`, `cacheHitCount` and
   `totalLoadsCompleted` describe its state; `flushPending()` waits for the loads in flight.
 
@@ -595,8 +599,5 @@ the streamer: do it in `onChunkEvicted`.
 - Occlusion results applied through `visible` also remove the objects' shadows.
 - `FloatingOriginController3D` only moves the camera, the tracked target and bound objects; other
   objects must follow the shift through a listener.
-- `WorldChunkStreamer3D` does not catch loader errors: a throwing `chunkLoader` raises an unhandled
-  error and is called again at every update. Chunks still in the cache when the streamer is removed
-  are not passed to `onChunkEvicted`.
 - `VolumeDecalBatch3D` is static: moving targets need a new projection. It caches a surface's BVH
   until its vertex or index count changes, so edits that keep the counts leave a stale BVH.
