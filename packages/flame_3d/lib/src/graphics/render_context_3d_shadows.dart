@@ -233,6 +233,9 @@ class _ShadowPass(final RenderContext3D _context) {
     if (dirLight == null && _spotCasterCount == 0 && pointCaster == null) {
       return _none();
     }
+    if (!_shadersAvailable()) {
+      return _none();
+    }
 
     // The atlas holds several tiles: cascades of the directional light, the
     // two hemispheres of a point light, or the maps of several lights.
@@ -1038,6 +1041,34 @@ class _ShadowPass(final RenderContext3D _context) {
     }
     _configureAtlasTile(atlas.tiles[_currentTileIndex]);
     return true;
+  }
+
+  // Whether the shaders of shadow maps load on this backend, `null` until
+  // tried: the WebGPU backend has no build of them.
+  bool? _shadersLoad;
+
+  bool _shadersAvailable() {
+    final known = _shadersLoad;
+    if (known != null) {
+      return known;
+    }
+    try {
+      _vertexShader.resource;
+      _fragmentShader.resource;
+      return _shadersLoad = true;
+    } on UnsupportedError catch (error) {
+      return _noShaders(error);
+    } on StateError catch (error) {
+      return _noShaders(error);
+    }
+  }
+
+  bool _noShaders(Error error) {
+    debugPrint(
+      'flame_3d: no shadows on this backend, the shaders of shadow maps do '
+      'not load: $error',
+    );
+    return _shadersLoad = false;
   }
 
   bool _none() {

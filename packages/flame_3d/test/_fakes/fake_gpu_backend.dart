@@ -38,6 +38,11 @@ final class FakeGpuBackend({
   /// Whether [createTextureFromImage] gives a texture, as Flutter GPU does,
   /// or `null`, as the WebGPU backend does.
   final bool wrapsImages = true,
+
+  /// Shader libraries it has no shaders for: loading one throws an
+  /// [UnsupportedError], as the WebGPU backend does for a package shader
+  /// without a web build.
+  final Set<String> missingShaderLibraries = const {},
 }) extends GpuBackend {
   @override
   int get uniformAlignment => uniformAlignmentInBytes;
@@ -114,6 +119,9 @@ final class FakeGpuBackend({
 
   @override
   GpuShaderLibrary loadShaderLibrary(String assetName) {
+    if (missingShaderLibraries.contains(assetName)) {
+      throw UnsupportedError('"$assetName" has no build for this backend');
+    }
     return _libraries.putIfAbsent(assetName, () => FakeShaderLibrary(this));
   }
 

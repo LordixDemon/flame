@@ -559,9 +559,11 @@ passes with them (2 of them in the shadow pass).
   (single map, atlas) by forcing `ShadowMapEncoding.rgba8` on the backend of the
   headless tests, not on an OpenGL ES device; the placement of the atlas tiles there is not covered
   by a test.
-- The web: no shadows. The shadow caster shaders have no WebGPU build, so a light with shadow
-  settings makes the shadow pass fail when it loads them; `ShadowCatcherMaterial` throws an
-  `UnsupportedError`, and the WebGPU build of `SpatialMaterial` reads only the single map.
+- The web: no shadows. The shadow caster shaders have no WebGPU build: the first shadow pass that
+  needs them finds they do not load, prints it once (`debugPrint`), and from then on the context
+  renders no shadow pass and its receivers no shadows, as if no light had settings.
+  `ShadowCatcherMaterial` throws an `UnsupportedError`, and the WebGPU build of `SpatialMaterial`
+  reads only the single map. The same holds for any backend whose caster shaders do not load.
 
 
 ## Limitations

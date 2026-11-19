@@ -6,6 +6,7 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 
 import '../_fakes/fake_gpu_backend.dart';
@@ -131,6 +132,43 @@ void main() {
         backend.textureBindings,
         contains(RenderContext3D.shadowMapSampler),
       );
+    });
+
+    test('none, once, when the backend has no shadow caster shaders', () {
+      // The WebGPU backend has no build of the caster shaders: shadows are
+      // off there rather than failing the frame.
+      final noCasters = FakeGpuBackend(
+        textureTargets: true,
+        missingShaderLibraries: {
+          'packages/flame_3d/assets/shaders/shadow_caster.shaderbundle',
+        },
+      );
+      final webDevice = GraphicsDevice(backend: noCasters);
+      final webContext = RenderContext3D(webDevice);
+      final logs = <String?>[];
+      final debugPrintBefore = debugPrint;
+      debugPrint = (message, {wrapWidth}) => logs.add(message);
+      addTearDown(() => debugPrint = debugPrintBefore);
+      for (var i = 0; i < 2; i++) {
+        webDevice.begin();
+        webContext
+          ..lights = [sun(shadows: ShadowSettings())]
+          ..setCamera(
+            Matrix4.identity(),
+            Matrix4.identity()..setAsPerspective(60, 1, 0.1, 100),
+          );
+        expect(
+          webContext.beginShadowPass(
+            projection: projection,
+            sceneBounds: bounds,
+          ),
+          isFalse,
+        );
+        expect(webContext.hasActiveShadows, isFalse);
+        webDevice.end();
+      }
+      expect(logs, hasLength(1));
+      expect(logs.single, contains('shadow'));
     });
 
     test('none when the backend cannot render into textures', () {
