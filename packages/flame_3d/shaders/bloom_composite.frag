@@ -1,10 +1,17 @@
 #version 460 core
 
 // Unified final scene compositor: combines optional 5-tap edge-aware FXAA,
-// SSAO, 3D DoF, additive Kawase HDR bloom, exposure, ACES/AgX/Reinhard tone
-// mapping, contrast, saturation, color tint, 3D ColorLut3D trilinear grading,
-// linear-HDR-to-sRGB encoding, vignette, and RenderDebugMode3D visualization in
-// a single pass while preserving `base.a` for Porter-Duff srcOver 2D layers.
+// SSAO, 3D DoF, additive bloom, exposure, ACES/AgX/Reinhard tone mapping,
+// contrast, saturation, color tint, 3D ColorLut3D trilinear grading, vignette,
+// and RenderDebugMode3D visualization in a single pass.
+//
+// The scene texture holds premultiplied colors. With HDR (`lutParams.z`) they
+// are sRGB-encoded with an extended range (values above 1 are kept), as every
+// material writes them; they are decoded to linear light for exposure, bloom
+// and tone mapping, then encoded again for display. The output keeps the
+// scene's alpha, and the response of the grading to black is removed from the
+// uncovered part of each pixel, so a transparent pixel stays transparent over
+// the 2D content drawn behind a layer.
 
 in vec2 fragUv;
 
@@ -29,7 +36,8 @@ uniform BloomComposite {
   vec4 ssao;
   // x: dofBlurStrength, y: dofFocusDepth [0..1], z: dofFocusRange, w: unused
   vec4 dof;
-  // x: lutIntensity, y: lutSize (16.0), z: hdrLinearToSrgb (1=on), w: debugMode
+  // x: lutIntensity, y: lutSize (16.0), z: hdr (1=scene texture is extended
+  // sRGB, decoded before and encoded after tone mapping), w: debugMode
   vec4 lutParams;
 } composite;
 
@@ -106,7 +114,8 @@ vec4 sampleDofBokeh(vec2 uv, vec2 invRes, vec4 sharpColor, float dCenter) {
     acc += texture(sceneTexture, bUv);
     wSum += 1.0;
   }
-  return vec4((acc / wSum).rgb, sharpColor.a);
+  // Premultiplied colors blur with their alpha.
+  return acc / wSum;
 }
 
 float luma(vec3 rgb) {
@@ -144,17 +153,17 @@ vec4 sampleSceneFxaa(vec2 uv, vec2 invRes) {
   float rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
   dir = clamp(dir * rcpDirMin, vec2(-4.0), vec2(4.0)) * invRes;
 
-  vec3 rgbA = 0.5 * (
-    texture(sceneTexture, uv + dir * (1.0 / 3.0 - 0.5)).rgb +
-    texture(sceneTexture, uv + dir * (2.0 / 3.0 - 0.5)).rgb
+  // Premultiplied colors are filtered with their alpha.
+  vec4 rgbA = 0.5 * (
+    texture(sceneTexture, uv + dir * (1.0 / 3.0 - 0.5)) +
+    texture(sceneTexture, uv + dir * (2.0 / 3.0 - 0.5))
   );
-  vec3 rgbB = rgbA * 0.5 + 0.25 * (
-    texture(sceneTexture, uv + dir * -0.5).rgb +
-    texture(sceneTexture, uv + dir * 0.5).rgb
+  vec4 rgbB = rgbA * 0.5 + 0.25 * (
+    texture(sceneTexture, uv + dir * -0.5) +
+    texture(sceneTexture, uv + dir * 0.5)
   );
-  float lB = luma(rgbB);
-  vec3 aaRgb = (lB < lMin || lB > lMax) ? rgbA : rgbB;
-  return vec4(aaRgb, cM.a);
+  float lB = luma(rgbB.rgb);
+  return (lB < lMin || lB > lMax) ? rgbA : rgbB;
 }
 
 vec3 acesFilmic(vec3 x) {
@@ -166,17 +175,27 @@ vec3 acesFilmic(vec3 x) {
   return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
-vec3 agxApprox(vec3 x) {
+// AgX base look (Blender's AgX, minimal approximation by B. Wrensch): inset,
+// log2 encoding over [-12.47, 4.03] EV, 6th-order sigmoid fit, outset. The
+// result is display-encoded (gamma 2.2), not linear.
+vec3 agx(vec3 x) {
   mat3 inset = mat3(
     0.842479062253094, 0.0423282422610123, 0.0423756549057051,
     0.0784335999999992, 0.878468636469772, 0.0784336,
     0.0792237451477643, 0.0791661274605434, 0.879142973793104
   );
-  vec3 v = max(inset * x, vec3(1e-6));
+  mat3 outset = mat3(
+    1.19687900512017, -0.0528968517574562, -0.0529716355144438,
+    -0.0980208811401368, 1.15190312990417, -0.0980434501171241,
+    -0.0990297440797205, -0.0989611768448433, 1.15107367264116
+  );
+  vec3 v = max(inset * x, vec3(1e-10));
   v = clamp((log2(v) + 12.47393) / 16.5, 0.0, 1.0);
   vec3 v2 = v * v;
-  vec3 s = 15.5 * v2 * v2 - 40.14 * v2 * v + 31.96 * v2 - 6.868 * v + 0.4298;
-  return clamp(s, 0.0, 1.0);
+  vec3 v4 = v2 * v2;
+  vec3 s = 15.5 * v4 * v2 - 40.14 * v4 * v + 31.96 * v4 - 6.868 * v2 * v +
+    0.4298 * v2 + 0.1191 * v - 0.00232;
+  return clamp(outset * s, 0.0, 1.0);
 }
 
 vec3 sampleColorLut3D(vec3 rgb, float size) {
@@ -200,6 +219,60 @@ vec3 linearToSrgb(vec3 linear) {
   vec3 lo = clamped * 12.92;
   vec3 hi = 1.055 * pow(max(clamped, vec3(1e-6)), vec3(1.0 / 2.4)) - 0.055;
   return mix(lo, hi, step(vec3(0.0031308), clamped));
+}
+
+// Decodes an sRGB-encoded color whose range extends above 1 (the HDR scene
+// texture) to linear light.
+vec3 extendedSrgbToLinear(vec3 encoded) {
+  vec3 c = max(encoded, vec3(0.0));
+  vec3 lo = c / 12.92;
+  vec3 hi = pow((c + 0.055) / 1.055, vec3(2.4));
+  return mix(lo, hi, step(vec3(0.04045), c));
+}
+
+// Exposure, tone mapping, display encoding and color grading of a color in
+// the scene's space (linear light with HDR, display-encoded without),
+// multiplied by `vignette`.
+vec3 grade(vec3 color, bool hdr, float vignette) {
+  color *= composite.params.y;
+
+  float mode = composite.grading.x;
+  bool displayEncoded = false;
+  if (mode > 2.5) {
+    color = agx(max(color, vec3(0.0)));
+    displayEncoded = true;
+  } else if (mode > 1.5) {
+    color = acesFilmic(max(color, vec3(0.0)));
+  } else if (mode > 0.5) {
+    color = max(color, vec3(0.0));
+    color = color / (color + vec3(1.0));
+  }
+
+  // Linear light -> sRGB display encoding before display-referred grading.
+  if (hdr && !displayEncoded) {
+    color = linearToSrgb(color);
+  }
+
+  float contrast = composite.params.z;
+  if (abs(contrast - 1.0) > 1e-4) {
+    color = (color - 0.5) * contrast + 0.5;
+  }
+
+  float sat = composite.params.w;
+  if (abs(sat - 1.0) > 1e-4) {
+    float lum = luma(color);
+    color = mix(vec3(lum), color, sat);
+  }
+
+  color *= composite.tint.rgb;
+
+  float lutStrength = composite.lutParams.x;
+  if (lutStrength > 1e-4 && composite.lutParams.y >= 2.0) {
+    vec3 graded = sampleColorLut3D(color, composite.lutParams.y);
+    color = mix(color, graded, clamp(lutStrength, 0.0, 1.0));
+  }
+
+  return clamp(color * vignette, 0.0, 1.0);
 }
 
 void main() {
@@ -250,54 +323,29 @@ void main() {
       composite.ssao.x
     );
   }
+  bool hdr = composite.lutParams.z > 0.5;
   vec3 glow = composite.params.x > 0.0
       ? texture(bloomTexture, fragUv).rgb * composite.params.x
       : vec3(0.0);
+  vec3 sceneColor = hdr ? extendedSrgbToLinear(base.rgb) : base.rgb;
+  vec3 color = sceneColor * ao + glow;
 
-  vec3 color = (base.rgb * ao + glow) * composite.params.y;
-
-  float mode = composite.grading.x;
-  if (mode > 2.5) {
-    color = agxApprox(max(color, vec3(0.0)));
-  } else if (mode > 1.5) {
-    color = acesFilmic(max(color, vec3(0.0)));
-  } else if (mode > 0.5) {
-    color = max(color, vec3(0.0));
-    color = color / (color + vec3(1.0));
-  }
-
-  // Linear HDR -> sRGB display encoding before display-referred LUT/grading.
-  if (composite.lutParams.z > 0.5) {
-    color = linearToSrgb(color);
-  }
-
-  float contrast = composite.params.z;
-  if (abs(contrast - 1.0) > 1e-4) {
-    color = (color - 0.5) * contrast + 0.5;
-  }
-
-  float sat = composite.params.w;
-  if (abs(sat - 1.0) > 1e-4) {
-    float lum = luma(color);
-    color = mix(vec3(lum), color, sat);
-  }
-
-  color *= composite.tint.rgb;
-
-  float lutStrength = composite.lutParams.x;
-  if (lutStrength > 1e-4 && composite.lutParams.y >= 2.0) {
-    vec3 graded = sampleColorLut3D(color, composite.lutParams.y);
-    color = mix(color, graded, clamp(lutStrength, 0.0, 1.0));
-  }
-
+  float vignette = 1.0;
   float vigAmt = composite.grading.y;
   if (vigAmt > 0.0) {
     vec2 centered = fragUv * 2.0 - 1.0;
     float d = length(centered) * 0.70710678;
     float smoothW = max(composite.grading.z, 0.05);
-    float vig = 1.0 - smoothstep(1.0 - smoothW, 1.05, d) * vigAmt;
-    color *= clamp(vig, 0.0, 1.0);
+    vignette = clamp(1.0 - smoothstep(1.0 - smoothW, 1.05, d) * vigAmt, 0.0, 1.0);
   }
 
-  outColor = vec4(clamp(color, 0.0, 1.0), base.a);
+  // Grading may lift black (contrast below 1, a LUT whose black is not
+  // black): that lift belongs to the covered part of the pixel only, so the
+  // 2D content behind an uncovered part is left as it is.
+  vec3 graded = grade(color, hdr, vignette);
+  if (base.a < 1.0) {
+    vec3 blackLift = grade(vec3(0.0), hdr, vignette);
+    graded = max(graded - (1.0 - base.a) * blackLift, 0.0);
+  }
+  outColor = vec4(graded, base.a);
 }

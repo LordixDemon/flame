@@ -179,9 +179,21 @@ class World3D({
     markSceneDirty(shadows: false);
   }
 
-  /// Whether the main scene pass renders un-tonemapped linear HDR radiance into
-  /// a 16-bit floating-point (`rgbaFloat16`) target before Bloom, ToneMap,
-  /// `ColorLut3D`, and final linear-to-sRGB encoding.
+  /// Whether the main scene pass renders into a 16-bit floating-point
+  /// (`rgbaFloat16`) target that keeps colors above 1, decoded to linear light
+  /// for [bloom] and the tone mapping of [postProcess].
+  ///
+  /// Every material writes that target sRGB-encoded with an extended range:
+  /// `SpatialMaterial` encodes its un-tonemapped radiance (instead of its
+  /// built-in Reinhard curve), the other materials write their usual colors.
+  /// Blending therefore happens in the same space as without HDR, and with
+  /// [ToneMapMode.none] and an exposure of 1 those materials look exactly as
+  /// without HDR. When [postProcess] is `null`, [ToneMapMode.acesFilmic] is
+  /// applied.
+  ///
+  /// Backends without floating-point render targets (OpenGL ES) render into
+  /// an 8-bit target instead: the picture is the same, but colors above 1
+  /// clip before bloom and tone mapping.
   bool get hdrEnabled => _hdrEnabled;
   bool _hdrEnabled = hdrEnabled;
   set hdrEnabled(bool value) {
@@ -480,7 +492,9 @@ class World3D({
     ctx
       ..lights = _lights
       ..fog = _fog
-      ..hdrEnabled = _hdrEnabled
+      // Only the passes into the HDR scene target encode for it, see
+      // `executeWorldRenderPipeline`.
+      ..hdrEnabled = false
       ..renderDebugMode = _renderDebugMode3D
       ..lightProbeGrid = _lightProbeGrid
       ..reflectionProbes = _reflectionProbes
@@ -570,6 +584,11 @@ class World3D({
         ? GpuPixelFormat.rgbaFloat16
         : GpuPixelFormat.rgba8888;
     final usePost = needsPostCompositePass(device);
+    // The scene (and the targets composited into it) is the HDR target only
+    // when the composite decodes it.
+    renderContext
+      ..hdrEnabled = _hdrEnabled && usePost
+      ..bumpPassUniforms();
     final runGrab =
         supportsTexTargets &&
         (_grabSceneColorEnabled || renderContext.hasRefractiveDraws);

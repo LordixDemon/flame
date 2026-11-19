@@ -224,8 +224,13 @@ class RenderContext3D(super.device) extends RenderContext {
   /// Atmospheric fog of the current pass (`null` disables fog).
   FogSettings? fog;
 
-  /// Whether the current scene pass renders un-tonemapped linear HDR radiance
-  /// into a floating-point target.
+  /// Whether the current pass renders into the HDR scene target of a
+  /// `World3D` with `hdrEnabled`, which the composite decodes.
+  ///
+  /// Materials write that target sRGB-encoded with an extended range (values
+  /// above 1 are kept): `SpatialMaterial` encodes its un-tonemapped radiance
+  /// when this is `true` (read from `PassOptions.flags.x`), the other
+  /// materials write their usual display colors either way.
   bool hdrEnabled = false;
 
   /// Active diagnostic buffer visualization mode for the current pass.

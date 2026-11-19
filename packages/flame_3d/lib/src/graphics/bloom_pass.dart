@@ -7,10 +7,15 @@ import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:meta/meta.dart';
 
-/// Runs soft-knee bright-pass extraction, multi-pass Kawase blur, and unified
+/// Runs soft-knee bright-pass extraction, multi-pass blur, and unified
 /// single-pass composition for [BloomSettings], [PostProcessSettings],
-/// [ColorLut3D], linear HDR -> sRGB encoding, and [RenderDebugMode3D] inside an
-/// open [GraphicsDevice] frame.
+/// [ColorLut3D], HDR decoding and display encoding, and [RenderDebugMode3D]
+/// inside an open [GraphicsDevice] frame.
+///
+/// With `hdrEnabled` the scene target holds premultiplied colors sRGB-encoded
+/// with an extended range (above 1), as every material writes them in an HDR
+/// pass (see `RenderContext3D.hdrEnabled`); the prefilter and the composite
+/// decode them to linear light.
 @internal
 class BloomPass(final GraphicsDevice _device) {
   static const String _prefilterBundle =
@@ -142,7 +147,12 @@ class BloomPass(final GraphicsDevice _device) {
       final threshold = math.max(0.0, bloom.threshold);
       final knee = threshold * bloom.softKnee.clamp(0.0, 1.0) + 1e-4;
       _curve.setValues(threshold, threshold - knee, 2.0 * knee, 0.25 / knee);
-      _texel.setValues(1.0 / fullWidth, 1.0 / fullHeight, 0, 0);
+      _texel.setValues(
+        1.0 / fullWidth,
+        1.0 / fullHeight,
+        hdrEnabled ? 1.0 : 0.0,
+        0,
+      );
       _prefilterFrag
         ..setTexture('sourceTexture', sceneTexture)
         ..setVector4('BloomPrefilter.curve', _curve)

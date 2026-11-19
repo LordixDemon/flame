@@ -54,7 +54,8 @@ uniform Material {
 } material;
 
 uniform PassOptions {
-  // x: hdrEnabled, y: debugMode, z: sceneColorActive, w: probeBoxActive
+  // x: 1 in a pass into the HDR scene target (output extended-range sRGB),
+  // y: debugMode, z: sceneColorActive, w: probeBoxActive
   vec4 flags;
   // xyz: reflection probe box min, w: probe blend weight
   vec4 probeBoxMin;
@@ -446,6 +447,21 @@ vec3 processLightPbr(
   return baseLayer;
 }
 
+// sRGB encoding extended above 1, the space of the HDR scene target.
+vec3 linearToExtendedSrgb(vec3 linear) {
+  vec3 c = max(linear, vec3(0.0));
+  vec3 lo = c * 12.92;
+  vec3 hi = 1.055 * pow(max(c, vec3(1e-6)), vec3(1.0 / 2.4)) - 0.055;
+  return mix(lo, hi, step(vec3(0.0031308), c));
+}
+
+vec3 extendedSrgbToLinear(vec3 encoded) {
+  vec3 c = max(encoded, vec3(0.0));
+  vec3 lo = c / 12.92;
+  vec3 hi = pow((c + 0.055) / 1.055, vec3(2.4));
+  return mix(lo, hi, step(vec3(0.04045), c));
+}
+
 void main() {
   float debugMode = passOptions.flags.y;
   // Overdraw heat diagnostic mode (`RenderDebugMode3D.overdraw == 6`).
@@ -664,6 +680,10 @@ void main() {
         vec2(0.998)
       );
       refractedBg = texture(sceneColorTexture, refractUv).rgb;
+      if (passOptions.flags.x > 0.5) {
+        // The HDR scene color is extended-range sRGB.
+        refractedBg = extendedSrgbToLinear(refractedBg);
+      }
     } else if (material.flags.w > 0.0) {
       vec3 refrRay = refract(-viewDir, normal, 1.0 / max(ior, 1.001));
       refractedBg = textureLod(
@@ -820,14 +840,15 @@ void main() {
     color = mix(clamp(color, 0.0, 1.0), splitTint, 0.65);
   }
 
-  // Legacy SDR path (`hdrEnabled == false`) applies inline Reinhard + gamma 2.2
-  // for 100% backward compatibility; HDR path (`hdrEnabled == true`) outputs
-  // pure un-clamped linear radiance for Bloom + ToneMap + LUT + sRGB composite!
+  // Without HDR the radiance is tone-mapped here (Reinhard, gamma 2.2). In an
+  // HDR pass it is sRGB-encoded with an extended range (values above 1 are
+  // kept), the space every material writes the HDR scene target in; the
+  // composite decodes it to linear light for bloom and tone mapping.
   if (passOptions.flags.x < 0.5) {
     color = color / (color + vec3(1.0));
     color = pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
   } else {
-    color = max(color, vec3(0.0));
+    color = linearToExtendedSrgb(color);
   }
 
   color = applyFog(

@@ -537,12 +537,17 @@ Translucent draws are not in the grabbed image, so glass behind glass does not s
 ## HDR render targets
 
 `World3D.hdrEnabled` (also on `Scene3DComponent`) renders the scene into a 64-bit
-`GpuPixelFormat.rgbaFloat16` texture target where the backend can render into float textures (Metal,
-Vulkan and WebGPU; not OpenGL ES, where it silently falls back to `rgba8888`), tells the shaders to
-output linear light, without a tone curve, through `PassOptions.flags.x`, and adds the composite
-pass that tone-maps the image and encodes it to sRGB. Only the native `SpatialMaterial` shader reads
-that flag; how it changes the look of the other materials, and what it costs, is described in
-[Post-Processing](post_processing.md#hdr).
+`GpuPixelFormat.rgbaFloat16` texture target where the backend can render into float textures (Metal
+and Vulkan; not OpenGL ES, where it falls back to `rgba8888` and colors above `1` clip), and adds
+the composite pass that decodes the image to linear light, tone-maps it and encodes it to sRGB.
+
+Materials write that target sRGB-encoded with an extended range. `RenderContext3D.hdrEnabled` is
+`true` during the passes into it (the main pass, and the grab and transparency passes composited
+into it), and shaders read it as `PassOptions.flags.x`: the native `SpatialMaterial` shader then
+encodes its lighting without its tone curve, so values above `1` survive. The other built-in
+materials write their usual display colors either way, so they look the same with and without HDR
+until the tone map changes them. A custom material that computes linear light should do as
+`SpatialMaterial` does; see [Post-Processing](post_processing.md#hdr) for the details and costs.
 
 
 ## Frame output and statistics

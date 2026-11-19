@@ -66,14 +66,21 @@ order, on each pixel:
 
 1. FXAA, when on, replaces the scene sample.
 2. Depth of field, then SSAO, when the depth-normal texture is there.
-3. Bloom is added.
-4. Exposure multiplies the color.
-5. Tone mapping.
-6. With `hdrEnabled`, linear to sRGB encoding.
-7. Contrast, saturation, tint.
-8. The color LUT.
-9. The vignette.
-10. The color is clamped to `[0, 1]`; the alpha of the scene is kept as it is.
+3. With `hdrEnabled`, the scene color is decoded to linear light (see [HDR](#hdr)).
+4. Bloom is added.
+5. Exposure multiplies the color.
+6. Tone mapping.
+7. With `hdrEnabled`, sRGB encoding (except after `ToneMapMode.agx`, whose output is already
+   display-encoded).
+8. Contrast, saturation, tint.
+9. The color LUT.
+10. The vignette.
+11. The color is clamped to `[0, 1]`; the alpha of the scene is kept as it is.
+
+The scene's colors are premultiplied by their alpha. Steps 5 to 10 can turn black into another
+color (a `contrast` below `1`, a LUT whose black is not black); that change is applied to the
+covered part of each pixel only, so a pixel of alpha `a` gets it in proportion `a`, and a
+transparent pixel stays transparent.
 
 
 ## HDR
@@ -83,34 +90,37 @@ final world = World3D(hdrEnabled: true);
 ```
 
 With `hdrEnabled`, the scene renders into a `GpuPixelFormat.rgbaFloat16` target where the backend
-can render into float textures (Metal, Vulkan, WebGPU), so lights brighter than white keep their
-value until the composite tone-maps them. The native `SpatialMaterial` shader then outputs linear
-light with no tone curve (instead of its own `c / (1 + c)` curve and 2.2 gamma), and the
-composite applies the tone map (ACES when `postProcess` is `null`, otherwise `postProcess.toneMap`)
-and encodes the result to sRGB. Bloom then extracts what is above its threshold from the
-unclamped values, so a threshold above `1` blooms only what is brighter than white.
+can render into float textures (Metal, Vulkan), so lights brighter than white keep their value
+until the composite tone-maps them.
+
+Every material writes that target sRGB-encoded, with the range extended above `1`:
+
+- the native `SpatialMaterial` shader encodes its lighting without a tone curve (instead of its
+  own `c / (1 + c)` curve and 2.2 gamma), so a light twice as bright as white is stored above `1`;
+- `StylizedMaterial`, `UnlitMaterial`, `WaterMaterial`, particles, the skybox, billboards and the
+  other materials write the display colors they write without HDR.
+
+Translucent draws therefore blend in the same space as without HDR. The bloom bright-pass and the
+composite decode the scene to linear light, add bloom, apply the exposure and the tone map (ACES
+when `postProcess` is `null`, otherwise `postProcess.toneMap`) and encode the result to sRGB again.
+With `ToneMapMode.none` and an exposure of `1`, a material that writes display colors looks exactly
+as it does without HDR, and bloom extracts what is above its threshold from the unclamped values,
+so a threshold of `1` or more blooms only what is brighter than white.
 
 Cost: the scene target holds 8 bytes per pixel instead of 4, and the scene pass writes twice as
 many bytes; with bloom, its two half-size targets are float too. For a 1170 by 2532 phone screen,
 the scene target alone is 23.7 MB instead of 11.9 MB.
 
-```{note}
-Only the native `SpatialMaterial` shader outputs linear light in HDR mode.
-`StylizedMaterial`, `UnlitMaterial`, `WaterMaterial`, particles, the skybox,
-billboards and the web's `SpatialMaterial` keep writing display colors, which
-the composite then tone-maps and encodes to sRGB a second time: an opaque
-`UnlitMaterial` of 50% gray shows at 81% gray. Enable HDR only for scenes
-drawn with `SpatialMaterial` (see
-[Choosing a material](materials.md#choosing-a-material)).
-```
-
 When a `postProcess` is set, its `toneMap` applies, and its default is `ToneMapMode.none`: giving
 an HDR world a `PostProcessSettings` for a vignette alone turns tone mapping off, and everything
 above white clips. Set `toneMap` explicitly with HDR.
 
-On OpenGL ES, float targets are not used: the scene renders linear light into an 8-bit target
-without a warning, values above `1` clip before tone mapping (with ACES nothing gets brighter than
-about 91% on screen), dark gradients band, and bloom thresholds above `1` never trigger.
+On OpenGL ES, float targets are not used: the scene renders into an 8-bit target. The picture is
+the same as on other backends, except that values above `1` clip before bloom and tone mapping,
+so bloom thresholds of `1` or more never trigger and tone mapping has no highlights to compress.
+
+A `RenderTexture3D` and the passes of a world that does not go through the composite render
+without HDR: `SpatialMaterial` applies its own tone curve there.
 
 
 ## Tone mapping and exposure
@@ -121,7 +131,9 @@ about 91% on screen), dark gradients band, and bloom thresholds above `1` never 
 - `ToneMapMode.none`: no curve (the default);
 - `ToneMapMode.reinhard`: `c / (1 + c)` per channel;
 - `ToneMapMode.acesFilmic`: a common fit of the ACES curve;
-- `ToneMapMode.agx`: meant as an AgX-like curve, but broken, see [Limitations](#limitations).
+- `ToneMapMode.agx`: the base look of Blender's AgX, in a common polynomial fit: a log2 encoding
+  from 12.47 stops below to 4.03 stops above middle gray, a sigmoid, and AgX's inset and outset
+  color matrices, which keep hues in bright saturated colors. Its output is display-encoded.
 
 Tone mapping is meant for HDR images. On an 8-bit scene, it reshapes colors that are already
 display colors; `SpatialMaterial` has already applied its own `c / (1 + c)` curve to them.
@@ -351,9 +363,9 @@ The pipeline is the same; what differs is the image it runs on.
   target. Effects measured on the image (the vignette, the edges of bloom and depth of field) follow
   that region, not the screen.
 - A layer's background is transparent and is drawn over the 2D components behind it. The composite
-  keeps the scene's alpha, so what it adds to transparent pixels is added to the 2D art: the bloom
-  glow (intended), but also the lift of a `contrast` below `1`, a LUT that maps black to a color,
-  and the gray of `ToneMapMode.agx`.
+  keeps the scene's alpha and applies grading only to the covered part of each pixel, so
+  transparent pixels stay transparent; the bloom glow over them is added to the 2D art behind the
+  layer.
 - Each layer runs its own post chain: two layers with bloom pay for two composites and two blurs.
   Prefer one layer with post-processing.
 - A retained layer (`Scene3DCacheMode.retained`) renders again when the bloom and post-processing
@@ -363,21 +375,16 @@ The pipeline is the same; what differs is the image it runs on.
 ## Platform support
 
 - Metal (iOS, macOS) and Vulkan (Android): everything on this page.
-- OpenGL ES: no float targets, so HDR and bloom run in 8 bits (see [HDR](#hdr)); the prepass uses
-  screen-space derivatives (`dFdx`, `dFdy`).
+- OpenGL ES: no float targets, so HDR and bloom run in 8 bits and values above `1` clip (see
+  [HDR](#hdr)); the prepass uses screen-space derivatives (`dFdx`, `dFdy`).
 - Web: none of it. The bloom, composite and depth-normal shaders have no WebGPU bundle, so enabling
   any of these effects makes the first frame throw a `StateError`.
 
 
 ## Limitations
 
-- `ToneMapMode.agx` is broken: its curve maps black to 0.43 (0.69 after sRGB encoding, 175 of 255)
-  and everything above about 5% linear light to white or nearly white, so the image is washed out
-  and has no highlights. In a `Scene3DComponent` it adds that gray over the 2D art behind the
-  layer. Use `ToneMapMode.acesFilmic`.
-- HDR double-encodes every material but the native `SpatialMaterial` (see [HDR](#hdr)), and falls
-  back to 8 bits on OpenGL ES without telling. Combined with order-independent transparency, it
-  makes translucent surfaces black or invisible (see
+- HDR falls back to 8 bits on OpenGL ES (see [HDR](#hdr)). Combined with order-independent
+  transparency, it makes translucent surfaces black or invisible (see
   [Rendering](rendering.md#order-independent-transparency)).
 - Under a perspective camera, the depth of a triangle that reaches behind the camera is wrong over
   the whole triangle in the depth-normal texture (it reads as `0`, the nearest depth), and large
@@ -392,7 +399,7 @@ The pipeline is the same; what differs is the image it runs on.
   the texture at their place (see [Depth and sorting](ui_3d.md#depth-and-sorting)).
 - SSAO and depth of field work in normalized depth with fixed thresholds and a screen-space radius:
   they do not scale with the world, and under a perspective camera they fade out with distance.
-- The composite runs on premultiplied colors: tone mapping and color grading are slightly off at
-  anti-aliased and translucent edges.
+- The composite runs on premultiplied colors: tone mapping, which is not linear, is slightly off at
+  anti-aliased and translucent edges of a layer over transparent pixels.
 - Changing fields of the current settings objects does not mark the scene as changed (see
   [Turning it on](#turning-it-on)).
