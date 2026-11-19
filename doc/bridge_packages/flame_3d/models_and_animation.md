@@ -142,16 +142,18 @@ tests and for small procedural assets, but do not optimize vertex order or quant
 
 ### OBJ files
 
-`ModelParser.parse('...obj')` reads positions, normals and texture coordinates, `mtllib` / `usemtl`
-with the diffuse color `Kd` of each material, and builds one surface per material. Only faces with
-exactly three corners are read: quads are skipped without a warning and larger polygons throw an
-`UnimplementedError`. Tokens must be separated by single spaces. The texture coordinates of the
-second and third corner of each face are swapped, so textured OBJ models come out with distorted
-UVs.
+`ModelParser.parse('...obj')` reads positions, normals and texture coordinates, faces of any
+number of corners (triangulated as fans, so convex polygons only), positive and negative
+(relative) indices, `mtllib` / `usemtl` with the diffuse color `Kd` of each material, and builds
+one surface per material; tokens may be separated by any whitespace. Normals missing from the file
+are computed. `ObjParser.parseObjString(source, directory: ...)` reads OBJ text from memory. Texture
+coordinates are taken as they are written: OBJ puts `v = 0` at the bottom of the image, so flip
+them in the exporter if your textures come out upside down. Other OBJ statements (groups, smoothing
+groups, lines, points) are ignored.
 
-`AsyncModelLoader3D.parseObjBytesAsync` and `parseObjStringInIsolate` use their own reader, which
-triangulates polygons as fans, accepts negative indices and any whitespace, and takes the contents
-of material libraries in `mtlSources` (by file name); prefer it for OBJ files.
+`AsyncModelLoader3D.parseObjBytesAsync` and `parseObjStringInIsolate` use their own reader, with
+the same rules, on a background isolate; it takes the contents of material libraries in
+`mtlSources` (by file name).
 
 
 ### Loading off the main isolate
@@ -781,8 +783,8 @@ the main isolate; `AsyncModelLoader3D` moves the geometry work to an isolate.
   vertex, only `KHR_materials_unlit`, `KHR_materials_emissive_strength`, `KHR_texture_transform`
   (offset and scale) and `KHR_mesh_quantization` among material and mesh extensions; external
   `.gltf` files are requested with a doubled slash.
-- **OBJ** through `ModelParser`: triangles only (quads dropped silently), swapped texture
-  coordinates; use `AsyncModelLoader3D` instead.
+- **OBJ**: fan triangulation (concave polygons come out wrong), only the diffuse color of
+  materials.
 - **Ray casts** hit skinned surfaces in their rest pose (see
   [Geometry and Scene Queries](geometry.md#limitations)).
 - **Foot placement** assumes world `+y` up; **retargeting** measures the hip height along `+y`.

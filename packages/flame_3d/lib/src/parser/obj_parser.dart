@@ -10,6 +10,10 @@ import 'package:flame_3d/src/parser/obj/surface_tool.dart';
 // These are keywords used in the OBJ syntax.
 // cSpell:ignore usemtl newmtl mtllib
 
+/// Reads Wavefront OBJ files: positions, normals, texture coordinates, faces
+/// of any number of corners (triangulated as fans, with positive or negative
+/// indices) and the diffuse color (`Kd`) of `mtllib` materials, one surface
+/// per material.
 class ObjParser() extends ModelParser {
   @override
   Future<Model> parseModel(String filePath) async {
@@ -17,70 +21,86 @@ class ObjParser() extends ModelParser {
     return Model.simple(mesh: mesh);
   }
 
+  /// Reads the OBJ file at [filePath] (a full asset path) into a [Mesh]
+  /// (or adds its surfaces to [applyTo]). Material libraries are read next to
+  /// the file.
   Future<Mesh> parseMesh(String filePath, {Mesh? applyTo}) async {
+    final source = await Flame.assets.readFile(filePath);
+    return await parseObjString(
+      source,
+      directory: ModelParser.prefix(filePath),
+      applyTo: applyTo,
+    );
+  }
+
+  /// Builds a [Mesh] from the contents of an OBJ file. Material libraries
+  /// (`mtllib`) are read through `Flame.assets` from [directory].
+  Future<Mesh> parseObjString(
+    String source, {
+    String directory = '',
+    Mesh? applyTo,
+  }) async {
     final vertices = <Vector3>[];
     final normals = <Vector3>[];
     final texCoords = <Vector2>[];
     final faces = <String, List<Face>>{};
-
-    final lines = (await Flame.assets.readFile(filePath)).split('\n');
 
     // if not material is specified, this will be used, and the default
     // material will be applied.
     var matName = '__default__';
 
     final materials = <String, SpatialMaterial>{};
-    for (final line in lines) {
-      final [type, ...parts] = line.split(' ');
+    for (final rawLine in source.split('\n')) {
+      final line = rawLine.trim();
+      if (line.isEmpty || line.startsWith('#')) {
+        continue;
+      }
+      final [type, ...parts] = line.split(_whitespace);
 
       switch (type) {
-        // Comment
-        case '#':
-          continue;
-        // Vertex
+        // Vertex (a fourth `w` or vertex colors are ignored)
         case 'v':
-          vertices.add(Vector3.array(parts.map(double.parse).toList()));
+          vertices.add(_vector3(parts, line));
         // Normal
         case 'vn':
-          normals.add(Vector3.array(parts.map(double.parse).toList()));
-        // UV
+          normals.add(_vector3(parts, line));
+        // UV (a third `w` is ignored)
         case 'vt':
-          texCoords.add(Vector2.array(parts.map(double.parse).toList()));
-        // Face
-        case 'f':
-          if (parts.length == 3) {
-            // Single triangle
-
-            final face = Face.empty();
-            for (final value in parts) {
-              // format is <vertex/texture/normal>, with vertex and normal being optional
-              final indices = value.split('/');
-              face.vertex.add(int.parse(indices[0]) - 1);
-              if (indices.length > 1) {
-                if (indices[1].isNotEmpty) {
-                  face.texCoord.add(int.parse(indices[1]) - 1);
-                }
-                if (indices.length > 2) {
-                  face.normal.add(int.parse(indices[2]) - 1);
-                }
-              }
-            }
-            (faces[matName] ??= []).add(face);
-          } else if (parts.length > 4) {
-            // TODO(luan): implement triangulation
-            throw UnimplementedError(
-              'Triangulation not implemented for ObjParser',
-            );
+          if (parts.isEmpty) {
+            throw FormatException('Malformed OBJ texture coordinate: $line');
           }
+          texCoords.add(
+            Vector2(
+              double.parse(parts[0]),
+              parts.length > 1 ? double.parse(parts[1]) : 0.0,
+            ),
+          );
+        // Face, with any number of corners
+        case 'f':
+          if (parts.length < 3) {
+            continue;
+          }
+          final face = Face.empty();
+          for (final value in parts) {
+            // format is v, v/vt, v/vt/vn or v//vn; negative indices count
+            // back from the last element read so far
+            final indices = value.split('/');
+            face.vertex.add(_index(indices[0], vertices.length, line));
+            if (indices.length > 1 && indices[1].isNotEmpty) {
+              face.texCoord.add(_index(indices[1], texCoords.length, line));
+            }
+            if (indices.length > 2 && indices[2].isNotEmpty) {
+              face.normal.add(_index(indices[2], normals.length, line));
+            }
+          }
+          (faces[matName] ??= []).add(face);
         // Material library
         case 'mtllib':
-          final relative = (filePath.split('/')..removeLast()).join('/');
-          materials.addAll(
-            await _parseMaterial('$relative/${parts[0]}'.trim()),
-          );
+          final library = parts.join(' ');
+          materials.addAll(await _parseMaterial('$directory$library'));
         // Material
         case 'usemtl':
-          matName = parts[0].trim();
+          matName = parts.join(' ');
 
           if (!faces.containsKey(matName)) {
             if (!materials.containsKey(matName)) {
@@ -93,45 +113,59 @@ class ObjParser() extends ModelParser {
 
     var mesh = applyTo ?? Mesh();
     for (final materialGroup in faces.keys) {
+      final groupFaces = faces[materialGroup]!;
+      if (groupFaces.isEmpty) {
+        continue;
+      }
       final material = materials[materialGroup] ?? Material.defaultMaterial;
       final surface = SurfaceTool()..setMaterial(material);
 
-      for (final face in faces[materialGroup]!) {
-        if (face.vertex.length == 3) {
-          // Vertices
-          final fanVertices = [
-            vertices[face.vertex[0]],
-            vertices[face.vertex[1]],
-            vertices[face.vertex[2]],
-          ];
-
-          // Tex coords
-          final fanTexCoords = <Vector2>[];
-          if (face.texCoord.isNotEmpty) {
-            for (final k in [0, 2, 1]) {
-              final f = face.texCoord[k];
-              if (f > -1) {
-                final uv = texCoords[f];
-                fanTexCoords.add(uv);
-              }
-            }
-          }
-
-          // Normals
-          final fanNormals = [
-            if (face.normal.isNotEmpty) ...[
-              normals[face.normal[0]],
-              normals[face.normal[1]],
-              normals[face.normal[2]],
+      for (final face in groupFaces) {
+        final corners = face.vertex.length;
+        final hasTexCoords = face.texCoord.length == corners;
+        final hasNormals = face.normal.length == corners;
+        // Fan triangulation: (0, i, i + 1).
+        for (var i = 1; i < corners - 1; i++) {
+          final order = [0, i, i + 1];
+          surface.addTriangleFan(
+            [for (final k in order) vertices[face.vertex[k]]],
+            [
+              if (hasTexCoords)
+                for (final k in order) texCoords[face.texCoord[k]],
             ],
-          ];
-
-          surface.addTriangleFan(fanVertices, fanTexCoords, fanNormals);
+            [
+              if (hasNormals)
+                for (final k in order) normals[face.normal[k]],
+            ],
+          );
         }
       }
       mesh = surface.apply(mesh);
     }
     return mesh;
+  }
+
+  static final RegExp _whitespace = RegExp(r'\s+');
+
+  static Vector3 _vector3(List<String> parts, String line) {
+    if (parts.length < 3) {
+      throw FormatException('Malformed OBJ vector: $line');
+    }
+    return Vector3(
+      double.parse(parts[0]),
+      double.parse(parts[1]),
+      double.parse(parts[2]),
+    );
+  }
+
+  /// Converts a 1-based (or negative, relative) OBJ index to a 0-based one.
+  static int _index(String token, int count, String line) {
+    final raw = int.parse(token);
+    final index = raw < 0 ? count + raw : raw - 1;
+    if (index < 0 || index >= count) {
+      throw FormatException('OBJ index $raw out of range: $line');
+    }
+    return index;
   }
 
   Future<Map<String, SpatialMaterial>> _parseMaterial(
@@ -141,8 +175,12 @@ class ObjParser() extends ModelParser {
 
     final materials = <String, SpatialMaterial>{};
     SpatialMaterial? currentMat;
-    for (final line in lines) {
-      final [type, ...parts] = line.split(' ');
+    for (final rawLine in lines) {
+      final line = rawLine.trim();
+      if (line.isEmpty) {
+        continue;
+      }
+      final [type, ...parts] = line.split(_whitespace);
       switch (type) {
         // Comment
         case '#':
@@ -152,7 +190,7 @@ class ObjParser() extends ModelParser {
           currentMat = SpatialMaterial(
             albedoTexture: ColorTexture(const Color(0xFFFFFFFF)),
           );
-          materials[parts[0].trim()] = currentMat;
+          materials[parts.join(' ')] = currentMat;
         // Diffuse color
         case 'Kd':
           currentMat?.albedoColor = Color.from(
