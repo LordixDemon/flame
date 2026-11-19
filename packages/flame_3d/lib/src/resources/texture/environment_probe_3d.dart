@@ -95,6 +95,15 @@ class EnvironmentProbe3D({
   /// Projects an RGBA8888 `2:1` equirectangular [pixels] buffer onto `SH9`
   /// radiance coefficients and builds a roughness-prefiltered mipmapped
   /// specular reflection texture.
+  ///
+  /// With [srgb] (the default) the pixels are sRGB-encoded, like those of a
+  /// Flutter image: the coefficients are projected from their linear values,
+  /// and the reflection texture is uploaded as an sRGB texture that the GPU
+  /// decodes to linear when sampling (or, on devices without sRGB textures,
+  /// decoded on the CPU into a linear 8-bit texture), so reflections and
+  /// diffuse light agree. Its blurred mip levels are computed in linear
+  /// light. Without [srgb] the pixels are linear values and are used as
+  /// they are.
   factory EnvironmentProbe3D.fromEquirectangular(
     ByteData pixels, {
     required int width,
@@ -123,14 +132,10 @@ class EnvironmentProbe3D({
         final z = sinTheta * math.sin(phi);
 
         final idx = (row * width + col) * 4;
-        var r = raw[idx] / 255.0;
-        var g = raw[idx + 1] / 255.0;
-        var b = raw[idx + 2] / 255.0;
-        if (srgb) {
-          r = math.pow(r, 2.2).toDouble();
-          g = math.pow(g, 2.2).toDouble();
-          b = math.pow(b, 2.2).toDouble();
-        }
+        final decode = srgb ? _srgbToLinear : _unormToLinear;
+        final r = decode[raw[idx]];
+        final g = decode[raw[idx + 1]];
+        final b = decode[raw[idx + 2]];
 
         final y00 = 0.282095 * solidAngle;
         final y1m1 = 0.488603 * y * solidAngle;
@@ -158,6 +163,7 @@ class EnvironmentProbe3D({
       pixels,
       width: width,
       height: height,
+      srgb: srgb,
     );
     return EnvironmentProbe3D(
       shCoefficients: coeffs,
@@ -239,20 +245,42 @@ class EnvironmentProbe3D({
   }
 
   static double _lerp(double a, double b, double t) => a + (b - a) * t;
+
+  /// The linear value of each 8-bit sRGB code (the exact sRGB curve, which
+  /// the GPU uses for sRGB textures).
+  static final Float32List _srgbToLinear = Float32List.fromList([
+    for (var i = 0; i < 256; i++) _decodeSrgb(i / 255.0),
+  ]);
+
+  /// The value of each 8-bit linear code.
+  static final Float32List _unormToLinear = Float32List.fromList([
+    for (var i = 0; i < 256; i++) i / 255.0,
+  ]);
+
+  static double _decodeSrgb(double c) =>
+      c <= 0.04045 ? c / 12.92 : math.pow((c + 0.055) / 1.055, 2.4).toDouble();
+
+  static double _encodeSrgb(double l) => l <= 0.0031308
+      ? l * 12.92
+      : 1.055 * math.pow(l, 1.0 / 2.4).toDouble() - 0.055;
 }
 
 /// Equirectangular specular reflection texture whose mip chain is pre-convolved
-/// with widening GGX roughness lobes (wrapping horizontally across `u = 0..1`
-/// and clamping at the poles) so `textureLod(..., roughness * maxMip)` produces
-/// smooth blurred reflections at higher roughness values.
+/// with widening Gaussian lobes (wrapping horizontally across `u = 0..1` and
+/// clamping at the poles) so `textureLod(..., roughness * maxMip)` produces
+/// smooth blurred reflections at higher roughness values. The blur runs on
+/// linear values; [srgb] pixels are stored in an sRGB texture when the device
+/// has one, else decoded to a linear texture.
 class _PrefilteredEquirectTexture(
   super.sourceData, {
   required super.width,
   required super.height,
+  required final bool srgb,
 }) extends Texture {
   this
     : super(
         mipmaps: true,
+        colorSpace: srgb ? TextureColorSpace.srgb : TextureColorSpace.linear,
         sampler: const TextureSampler(
           minFilter: TextureFilter.linear,
           magFilter: TextureFilter.linear,
@@ -266,73 +294,108 @@ class _PrefilteredEquirectTexture(
     final data = sourceData!;
     final backend = GpuBackend.instance;
     final levels = math.min(6, backend.maxMipLevelCount(width, height));
+    final srgbStorage =
+        srgb && backend.supportsPixelFormat(GpuPixelFormat.rgba8888Srgb);
     final gpuTex = backend.createTexture(
       storageMode: GpuStorageMode.hostVisible,
       width: width,
       height: height,
-      format: GpuPixelFormat.rgba8888,
+      format: srgbStorage
+          ? GpuPixelFormat.rgba8888Srgb
+          : GpuPixelFormat.rgba8888,
       mipLevelCount: levels,
-    )..write(data);
+    );
 
-    var prevBytes = data.buffer.asUint8List(
+    final bytes = data.buffer.asUint8List(
       data.offsetInBytes,
       data.lengthInBytes,
     );
+    final decode = srgb
+        ? EnvironmentProbe3D._srgbToLinear
+        : EnvironmentProbe3D._unormToLinear;
+    var prev = Float32List(width * height * 4);
+    for (var i = 0; i < prev.length; i++) {
+      // Alpha is linear.
+      prev[i] = (i & 3) == 3 ? bytes[i] / 255.0 : decode[bytes[i]];
+    }
+    if (srgbStorage || !srgb) {
+      gpuTex.write(data);
+    } else {
+      gpuTex.write(ByteData.sublistView(_encode(prev, srgb: false)));
+    }
+
     var prevW = width;
     var prevH = height;
-
     for (var level = 1; level < levels; level++) {
       final mipW = math.max(1, width >> level);
       final mipH = math.max(1, height >> level);
       final roughness = levels > 1 ? level / (levels - 1) : 0.0;
       final next = _convolveRoughnessMip(
-        prevBytes,
+        prev,
         prevW,
         prevH,
         mipW,
         mipH,
         roughness,
       );
-      gpuTex.write(ByteData.sublistView(next), mipLevel: level);
-      prevBytes = next;
+      gpuTex.write(
+        ByteData.sublistView(_encode(next, srgb: srgbStorage)),
+        mipLevel: level,
+      );
+      prev = next;
       prevW = mipW;
       prevH = mipH;
     }
     return gpuTex;
   }
 
-  static Uint8List _convolveRoughnessMip(
-    Uint8List src,
+  static Uint8List _encode(Float32List linear, {required bool srgb}) {
+    final out = Uint8List(linear.length);
+    for (var i = 0; i < linear.length; i++) {
+      final v = linear[i].clamp(0.0, 1.0);
+      final encoded = srgb && (i & 3) != 3
+          ? EnvironmentProbe3D._encodeSrgb(v)
+          : v;
+      out[i] = (encoded * 255.0).round();
+    }
+    return out;
+  }
+
+  /// Blurs [src] (`srcW x srcH` linear RGBA) into a `dstW x dstH` level with
+  /// a Gaussian centered on each destination texel's footprint.
+  static Float32List _convolveRoughnessMip(
+    Float32List src,
     int srcW,
     int srcH,
     int dstW,
     int dstH,
     double roughness,
   ) {
-    final dst = Uint8List(dstW * dstH * 4);
+    final dst = Float32List(dstW * dstH * 4);
     final radius = math.max(1, (roughness * 3.0).ceil());
     final sigma = math.max(0.65, roughness * 2.2);
     final inv2Sigma2 = 0.5 / (sigma * sigma);
 
     for (var y = 0; y < dstH; y++) {
-      final cy = ((y + 0.5) / dstH * srcH - 0.5).round();
+      final fy = (y + 0.5) / dstH * srcH - 0.5;
+      final y0 = fy.floor();
       for (var x = 0; x < dstW; x++) {
-        final cx = ((x + 0.5) / dstW * srcW - 0.5).round();
+        final fx = (x + 0.5) / dstW * srcW - 0.5;
+        final x0 = fx.floor();
         var sumR = 0.0;
         var sumG = 0.0;
         var sumB = 0.0;
         var sumA = 0.0;
         var sumW = 0.0;
 
-        for (var dy = -radius; dy <= radius; dy++) {
-          final sy = (cy + dy).clamp(0, srcH - 1);
-          for (var dx = -radius; dx <= radius; dx++) {
-            var sx = (cx + dx) % srcW;
-            if (sx < 0) {
-              sx += srcW;
-            }
+        for (var sy = y0 - radius; sy <= y0 + 1 + radius; sy++) {
+          final cy = sy.clamp(0, srcH - 1);
+          final dy = sy - fy;
+          for (var sx = x0 - radius; sx <= x0 + 1 + radius; sx++) {
+            final cx = sx % srcW;
+            final dx = sx - fx;
             final w = math.exp(-(dx * dx + dy * dy) * inv2Sigma2);
-            final o = (sy * srcW + sx) * 4;
+            final o = (cy * srcW + cx) * 4;
             sumR += src[o] * w;
             sumG += src[o + 1] * w;
             sumB += src[o + 2] * w;
@@ -343,10 +406,10 @@ class _PrefilteredEquirectTexture(
 
         final invW = sumW > 0.0 ? 1.0 / sumW : 1.0;
         final outIdx = (y * dstW + x) * 4;
-        dst[outIdx] = (sumR * invW).round().clamp(0, 255);
-        dst[outIdx + 1] = (sumG * invW).round().clamp(0, 255);
-        dst[outIdx + 2] = (sumB * invW).round().clamp(0, 255);
-        dst[outIdx + 3] = (sumA * invW).round().clamp(0, 255);
+        dst[outIdx] = sumR * invW;
+        dst[outIdx + 1] = sumG * invW;
+        dst[outIdx + 2] = sumB * invW;
+        dst[outIdx + 3] = sumA * invW;
       }
     }
     return dst;

@@ -13,7 +13,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'gpu_test_helpers.dart';
 
 /// A probe whose panorama is [r], [g], [b] in every direction.
-EnvironmentProbe3D _uniformProbe(int r, int g, int b) {
+EnvironmentProbe3D _uniformProbe(int r, int g, int b, {bool srgb = true}) {
   const w = 32;
   const h = 16;
   final bytes = Uint8List(w * h * 4);
@@ -28,6 +28,7 @@ EnvironmentProbe3D _uniformProbe(int r, int g, int b) {
     ByteData.sublistView(bytes),
     width: w,
     height: h,
+    srgb: srgb,
   );
 }
 
@@ -196,6 +197,28 @@ void main() {
         reason: 'the sphere reflects its own probe',
       );
       expect(differingPixels(without, withVolume), 0);
+    });
+  });
+
+  group('EnvironmentProbe3D', () {
+    testGpu('reflects an sRGB panorama in linear light', (tester) async {
+      Future<Pixels> mirror(EnvironmentProbe3D probe) => _render(
+        tester,
+        World3D(
+          children: [
+            MeshComponent(
+              mesh: SphereMesh(radius: 0.9, material: _mirror(probe: probe)),
+            ),
+          ],
+        ),
+      );
+      // sRGB 128 is linear 0.216, which is 55 of 255 in a linear panorama.
+      final encoded = await mirror(_uniformProbe(128, 128, 128));
+      final linear = await mirror(_uniformProbe(55, 55, 55, srgb: false));
+      final (er, _, _, _) = encoded.at(64, 64);
+      final (lr, _, _, _) = linear.at(64, 64);
+      expect(lr, greaterThan(40));
+      expect(er, closeTo(lr, 3));
     });
   });
 }

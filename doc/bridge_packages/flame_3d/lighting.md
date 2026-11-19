@@ -330,9 +330,13 @@ final chrome = SpatialMaterial(
 - `EnvironmentProbe3D.fromEquirectangular(pixels, width:, height:, intensity: 1, srgb: true)` reads
   an RGBA8 panorama of aspect 2:1 (for example the bytes of `Image.toByteData()`). It projects the
   pixels onto the spherical harmonics on the CPU, synchronously, in time proportional to the pixel
-  count, converting them to linear with a 2.2 power when `srgb` is `true`. The panorama itself
-  becomes the reflection texture, uploaded on first use with up to 6 mip levels, each a Gaussian
-  blur of the previous one (an approximation of prefiltering for rough reflections) that wraps
+  count. With `srgb: true` (the default, right for images) the pixels are decoded with the sRGB
+  curve first, and the panorama becomes the reflection texture as an sRGB texture that the GPU
+  decodes when sampling, so reflections and diffuse light see the same linear values; on devices
+  without sRGB textures it is decoded on the CPU into a linear 8-bit texture, which loses precision
+  in dark areas. With `srgb: false` the bytes are linear values, used as they are. The texture is
+  uploaded on first use with up to 6 mip levels, each a Gaussian blur of the previous one computed
+  in linear light (an approximation of prefiltering for rough reflections) that wraps
   horizontally.
 - `EnvironmentProbe3D.skyDome(...)` paints a 128 x 64 panorama of a sky gradient with a sun glow
   (defaults: zenith `0xFF0A2463`, horizon `0xFF60A5FA`, ground `0xFF334155`, sun direction
@@ -574,10 +578,9 @@ material's slots (see [Materials](materials.md#custom-shaders)):
 - Reflections: one volume per object (one per instanced draw of your own), no blending between
   overlapping volumes; boxes are axis-aligned; `priority` is the component's ordering priority as
   well.
-- Probes are 8-bit: the reflection texture keeps the panorama's encoding while the spherical
-  harmonics are linearized (with `srgb: true`), so reflections are brighter relative to the diffuse
-  light than they would be in linear light; the blurred mip levels are a Gaussian approximation and
-  are missing on devices without manually uploaded mip levels.
+- Probes are 8-bit (LDR): a panorama brighter than white cannot be represented. The blurred mip
+  levels are a Gaussian approximation of prefiltering and are missing on devices without manually
+  uploaded mip levels.
 - Light probe grids are baked without occlusion, and on the GPU they drop the mixed terms of band 2
   of each probe's spherical harmonics (see [Light probe grids](#light-probe-grids)).
 - `StylizedMaterial` and `WaterMaterial` receive wrong shadows when the scene uses the multi-light
