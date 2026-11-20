@@ -23,14 +23,16 @@ void main() {
       )!;
       final fragment = water['TextureFragment']!;
       expect(fragment.stage, GpuShaderStage.fragment);
-      // StylizedPass 2176 + WaterMaterial 944 + 16 + 16 bytes.
-      expect(fragment.uniformVectors, 197);
+      // The lean fragment stage (8 foam sources, no carried pattern): 181
+      // vectors of the 224 an OpenGL ES 3.0 driver must offer.
+      expect(fragment.uniformVectors, 181);
       expect(fragment.samplers, 3);
       expect(fragment.extensions, isEmpty);
       final vertex = water['TextureVertex']!;
       expect(vertex.stage, GpuShaderStage.vertex);
-      // WaterVertex 48 + CameraMatrices 192 bytes, and the y flip float.
-      expect(vertex.uniformVectors, 16);
+      // WaterVertex 304 (3 vectors and the bounds of 16 foam sources) +
+      // CameraMatrices 192 bytes, and the y flip float.
+      expect(vertex.uniformVectors, 32);
       expect(vertex.samplers, 0);
     });
 
