@@ -235,7 +235,7 @@ void main() {
     });
 
     test(
-      'writes the sources above 0 first, in plane coordinates and widths',
+      'writes the sources in their slots, in plane coordinates and widths',
       () {
         final sources = WaterFoamSources()
           ..addCircle(Vector3(9, 9, 9), radius: 1, strength: 0)
@@ -266,27 +266,75 @@ void main() {
           positions,
           shapes,
         );
-        expect(count, 3);
+        expect(count, 4);
+        // The hidden source keeps its slot, with a strength of 0.
+        expect(positions[0].storage, [0, 0, 0, 0]);
+        expect(shapes[0].storage, [0, 0, 0, 0]);
         // A circle is a rectangle with no straight part and round corners;
         // its axis is world x, divided by the width.
-        expect(positions[0].storage, [1, 2, 4, 0]);
-        expect(shapes[0].storage, [0, 0, 1.2000000476837158, 1]);
+        expect(positions[1].storage, [1, 2, 4, 0]);
+        expect(shapes[1].storage, [0, 0, 1.2000000476837158, 1]);
         // Along +Y, divided by the width.
-        expect(positions[1].storage, [4, 5, 0, 2]);
-        expect(shapes[1].storage, [1, 0, 1, 0.800000011920929]);
+        expect(positions[2].storage, [4, 5, 0, 2]);
+        expect(shapes[2].storage, [1, 0, 1, 0.800000011920929]);
         expect(
-          positions[2].storage,
+          positions[3].storage,
           [0, 0, 1 / 0.3, 0].map((v) {
             return closeTo(v, 1e-6);
           }).toList(),
         );
-        expect(shapes[2].storage.sublist(0, 3), [
+        expect(shapes[3].storage.sublist(0, 3), [
           closeTo(0.4 / 0.3, 1e-6),
           closeTo(0.2 / 0.3, 1e-6),
           0,
         ]);
+
+        // Up to the last source above 0; a source that carries its pattern
+        // is sent with a negative strength.
+        sources
+          ..setStrength(3, 0)
+          ..setCarryPattern(2, carry: true);
+        expect(
+          sources.writeUniforms(
+            Vector3(1, 0, 0),
+            Vector3(0, 1, 0),
+            positions,
+            shapes,
+          ),
+          3,
+        );
+        expect(shapes[2].w, closeTo(-0.8, 1e-6));
+        expect(shapes[1].w, 1);
       },
     );
+
+    test('carries the pattern of the sources that ask for it', () {
+      final sources = WaterFoamSources();
+      final circle = sources.addCircle(Vector3.zero(), radius: 0.2);
+      final carried = sources.addRectangle(
+        Vector3.zero(),
+        halfLength: 0.4,
+        halfWidth: 0.2,
+        carryPattern: true,
+      );
+      expect(sources.carriesPattern(circle), isFalse);
+      expect(sources.carriesPattern(carried), isTrue);
+      final version = sources.version;
+      sources.setCarryPattern(carried, carry: true);
+      expect(sources.version, version);
+      sources.setCarryPattern(circle, carry: true);
+      expect(sources.version, isNot(version));
+      expect(sources.carriesPattern(circle), isTrue);
+      // Setting a slot again sets it as asked.
+      sources.setCircle(circle, Vector3.zero(), radius: 0.2);
+      expect(sources.carriesPattern(circle), isFalse);
+      sources.remove(carried);
+      expect(() => sources.carriesPattern(carried), throwsStateError);
+      expect(
+        () => sources.setCarryPattern(carried, carry: true),
+        throwsStateError,
+      );
+    });
 
     test('writes the circles beyond which the sources have no foam', () {
       final sources = WaterFoamSources()
@@ -300,17 +348,13 @@ void main() {
           width: 0.5,
         )
         ..addCircle(Vector3(9, 9, 9), radius: 1, strength: 0);
-      final positions = List.generate(16, (_) => Vector4.zero());
-      final shapes = List.generate(16, (_) => Vector4.zero());
       final bounds = List.generate(16, (_) => Vector4.zero());
       final origin = Vector2.zero();
-      final count = sources.writeUniforms(
+      final count = sources.writeBounds(
         Vector3(1, 0, 0),
         Vector3(0, 1, 0),
-        positions,
-        shapes,
-        bounds: bounds,
-        origin: origin,
+        bounds,
+        origin,
       );
       expect(count, 2);
       // The middle of the centers of the sources above 0, and the centers
@@ -351,14 +395,7 @@ void main() {
         ..setStrength(0, 0)
         ..setStrength(1, 0);
       expect(
-        sources.writeUniforms(
-          Vector3(1, 0, 0),
-          Vector3(0, 1, 0),
-          positions,
-          shapes,
-          bounds: bounds,
-          origin: origin,
-        ),
+        sources.writeBounds(Vector3(1, 0, 0), Vector3(0, 1, 0), bounds, origin),
         0,
       );
       expect(origin.storage, [0, 0]);

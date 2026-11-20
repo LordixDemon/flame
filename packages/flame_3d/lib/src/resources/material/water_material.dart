@@ -317,20 +317,27 @@ class WaterMaterial({
     if (ripples != null || foamSources != null) {
       _planeAxes(upAxis);
     }
+    // The slots of the sources for the fragments, the circles of those
+    // above 0 for the vertices.
     var foamSourceCount = 0;
+    var foamBoundCount = 0;
     if (foamSources != null) {
       foamSourceCount = foamSources.writeUniforms(
         _uAxis,
         _vAxis,
         _foamSourcePositions,
         _foamSourceShapes,
-        bounds: _foamSourceBounds,
-        origin: _foamSourceOrigin,
+      );
+      foamBoundCount = foamSources.writeBounds(
+        _uAxis,
+        _vAxis,
+        _foamSourceBounds,
+        _foamSourceOrigin,
       );
     }
-    _applyVertex(vertexShader, foamSourceCount);
+    _applyVertex(vertexShader, foamBoundCount);
     if (_maskedInUse) {
-      _applyVertex(_maskedVertexShader, foamSourceCount);
+      _applyVertex(_maskedVertexShader, foamBoundCount);
     }
 
     // The members of the options are written through the block, which

@@ -17,7 +17,7 @@ import 'gpu_test_helpers.dart';
 // sources (the vertices tell them), and the material then draws exactly the
 // pixels of the fragment stage of before
 // (test/gpu/shaders/reference/water_collars_fragment.glsl), whatever the
-// size of the triangles.
+// size of the triangles; a source can carry its pattern along.
 
 const _size = 128;
 
@@ -26,11 +26,13 @@ const _pixelsPerUnit = 32.0;
 
 /// A grid of water in [WaterMaterial.vertexLayout] over x = -[half] to
 /// [half] and z = -[half] to [half] (in a `+Y`-up world; [v] maps the
-/// coordinates for other worlds), [cells] cells a side, foaming towards -x.
+/// coordinates for other worlds), [cells] cells a side, deeper towards +x
+/// and foaming towards -x, or, [plain], 1 deep everywhere without foam.
 Mesh _grid(
   WaterMaterial material, {
   double half = 2,
   int cells = 32,
+  bool plain = false,
   Vector3 Function(double x, double y, double z)? v,
 }) {
   final positions = <double>[];
@@ -43,8 +45,8 @@ Mesh _grid(
       final x = -half + 2 * half * i / cells;
       final p = v?.call(x, 0, z) ?? Vector3(x, 0, z);
       positions.addAll([p.x, p.y, p.z]);
-      depths.add(0.2 + 0.3 * (x + 2));
-      foams.add(x < -1.6 ? 1 : (x < -1.2 ? 0.5 : 0));
+      depths.add(plain ? 1 : 0.2 + 0.3 * (x + 2));
+      foams.add(plain ? 0 : (x < -1.6 ? 1 : (x < -1.2 ? 0.5 : 0)));
     }
   }
   for (var j = 0; j < cells; j++) {
@@ -163,6 +165,8 @@ WaterFoamSources _collars(Vector3 Function(double x, double y, double z) v) {
       cornerRadius: 0.04,
       strength: 0.6,
     )
+    // A hidden source, whose slot stays between the others.
+    ..addCircle(v(0, 0, 0), radius: 0.5, strength: 0)
     ..addCircle(v(1.9, 0, -1.8), radius: 0.2, width: 0.25)
     ..addCircle(v(-0.7, 0, -0.1), radius: 0.15, width: 0.2)
     ..addCircle(v(0.7, 0, 0.1), radius: 0.1, width: 0.15, strength: 0.9);
@@ -275,6 +279,155 @@ void main() {
         }
       },
       timeout: const Timeout(Duration(minutes: 4)),
+    );
+
+    testGpu(
+      'carry their pattern along when asked, and leave it in the world '
+      'otherwise',
+      (tester) async {
+        final sources = WaterFoamSources();
+        final material = WaterMaterial(
+          waveAmplitude: 0,
+          rippleStrength: 0,
+          foamThreshold: 1,
+          opacity: 1,
+          time: 0.7,
+          foamColor: const Color(0xFFFFFFFF),
+          foamSources: sources,
+        );
+        Future<Pixels> render() async => (await _render(
+          tester,
+          World3D(
+            children: [
+              LightComponent.directional(direction: Vector3(0.3, -1, 0.2)),
+              LightComponent.hemisphere(),
+              MeshComponent(mesh: _grid(material, plain: true)),
+            ],
+          ),
+          view: _topView(zUp: false),
+          projection: _topProjection,
+        )).pixels;
+
+        /// The pixels around the world point (x, z), within [radius] world
+        /// units, of [a] that differ by more than 2 from those of [b] around
+        /// (x + dx, z + dz), [b] read through [map] (a quarter turn, for
+        /// one).
+        int differing(
+          Pixels a,
+          Pixels b, {
+          required double x,
+          required double z,
+          double dx = 0,
+          double dz = 0,
+          double radius = 0.62,
+          (int, int) Function(int i, int j)? map,
+        }) {
+          final cx = (_size / 2 + x * _pixelsPerUnit).round();
+          final cz = (_size / 2 + z * _pixelsPerUnit).round();
+          final ox = (dx * _pixelsPerUnit).round();
+          final oz = (dz * _pixelsPerUnit).round();
+          final r = (radius * _pixelsPerUnit).round();
+          var count = 0;
+          for (var j = -r; j < r; j++) {
+            for (var i = -r; i < r; i++) {
+              final (bi, bj) = map?.call(i, j) ?? (i, j);
+              final (ar, ag, ab, _) = a.at(cx + i, cz + j);
+              final (br, bg, bb, _) = b.at(cx + ox + bi, cz + oz + bj);
+              if ((ar - br).abs() > 2 ||
+                  (ag - bg).abs() > 2 ||
+                  (ab - bb).abs() > 2) {
+                count++;
+              }
+            }
+          }
+          return count;
+        }
+
+        int foam(Pixels p, double x, double z) {
+          final cx = (_size / 2 + x * _pixelsPerUnit).round();
+          final cz = (_size / 2 + z * _pixelsPerUnit).round();
+          var count = 0;
+          for (var j = -20; j < 20; j++) {
+            for (var i = -20; i < 20; i++) {
+              final (r, g, b, _) = p.at(cx + i, cz + j);
+              if (r > 200 && g > 200 && b > 200) {
+                count++;
+              }
+            }
+          }
+          return count;
+        }
+
+        // A collar that carries its pattern, moved by one unit (32 pixels):
+        // the same foam, one unit further.
+        final slot = sources.addRectangle(
+          Vector3(-0.75, 0, -0.5),
+          halfLength: 0.3,
+          halfWidth: 0.2,
+          cornerRadius: 0.05,
+          carryPattern: true,
+        );
+        final here = await render();
+        expect(foam(here, -0.75, -0.5), greaterThan(150));
+        sources.move(slot, Vector3(0.25, 0, -0.5));
+        final there = await render();
+        expect(
+          differing(here, there, x: -0.75, z: -0.5, dx: 1),
+          lessThan(12),
+        );
+        // Turned a quarter turn about up with it (+x to -z, so the pixel
+        // i, j of before is at j, -i), the foam turns with it.
+        sources.move(slot, Vector3(0.25, 0, -0.5), axis: Vector3(0, 0, -1));
+        final turned = await render();
+        expect(
+          differing(
+            there,
+            turned,
+            x: 0.25,
+            z: -0.5,
+            map: (i, j) => (j, -i - 1),
+          ),
+          lessThan(12),
+        );
+
+        // Left in the world, the collar moves through its pattern: its foam
+        // changes as it moves.
+        sources.setCarryPattern(slot, carry: false);
+        sources.move(slot, Vector3(-0.75, 0, -0.5), axis: Vector3(1, 0, 0));
+        final worldHere = await render();
+        sources.move(slot, Vector3(0.25, 0, -0.5));
+        final worldThere = await render();
+        expect(
+          differing(worldHere, worldThere, x: -0.75, z: -0.5, dx: 1),
+          greaterThan(150),
+        );
+
+        // Two collars of one shape that carry their patterns, in two slots:
+        // different foam.
+        sources
+          ..setRectangle(
+            slot,
+            Vector3(-0.75, 0, 0.75),
+            halfLength: 0.3,
+            halfWidth: 0.2,
+            cornerRadius: 0.05,
+            carryPattern: true,
+          )
+          ..addRectangle(
+            Vector3(0.75, 0, 0.75),
+            halfLength: 0.3,
+            halfWidth: 0.2,
+            cornerRadius: 0.05,
+            carryPattern: true,
+          );
+        final pair = await render();
+        expect(foam(pair, 0.75, 0.75), greaterThan(150));
+        expect(
+          differing(pair, pair, x: -0.75, z: 0.75, dx: 1.5),
+          greaterThan(150),
+        );
+      },
+      timeout: const Timeout(Duration(minutes: 2)),
     );
   });
 }

@@ -1224,6 +1224,7 @@ collars
 | `axis`         | world x  | the world direction of its length, projected onto the plane    |
 | `width`        | `0.3`    | how far from its outline its foam reaches, in world units      |
 | `strength`     | `1`      | how solid that foam is, `0` hides the source                   |
+| `carryPattern` | `false`  | whether the pattern of its foam moves and turns with it        |
 
 The center is projected onto the plane of each material along its `upAxis`; an `axis` along the
 up axis falls back to the first axis of the plane. Per pixel, a source's foam mask is `strength`
@@ -1235,12 +1236,24 @@ out and its flecks the whole width; below about `0.7` only flecks are left. Fade
 its object rises out of the water and out as it sinks, with `setStrength`; the ring of
 `WaterRipples` and the volume's waterline on the object's own sides go well with it.
 
+The pattern of a collar's foam, its patches, holes and flecks, stays in the world by default, as
+the foam mask's does: a source that moves slides through it, and its foam seems to stream through
+the collar. With `carryPattern: true` (or `setCarryPattern(slot, carry: true)`), the source draws
+its foam in its own frame, along and across its `axis`, so the collar moves and turns with it, a
+crate drifting by or a boat, still lapping at the pace of `edgeFoamMotion`. Each slot starts its
+pattern at a place of its own, so two collars of one shape do not show the same foam (a source
+keeps its slot in the shader). Where such a collar meets other foam, the band of a wall or another
+collar, the larger of the two foams shows, without the two bands merging into one. A collar that
+carries its pattern computes it per pixel where it reaches (13 sines), on top of the mask's own
+pattern where both foam.
+
 `addCircle` and `addRectangle` take the first free slot and throw a `StateError` when all are
 taken (a collar must not take the place of another one while its object is still there);
 `setCircle` and `setRectangle` fill a given slot, `move` moves a source (and turns it with `axis`),
-`setStrength`, `strengthOf`, `isUsed`, `remove` and `clear` manage them, and `version` changes
-with every change. Adding, moving and drawing allocate nothing, and only the sources whose
-strength is above `0` are sent to the shader, packed first.
+`setStrength`, `strengthOf`, `setCarryPattern`, `carriesPattern`, `isUsed`, `remove` and `clear`
+manage them, and `version` changes with every change. Adding, moving and drawing allocate nothing;
+the slots are sent to the shader up to the last source whose strength is above `0`, a free or
+hidden slot before it costing the pixels within reach a comparison.
 
 The cost follows where the collars are, not only how many there are: each vertex of the surface
 finds, from the circles beyond which the sources have no foam, whether one may reach it, and the
@@ -1265,8 +1278,8 @@ arithmetic instructions (the 9 cells of the Voronoi diagram), the sparkles 3 sin
 cosines, each living ripple 3 transcendentals and 25 instructions, the foam mask (only where it or
 a foam source is above `0`) 13 sines, the foam sources a dot product and a comparison where none
 reaches and, where one may, about 10 instructions per source above `0` (its box) plus a square root
-and about 15 more for those whose box the pixel is in, `foamLightTint` below `1` a dot product and
-a mix where the foam is, and `edgeFoamMotion` nothing (its phase is computed on the CPU). Per
+and about 15 more for those whose box the pixel is in (and 13 sines for each such source that
+carries its pattern), `foamLightTint` below `1` a dot product and a mix where the foam is, and `edgeFoamMotion` nothing (its phase is computed on the CPU). Per
 vertex, the foam sources add 3 instructions each. On the software rasterizer of `flutter test`, a
 full-screen 2532 x 1170 surface with the caustics, sparkles, swell and depth ramp costs about as
 much as the legacy material (within the noise, a few percent), 8 living ripples add about 30 %,
@@ -2417,7 +2430,8 @@ The texture sampler options, including anisotropy up to 16, work on the web.
   surface): foam sources (`WaterFoamSources`) follow them, but only as circles or rectangles with
   rounded corners lying in the plane of the water, 16 at most per set, and each one costs every
   pixel it may reach (as far as the vertices of the surface can tell: a surface of a few large
-  triangles pays them over most of its pixels). `edgeFoamMotion` and `foamLightTint` belong to the material, not to the
+  triangles pays them over most of its pixels). A collar that carries its pattern keeps its band
+  apart from the foam it meets (the larger of the two shows) instead of merging with it. `edgeFoamMotion` and `foamLightTint` belong to the material, not to the
   vertices: a still band on part of a surface takes a surface and a material of its own. The
   volume's `waterlineMotion` holds for every waterline of the world alike.
 - A water volume has a flat level: it ignores the waves of the surface, so its waterline band does

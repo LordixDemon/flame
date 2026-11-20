@@ -2,8 +2,9 @@
 #define FLAME_WATER_COLLARS_REFERENCE_FRAGMENT_GLSL_
 
 // WaterMaterial's fragment stage from before the pixels that no foam source
-// reaches skipped the sources, kept to check that the material draws the
-// same collars (see test/gpu/water_collars_test.dart).
+// reaches skipped the sources and before a source could carry its pattern,
+// kept to check that the material draws the same collars (see
+// test/gpu/water_collars_test.dart).
 
 // The fragment stage of WaterMaterial: stylized + physically-inspired water
 // with dual scrolling micro-ripples, a shallow/deep gradient, crest foam, a
