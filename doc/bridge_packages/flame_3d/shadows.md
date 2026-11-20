@@ -519,6 +519,14 @@ returns `false`, as the loop under
   record draws, so culling, recording, sorting and submitting follow what moves; a frame that
   renders layers walks the scene once more per view.
 
+On the bench board of the tests (`shadow_still_casters_bench_test.dart`: 414 still casters, four
+tokens that take turns, two dice and a rising podium; one map of 1024 texels, a view of 1170 by 540
+pixels), the shadow pass draws 6 calls and 2,100 triangles per frame on average instead of 21 and
+29,600 (one frame in ten renders the layer again: a die or a token that starts or stops), its CPU
+time in `flutter test` (JIT, `FLAME_3D_PROFILE`) falls from 0.53 to 0.28 ms per frame, and a frame on
+the software rasterizer of `flutter test` takes about 42 ms instead of 52 (37 without shadows; a
+loaded machine, medians of three rounds). There is no figure from a phone.
+
 `RenderStats.shadowLayersReused` and `shadowLayersRendered` count the views whose layer was reused or
 rendered again, and `shadowReusedDrawCalls` and `shadowReusedTriangles` what the reused layers (or
 the map reused whole) hold: what rendering every caster would have drawn on top of
