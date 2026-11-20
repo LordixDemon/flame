@@ -452,10 +452,11 @@ into the map, and the moving casters are drawn with shaders that discard a fragm
 nearer to the light than the kept depth at its texel (packed RGBA8 depths are compared as the
 24-bit integers they store); among themselves they are depth-tested as usual. The tests compare
 both paths frame by frame at a tolerance of 0, through moves, additions, removals, hidden and shown
-casters, a turning light and a resized map: the sun with one map and with packed depths, a spot
-light alone, two cascades and a spot light (with packed depths too), a sun and a point light,
-skinned casters, an instanced group, casters that set `shadowMotion`, a `ShadowGroup`, and a map
-that follows a panning camera. No pixel differed. Two things can differ, by construction:
+casters, a turning light and a resized map: the sun with one map, a spot light alone, two cascades
+and a spot light, and a sun and a point light, each with 32-bit and with packed depths; skinned
+casters, an instanced group, casters that set `shadowMotion`, a `ShadowGroup`, a map that follows a
+panning camera, and a podium that rises above the others. No pixel differed. Two things can differ,
+by construction:
 
 - The projection of a directional light is held while it covers what it must (see below): the depth
   range then reaches further towards the light than a plain fit, which costs a little depth

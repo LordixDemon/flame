@@ -351,9 +351,11 @@ void main() {
       (_Lights.sun, ShadowMapEncoding.auto),
       (_Lights.sun, ShadowMapEncoding.rgba8),
       (_Lights.spot, ShadowMapEncoding.auto),
+      (_Lights.spot, ShadowMapEncoding.rgba8),
       (_Lights.cascadesAndSpot, ShadowMapEncoding.auto),
       (_Lights.cascadesAndSpot, ShadowMapEncoding.rgba8),
       (_Lights.sunAndPoint, ShadowMapEncoding.auto),
+      (_Lights.sunAndPoint, ShadowMapEncoding.rgba8),
     ]) {
       testGpu('${lights.name}, ${encoding.name}: the same pixels as rendering '
           'every caster, through moves, additions, removals, light and map '
