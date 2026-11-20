@@ -49,13 +49,39 @@ const Set<String> gltfReadExtensions = {
   'KHR_texture_transform',
 };
 
+/// Whether the glTF readers keep the primitive attribute [name] in
+/// `Surface.customAttributes` rather than in the vertex buffer: application
+/// attributes (`_NAME`) and the texture coordinates after the first
+/// (`TEXCOORD_1` and up), when they are scalars or vectors.
+bool gltfKeepsAttribute(String name) =>
+    name.startsWith('_') || _extraTexCoord.hasMatch(name);
+
+final RegExp _extraTexCoord = RegExp(r'^TEXCOORD_[1-9][0-9]*$');
+
+/// The components per vertex of a kept attribute whose accessor is of
+/// [type] (`SCALAR`, `VEC2`, `VEC3` or `VEC4`), or `0` for matrices, which
+/// are not kept.
+int gltfKeptComponents(String? type) => switch (type) {
+  'SCALAR' => 1,
+  'VEC2' => 2,
+  'VEC3' => 3,
+  'VEC4' => 4,
+  _ => 0,
+};
+
+/// The message reported for a kept attribute ([gltfKeepsAttribute]) that is
+/// dropped because its accessor holds matrices.
+String droppedAttributeWarning(String name, String? type) =>
+    'primitive attribute $name ($type) is dropped: only scalar and vector '
+    'attributes are kept in Surface.customAttributes';
+
 /// The message reported for the primitive attributes in [attributes] that
-/// are not read, or `null` when every attribute is read. Application-specific
-/// attributes (starting with `_`) are not reported.
+/// are not read, or `null` when every attribute is read. The attributes kept
+/// in `Surface.customAttributes` ([gltfKeepsAttribute]) are not reported.
 String? unreadAttributesWarning(Iterable<String> attributes) {
   final unread = [
     for (final name in attributes)
-      if (!gltfReadAttributes.contains(name) && !name.startsWith('_')) name,
+      if (!gltfReadAttributes.contains(name) && !gltfKeepsAttribute(name)) name,
   ]..sort();
   if (unread.isEmpty) {
     return null;

@@ -526,6 +526,10 @@ separate draws, as different materials are. Setting or clearing `baseColorTextur
 stages (the first draw with them creates their pipelines); a material whose `fragmentShader` was
 replaced keeps it.
 
+glTF models (textured or not, skinned or not) are drawn with `StylizedMaterial` and their own
+masks through `StylizedVertexMapping`, which converts their surfaces and materials, see
+[Custom attributes](models_and_animation.md#custom-attributes).
+
 
 ### Per-instance data
 

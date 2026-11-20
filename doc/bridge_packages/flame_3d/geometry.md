@@ -198,8 +198,11 @@ shading differences, mostly along UV seams.
 
 If the layout has no `vertexTangent` or `vertexTexCoord1` yet, the surface is repacked into a wider
 layout (`pbrStandard` when it was `standard`): the second UV set is taken from the `texCoord1` you
-pass, or copied from `vertexTexCoord`. Repacking replaces `vertexData` and drops the GPU buffer, so
-call it once at load time, not every frame. `computeTangents(storeInSurface: false)` only returns
+pass, or copied from `vertexTexCoord`. The glTF readers keep a primitive's `TEXCOORD_1` in
+`surface.customAttributes['TEXCOORD_1']` (see
+[Custom attributes](models_and_animation.md#custom-attributes)): pass its `values` as `texCoord1`
+to use it. Repacking replaces `vertexData` and drops the GPU buffer, so call it once at load time,
+not every frame. `computeTangents(storeInSurface: false)` only returns
 the tangents (4 floats per vertex), and `Surface.calculateTangents(...)` does the same from raw
 arrays.
 

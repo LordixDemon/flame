@@ -16,6 +16,20 @@ class MorphTargetData({
   final Float32List? normalDeltas,
 });
 
+/// The per-vertex values of an attribute that a [Surface] keeps beside its
+/// vertex buffer, see [Surface.customAttributes]: [components] floats per
+/// vertex, one vertex after the other, in [values].
+class SurfaceAttribute(
+  /// The number of floats per vertex, `1` to `4`.
+  final int components,
+
+  /// The values, [components] per vertex.
+  final Float32List values,
+) {
+  /// The number of vertices [values] holds.
+  int get vertexCount => values.length ~/ components;
+}
+
 /// {@template surface}
 /// Base surface [Resource], it describes a single surface to be rendered: an
 /// interleaved vertex buffer laid out as described by [layout], primitive
@@ -39,8 +53,10 @@ class Surface extends Resource<GpuBuffer> {
     List<MorphTargetData> morphTargets = const [],
     bool calculateNormals = true,
     this.topology = PrimitiveTopology.triangles,
+    Map<String, SurfaceAttribute> customAttributes = const {},
   }) : _material = material ?? Material.defaultMaterial,
-       morphTargets = List.unmodifiable(morphTargets) {
+       morphTargets = List.unmodifiable(morphTargets),
+       customAttributes = Map.unmodifiable(customAttributes) {
     final normalizedVertices = _normalize(
       vertices: vertices,
       indices: indices,
@@ -79,9 +95,11 @@ class Surface extends Resource<GpuBuffer> {
     List<MorphTargetData> morphTargets = const [],
     Aabb3? aabb,
     this.topology = PrimitiveTopology.triangles,
+    Map<String, SurfaceAttribute> customAttributes = const {},
   }) : _material = material ?? Material.defaultMaterial,
        _layout = layout ?? VertexLayout.standard,
-       morphTargets = List.unmodifiable(morphTargets) {
+       morphTargets = List.unmodifiable(morphTargets),
+       customAttributes = Map.unmodifiable(customAttributes) {
     final stride = _layout.strideInFloats;
     if (vertices.length % stride != 0) {
       throw ArgumentError.value(
@@ -139,12 +157,25 @@ class Surface extends Resource<GpuBuffer> {
   /// Optional blend-shape / morph targets displacing [vertexData].
   final List<MorphTargetData> morphTargets;
 
+  /// Per-vertex attributes the surface keeps beside its vertex buffer, by
+  /// name: data no material reads, kept on the CPU only (the glTF readers
+  /// keep a primitive's application attributes, `_NAME`, and its
+  /// `TEXCOORD_1` and further texture coordinates here). Empty by default.
+  ///
+  /// `StylizedVertexMapping` turns them into the inputs of
+  /// `StylizedMaterial`'s layout.
+  final Map<String, SurfaceAttribute> customAttributes;
+
   Float32List? _baseVertexData;
 
   late VertexLayout _layout;
 
   /// The layout of [vertexData].
   VertexLayout get layout => _layout;
+
+  /// The vertices before any morph weights were applied ([vertexData] when
+  /// the surface has no [morphTargets] or no weights were applied).
+  Float32List get restVertexData => _baseVertexData ?? vertexData;
 
   /// The interleaved vertex data, [VertexLayout.strideInFloats] floats per
   /// vertex.
@@ -533,8 +564,9 @@ class Surface extends Resource<GpuBuffer> {
   }
 
   /// Returns a surface that shares this surface's [indices], [layout],
-  /// [material], [topology], [jointMap] and [morphTargets], with its own copy
-  /// of the rest vertices (the vertices before any morph weights).
+  /// [material], [topology], [jointMap], [morphTargets] and
+  /// [customAttributes], with its own copy of the rest vertices (the vertices
+  /// before any morph weights).
   ///
   /// Morph weights applied to the copy leave this surface unchanged, which is
   /// how `ModelComponent`s sharing a model keep independent morph states. The
@@ -548,6 +580,7 @@ class Surface extends Resource<GpuBuffer> {
       jointMap: jointMap,
       morphTargets: morphTargets,
       topology: topology,
+      customAttributes: customAttributes,
     );
   }
 

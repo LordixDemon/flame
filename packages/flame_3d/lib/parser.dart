@@ -10,4 +10,5 @@ export 'src/parser/meshopt_decoder_3d.dart';
 export 'src/parser/model_parser.dart';
 export 'src/parser/obj_parser.dart';
 export 'src/parser/scene_loader_3d.dart';
+export 'src/parser/stylized_vertex_mapping.dart';
 export 'src/parser/world_chunk_streamer_3d.dart';

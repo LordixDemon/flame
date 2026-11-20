@@ -195,6 +195,19 @@ class RawAccessor({
     }
   }
 
+  /// The components of every element, `type.size` per element, as floats:
+  /// normalized when [normalized] is set, with the [sparse] substitutions
+  /// applied.
+  Float32List floats() {
+    final size = type.size;
+    final components = count == 0 ? const <num>[] : _readComponents(size);
+    final out = Float32List(count * size);
+    for (var i = 0; i < out.length; i++) {
+      out[i] = normalizeComponent(components[i]);
+    }
+    return out;
+  }
+
   IntAccessor asInt() => IntAccessor(root: root, accessor: this);
   FloatAccessor asFloat() => FloatAccessor(root: root, accessor: this);
   Vector2Accessor asVector2() => Vector2Accessor(root: root, accessor: this);

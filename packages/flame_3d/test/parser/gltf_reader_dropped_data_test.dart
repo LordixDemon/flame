@@ -355,10 +355,16 @@ void main() {
         );
         expect(_surfaces(model), hasLength(2));
         expect(
-          warnings.where((w) => w.contains('TANGENT, TEXCOORD_1')),
+          warnings.where((w) => w.contains('attributes TANGENT are not read')),
           hasLength(1),
         );
+        // Kept in Surface.customAttributes, not reported.
+        expect(warnings.any((w) => w.contains('TEXCOORD_1')), isFalse);
         expect(warnings.any((w) => w.contains('_CUSTOM')), isFalse);
+        expect(
+          _surfaces(model).first.customAttributes.keys,
+          unorderedEquals(['TEXCOORD_1', '_CUSTOM']),
+        );
         expect(
           warnings,
           contains(contains('KHR_animation_pointer, KHR_materials_sheen')),

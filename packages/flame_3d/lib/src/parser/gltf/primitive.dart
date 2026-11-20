@@ -64,6 +64,10 @@ class Primitive({
   /// into multiple `<= 64`-joint sub-surfaces if more than 64 bones influence
   /// the primitive.
   ///
+  /// Application attributes (`_NAME`) and the texture coordinates after the
+  /// first (`TEXCOORD_1` and up) are kept, as floats, in each surface's
+  /// `Surface.customAttributes`.
+  ///
   /// Triangle strips and fans are converted to triangle lists; points and
   /// lines throw an [UnsupportedError] (see [isTriangles]). Vertices
   /// influenced by more than 4 joints (`JOINTS_1` / `WEIGHTS_1`) keep the 4
@@ -109,6 +113,7 @@ class Primitive({
 
     final morphList = _extractMorphTargets(vertCount, transform);
     final mat = _resolveMaterial();
+    final customList = _readCustomAttributes(vertCount);
 
     // Check how many unique non-zero joints influence this primitive.
     final uniqueJoints = <int>{};
@@ -147,6 +152,7 @@ class Primitive({
           jointList: jointList,
           weightList: weightList,
           morphList: morphList,
+          customList: customList,
           transform: transform,
           material: mat,
         ),
@@ -186,6 +192,7 @@ class Primitive({
           jointList: jointList,
           weightList: weightList,
           morphList: _sliceMorphTargets(morphList, usedVerts),
+          customList: _sliceCustomAttributes(customList, usedVerts),
           transform: transform,
           material: mat,
         ),
@@ -300,6 +307,7 @@ class Primitive({
     required List<Vector4>? jointList,
     required List<Vector4>? weightList,
     required List<flame_3d.MorphTargetData> morphList,
+    required Map<String, flame_3d.SurfaceAttribute> customList,
     required Matrix4? transform,
     required flame_3d.Material material,
   }) {
@@ -410,7 +418,64 @@ class Primitive({
       jointMap: globalToLocal.isEmpty ? null : globalToLocal,
       morphTargets: morphList,
       material: material,
+      customAttributes: customList,
     );
+  }
+
+  /// Reads the attributes kept in `Surface.customAttributes`
+  /// ([gltfKeepsAttribute]) for [vertCount] vertices; matrices are dropped
+  /// and reported.
+  Map<String, flame_3d.SurfaceAttribute> _readCustomAttributes(int vertCount) {
+    final kept = <String, flame_3d.SurfaceAttribute>{};
+    for (final name in attributes.keys) {
+      if (!gltfKeepsAttribute(name)) {
+        continue;
+      }
+      final raw = _accessor<RawAccessor>(name)!.get();
+      final components = gltfKeptComponents(raw.type.name);
+      if (components == 0) {
+        GltfWarnings.report(droppedAttributeWarning(name, raw.type.name));
+        continue;
+      }
+      final values = raw.floats();
+      final out = values.length == vertCount * components
+          ? values
+          : (Float32List(vertCount * components)..setRange(
+              0,
+              math.min(values.length, vertCount * components),
+              values,
+            ));
+      kept[name] = flame_3d.SurfaceAttribute(components, out);
+    }
+    return kept;
+  }
+
+  static Map<String, flame_3d.SurfaceAttribute> _sliceCustomAttributes(
+    Map<String, flame_3d.SurfaceAttribute> source,
+    List<int> usedVerts,
+  ) {
+    return {
+      for (final MapEntry(key: name, value: attribute) in source.entries)
+        name: flame_3d.SurfaceAttribute(
+          attribute.components,
+          _sliceValues(attribute.values, attribute.components, usedVerts),
+        ),
+    };
+  }
+
+  static Float32List _sliceValues(
+    Float32List values,
+    int components,
+    List<int> usedVerts,
+  ) {
+    final out = Float32List(usedVerts.length * components);
+    for (var i = 0; i < usedVerts.length; i++) {
+      final from = usedVerts[i] * components;
+      for (var c = 0; c < components; c++) {
+        out[i * components + c] = values[from + c];
+      }
+    }
+    return out;
   }
 
   /// The inverse transpose of the linear part of [transform], which keeps

@@ -96,9 +96,10 @@ Ignored, and reported once per message in debug builds through `GltfWarnings` (t
 to `GltfWarnings.onWarning` when set; `AsyncModelLoader3D` reports the same messages):
 
 - primitive attributes other than those above, such as `TANGENT` (call `Surface.computeTangents()`
-  on the surfaces, see [Geometry and Scene Queries](geometry.md#tangents-and-the-second-uv-set)),
-  `TEXCOORD_1` and `COLOR_1`; attributes starting with `_` (application data) are ignored without
-  a message;
+  on the surfaces, see [Geometry and Scene Queries](geometry.md#tangents-and-the-second-uv-set))
+  and `COLOR_1`; application attributes (starting with `_`) and `TEXCOORD_1` and up are kept in
+  `Surface.customAttributes` instead (see [Custom attributes](#custom-attributes)), and a kept
+  attribute whose accessor holds matrices is dropped with a message;
 - primitives of mode points, lines, line loop and line strip (skipped);
 - the `texCoord` index of texture slots (every texture reads the first UV set), the rotation and
   `texCoord` of `KHR_texture_transform`, and transforms that differ between the textures of one
@@ -118,6 +119,64 @@ Rejected with an exception: textures without a `source` (for example images give
 
 `GltfRoot.meshes[i].toFlameMesh(transform)` bakes a transform into the surfaces: positions by the
 transform, normals by its inverse transpose, morph deltas by its linear part.
+
+
+### Custom attributes
+
+Both readers keep a primitive's application attributes (glTF's `_NAME` convention: a wind weight,
+a tint mask, an emission mask per vertex) and its texture coordinates after the first
+(`TEXCOORD_1` and up) in `Surface.customAttributes`: a map from the attribute's name to a
+`SurfaceAttribute` (`components`, 1 to 4, and the `values` as floats, normalized integers read as
+the specification says, sparse accessors applied). They stay on the CPU, beside the vertex buffer
+(`SpatialMaterial` does not draw them), they follow the surfaces when a skin is split, and
+`copyWithOwnVertices` shares them. A kept attribute whose accessor holds matrices is dropped and
+reported.
+
+`StylizedVertexMapping` turns them into the inputs of `StylizedMaterial`'s layout (see
+[Materials](materials.md#stylizedmaterial)): each mask, the gloss, the occlusion and the wind
+come from an `AttributeChannel` (a component of a custom attribute, or a constant), and the
+position, normal, vertex color, joints and weights from the surface:
+
+```dart
+final model = await ModelParser.parse('models/hero.glb');
+final conversion = const StylizedVertexMapping(
+  tint: AttributeChannel('_MASKS', 0),
+  accent: AttributeChannel('_MASKS', 1),
+  emissive: AttributeChannel('_MASKS', 2),
+  gloss: AttributeChannel('_MASKS', 3),
+  sway: AttributeChannel('_WIND'),
+).convertModel(model);
+conversion.materials.values.first.accentColor = const Color(0xFF5A3418);
+world.add(ModelComponent(model: model));
+```
+
+`convertModel` replaces the surfaces of the model's meshes in place: call it before making
+components of the model. Each surface becomes a `StylizedMaterial` surface, skinned
+(`skinnedVertexLayout`, with the same joint map) when its vertices have joints with weights,
+textured (`texturedVertexLayout`) when its material has a base color texture, with its indices,
+morph targets (applied to its rest vertices) and bounds. Its material is made by `materialFor`, or
+by `StylizedVertexMapping.materialFrom`: the base color factor and texture of the glTF material
+(the texture as the `StylizedMaterial`'s `baseColorTexture`, with the offset and scale of
+`KHR_texture_transform` baked into the texture coordinates), `MASK` as `alphaCutoff`, `BLEND` as
+`translucent`, `doubleSided` as the cull mode; the primitives that share a glTF material share one
+`StylizedMaterial`, so they batch. `texCoord: 'TEXCOORD_1'` samples the texture at the second UV
+set. An input without a channel, or whose attribute a surface lacks, takes the default of
+`StylizedMaterial.buildSurface` (no masks, unoccluded, no wind); `tint:
+AttributeChannel.constant(1)` tints every vertex, as the standard layout drawn with a
+`StylizedMaterial` is tinted (with nothing else mapped, every pixel is that drawing's, which a GPU
+test checks). `convertSurface` converts a single surface.
+
+`convertModel` returns a `StylizedConversion` and reports through `GltfWarnings` what was mapped
+(`tint <- _MASKS`, `windPhase <- _WIND.y`), the custom attributes no channel reads (dropped), the
+mapped attributes some surfaces lack (they take their default there) and what the stylized
+materials do not draw of the glTF materials (normal, metallic-roughness, occlusion and emissive
+textures, emissive colors, unlit shading).
+
+Cost: the kept attributes take their floats in CPU memory for the model's life (none for a file
+without them); the conversion runs once on the main isolate, a pass over the vertices, and makes
+new vertex buffers (18 to 28 floats per vertex, against the 20 of the standard layout). The
+converted surfaces draw and batch as any `StylizedMaterial` surface: instances of one unskinned
+surface with one material are one draw, skinned ones one draw each.
 
 External files of a `.gltf` (`.bin` buffers, images) are read through `Flame.assets` from the
 directory of the `.gltf`: the `uri` is percent-decoded and `.` and `..` segments are resolved, so
@@ -803,10 +862,16 @@ the main isolate; `AsyncModelLoader3D` moves the geometry work to an isolate.
 - **Joint matrices** are drawn as affine transforms: the renderer sends their top three rows and
   the shaders take the bottom row to be `(0, 0, 0, 1)`.
 - **Layers** override only; no additive layers.
-- **glTF**: no second UV set, no tangents, at most 4 joint influences per vertex (the largest
-  are kept), no points or lines, only `KHR_materials_unlit`, `KHR_materials_emissive_strength`,
+- **glTF**: no second UV set for `SpatialMaterial` (it is kept in `Surface.customAttributes`, which
+  only `StylizedVertexMapping` reads), no tangents, at most 4 joint influences per vertex (the
+  largest are kept), no points or lines, only `KHR_materials_unlit`, `KHR_materials_emissive_strength`,
   `KHR_texture_transform` (offset and scale) and `KHR_mesh_quantization` among material and mesh
   extensions; what is dropped is reported in debug builds (`GltfWarnings`).
+- **Custom attributes** are kept on the CPU only, are not saved by `SceneSerializer3D`, and no
+  material reads them as they are: `StylizedVertexMapping` copies them into `StylizedMaterial`'s
+  layout once (a change to them afterwards is not seen). The conversion keeps no `TANGENT`, takes
+  the glTF material's base color only (no normal, emissive or metallic-roughness maps), and makes
+  a lit material of an unlit one.
 - **OBJ**: fan triangulation (concave polygons come out wrong), only the diffuse color of
   materials.
 - **Ray casts** hit skinned surfaces in their rest pose (see

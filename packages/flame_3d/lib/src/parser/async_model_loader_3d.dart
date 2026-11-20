@@ -1353,8 +1353,32 @@ abstract final class AsyncModelLoader3D() {
           materialIndex: matIdx,
           jointMap: null,
           morphTargets: const [],
+          customAttributes: const {},
         ),
       ];
+    }
+
+    // The attributes kept in Surface.customAttributes.
+    final customData = <String, (int, Float32List)>{};
+    for (final MapEntry(key: name, value: accRaw) in attrs.entries) {
+      if (!gltfKeepsAttribute(name)) {
+        continue;
+      }
+      final accIdx = (accRaw! as num).toInt();
+      final type =
+          (rawAccessors[accIdx]! as Map<String, Object?>)['type'] as String?;
+      final components = gltfKeptComponents(type);
+      if (components == 0) {
+        warnings.add(droppedAttributeWarning(name, type));
+        continue;
+      }
+      final values = readDoubles(accIdx, components);
+      final out = Float32List(vertCount * components);
+      final limit = math.min(values.length, out.length);
+      for (var k = 0; k < limit; k++) {
+        out[k] = values[k];
+      }
+      customData[name] = (components, out);
     }
 
     final uvAcc = (attrs['TEXCOORD_0'] as num?)?.toInt();
@@ -1554,6 +1578,27 @@ abstract final class AsyncModelLoader3D() {
         );
       }
 
+      final customPayloads = <String, (int, TransferableTypedData)>{};
+      for (final MapEntry(key: name, value: (components, values))
+          in customData.entries) {
+        final Float32List out;
+        if (vertRemap == null) {
+          out = values;
+        } else {
+          out = Float32List(vLen * components);
+          for (var i = 0; i < vLen; i++) {
+            final from = vertRemap[i] * components;
+            for (var c = 0; c < components; c++) {
+              out[i * components + c] = values[from + c];
+            }
+          }
+        }
+        customPayloads[name] = (
+          components,
+          TransferableTypedData.fromList([out.buffer.asUint8List()]),
+        );
+      }
+
       return _PreparedSurface(
         vertices: TransferableTypedData.fromList([packed.buffer.asUint8List()]),
         indices: TransferableTypedData.fromList([
@@ -1563,6 +1608,7 @@ abstract final class AsyncModelLoader3D() {
         materialIndex: matIdx,
         jointMap: globalToLocal.isEmpty ? null : globalToLocal,
         morphTargets: morphPayloads,
+        customAttributes: customPayloads,
       );
     }
 
@@ -1756,7 +1802,15 @@ abstract final class AsyncModelLoader3D() {
     // nodes get copies of the vertices (each node has its own surfaces, as
     // with ModelParser) and share the indices.
     final materialized =
-        <_PreparedSurface, (Float32List, List<int>, List<MorphTargetData>)>{};
+        <
+          _PreparedSurface,
+          (
+            Float32List,
+            List<int>,
+            List<MorphTargetData>,
+            Map<String, SurfaceAttribute>,
+          )
+        >{};
 
     Mesh buildMesh(_PreparedMesh pm, List<double>? nodeWeights) {
       final mesh = Mesh();
@@ -1765,10 +1819,12 @@ abstract final class AsyncModelLoader3D() {
         final Float32List verts;
         final List<int> indices;
         final List<MorphTargetData> morphs;
-        if (materialized[ps] case (final v, final i, final m)) {
+        final Map<String, SurfaceAttribute> custom;
+        if (materialized[ps] case (final v, final i, final m, final c)) {
           verts = Float32List.fromList(v);
           indices = i;
           morphs = m;
+          custom = c;
         } else {
           verts = ps.vertices.materialize().asFloat32List();
           final idxBuf = ps.indices.materialize();
@@ -1783,7 +1839,20 @@ abstract final class AsyncModelLoader3D() {
                 normalDeltas: m.nrmDeltas?.materialize().asFloat32List(),
               ),
           ];
-          materialized[ps] = (Float32List.fromList(verts), indices, morphs);
+          custom = {
+            for (final MapEntry(key: name, value: (components, values))
+                in ps.customAttributes.entries)
+              name: SurfaceAttribute(
+                components,
+                values.materialize().asFloat32List(),
+              ),
+          };
+          materialized[ps] = (
+            Float32List.fromList(verts),
+            indices,
+            morphs,
+            custom,
+          );
         }
         final mat =
             ps.materialIndex != null &&
@@ -1796,6 +1865,7 @@ abstract final class AsyncModelLoader3D() {
           material: mat,
           jointMap: ps.jointMap,
           morphTargets: morphs,
+          customAttributes: custom,
         );
         if (weights != null && weights.isNotEmpty) {
           surface.applyMorphWeights(weights);
@@ -2133,6 +2203,9 @@ class _PreparedSurface({
   required final int? materialIndex,
   required final Map<int, int>? jointMap,
   required final List<_PreparedMorph> morphTargets,
+  // The attributes kept in Surface.customAttributes: components per vertex
+  // and values.
+  required final Map<String, (int, TransferableTypedData)> customAttributes,
 });
 
 class _PreparedMesh(
