@@ -304,14 +304,18 @@ void main() {
         return Float32List.fromList(projection.viewProjection.storage);
       }
 
-      test('casters that rise within the depth kept leave the projection '
-          'unchanged', () {
+      test('the first fit is a plain one; once casters rise, rising within '
+          'the depth kept leaves the projection unchanged', () {
         final held = DirectionalShadowProjection();
-        final first = fit(held, 1.4, receivers: board);
-        for (final top in [1.5, 2.0, 2.5, 1.0]) {
-          expect(fit(held, top, receivers: board), first, reason: '$top');
-        }
         final plain = DirectionalShadowProjection();
+        expect(
+          fit(held, 1.4, receivers: board),
+          fit(plain, 1.4, hold: false, receivers: board),
+        );
+        final risen = fit(held, 1.5, receivers: board);
+        for (final top in [2.0, 2.5, 1.5, 1.0]) {
+          expect(fit(held, top, receivers: board), risen, reason: '$top');
+        }
         expect(
           fit(plain, 1.4, hold: false, receivers: board),
           isNot(fit(plain, 2, hold: false, receivers: board)),

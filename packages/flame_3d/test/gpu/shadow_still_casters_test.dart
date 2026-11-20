@@ -610,7 +610,12 @@ void main() {
           }
         },
       );
-      for (var frame = 6; frame < 14; frame++) {
+      // It rises above the near end of the map in frame 5: the map moves
+      // its near end once (rendered whole), its layer is rendered again,
+      // and the podium keeps rising within the room left in front of it.
+      expect(kept.stats[5].shadowLayersReused, 0);
+      expect(kept.stats[6].shadowLayersRendered, 1);
+      for (var frame = 7; frame < 14; frame++) {
         expect(kept.stats[frame].shadowLayersReused, 1, reason: '$frame');
         expect(
           kept.stats[frame].shadowDrawCalls,

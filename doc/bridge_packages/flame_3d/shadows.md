@@ -458,11 +458,12 @@ casters, an instanced group, casters that set `shadowMotion`, a `ShadowGroup`, a
 panning camera, and a podium that rises above the others. No pixel differed. Two things can differ,
 by construction:
 
-- The projection of a directional light is held while it covers what it must (see below): the depth
-  range then reaches further towards the light than a plain fit, which costs a little depth
-  precision (negligible with 32-bit maps, about `1/16777216` of the range with packed ones), and
-  with `bounds`, a receiver outside the bounds but inside the held map can receive a shadow the
-  plain map would leave out.
+- The projection of a directional light is held while it covers what it must (see below). Once
+  casters have risen above its near end, its depth range reaches further towards the light than a
+  plain fit, which costs a little depth precision: at a grazing self-shadowing edge a pixel can
+  flip by a few levels (32-bit maps keep about 7 significant digits, packed ones `1/16777216` of
+  the range). With `bounds`, a receiver outside the bounds but inside the held map can receive a
+  shadow the plain map would leave out.
 - The moving casters' shaders compute the same depth with a different vertex output (the whole
   clip-space position); a compiler can round it differently by an ulp, far below the biases.
 
@@ -471,8 +472,10 @@ by construction:
 A layer only lasts while its view does not change. With `cacheStillCasters`, the map of a
 directional light (and each of its cascades) is held:
 
-- the near end of its depth range, towards the light, leaves room in front of the casters: half the
-  depth they need, snapped to a power of two; casters that rise within it keep the map;
+- the near end of its depth range, towards the light, is fitted as without the option; when casters
+  rise above it, it moves towards the light to leave room in front of them (half the depth they
+  need, snapped to a power of two), and casters that rise within that room keep the map; it is
+  fitted plainly again once the room grows beyond the depth they need;
 - the single map, and the last cascade, keep their edges on the same texels while the receiving
   region still fits in them at the same size (the inner cascades refit, since their edges place the
   blend between cascades).

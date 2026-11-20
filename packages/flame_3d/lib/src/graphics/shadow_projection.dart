@@ -99,9 +99,12 @@ class DirectionalShadowProjection() {
   /// are then ignored.
   ///
   /// With [holdNear], the near end of the depth range (towards the light,
-  /// where the casters are) is kept from fit to fit while it holds the
-  /// casters and leaves at most the depth they need in front of them; a new
-  /// one leaves half that depth, snapped to a power of two of it. With
+  /// where the casters are) is fitted as without it the first time, then
+  /// kept from fit to fit while it holds the casters and leaves at most the
+  /// depth they need in front of them; when casters rise above it, it moves
+  /// towards the light by half the depth they need more than they need,
+  /// snapped to a power of two of it, and when it leaves more room than
+  /// that, it is fitted as without it again. With
   /// [holdWindow] and [stabilize], the edges of the map are kept where they
   /// are, on the same texels, while the region still fits in it at the same
   /// size. Casters that move up and down within the depth kept, and a region
@@ -203,7 +206,12 @@ class DirectionalShadowProjection() {
       _nearHeld = false;
     } else {
       final needed = _far - neededNear;
-      if (!_nearHeld || _near > neededNear || neededNear - _near > needed) {
+      if (!_nearHeld || neededNear - _near > needed) {
+        // As a plain fit: the first time, and when much more room is left
+        // in front of the casters than they need.
+        _near = neededNear;
+      } else if (_near > neededNear) {
+        // Casters rose above it: leave room for them to keep rising.
         final headroom = needed * 0.5;
         final step = math
             .pow(2, (math.log(headroom / 4) / math.ln2).floor())
