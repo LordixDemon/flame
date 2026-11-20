@@ -18,8 +18,14 @@ uniform WaterVertex {
   // xyz: world up axis (unit), w: steepness
   vec4 upAndSteepness;
   // x: the depth of the water under the vertices of layouts without one
-  // (WaterMaterial.defaultDepth), yzw: unused.
+  // (WaterMaterial.defaultDepth), y: the number of foam sources in
+  // `foamSourceBounds`, zw: the origin of their coordinates in the plane of
+  // the water.
   vec4 surface;
+  // Per foam source whose strength is above 0, the circle beyond which it
+  // has no foam, in the plane coordinates of the water less `surface.zw`
+  // (WaterFoamSources): xy, its center c; z, |c|² - r²; w: unused.
+  vec4 foamSourceBounds[16];
 } waterVert;
 
 out vec3 fragPosition;
@@ -32,6 +38,14 @@ out vec4 fragClipPos;
 // mask, z: how calm it is (0: the full waves, 1: still). Last, so that the
 // outputs of before keep their locations.
 out vec3 fragWater;
+// Where the foam sources reach, so that the fragment stage skips their loop
+// where none does: xy, the plane coordinates q less the origin of the
+// sources' (surface.zw); z, the smallest over the sources of
+// |c|² - r² - 2 q·c, which is |q - c|² - r² less |q|². Interpolated across a
+// triangle, a minimum of functions linear in q is at most its value at each
+// fragment (it is concave), so |q|² + z < 0 wherever a source reaches,
+// however large the triangle. After fragWater.
+out vec3 fragFoamGate;
 
 void addGerstnerWave(
   vec2 d,
@@ -168,6 +182,23 @@ void emitWaterVertex(vec2 uvNudge, vec3 water) {
   fragColor = vertexColor * instanceColor;
   fragCrest = amp > 1e-5 ? clamp(0.5 + dispH / (amp * 2.2), 0.0, 1.0) : 0.0;
   fragWater = water;
+
+  vec3 foamGate = vec3(0.0, 0.0, 1.0);
+  int sources = int(waterVert.surface.y + 0.5);
+  if (sources > 0) {
+    vec2 q = vec2(coordU, coordV) - waterVert.surface.zw;
+    vec4 bound = waterVert.foamSourceBounds[0];
+    float reach = bound.z - 2.0 * dot(q, bound.xy);
+    for (int i = 1; i < 16; i++) {
+      if (i >= sources) {
+        break;
+      }
+      bound = waterVert.foamSourceBounds[i];
+      reach = min(reach, bound.z - 2.0 * dot(q, bound.xy));
+    }
+    foamGate = vec3(q, reach);
+  }
+  fragFoamGate = foamGate;
 
   gl_Position = camera.viewProjection * vec4(displaced, 1.0);
   fragClipPos = gl_Position;

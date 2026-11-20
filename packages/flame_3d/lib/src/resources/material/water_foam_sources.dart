@@ -52,7 +52,10 @@ import 'package:meta/meta.dart';
 /// it is removed: adding one when every slot is taken throws. Adding, moving,
 /// changing and drawing allocate nothing, and moving a source does not
 /// rebuild any surface. Only the sources whose strength is above `0` are sent
-/// to the shaders, packed first, so the cost per pixel follows their number.
+/// to the shaders, packed first, and only the pixels they may reach pay for
+/// them: the vertices of the surface tell the pixels where none does, so the
+/// cost follows the area the collars cover (on a surface subdivided finely
+/// enough for its waves).
 /// {@endtemplate}
 class WaterFoamSources() {
   /// The number of sources a set holds.
@@ -301,14 +304,26 @@ class WaterFoamSources() {
   /// [shapes], one `Vector4` each per source, as `WaterMaterial`'s fragment
   /// shader reads them, in the plane coordinates `(dot(p, uAxis), dot(p,
   /// vAxis))`; returns how many it wrote.
+  ///
+  /// With [bounds] and [origin], also writes, per source, the circle beyond
+  /// which it has no foam, a little enlarged, as `WaterMaterial`'s vertex
+  /// shader reads it to tell where the fragments may skip the sources: its
+  /// center `c` relative to [origin] (the middle of the sources' centers) in
+  /// `xy` and `|c|² - r²` in `z`.
   @internal
   int writeUniforms(
     Vector3 uAxis,
     Vector3 vAxis,
     List<Vector4> positions,
-    List<Vector4> shapes,
-  ) {
+    List<Vector4> shapes, {
+    List<Vector4>? bounds,
+    Vector2? origin,
+  }) {
     var count = 0;
+    var minU = double.infinity;
+    var minV = double.infinity;
+    var maxU = double.negativeInfinity;
+    var maxV = double.negativeInfinity;
     for (var i = 0; i < capacity && count < positions.length; i++) {
       final o = i * _stride;
       final strength = _sources[o + 10];
@@ -333,19 +348,57 @@ class WaterFoamSources() {
       final width = _sources[o + 9];
       final corner = _sources[o + 8];
       final perWidth = 1 / (length * width);
-      positions[count].setValues(
-        x * uAxis.x + y * uAxis.y + z * uAxis.z,
-        x * vAxis.x + y * vAxis.y + z * vAxis.z,
-        au * perWidth,
-        av * perWidth,
-      );
+      final u = x * uAxis.x + y * uAxis.y + z * uAxis.z;
+      final v = x * vAxis.x + y * vAxis.y + z * vAxis.z;
+      positions[count].setValues(u, v, au * perWidth, av * perWidth);
+      final straightLength = _sources[o + 6] - corner;
+      final straightWidth = _sources[o + 7] - corner;
       shapes[count].setValues(
-        (_sources[o + 6] - corner) / width,
-        (_sources[o + 7] - corner) / width,
+        straightLength / width,
+        straightWidth / width,
         corner / width,
         strength,
       );
+      if (bounds != null) {
+        // The farthest its foam reaches from its center: the corner of its
+        // straight part, the corner's radius and the width of its foam.
+        final reach =
+            math.sqrt(
+              straightLength * straightLength + straightWidth * straightWidth,
+            ) +
+            corner +
+            width;
+        bounds[count].setValues(u, v, reach * 1.02 + 0.02, 0);
+        minU = math.min(minU, u);
+        minV = math.min(minV, v);
+        maxU = math.max(maxU, u);
+        maxV = math.max(maxV, v);
+      }
       count++;
+    }
+    if (bounds != null && origin != null) {
+      if (count == 0) {
+        origin.setZero();
+        return 0;
+      }
+      origin.setValues((minU + maxU) / 2, (minV + maxV) / 2);
+      // The fragments compare |q|² + z to 0 in 32-bit floats, after a
+      // cancellation of terms about as large as |c|²: a margin of a few
+      // dozen of their units in the last place keeps the test conservative.
+      var far = 0.0;
+      for (var i = 0; i < count; i++) {
+        final b = bounds[i];
+        final cu = b.x - origin.x;
+        final cv = b.y - origin.y;
+        far = math.max(far, cu * cu + cv * cv);
+      }
+      final margin = 1e-4 + far * 1e-5;
+      for (var i = 0; i < count; i++) {
+        final b = bounds[i];
+        final cu = b.x - origin.x;
+        final cv = b.y - origin.y;
+        b.setValues(cu, cv, cu * cu + cv * cv - b.z * b.z - margin, 0);
+      }
     }
     return count;
   }

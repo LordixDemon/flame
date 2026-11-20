@@ -304,12 +304,33 @@ class WaterMaterial({
     WaterFoamSources.capacity,
     (_) => Vector4.zero(),
   );
+  static final List<Vector4> _foamSourceBounds = List.generate(
+    WaterFoamSources.capacity,
+    (_) => Vector4.zero(),
+  );
+  static final Vector2 _foamSourceOrigin = Vector2.zero();
 
   @override
   void apply(RenderContext context) {
-    _applyVertex(vertexShader);
+    final ripples = this.ripples;
+    final foamSources = this.foamSources;
+    if (ripples != null || foamSources != null) {
+      _planeAxes(upAxis);
+    }
+    var foamSourceCount = 0;
+    if (foamSources != null) {
+      foamSourceCount = foamSources.writeUniforms(
+        _uAxis,
+        _vAxis,
+        _foamSourcePositions,
+        _foamSourceShapes,
+        bounds: _foamSourceBounds,
+        origin: _foamSourceOrigin,
+      );
+    }
+    _applyVertex(vertexShader, foamSourceCount);
     if (_maskedInUse) {
-      _applyVertex(_maskedVertexShader);
+      _applyVertex(_maskedVertexShader, foamSourceCount);
     }
 
     // The members of the options are written through the block, which
@@ -360,11 +381,6 @@ class WaterMaterial({
     }
 
     var rippleCount = 0;
-    final ripples = this.ripples;
-    final foamSources = this.foamSources;
-    if (ripples != null || foamSources != null) {
-      _planeAxes(upAxis);
-    }
     if (ripples != null) {
       rippleCount = ripples.writeUniforms(
         time,
@@ -379,23 +395,14 @@ class WaterMaterial({
           ..setVector4('rippleShapes', _rippleShapes[i], index: i);
       }
     }
-    var foamSourceCount = 0;
-    if (foamSources != null) {
-      foamSourceCount = foamSources.writeUniforms(
-        _uAxis,
-        _vAxis,
-        _foamSourcePositions,
-        _foamSourceShapes,
-      );
-      for (var i = 0; i < foamSourceCount; i++) {
-        block
-          ..setVector4(
-            'foamSourcePositions',
-            _foamSourcePositions[i],
-            index: i,
-          )
-          ..setVector4('foamSourceShapes', _foamSourceShapes[i], index: i);
-      }
+    for (var i = 0; i < foamSourceCount; i++) {
+      block
+        ..setVector4(
+          'foamSourcePositions',
+          _foamSourcePositions[i],
+          index: i,
+        )
+        ..setVector4('foamSourceShapes', _foamSourceShapes[i], index: i);
     }
     final caustics = math.max(0.0, causticStrength);
     final sparkles = math.max(0.0, sparkleStrength);
@@ -439,8 +446,12 @@ class WaterMaterial({
       );
   }
 
-  void _applyVertex(Shader shader) {
-    shader.block(_vertexBlock)
+  /// Writes the vertex stage's values, with the circles of the
+  /// [foamSourceCount] foam sources above `0` (the vertices tell the
+  /// fragments where none reaches, so that they skip them).
+  void _applyVertex(Shader shader, int foamSourceCount) {
+    final origin = _foamSourceOrigin;
+    final block = shader.block(_vertexBlock)
       ..setVector4(
         'waveParams',
         _waveParams..setValues(time, waveAmplitude, waveFrequency, waveSpeed),
@@ -449,7 +460,20 @@ class WaterMaterial({
         'upAndSteepness',
         _upSteep..setValues(upAxis.x, upAxis.y, upAxis.z, steepness),
       )
-      ..setVector4('surface', _surface..setValues(defaultDepth, 0, 0, 0));
+      ..setVector4(
+        'surface',
+        foamSourceCount > 0
+            ? (_surface..setValues(
+                defaultDepth,
+                foamSourceCount.toDouble(),
+                origin.x,
+                origin.y,
+              ))
+            : (_surface..setValues(defaultDepth, 0, 0, 0)),
+      );
+    for (var i = 0; i < foamSourceCount; i++) {
+      block.setVector4('foamSourceBounds', _foamSourceBounds[i], index: i);
+    }
   }
 
   /// The phase of [time] in a loop of [period] seconds, from `0` to `2π`:

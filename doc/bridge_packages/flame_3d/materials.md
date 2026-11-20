@@ -1240,8 +1240,17 @@ taken (a collar must not take the place of another one while its object is still
 `setCircle` and `setRectangle` fill a given slot, `move` moves a source (and turns it with `axis`),
 `setStrength`, `strengthOf`, `isUsed`, `remove` and `clear` manage them, and `version` changes
 with every change. Adding, moving and drawing allocate nothing, and only the sources whose
-strength is above `0` are sent to the shader, packed first, so the cost per pixel follows their
-number.
+strength is above `0` are sent to the shader, packed first.
+
+The cost follows where the collars are, not only how many there are: each vertex of the surface
+finds, from the circles beyond which the sources have no foam, whether one may reach it, and the
+pixels between vertices that say none does skip the sources altogether. The vertex stage passes
+on `|q - c|² - r² - |q|²` minimised over the sources (`q` the vertex in the plane, `c` and `r` a
+source's circle), which is linear in `q` for each source; interpolated across a triangle, that
+minimum is never above its value at the pixel (it is concave), so the test `|q|² + it < 0` that
+each pixel makes is conservative whatever the size of the triangles: the collars are drawn
+exactly as without it, and a surface of a few large triangles only skips less. Within reach, a
+pixel tests each source against the box around its foam before computing its outline.
 
 
 ### What the options cost
@@ -1254,13 +1263,16 @@ with every option and 8 ripples (in `flutter test`, JIT).
 Per pixel of the surface, roughly: the caustics 22 sines, cosines or square roots and 170
 arithmetic instructions (the 9 cells of the Voronoi diagram), the sparkles 3 sines, the swell 6
 cosines, each living ripple 3 transcendentals and 25 instructions, the foam mask (only where it or
-a foam source is above `0`) 13 sines, each foam source above `0` a square root and about 20
-instructions, `foamLightTint` below `1` a dot product and a mix where the foam is, and
-`edgeFoamMotion` nothing (its phase is computed on the CPU). On the software rasterizer of
-`flutter test`, a full-screen 2532 x 1170 surface with the caustics, sparkles, swell and depth
-ramp costs about as much as the legacy material (within the noise, a few percent), 8 living
-ripples add about 30 %, foam mask over the whole surface about 4 %, and each foam source about
-2 % (4 sources about 10 %, 16 about 35 %, whether or not a pixel is near them); compare on your
+a foam source is above `0`) 13 sines, the foam sources a dot product and a comparison where none
+reaches and, where one may, about 10 instructions per source above `0` (its box) plus a square root
+and about 15 more for those whose box the pixel is in, `foamLightTint` below `1` a dot product and
+a mix where the foam is, and `edgeFoamMotion` nothing (its phase is computed on the CPU). Per
+vertex, the foam sources add 3 instructions each. On the software rasterizer of `flutter test`, a
+full-screen 2532 x 1170 surface with the caustics, sparkles, swell and depth ramp costs about as
+much as the legacy material (within the noise, a few percent), 8 living ripples add about 30 %,
+foam mask over the whole surface about 4 %, and the foam sources what the pixels they reach pay:
+16 small collars over a fifth of the screen add about 5 % (30 % before the vertices told the
+pixels), 16 large ones over four fifths of it about 20 %, 1 to 4 within the noise; compare on your
 target device, where transcendentals cost relatively more.
 
 The shaders compile to GLSL ES 1.00 for OpenGL ES: they use no `flat` input, no derivative, no
@@ -1269,9 +1281,10 @@ to 8 and stops at the number of living ripples). They need high precision in the
 as every built-in material does (the compiled shaders declare their values `highp`); their
 arguments stay small (the time is wrapped, the cells' values come from coordinates wrapped to 64),
 so they also hold in 16-bit floats near the origin. The options add 52 uniform vectors to the
-fragment stage (198 in all: 16 for the ripples, 32 for the foam sources), within the 224 that
-OpenGL ES 3.0 guarantees; the foam sources' loop runs to 16 and stops at their number. Like the
-rest of `WaterMaterial`, they do not run on the web.
+fragment stage (197 in all: 16 for the ripples, 32 for the foam sources), within the 224 that
+OpenGL ES 3.0 guarantees; the foam sources' loop runs to 16 and stops at their number. The foam
+sources' circles add 16 vectors to the vertex stage (19 in its block, of the 256 guaranteed) and one
+`vec3` output. Like the rest of `WaterMaterial`, they do not run on the web.
 
 
 ## UnlitMaterial
@@ -2403,7 +2416,8 @@ The texture sampler options, including anisotropy up to 16, work on the web.
   they do not follow objects that move under or through the water (a slab rising under the
   surface): foam sources (`WaterFoamSources`) follow them, but only as circles or rectangles with
   rounded corners lying in the plane of the water, 16 at most per set, and each one costs every
-  pixel of the surface. `edgeFoamMotion` and `foamLightTint` belong to the material, not to the
+  pixel it may reach (as far as the vertices of the surface can tell: a surface of a few large
+  triangles pays them over most of its pixels). `edgeFoamMotion` and `foamLightTint` belong to the material, not to the
   vertices: a still band on part of a surface takes a surface and a material of its own. The
   volume's `waterlineMotion` holds for every waterline of the world alike.
 - A water volume has a flat level: it ignores the waves of the surface, so its waterline band does

@@ -287,6 +287,82 @@ void main() {
         ]);
       },
     );
+
+    test('writes the circles beyond which the sources have no foam', () {
+      final sources = WaterFoamSources()
+        ..addCircle(Vector3(1, 2, 3), radius: 0.3, width: 0.25)
+        ..addRectangle(
+          Vector3(4, 5, 6),
+          halfLength: 1,
+          halfWidth: 0.5,
+          cornerRadius: 0.1,
+          axis: Vector3(1, 1, 0),
+          width: 0.5,
+        )
+        ..addCircle(Vector3(9, 9, 9), radius: 1, strength: 0);
+      final positions = List.generate(16, (_) => Vector4.zero());
+      final shapes = List.generate(16, (_) => Vector4.zero());
+      final bounds = List.generate(16, (_) => Vector4.zero());
+      final origin = Vector2.zero();
+      final count = sources.writeUniforms(
+        Vector3(1, 0, 0),
+        Vector3(0, 1, 0),
+        positions,
+        shapes,
+        bounds: bounds,
+        origin: origin,
+      );
+      expect(count, 2);
+      // The middle of the centers of the sources above 0, and the centers
+      // relative to it.
+      expect(origin.storage, [2.5, 3.5]);
+      expect(bounds[0].storage.sublist(0, 2), [-1.5, -1.5]);
+      expect(bounds[1].storage.sublist(0, 2), [1.5, 1.5]);
+      // |q|² + z, at the plane point q (relative to the origin), is below 0
+      // wherever a source has foam: on the circle's reach, and at the far
+      // end of the rectangle's turned corner, its foam's width out.
+      double gate(int i, double u, double v) {
+        final qu = u - origin.x;
+        final qv = v - origin.y;
+        final b = bounds[i];
+        return qu * qu + qv * qv + b.z - 2 * (qu * b.x + qv * b.y);
+      }
+
+      for (var k = 0; k < 16; k++) {
+        final angle = k * math.pi / 8;
+        expect(
+          gate(0, 1 + 0.55 * math.cos(angle), 2 + 0.55 * math.sin(angle)),
+          lessThan(0),
+        );
+      }
+      final along = Vector2(1, 1)..normalize();
+      final across = Vector2(-along.y, along.x);
+      final corner = Vector2(4, 5)
+        ..addScaled(along, 0.9)
+        ..addScaled(across, 0.4);
+      final out = (corner - Vector2(4, 5))..normalize();
+      corner.addScaled(out, 0.1 + 0.5);
+      expect(gate(1, corner.x, corner.y), lessThan(0));
+      // Far from them, above 0.
+      expect(gate(0, 1 + 0.75, 2), greaterThan(0));
+      expect(gate(1, 4 + 2, 5), greaterThan(0));
+      // No source above 0: none, and the origin at 0.
+      sources
+        ..setStrength(0, 0)
+        ..setStrength(1, 0);
+      expect(
+        sources.writeUniforms(
+          Vector3(1, 0, 0),
+          Vector3(0, 1, 0),
+          positions,
+          shapes,
+          bounds: bounds,
+          origin: origin,
+        ),
+        0,
+      );
+      expect(origin.storage, [0, 0]);
+    });
   });
 
   group('WaterMaterial', () {
@@ -406,6 +482,19 @@ void main() {
         return data.sublist(offset + index * 4, offset + index * 4 + 4);
       }
 
+      List<double> vertexMember(
+        WaterMaterial material,
+        Map<String, Float32List> uniforms,
+        String name,
+      ) {
+        final offset =
+            material.vertexShader
+                .slot('WaterVertex')
+                .getMemberOffsetInBytes(name)! ~/
+            4;
+        return uniforms['WaterVertex']!.sublist(offset, offset + 4);
+      }
+
       test('turns every option off by default', () {
         final water = WaterMaterial();
         final uniforms = draw(water);
@@ -418,6 +507,7 @@ void main() {
         expect(member(water, uniforms, 'ramp')[0], 0);
         expect(member(water, uniforms, 'ramp')[2], 0);
         expect(member(water, uniforms, 'ramp')[3], 0);
+        expect(vertexMember(water, uniforms, 'surface'), [1, 0, 0, 0]);
         // The foam takes the color of the light and moves at its pace, and
         // its light falls to half its color at least.
         final shore = member(water, uniforms, 'shoreParams');
@@ -453,6 +543,14 @@ void main() {
         expect(member(water, uniforms, 'ramp')[2], 1);
         expect(member(water, uniforms, 'foamSourcePositions'), [2, 1, 0, 4]);
         expect(member(water, uniforms, 'foamSourceShapes'), [0, 0, 2, 1]);
+        // The vertices get its circle, around its own center: the reach of
+        // 0.75, a little enlarged.
+        final surface = vertexMember(water, uniforms, 'surface');
+        expect(surface.sublist(1), [1, 2, 1]);
+        final bound = vertexMember(water, uniforms, 'foamSourceBounds');
+        expect(bound.sublist(0, 2), [0, 0]);
+        expect(-bound[2], greaterThan(0.75 * 0.75));
+        expect(-bound[2], lessThan(0.85 * 0.85));
 
         water
           ..foamLightTint = 3

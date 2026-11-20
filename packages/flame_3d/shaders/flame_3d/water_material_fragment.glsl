@@ -25,6 +25,9 @@ in vec4 fragClipPos;
 // x: depth of the water under the fragment, y: foam mask, z: calm, see
 // flame_3d/water_vertex.glsl.
 in vec3 fragWater;
+// Where the foam sources reach: |xy|² + z < 0 where one may, see
+// flame_3d/water_vertex.glsl.
+in vec3 fragFoamGate;
 
 out vec4 outColor;
 
@@ -201,6 +204,11 @@ float waterFoamSources(vec2 uv) {
       dot(d, vec2(-position.w, position.z))
     ));
     vec2 q = local - shape.xy;
+    // Beyond the box around its reach: no foam (the distance below is more
+    // than 1).
+    if (max(q.x, q.y) > shape.z + 1.0) {
+      continue;
+    }
     // The signed distance to the outline, negative inside.
     float outside = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - shape.z;
     if (outside < 1.0) {
@@ -399,7 +407,10 @@ void main() {
   float litFoam = 0.0;
   float edgeMask = fragWater.y;
   float sourceFade = 1.0;
-  if (waterMat.ramp.z > 0.5) {
+  // The sources' loop runs only where the vertices say that one may reach
+  // (elsewhere their mask is 0).
+  if (waterMat.ramp.z > 0.5 &&
+      dot(fragFoamGate.xy, fragFoamGate.xy) + fragFoamGate.z < 0.0) {
     float sources = waterFoamSources(fragUv);
     if (edgeMask <= 0.001) {
       // Where only the sources foam, their loose flecks fade out with their
