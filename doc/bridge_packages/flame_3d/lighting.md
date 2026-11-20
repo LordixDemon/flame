@@ -285,7 +285,8 @@ size), so a moving camera changes nothing, even in full cells; a light that move
 intensity changes) into a full cell can take the place of the weakest one, which then stops lighting
 that cell at once, a change as large as the light the weakest gave there. Beyond `maxLights`, the
 lights of the least `intensity * brightness * range²` are left out of the pass
-(`LightGridStats.droppedLights`).
+(`LightGridStats.droppedLights`). The example's scene of 200 lanterns and windows lists at most 23
+lights in a cell, with nothing left out.
 
 **Costs.**
 
@@ -297,7 +298,8 @@ lights of the least `intensity * brightness * range²` are left out of the pass
   2 MB): the cells' headers (one texel each), then each cell's lights, 2 texels per point light and
   4 per spot light, a copy per cell that lists it. It is uploaded only when it changes
   (`LightGridStats.uploads`), into one of three textures in turn, so that a texture a frame in
-  flight may still read is not written.
+  flight may still read is not written. The example's 200 lights fill 20,600 texels in a 256 x 128
+  texture (512 KB), uploaded on each frame where a light moves or flickers.
 - Per pixel: one read for the header of its cell, then two reads (four for a spot light) and a
   distance test per listed light; a light that does not reach the pixel skips its shading.
 - Uniforms and textures: the `LightGrid` block is 4 vectors and the grid one more sampler, in every
@@ -322,7 +324,9 @@ lights of the blocks only.
 
 `RenderContext3D.lightGridStats` (a `LightGridStats`) tells what the grid of the last pass that read
 one held: its cell size and cells, its lights, entries and fullest cells, what it left out, its
-texture, builds and uploads. `LightGrid3D` builds a grid on its own, to inspect one.
+texture, builds and uploads. `LightGrid3D` builds a grid on its own, to inspect one. The example's
+`lanterns` scenario lights the pool at dusk with 200 lanterns, lit windows and floating lanterns; a
+tap turns the grid off and on.
 
 
 ### Which materials use which lights

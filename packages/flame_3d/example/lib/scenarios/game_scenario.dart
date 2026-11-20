@@ -5,6 +5,7 @@ import 'package:flame_3d_example/scenarios/boxes_scenario.dart';
 import 'package:flame_3d_example/scenarios/colors_scenario.dart';
 import 'package:flame_3d_example/scenarios/culling_scenario.dart';
 import 'package:flame_3d_example/scenarios/houses_scenario.dart';
+import 'package:flame_3d_example/scenarios/lanterns_scenario.dart';
 import 'package:flame_3d_example/scenarios/models_scenario.dart';
 import 'package:flame_3d_example/scenarios/particles_scenario.dart';
 import 'package:flame_3d_example/scenarios/pool_scenario.dart';
@@ -25,6 +26,7 @@ abstract class GameScenario() {
     'colors': ColorsScenario(),
     'culling': CullingScenario(),
     'houses': HousesScenario(),
+    'lanterns': LanternsScenario(),
     'models': ModelsScenario(),
     'particles': ParticlesScenario(),
     'pool': PoolScenario(),
