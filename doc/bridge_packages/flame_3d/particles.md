@@ -64,9 +64,11 @@ A `ParticleEmitter3D` is an immutable description that any number of systems can
   spread along the way, for trails behind moving objects;
 - where: its `shape` and `offset`. The shapes are `PointEmitterShape3D`, `SphereEmitterShape3D`
   (volume or surface, optionally the upper half), `BoxEmitterShape3D`, `DiscEmitterShape3D` (a disc,
-  a ring with `innerRadius`, moving up or `radial` along the ground) and `ConeEmitterShape3D` (from
-  its apex, or from a base disc). Shapes are described around the local `+y` axis and oriented by
-  the system's transform; subclass `EmitterShape3D` for custom ones;
+  a ring with `innerRadius`, moving up, leaning out from its center by `tilt` radians, or `radial`
+  along the ground), `RectangleEdgeEmitterShape3D` (the outline of a rectangle, moving up or
+  `outward`) and `ConeEmitterShape3D` (from its apex, or from a base disc). Shapes are described
+  around the local `+y` axis and oriented by the system's transform; subclass `EmitterShape3D` for
+  custom ones;
 - how: `speed` along the shape's direction, randomized within a cone of `spread`, plus a constant
   `velocity` and a fraction of the system's own velocity (`inheritVelocity`); `lifespan`, `size`
   and `aspect` (height over width), `rotation` and `spin`, `gravityScale`, and the `colors` each
@@ -289,6 +291,58 @@ final coins = ParticlePresets3D.coinBurst(up: Vector3(0, 0, 1), scale: 0.5);
 layer.world.add(coins);
 coins.burst(14, at: Vector3(3.5, 4.5, 0.2));
 ```
+
+
+### Water splashes
+
+Four presets splash water, blended with premultiplied alpha and sorted back to front, drawn with
+the procedural sprites of `ParticleMaterial` (no texture). Their `size` scales the splash: `1`
+suits something about 20 cm across (a die, a stone), distances grow with it and speeds with its
+square root, so a bigger splash rises higher and lasts longer. `waterLevel` is the height of the
+water's surface along `up`, in the simulation space (the world, by default).
+
+- `splashCrown`: a crown of droplets thrown up and out of a ring where something breaks the surface
+  or lands on it, stretched along their velocity, that fall back and die at the `waterLevel` (384
+  particles, burst about `40 * size` of them). `tint` colors them.
+- `runoffDrips`: water running off the edges of a slab that rises out of the water: drops fall from
+  the outline of a rectangle of `width` by `depth` (along the scene's x and its other horizontal
+  axis), thinning out over `duration` (1.6 s), `rate` (480) drops per second at the start, and die
+  at the `waterLevel` (512 particles). Its emitter starts stopped: call `start()` when the slab
+  leaves the water, and keep the system's `position` at the middle of the slab's top as it rises;
+  the drops stay where they fall from.
+- `foamBurst`: soft white patches lying flat on the surface (`ParticleBillboard.flat` around `up`)
+  that spread from the point, swell and fade within a second (256 particles, burst about
+  `14 * size`).
+- `mistPuff`: faint soft blobs that start a little above the point, swell, drift up and fade
+  within a second or so (128 particles, burst about `10 * size`).
+
+`splashCrown` and `runoffDrips` report each drop that falls back to `onGroundHit`, with the point
+where it fell and its speed, for a ripple of your own (a ring decal, a wave in the water shader, a
+sound):
+
+```dart
+final up = Vector3(0, 0, 1);
+final crown = ParticlePresets3D.splashCrown(
+  up: up,
+  scale: 2.5, // scene units per meter
+  onGroundHit: (point, speed) => ripples.add(point.clone()),
+);
+final foam = ParticlePresets3D.foamBurst(up: up, scale: 2.5);
+final mist = ParticlePresets3D.mistPuff(up: up, scale: 2.5);
+layer.world.addAll([crown, foam, mist]);
+
+// Where something lands in the water:
+crown.burst(40, at: splashPoint);
+foam.burst(14, at: splashPoint);
+mist.burst(10, at: splashPoint);
+```
+
+The crown's droplets live until they reach the water, about half a second at `size` 1; the foam
+and the mist about a second. The bounds of each system follow its particles (see
+[Bounds and statistics](#bounds-and-statistics)), so a finished splash costs nothing to cull. The
+foam lies a hair above the point it is burst at and the mist starts higher, which keeps them from
+cutting into a water surface drawn with depth there; soft particles hide what still crosses
+geometry (see [Soft particles](#soft-particles)).
 
 
 ## Shadows

@@ -105,6 +105,55 @@ void main() {
         expect(math.acos(out.dot(axis).clamp(-1.0, 1.0)), lessThan(0.3 + 1e-6));
       }
     });
+
+    test('a tilted ring leans its directions away from its center', () {
+      const tilt = 0.4;
+      sampleMany(const DiscEmitterShape3D(1, innerRadius: 0.8, tilt: tilt), (
+        p,
+        d,
+      ) {
+        expect(d.y, closeTo(math.cos(tilt), 1e-6));
+        final outward = Vector3(p.x, 0, p.z)..normalize();
+        expect(outward.dot(d), closeTo(math.sin(tilt), 1e-6));
+      });
+      // radial wins over tilt.
+      sampleMany(const DiscEmitterShape3D(1, radial: true, tilt: tilt), (
+        p,
+        d,
+      ) {
+        expect(d.y, 0);
+      });
+    });
+
+    test('rectangle edges spawn on the outline, moving up or out', () {
+      final counts = [0, 0, 0, 0];
+      sampleMany(const RectangleEdgeEmitterShape3D(4, 2), (p, d) {
+        expect(p.y, 0);
+        final onX = (p.x.abs() - 2).abs() < 1e-6 && p.z.abs() <= 1 + 1e-6;
+        final onZ = (p.z.abs() - 1).abs() < 1e-6 && p.x.abs() <= 2 + 1e-6;
+        expect(onX || onZ, isTrue, reason: '$p');
+        expect(d, Vector3(0, 1, 0));
+        if (onZ) {
+          counts[p.z > 0 ? 0 : 1]++;
+        } else {
+          counts[p.x > 0 ? 2 : 3]++;
+        }
+      });
+      // Uniform along the outline: the long sides get twice the particles.
+      expect(counts[0] + counts[1], greaterThan((counts[2] + counts[3]) * 1.5));
+      sampleMany(const RectangleEdgeEmitterShape3D(4, 2, outward: true), (
+        p,
+        d,
+      ) {
+        expect(d.y, 0);
+        // Straight out across the edge it spawned on.
+        if ((p.x.abs() - 2).abs() < 1e-6 && p.z.abs() < 1 - 1e-6) {
+          expect(d, Vector3(p.x.sign, 0, 0));
+        } else if (p.x.abs() < 2 - 1e-6) {
+          expect(d, Vector3(0, 0, p.z.sign));
+        }
+      });
+    });
   });
 
   group('CurlNoise3D', () {

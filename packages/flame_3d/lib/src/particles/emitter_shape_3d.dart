@@ -155,7 +155,8 @@ class const BoxEmitterShape3D(
 /// a ring when [innerRadius] is above zero (on a circle when it equals
 /// [radius]).
 ///
-/// Particles move along `+y`, or away from the center within the plane when
+/// Particles move along `+y`, leaning away from the center by [tilt] (a
+/// crown of droplets), or away from the center within the plane when
 /// [radial] is `true` (a shock ring of dust, for instance).
 class const DiscEmitterShape3D(
   /// The outer radius.
@@ -167,6 +168,11 @@ class const DiscEmitterShape3D(
   /// Whether particles move away from the center within the plane rather
   /// than along `+y`.
   final bool radial = false,
+
+  /// The angle, in radians, by which the direction of each particle leans
+  /// from `+y` away from the center (`pi / 2` is the same as [radial]).
+  /// Ignored when [radial] is `true`.
+  final double tilt = 0,
 }) extends EmitterShape3D {
   this
     : assert(
@@ -187,7 +193,54 @@ class const DiscEmitterShape3D(
     position.setValues(c * distance, 0, s * distance);
     if (radial) {
       direction.setValues(c, 0, s);
+    } else if (tilt != 0) {
+      final lean = math.sin(tilt);
+      direction.setValues(c * lean, math.cos(tilt), s * lean);
     } else {
+      direction.setValues(0, 1, 0);
+    }
+  }
+}
+
+/// Spawns particles uniformly along the outline of a rectangle of [width]
+/// (along x) by [depth] (along z) centered on the emitter, in its `xz`
+/// plane: water dripping off the edges of a slab, sparks running along a
+/// frame.
+///
+/// Particles move along `+y`, or straight out of the rectangle, across the
+/// edge they spawn on, when [outward] is `true`.
+class const RectangleEdgeEmitterShape3D(
+  /// The size of the rectangle along x.
+  final double width,
+
+  /// The size of the rectangle along z.
+  final double depth, {
+
+  /// Whether particles move out of the rectangle rather than along `+y`.
+  final bool outward = false,
+}) extends EmitterShape3D {
+  this : assert(width >= 0 && depth >= 0, 'the size must not be negative');
+
+  @override
+  void sample(math.Random random, Vector3 position, Vector3 direction) {
+    final halfWidth = width / 2;
+    final halfDepth = depth / 2;
+    var d = random.nextDouble() * 2 * (width + depth);
+    if (d < width) {
+      position.setValues(d - halfWidth, 0, halfDepth);
+      direction.setValues(0, 0, 1);
+    } else if ((d -= width) < depth) {
+      position.setValues(halfWidth, 0, halfDepth - d);
+      direction.setValues(1, 0, 0);
+    } else if ((d -= depth) < width) {
+      position.setValues(halfWidth - d, 0, -halfDepth);
+      direction.setValues(0, 0, -1);
+    } else {
+      d -= width;
+      position.setValues(-halfWidth, 0, math.min(d, depth) - halfDepth);
+      direction.setValues(-1, 0, 0);
+    }
+    if (!outward) {
       direction.setValues(0, 1, 0);
     }
   }
