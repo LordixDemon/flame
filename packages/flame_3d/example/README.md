@@ -22,6 +22,11 @@ mode and `O` toggles 4x MSAA.
   water running off its edges (`ParticlePresets3D.runoffDrips`), a `BarrierMaterial` wall rises
   from its rim, is hit three times in different colors and sinks back, and a block drops into the
   water (`splashCrown`, `foamBurst`, `mistPuff`). A tap switches the barrier's pattern.
+- `pool` (`PoolGame`, `PoolScene`): a clear, shallow pool in a walled quay, seen through a mirrored
+  isometric-like `Scene3DComponent` projection: the water is one `WaterMaterial` draw (caustics,
+  sparkles, a swell of the normals, a depth ramp, foam along the walls and ripples), and a
+  `World3D.waterVolume` submerges the floor, the stepping stones and a grid of slabs on columns
+  that rise out of the water and sink back. Pebbles drop in; a tap switches between noon and dusk.
 - `showcase` (`ShowcaseGame`, `ShowcaseView`): one scene with 20 feature labs (`ShowcasePreset`),
   from materials, lights and shadows to physics, navigation, animation, 3D UI and the inspector,
   and switches for most rendering options.
