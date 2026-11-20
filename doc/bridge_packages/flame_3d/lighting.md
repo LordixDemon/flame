@@ -221,6 +221,9 @@ the selection leaves out casts no shadow in that pass (see
 is described in [Shadows](shadows.md#receiving-shadows): `SpatialMaterial`, `StylizedMaterial` and
 `WaterMaterial` receive those of every light that casts them.
 
+The caustics of `WaterMaterial` and its sparkles take the light reaching the water from every
+light, after their shadows (see [Materials](materials.md#clear-water-without-extra-passes)).
+
 
 ## Light masks
 
@@ -556,7 +559,8 @@ the end of its fragment shader, after lighting:
   the composite then decodes and tone-maps: the fog color is changed by the tone map, as every
   material's colors are.
 - `StylizedMaterial` fogs its graded color before multiplying it by its alpha; `WaterMaterial` and
-  `BillboardMaterial3D` fog their final color.
+  `BillboardMaterial3D` fog their final color, the light the options of `WaterMaterial` add over
+  the water included.
 - Fog does not change the light: lights are not dimmed by it, and it adds no light scattering or
   glow around lights. Unlit materials, decals, particles, ribbons and the skybox are not fogged.
 

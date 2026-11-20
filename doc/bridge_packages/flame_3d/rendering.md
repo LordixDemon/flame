@@ -378,6 +378,9 @@ Shaders are GLSL, compiled ahead of time into shader bundles (see
   `castsShadows()`, see [Shadows](shadows.md#receiving-shadows).
 - `flame_3d/fog.glsl` declares the `Fog` block (driven by `World3D.fog`) and
   `applyFog(color, worldPosition, view, projection, cameraPosition)` for distance and height fog.
+- `flame_3d/water_pattern.glsl` holds the procedural patterns of `WaterMaterial`'s options:
+  `waterCaustics`, `waterNoise`, `waterDetailSlope` and `waterSparkle`, built from sines of small
+  arguments, without textures, derivatives or loops of variable length.
 - `flame_3d/dither.glsl` declares `bayerDither4x4(gl_FragCoord.xy)`, a threshold for dithered
   fades.
 - `flame_3d/outline.glsl` holds the vertex step of an inverted-hull outline:
@@ -388,12 +391,12 @@ Shaders are GLSL, compiled ahead of time into shader bundles (see
 
 Blocks named `CameraMatrices`, `Camera` (`position`, and any of the `CameraMatrices` members),
 `AmbientLight`, `Lights`, `DirectionalLights`, `SpotLights`, `HemisphereLight`, `Shadows`,
-`ShadowAtlas`, `Fog`, `DepthNormal`, `SceneColor` and `PassOptions`, and the samplers `shadowMap`,
-`depthNormalTexture`, `sceneColorTexture`, `brdfLutTexture` and `probeGridTexture`, are filled once
-per render pass by the `RenderContext3D`, for every shader that declares them. No built-in shader
-declares `ShadowAtlas` any more (they read the atlas tiles from `Shadows` through `shadows.glsl`);
-it is still filled for custom shaders written against it. The joint matrices
-of skinned draws are filled for each draw, from the `jointTransforms` given to
+`ShadowAtlas`, `Fog`, `DepthNormal`, `SceneColor` and `PassOptions`, and the
+samplers `shadowMap`, `depthNormalTexture`, `sceneColorTexture`, `brdfLutTexture` and
+`probeGridTexture`, are filled once per render pass by the `RenderContext3D`, for every shader that
+declares them. No built-in shader declares `ShadowAtlas` any more (they read the atlas tiles from
+`Shadows` through `shadows.glsl`); it is still filled for custom shaders written against it. The
+joint matrices of skinned draws are filled for each draw, from the `jointTransforms` given to
 `RenderContext3D.drawSurface` (or to `drawMesh`, by surface index, which
 `MeshComponent.jointTransforms` feeds), whatever the surface: a parsed model's or one built with
 `Surface.fromBuffers`. Register your own per-pass blocks with `RenderContext3D.registerPassUniform`,
@@ -434,7 +437,7 @@ Without `--src` and `--out`, the tool builds the current package's `shaders/` in
 `flame_3d` builds its own bundles).
 
 `--with-web-gpu` also builds `.wgslbundle` files for the WebGPU backend, through the `naga` CLI
-(`cargo install naga-cli`). Only 8 of the package's 30 shaders have a web bundle (`spatial_material`
+(`cargo install naga-cli`). Only 8 of the package's 31 shaders have a web bundle (`spatial_material`
 in its non-PBR variant, `unlit_material`, `skybox_material`, `billboard_material`, `decal_material`,
 `outline_material`, `outline_material_skinned` and `ribbon_material`): on the web, anything that
 needs another shader (water, the depth-normal prepass, order-independent transparency, bloom, HDR,

@@ -81,7 +81,9 @@ pipeline changes; joint matrices are written for every skinned draw.
   block), `matCapTexture`, `gemMatCapTexture`, `shadowMap`: 7 bindings.
 - `WaterMaterial`: vertex `CameraMatrices`, `WaterVertex`; fragment `WaterMaterial`,
   `StylizedPass`, `DepthNormal`, `SceneColor`, `shadowMap`, `depthNormalTexture`,
-  `sceneColorTexture`.
+  `sceneColorTexture`. Surfaces in `WaterMaterial.vertexLayout` draw with a vertex stage of their
+  own that binds the same blocks; the options of [Clear water](#clear-water-without-extra-passes)
+  and [Ripples](#ripples) bind nothing more.
 - `UnlitMaterial`: vertex `CameraMatrices`, `JointMatrices`; fragment `Material`, `albedoTexture`.
 - `OutlineMaterial`: vertex `CameraMatrices`, `Outline` (and `JointMatrices` when skinned).
 - `DecalMaterial`: vertex `CameraMatrices`, `Decal`; fragment `Decal`, `albedoTexture`.
@@ -529,6 +531,7 @@ of every light that casts them (the sun with its cascades, and spot and point li
 shadow map and on the shadow atlas alike (see [Shadows](shadows.md)). Without a `HemisphereLight` in
 the scene, `ambientBase`, `skyFill` and `groundBounce` have no effect and only the ambient light
 lights the shadowed side.
+
 | Parameter                                     | Default                   | Meaning              |
 | --------------------------------------------- | ------------------------- | -------------------- |
 | `albedoColor`                                 | white                     | times vertex color   |
@@ -962,11 +965,208 @@ water.time += dt;
   and fades where the depth of the opaque scene behind it is within `shoreFoamDepth` (in clip-space
   depth, not world units) of its own, see
   [Post-Processing](post_processing.md#shoreline-foam) for the depth prepass.
+- Crest foam: where the height of the waves, relative to their amplitude (`0` in the troughs, `1`
+  on the highest crests) plus the micro-ripples, passes `foamThreshold`, whatever the amplitude. A
+  `foamThreshold` of `1` or more turns it off.
 - `opacity` below `1` draws the water blended (straight alpha, back faces culled) after the opaque
   draws; `1` or more draws it opaque. Setting `opacity` updates the render state, unless you set
   `renderState` yourself. Water never casts shadows.
 
 It does not run on the web: there is no WebGPU version of its shaders.
+
+
+### Clear water without extra passes
+
+Shoreline foam needs the depth prepass and refraction the scene color grab, two passes a phone
+pays for on every frame. The options below draw clear, shallow, living water with the surface as
+one translucent draw and neither pass. All of them are off by default, and a material that leaves
+them off draws exactly the pixels it drew before they existed.
+
+```dart
+final ripples = WaterRipples();
+final water = WaterMaterial(
+  shallowColor: const Color(0xFF86E3F0),
+  deepColor: const Color(0xFF1B78B0),
+  waveAmplitude: 0.012, // a calm basin
+  rippleStrength: 0, // the swell below replaces the micro-ripples
+  foamThreshold: 1, // no crest foam
+  specularPower: 220,
+  opacity: 0.8, // the opacity of deep water
+  depthRange: 0.75, // shallow to deep over about 0.75 units
+  shallowOpacity: 0.1,
+  causticStrength: 0.25,
+  causticScale: 0.62, // world units per cell
+  sparkleStrength: 1.2,
+  detailStrength: 0.6,
+  detailScale: 1.1,
+  animationPeriod: 4, // everything below loops every 4 s
+  ripples: ripples,
+);
+```
+
+| Parameter                      | Default      | Meaning                                  |
+| ------------------------------ | ------------ | ---------------------------------------- |
+| `causticStrength`              | `0` (off)    | the light network on the surface         |
+| `causticScale`, `causticColor` | `0.6`, white | its cells' size (world units), color     |
+| `sparkleStrength`              | `0` (off)    | tiny points flashing in the light        |
+| `sparkleScale`                 | `0.35`       | one point per cell of this size          |
+| `detailStrength`               | `0` (off)    | a swell of the normals                   |
+| `detailScale`                  | `1.6`        | its longest wave, in world units         |
+| `depthRange`                   | `0` (off)    | depth from shallow to deep (world units) |
+| `shallowOpacity`               | `0.2`        | the opacity where there is no depth      |
+| `defaultDepth`                 | `1`          | the depth under standard-layout vertices |
+| `edgeFoamScale`                | `0.6`        | the patches of the foam mask's foam      |
+| `animationPeriod`              | `8`          | seconds over which the options loop      |
+| `ripples`                      | none         | a shared `WaterRipples`, see below       |
+
+- **Caustics**: the network of bright, wavy lines of light that a rippled surface focuses, added in
+  `causticColor` times the light reaching the water (the directional, point and spot lights after
+  their shadows, and a third of the sky). The lines are the borders of a Voronoi diagram of one
+  swaying point per cell, in a domain warped by slow waves, so the cells keep changing shape; they
+  repeat only every 64 cells, and are brighter where the cells are small. The network is computed
+  from the world position of the rest surface, so it does not swim when the camera or a
+  `Scene3DComponent`'s projection moves (mirrored projections included), nor with the waves. With
+  `depthRange`, it shows at a quarter of its strength where the water has no depth, fully where it
+  is deep.
+- **Sparkles**: one point per cell of `sparkleScale`, at its own place in the cell, flashes twice
+  per period at its own moment, in the light reaching the water, brighter where the highlights of
+  the lights are. Without light, no sparkle.
+- **Swell**: six small waves of different directions and lengths, the longest `detailScale`
+  long, tilt the normal (by up to about `0.3 * detailStrength` radians), so the highlights of the
+  sun and of the lamps break up and move over the water. It moves the light only, not the
+  vertices.
+- **Depth ramp**: with `depthRange` above `0`, the water under each vertex is `depth` deep (see
+  the layout below) and, with `k = 1 - exp(-depth / depthRange)`, its color is
+  `mix(shallowColor, deepColor, k)` (lightened towards `shallowColor` on the crests) and its
+  opacity `mix(shallowOpacity, opacity, k)`, raised towards `1` at grazing angles by the Fresnel
+  term (`(1 - n·v)^fresnelPower` of the rest) and to the foam's opacity where it foams. Without
+  `depthRange`, the color follows the height of the waves and the opacity is `opacity`, as before.
+- **Foam mask**: vertices with a foam mask above `0` foam: a band whose inner edge, where the mask
+  passes about `0.7`, laps in and out twice per period, with lacy holes and loose flecks in front
+  of it, broken up into patches of about `edgeFoamScale` world units. Paint `1` against a wall or
+  around a rock that breaks the surface, falling to `0` over a few tenths of a unit. It is lit by
+  the light reaching the water, as the foam of the ripples is (the crest and shore foam keep the
+  plain `foamColor`).
+- **Light added over the water**: the caustics, the sparkles and the highlights of the ripples are
+  added over the translucent surface with an opacity of their own (their luminosity), so they keep
+  their brightness however clear the water is.
+
+The caustics, the sparkles, the swell and the foam move with whole multiples of
+`2π * fract(time / animationPeriod)`: they loop exactly over the period, and the time is wrapped
+on the CPU, so the shader's arguments stay small however long the game runs. The Gerstner waves
+keep their own, endless time.
+
+The depth and the foam mask come from the vertices. Surfaces in `WaterMaterial.vertexLayout`, 10
+floats per vertex, give them:
+
+| Attribute        | Floats | Meaning                                                       |
+| ---------------- | ------ | ------------------------------------------------------------- |
+| `vertexPosition` | 3      | the position                                                  |
+| `vertexColor`    | 4      | multiplies the color and the opacity                          |
+| `vertexWater`    | 3      | the depth (world units), the foam mask, the calm (`0` to `1`) |
+
+The calm scales the waves down, from `0` (the full waves) to `1` (still), so the water stays flat
+against a wall. Surfaces in the standard layout (`TerrainMesh3D`, the built-in meshes) are
+`defaultDepth` deep everywhere, with no foam mask and the full waves. Build a surface in the water
+layout with `WaterMaterial.buildSurface`, giving each vertex the depth of the floor under it:
+
+```dart
+final surface = WaterMaterial.buildSurface(
+  positions: positions, // 3 floats per vertex, on the rest surface
+  depths: depths, // the depth of the floor under each vertex
+  foam: foam, // 1 along the walls, falling to 0 over 0.45 units
+  calm: calm, // 0.85 at the walls
+  indices: indices,
+  material: water,
+);
+```
+
+Advance `time` every frame.
+
+
+### Ripples
+
+A `WaterRipples` holds up to `WaterRipples.capacity` (8) ripple sources: the rings that something
+landing on, rising out of, sinking into or moving through the water raises. Give one set to every
+`WaterMaterial` of a body of water: each draws the rings over its own surfaces, so a ring crosses
+from one surface to the next. A ripple starts at a time of the materials' clock, so the materials
+sharing a set share their `time`:
+
+```dart
+// A pebble lands at `point`:
+ripples.add(point, time: water.time, strength: 1.1, wavelength: 0.2);
+
+// A slab rises out of the water: a ring that starts at its edge.
+ripples.add(slab, time: water.time, radius: 0.42, lifetime: 1.6);
+```
+
+| Argument     | Default | Meaning                                               |
+| ------------ | ------- | ----------------------------------------------------- |
+| `strength`   | `1`     | the height of its waves                               |
+| `speed`      | `0.9`   | how fast its front travels, world units per second    |
+| `wavelength` | `0.22`  | the distance between its waves                        |
+| `trail`      | `3`     | how many wavelengths its waves trail behind the front |
+| `lifetime`   | `2.4`   | seconds until it is gone                              |
+| `radius`     | `0`     | where its front starts (the size of the object)       |
+
+A ripple's front is `radius + speed * age` from its center (the position projected onto the
+surface along `upAxis`). Its waves rise sharply at the front, die out over `trail` wavelengths
+behind it, and fade with the square of the fraction of `lifetime` left; for its first third of a
+second, a splash of foam fills it. The rings tilt the normals (moving highlights), lighten the
+water they raise towards `shallowColor`, add a highlight on their crests in the light reaching the
+water, and foam where their crests are highest. They do not move the vertices.
+
+Adding a ripple when the set is full replaces the weakest when it starts: one that is over, else
+the one whose waves are the lowest (its strength times the square of the fraction of its life
+left), so the faint rings of falling drops replace each other rather than the large ring of what
+made the splash. `remove`, `clear`, `aliveAt` and `frontRadius` manage and query them. Adding,
+clearing and drawing allocate nothing, and only the ripples alive at the material's `time` are
+sent to the shader, packed first, so the cost per pixel follows the number of living ripples. The
+rings are computed from the plane coordinates of the rest surface, like the caustics.
+
+The splash presets of [Particles](particles.md#water-splashes) report each drop that falls back:
+give that to the ripples, a faint, short ring per drop (at most one every few hundredths of a
+second, so that the drops of one splash share the slots), and a splash leaves rings where its
+drops land:
+
+```dart
+void dropRing(Vector3 position, double speed) => ripples.add(
+  position,
+  time: water.time,
+  strength: 0.18,
+  speed: 0.32,
+  wavelength: 0.07,
+  lifetime: 0.7,
+);
+
+final crown = ParticlePresets3D.splashCrown(up: up, onGroundHit: dropRing);
+crown.burst(52, at: point); // where the pebble lands, with a ring of its own
+```
+
+
+### What the options cost
+
+The options are arithmetic in the fragment shader of the surface: no pass, no texture, no
+binding, and the surface stays one draw (instanced with the other draws of its mesh). Their CPU
+cost is `Material.apply` writing a few more values: about 0.5 µs for the legacy material and 1 µs
+with every option and 8 ripples (in `flutter test`, JIT).
+
+Per pixel of the surface, roughly: the caustics 22 sines, cosines or square roots and 170
+arithmetic instructions (the 9 cells of the Voronoi diagram), the sparkles 3 sines, the swell 6
+cosines, each living ripple 3 transcendentals and 25 instructions, the foam mask (only where it is
+above `0`) 13 sines. On the software rasterizer of `flutter test`, a full-screen 2532 x 1170
+surface with the caustics, sparkles, swell and depth ramp costs about as much as the legacy
+material (within the noise, a few percent), and 8 living ripples add about 30 %; compare on your
+target device, where transcendentals cost relatively more.
+
+The shaders compile to GLSL ES 1.00 for OpenGL ES: they use no `flat` input, no derivative, no
+explicit level of detail, no texture, and their loops have constant bounds (the ripples' loop runs
+to 8 and stops at the number of living ripples). They need high precision in the fragment stage,
+as every built-in material does (the compiled shaders declare their values `highp`); their
+arguments stay small (the time is wrapped, the cells' values come from coordinates wrapped to 64),
+so they also hold in 16-bit floats near the origin. The options add 20 uniform vectors to the
+fragment stage (166 in all), within the 224 that OpenGL ES 3.0 guarantees. Like the rest of
+`WaterMaterial`, they do not run on the web.
 
 
 ## UnlitMaterial
@@ -1718,8 +1918,8 @@ On the web, the materials run on WebGPU through hand-written WGSL versions of th
 - `UnlitMaterial`, `SkyboxMaterial3D` and `BillboardMaterial3D` have WGSL shaders.
 - `StylizedMaterial`, `OutlineMaterial`, `DecalMaterial`, `ShadowCatcherMaterial` and
   `BarrierMaterial` throw an `UnsupportedError` when created there (WGSL files exist for the outline
-  and decal shaders but are not used). `WaterMaterial` has no WGSL shaders and fails when first
-  drawn.
+  and decal shaders but are not used). `WaterMaterial` (its options and ripples included) has no
+  WGSL shaders and fails when first drawn.
 - Compressed KTX2 textures are always decoded on the CPU, so BC7, ETC2 and ASTC files throw.
 
 The texture sampler options, including anisotropy up to 16, work on the web.
@@ -1736,7 +1936,10 @@ The texture sampler options, including anisotropy up to 16, work on the web.
   map but not to the lightmap, and there is no UV rotation.
 - `StylizedMaterial` is display-referred and clamped to `[0, 1]`; it has no textures besides its
   MatCaps, and no image-based lighting.
-- `WaterMaterial` reflects a flat sky color and needs a subdivided mesh.
+- `WaterMaterial` reflects a flat sky color and needs a subdivided mesh. Its ripples tilt the
+  normals but do not move the vertices, and its depth ramp and foam mask come from the vertices, so
+  they do not follow objects that move under or through the water (a slab rising under the
+  surface).
 - A `DecalBatch3D` is one draw: it is sorted among the translucent draws at the center of its
   decals' bounds, so decals spread far apart can still be drawn in the wrong order against
   translucent objects between them. Textured decals are multiplied by their alpha a second time,

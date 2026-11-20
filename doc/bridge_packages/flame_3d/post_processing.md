@@ -326,7 +326,8 @@ line where it meets the ground. It needs `depthPrepassEnabled`. See
 
 `WaterMaterial.shoreFoamDepth` (default `0`, off) adds foam and fades the water where the opaque
 ground under it is within that span of normalized depth. It needs `depthPrepassEnabled`. See
-[Materials](materials.md).
+[Materials](materials.md). Without the prepass, a foam mask painted on the water's vertices and a
+depth ramp draw shores (see [Clear water](materials.md#clear-water-without-extra-passes)).
 
 
 ## Debug views
