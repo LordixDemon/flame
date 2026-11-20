@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' show Color;
 
 import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
@@ -39,6 +40,12 @@ enum BarrierMeshShape() {
 ///
 /// Rotate the component that draws it to stand it in a scene whose up is
 /// not `+y`.
+///
+/// When its surface's material is a [BarrierMaterial] whose
+/// [BarrierMaterial.drawsReactionInFront] holds, the mesh draws the surface
+/// a second time with [BarrierMaterial.reactionInFrontMaterial], outside the
+/// shadow and depth-normal passes: the reaction over what stands in front
+/// of the wall.
 /// {@endtemplate}
 class BarrierMesh._(
   /// The shape of the wall.
@@ -61,12 +68,21 @@ class BarrierMesh._(
   /// segments each.
   ///
   /// The distance along it starts at the middle of the `+x` side.
+  ///
+  /// The band has [heightSegments] rows of quads up its height (`1` by
+  /// default) and, with [maxSegmentLength], columns at most that far apart
+  /// along its foot (by default, only where the corners need them): a wall
+  /// that wobbles (`BarrierMaterial.wobbleAmplitude`) needs rows and columns
+  /// a fraction of the wobble's wavelength apart. Neither changes [length]
+  /// or the wall coordinates.
   factory BarrierMesh.roundedRectangle({
     required double width,
     required double depth,
     required double height,
     double cornerRadius = 0,
     int cornerSegments = 8,
+    int heightSegments = 1,
+    double? maxSegmentLength,
     Material? material,
   }) {
     if (!(width > 0 && depth > 0 && height > 0)) {
@@ -104,9 +120,10 @@ class BarrierMesh._(
     points.addAll([width / 2, 0, 1, 0]);
     return _band(
       BarrierMeshShape.roundedRectangle,
-      _dropRepeats(points),
+      _subdivide(_dropRepeats(points), maxSegmentLength),
       height,
       material,
+      heightSegments: heightSegments,
     );
   }
 
@@ -114,10 +131,14 @@ class BarrierMesh._(
   /// the origin, in [segments] segments.
   ///
   /// The distance along it starts at `(radius, 0, 0)`.
+  ///
+  /// The band has [heightSegments] rows of quads up its height, `1` by
+  /// default; see [BarrierMesh.roundedRectangle].
   factory BarrierMesh.ring({
     required double radius,
     required double height,
     int segments = 64,
+    int heightSegments = 1,
     Material? material,
   }) {
     if (!(radius > 0 && height > 0)) {
@@ -133,7 +154,13 @@ class BarrierMesh._(
       final nz = i == segments ? 0.0 : -math.sin(angle);
       points.addAll([nx * radius, nz * radius, nx, nz]);
     }
-    return _band(BarrierMeshShape.ring, points, height, material);
+    return _band(
+      BarrierMeshShape.ring,
+      points,
+      height,
+      material,
+      heightSegments: heightSegments,
+    );
   }
 
   /// The upper half of the sphere of [radius] centered on the origin, in
@@ -268,31 +295,42 @@ class BarrierMesh._(
   }
 
   /// Builds a band of [height] over the foot [points] (x, z, normal x,
-  /// normal z per point).
+  /// normal z per point), in [heightSegments] rows.
   static BarrierMesh _band(
     BarrierMeshShape shape,
     List<double> points,
     double height,
-    Material? material,
-  ) {
+    Material? material, {
+    int heightSegments = 1,
+  }) {
+    if (heightSegments < 1) {
+      throw ArgumentError.value(heightSegments, 'heightSegments', 'Must be 1+');
+    }
     final foot = _footFrom(points);
     final count = points.length ~/ 4;
+    final rows = heightSegments + 1;
+    if (count * rows > 65535) {
+      throw ArgumentError(
+        'The columns and heightSegments make more than 65535 vertices',
+      );
+    }
     final stride = layout.strideInFloats;
-    final vertices = Float32List(count * 2 * stride);
+    final vertices = Float32List(count * rows * stride);
     for (var i = 0; i < count; i++) {
       final x = points[i * 4];
       final z = points[i * 4 + 1];
       final nx = points[i * 4 + 2];
       final nz = points[i * 4 + 3];
       final along = foot[i * 3 + 2];
-      for (var row = 0; row < 2; row++) {
-        final o = (i * 2 + row) * stride;
+      for (var row = 0; row < rows; row++) {
+        final v = row == heightSegments ? 1.0 : row / heightSegments;
+        final o = (i * rows + row) * stride;
         vertices
           ..[o] = x
-          ..[o + 1] = row * height
+          ..[o + 1] = v * height
           ..[o + 2] = z
           ..[o + 3] = along
-          ..[o + 4] = row.toDouble()
+          ..[o + 4] = v
           ..[o + 5] = nx
           ..[o + 6] = 0
           ..[o + 7] = nz;
@@ -300,12 +338,14 @@ class BarrierMesh._(
     }
     final indices = <int>[];
     for (var i = 0; i < count - 1; i++) {
-      final foot0 = i * 2;
-      final top0 = foot0 + 1;
-      final foot1 = foot0 + 2;
-      final top1 = foot0 + 3;
-      // Counter-clockwise seen from outside.
-      indices.addAll([foot0, foot1, top1, foot0, top1, top0]);
+      for (var row = 0; row < heightSegments; row++) {
+        final foot0 = i * rows + row;
+        final top0 = foot0 + 1;
+        final foot1 = foot0 + rows;
+        final top1 = foot1 + 1;
+        // Counter-clockwise seen from outside.
+        indices.addAll([foot0, foot1, top1, foot0, top1, top0]);
+      }
     }
     return BarrierMesh._(shape, foot[(count - 1) * 3 + 2], height, foot)
       ..addSurface(
@@ -316,6 +356,75 @@ class BarrierMesh._(
           material: material,
         ),
       );
+  }
+
+  /// [points] (x, z, normal x, normal z per point) with points added along
+  /// every segment longer than [maxLength], so that none is; the normals of
+  /// the added points are interpolated. `null` keeps [points].
+  static List<double> _subdivide(List<double> points, double? maxLength) {
+    if (maxLength == null) {
+      return points;
+    }
+    if (!(maxLength > 0)) {
+      throw ArgumentError.value(maxLength, 'maxSegmentLength', 'Must be > 0');
+    }
+    final result = <double>[...points.sublist(0, 4)];
+    for (var i = 4; i < points.length; i += 4) {
+      final x0 = points[i - 4];
+      final z0 = points[i - 3];
+      final x1 = points[i];
+      final z1 = points[i + 1];
+      final dx = x1 - x0;
+      final dz = z1 - z0;
+      final parts = (math.sqrt(dx * dx + dz * dz) / maxLength).ceil();
+      for (var k = 1; k < parts; k++) {
+        final t = k / parts;
+        var nx = points[i - 2] + (points[i + 2] - points[i - 2]) * t;
+        var nz = points[i - 1] + (points[i + 3] - points[i - 1]) * t;
+        final n = math.sqrt(nx * nx + nz * nz);
+        if (n > 0) {
+          nx /= n;
+          nz /= n;
+        }
+        result.addAll([x0 + dx * t, z0 + dz * t, nx, nz]);
+      }
+      result.addAll(points.sublist(i, i + 4));
+    }
+    return result;
+  }
+
+  @override
+  void draw(
+    RenderContext3D context, {
+    Matrix4? transform,
+    Color color = const Color(0xFFFFFFFF),
+    Vector4? instanceData,
+    Map<int, List<Matrix4>>? jointTransforms,
+  }) {
+    super.draw(
+      context,
+      transform: transform,
+      color: color,
+      instanceData: instanceData,
+      jointTransforms: jointTransforms,
+    );
+    if (context.isShadowPass || context.isDepthNormalPass) {
+      return;
+    }
+    final surfaces = this.surfaces;
+    for (var i = 0; i < surfaceCount; i++) {
+      final surface = surfaces.elementAt(i);
+      final material = surface.material;
+      if (material is BarrierMaterial && material.drawsReactionInFront) {
+        context.drawSurface(
+          surface,
+          transform: transform,
+          color: color,
+          instanceData: instanceData,
+          material: material.reactionInFrontMaterial,
+        );
+      }
+    }
   }
 
   /// The x, z and distance along the foot of each point of [points] (x, z,

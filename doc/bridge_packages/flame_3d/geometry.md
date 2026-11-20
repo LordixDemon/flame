@@ -272,7 +272,8 @@ without a default are required.
   crossSectionAspect: 1, uvLengthScale: 1, color: white)`: a tube along a `CatmullRomSpline3D`.
 - `TerrainMesh3D`: a heightfield grid, see below.
 - `BarrierMesh.roundedRectangle`, `.ring` and `.dome`: walls for `BarrierMaterial`, in a layout of
-  their own, see [Materials](materials.md#wall-meshes).
+  their own, with rows (`heightSegments`) and columns (`maxSegmentLength`) for its wobble on
+  request, see [Materials](materials.md#wall-meshes).
 
 Notes on individual shapes:
 

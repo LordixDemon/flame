@@ -1,8 +1,13 @@
 import 'dart:math' as math;
 
+import 'dart:ui';
+
 import 'package:flame_3d/core.dart';
+import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../_fakes/fake_gpu_backend.dart';
 
 /// The vertices of [mesh]'s surface: position, wall coordinates and normal.
 List<(Vector3, Vector2, Vector3)> _vertices(BarrierMesh mesh) {
@@ -174,6 +179,163 @@ void main() {
           ),
           throwsArgumentError,
         );
+      });
+    });
+
+    group('subdivided', () {
+      test('has rows of quads up its height', () {
+        const rows = 4;
+        final mesh = BarrierMesh.roundedRectangle(
+          width: 3,
+          depth: 2,
+          height: 0.8,
+          cornerRadius: 0.3,
+          cornerSegments: 4,
+          heightSegments: rows,
+        );
+        final plain = BarrierMesh.roundedRectangle(
+          width: 3,
+          depth: 2,
+          height: 0.8,
+          cornerRadius: 0.3,
+          cornerSegments: 4,
+        );
+        final columns = plain.surfaces.single.vertexCount ~/ 2;
+        final vertices = _vertices(mesh);
+        expect(vertices, hasLength(columns * (rows + 1)));
+        for (final (position, wall, _) in vertices) {
+          expect(
+            [0.0, 0.25, 0.5, 0.75, 1.0].contains(wall.y),
+            isTrue,
+            reason: '${wall.y}',
+          );
+          expect(position.y, closeTo(wall.y * 0.8, 1e-6));
+        }
+        expect(mesh.length, plain.length);
+        expect(
+          _expectOutwardWinding(mesh),
+          _expectOutwardWinding(plain) * rows,
+        );
+      });
+
+      test('has columns at most maxSegmentLength apart along its foot', () {
+        final plain = BarrierMesh.roundedRectangle(
+          width: 6,
+          depth: 4,
+          height: 1,
+          cornerRadius: 0.5,
+        );
+        final mesh = BarrierMesh.roundedRectangle(
+          width: 6,
+          depth: 4,
+          height: 1,
+          cornerRadius: 0.5,
+          maxSegmentLength: 0.25,
+        );
+        expect(mesh.length, closeTo(plain.length, 1e-9));
+        final foot = [
+          for (final v in _vertices(mesh))
+            if (v.$2.y == 0) v,
+        ];
+        expect(foot.length, greaterThan(_vertices(plain).length));
+        for (var i = 1; i < foot.length; i++) {
+          final step = (foot[i].$1 - foot[i - 1].$1).length;
+          expect(step, lessThanOrEqualTo(0.25 + 1e-9));
+          expect(
+            foot[i].$2.x - foot[i - 1].$2.x,
+            closeTo(step, 1e-5),
+          );
+          expect(foot[i].$3.length, closeTo(1, 1e-6));
+        }
+        expect(foot.last.$2.x, closeTo(mesh.length, 1e-5));
+        expect(
+          _expectOutwardWinding(mesh),
+          (foot.length - 1) * 2,
+        );
+        // The points on the wall are the same.
+        for (final d in [0.0, 1.3, 7.7, 15.2]) {
+          final a = mesh.pointOnWall(d, 0.5);
+          final b = plain.pointOnWall(d, 0.5);
+          expect((a - b).length, lessThan(1e-6));
+        }
+      });
+
+      test('rings take rows too', () {
+        final ring = BarrierMesh.ring(
+          radius: 1,
+          height: 2,
+          segments: 16,
+          heightSegments: 3,
+        );
+        expect(_vertices(ring), hasLength(17 * 4));
+        expect(_expectOutwardWinding(ring), 16 * 2 * 3);
+      });
+
+      test('rejects rows, lengths and vertex counts out of range', () {
+        expect(
+          () => BarrierMesh.ring(radius: 1, height: 1, heightSegments: 0),
+          throwsArgumentError,
+        );
+        expect(
+          () => BarrierMesh.roundedRectangle(
+            width: 1,
+            depth: 1,
+            height: 1,
+            maxSegmentLength: 0,
+          ),
+          throwsArgumentError,
+        );
+        expect(
+          () => BarrierMesh.ring(
+            radius: 1,
+            height: 1,
+            segments: 1000,
+            heightSegments: 100,
+          ),
+          throwsArgumentError,
+        );
+      });
+    });
+
+    group('draws', () {
+      late FakeGpuBackend backend;
+      late GraphicsDevice device;
+      late RenderContext3D context;
+
+      setUp(() {
+        backend = FakeGpuBackend(
+          blockSizes: {'BarrierLook': 32768, 'BarrierShape': 8192},
+        );
+        device = GraphicsDevice(backend: backend);
+        context = RenderContext3D(device);
+      });
+
+      int drawCalls(BarrierMesh mesh) {
+        device.begin();
+        context.setCamera(Matrix4.identity(), Matrix4.identity());
+        device.beginPass(const Size(8, 8));
+        context
+          ..drawMesh(mesh)
+          ..flush();
+        device
+          ..endPass()
+          ..end();
+        return device.lastFrameStats.drawCalls;
+      }
+
+      test('its surface a second time for the reaction in front', () {
+        final material = BarrierMaterial(reactionInFront: 1);
+        final mesh = BarrierMesh.ring(
+          radius: 1,
+          height: 1,
+          segments: 8,
+          material: material,
+        );
+        expect(drawCalls(mesh), 1);
+        material.impact(Vector3.zero());
+        expect(drawCalls(mesh), 2);
+        material.reactionInFront = 0;
+        expect(drawCalls(mesh), 1);
       });
     });
 

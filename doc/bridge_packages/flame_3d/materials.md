@@ -89,7 +89,7 @@ pipeline changes; joint matrices are written for every skinned draw.
 - `DecalMaterial`: vertex `CameraMatrices`, `Decal`; fragment `Decal`, `albedoTexture`.
 - `SkyboxMaterial3D`: fragment `Skybox`, `panoramaTexture`.
 - `BarrierMaterial`: vertex `CameraMatrices`, `BarrierShape`; fragment `BarrierLook`: 3 blocks, no
-  texture.
+  texture, for both of its shader pairs (see [Barriers](#costs)).
 
 `RenderStats` (see [Rendering](rendering.md#frame-output-and-statistics)) counts the material
 changes of a frame.
@@ -1505,18 +1505,22 @@ sorts. Without `sortByDepth` (the default), nothing is sorted and the decals kee
 ## Barriers
 
 `BarrierMaterial` draws a translucent energy wall that stands around an area while something is in
-play inside it and lights up where it is hit: brightest at its foot and thin above, so that it
-never hides what stands inside, with a slow pattern of motifs travelling along it, a glint where it
-is seen edge-on, and up to four impacts, each a ring spreading over the wall from a point and a
-flash around that point. `BarrierMesh` builds the walls it draws:
+play inside it and lights up where it is hit: brightest at its foot and thin above by default, so
+that it never hides what stands inside, with a slow pattern of motifs travelling along it, a glint
+where it is seen edge-on, and impacts, each rings spreading over the wall from a point and a flash
+around that point. Its height, its density and its reaction are each settings.
+`BarrierMesh` builds the walls it draws:
 
 ```dart
-final barrier = BarrierMaterial(appear: 0);
+final barrier = BarrierMaterial(appear: 0, reactionInFront: 1)
+  ..wobbleAmplitude = 0.05;
 final wall = BarrierMesh.roundedRectangle(
   width: 5.4,
   depth: 5.4,
   height: 0.75,
   cornerRadius: 0.16,
+  heightSegments: 8, // rows and columns for the wobble
+  maxSegmentLength: 0.15,
   material: barrier,
 );
 barrier.fitPatternTo(wall.length, motifLength: 0.45);
@@ -1530,11 +1534,21 @@ barrier.time += dt;
 wallComponent.visible = true;
 barrier.appear = raised; // 0..1
 
+// While a ball flies towards the wall, it glows where the ball comes close:
+barrier.setNearPoint(0, ballPosition);
+
 // Where something hits it (a world position, from the physics contact):
 barrier.impact(contactPoint, color: const Color(0xFF7FD4FF));
 
+// When it lands, or on each beat of a countdown:
+barrier.pulse();
+
 // When play ends: animate appear back to 0, then hide the component.
 ```
+
+Every setting added to the original material is off or neutral by default: a `BarrierMaterial()`
+draws exactly the pixels it drew before they existed (a GPU test compares them with the shaders of
+that time at a tolerance of 0).
 
 
 ### Wall meshes
@@ -1548,74 +1562,141 @@ surface in the standard layout with such texture coordinates works too.
 texture coordinates and the normal), standing on the xz plane with its foot at `y = 0`, around the
 origin:
 
-- `BarrierMesh.roundedRectangle(width, depth, height, cornerRadius: 0, cornerSegments: 8)`: a band
-  around a rectangle (along x and z) with rounded corners (sharp ones at a radius of `0`);
-- `BarrierMesh.ring(radius, height, segments: 64)`: a band around a circle;
+- `BarrierMesh.roundedRectangle(width, depth, height, cornerRadius: 0, cornerSegments: 8,
+  heightSegments: 1, maxSegmentLength: null)`: a band around a rectangle (along x and z) with
+  rounded corners (sharp ones at a radius of `0`);
+- `BarrierMesh.ring(radius, height, segments: 64, heightSegments: 1)`: a band around a circle;
 - `BarrierMesh.dome(radius, segments: 64, rings: 16)`: the upper half of a sphere, the height
   running by elevation from its rim to its pole.
 
 The distance along the foot runs counter-clockwise seen from above (from `+x` towards `-z`), from
 `0` to `length`, starting at the middle of the `+x` side (the rectangle) or at `(radius, 0, 0)`;
-the first and last columns of vertices are at the same place. Faces face outwards. A rectangle
-with rounded corners is `2 * (5 + 4 * cornerSegments)` triangles, a ring `2 * segments`, a dome
-`segments * (2 * rings - 1)`. The material shades every pixel from its interpolated coordinates,
-so the walls need no more rows than these.
+the first and last columns of vertices are at the same place. Faces face outwards. By default a
+rectangle with rounded corners is `2 * (5 + 4 * cornerSegments)` triangles, a ring `2 * segments`,
+a dome `segments * (2 * rings - 1)`. The material shades every pixel from its interpolated
+coordinates, so the walls need no more rows than these, except for the wobble: it moves vertices,
+so a wall that wobbles needs `heightSegments` rows and columns `maxSegmentLength` apart (a fraction
+of `wobbleWavelength`, say a fifth); neither changes `length`, the wall coordinates or
+`pointOnWall`. Each band has at most 65,535 vertices.
 
 Rotate the component to stand a wall in a scene whose up is not `+y` (a quarter turn about x for
 `+z`). `pointOnWall(along, heightFraction, [out])` gives a point of the wall in the mesh's space,
 by distance along its foot and height; transform it by the component's `worldTransformMatrix` for
-`impact`.
+`impact`. With a `heightScale` other than `1`, multiply the point's `y` by it.
 
 
-### Look
+### Height
 
-| Parameter           | Default      | Meaning                                                   |
-| ------------------- | ------------ | --------------------------------------------------------- |
-| `footColor`         | `0xFFFFB45A` | color at the foot; its alpha scales the light there       |
-| `topColor`          | `0x4DFFF2D6` | color at the top; its alpha scales the light there        |
-| `intensity`         | `0.8`        | multiplies all the light; above `1` goes above white      |
-| `heightFalloff`     | `1.8`        | the light is multiplied by `(1 - height) ^ heightFalloff` |
-| `footGlow`          | `0.7`        | a thin bright line along the foot                         |
-| `nearSideFade`      | `0.7`        | how much the side facing the viewer is thinned            |
-| `glintStrength`     | `0.35`       | glint where the wall is seen edge-on                      |
-| `glintPower`        | `4`          | how close to the edges the glint stays                    |
-| `appear`            | `1`          | how far the wall has risen from its foot, `0` to `1`      |
-| `appearSoftness`    | `0.15`       | softness of the rising front, a fraction of the height    |
-| `pattern`           | `chevrons`   | the motif, a `BarrierPattern`                             |
-| `patternScale`      | `2.5`        | motifs per scene unit along the wall                      |
-| `patternSpeed`      | `0.3`        | scene units per second, negative the other way            |
-| `patternStrength`   | `0.55`       | brightness of the motifs                                  |
-| `patternHeight`     | `0.45`       | the band the motifs fill, a fraction of the height        |
-| `patternLoopLength` | `0` (open)   | length of a closed loop, see [Pattern](#pattern)          |
-| `impactRingSpeed`   | `2.5`        | scene units per second                                    |
-| `impactRingWidth`   | `0.07`       | scene units                                               |
-| `impactDuration`    | `0.9`        | seconds                                                   |
-| `impactFlashRadius` | `0.3`        | scene units                                               |
+| Parameter         | Default      | Meaning                                                |
+| ----------------- | ------------ | ------------------------------------------------------ |
+| `heightScale`     | `1`          | how tall the wall stands, a scale of the mesh's height |
+| `heightFalloff`   | `1.8`        | the light is multiplied by `(1 - u) ^ heightFalloff`   |
+| `fadeStart`       | `0`          | where the light starts to fade (`u = 0`), a fraction   |
+| `fadeEnd`         | `1`          | where the light has faded out (`u = 1`), a fraction    |
+| `footGlow`        | `0.7`        | a thin bright line along the foot                      |
+| `topEdgeStrength` | `0` (none)   | a glowing line along the top, the upper boundary       |
+| `topEdgeWidth`    | `0.04`       | its width, a fraction of the height                    |
+| `topEdgeColor`    | `0xFFFFFFFF` | its color; the alpha scales it                         |
+| `appear`          | `1`          | how far the wall has risen, `0` to `1`                 |
+| `appearSoftness`  | `0.15`       | softness of the rising front, a fraction               |
+
+- `heightScale` sets how tall the wall stands at run time, without rebuilding the mesh and
+  independently of `appear`: the vertex stage scales the mesh along its own y axis about `y = 0`
+  (the foot of a `BarrierMesh`), so `0.5` stands half as tall, `1.4` taller than built, and a game
+  can raise, lower or breathe the wall every frame. The profile, the top edge and the motifs follow
+  the wall's height (the motifs stretch with it); the impacts are world points and stay where they
+  are.
+- The light fades over `u`, running from `0` at `fadeStart` to `1` at `fadeEnd`: by default from
+  the foot to the top, which with the falloff of `1.8` reads as a low glowing fence. A
+  `heightFalloff` below `1` holds the light and drops it near the end of the fade, above `1` drops
+  it soon and tails off. Past `fadeEnd` the light and the motifs are gone; the fill, the top edge
+  and the reaction still show. A tall shield takes a late fade (`fadeStart: 0.4`, `fadeEnd: 1`,
+  `heightFalloff: 0.8`), a fill and a top edge; a fence an early one (`fadeEnd: 0.5`).
+- The top edge is a line of light at the top of the wall whatever the fade below it, thinned half
+  as much as the rest of the wall on the near side, so that a closed wall keeps its outline.
+- `appear` raises the wall from its foot: everything below a soft front at that fraction of the
+  height is drawn, and the front glows while the wall rises or sinks (`0 < appear < 1`). At `0`, as
+  at a `heightScale` of `0`, every vertex is moved out of view, so the wall costs its draw call but
+  no pixels; set the component's `visible` to `false` as well to skip the draw.
+
+
+### Density
+
+| Parameter          | Default      | Meaning                                                     |
+| ------------------ | ------------ | ----------------------------------------------------------- |
+| `footColor`        | `0xFFFFB45A` | color at the foot; its alpha scales the light there         |
+| `topColor`         | `0x4DFFF2D6` | color at the top; its alpha scales the light there          |
+| `intensity`        | `0.8`        | multiplies all the light; above `1` goes above white        |
+| `fillOpacity`      | `0` (none)   | a body covering what is behind the wall, `0` to `1`         |
+| `fillColor`        | `0xFFFFB45A` | its color; the alpha scales the opacity                     |
+| `fillFade`         | `0`          | how much the fill follows the fade, `0` even, `1` fully     |
+| `noiseStrength`    | `0` (none)   | value noise breaking up the light, `1` from dark to double  |
+| `noiseScale`       | `3`          | noise cells per scene unit                                  |
+| `noiseSpeed`       | `0.3`        | how fast the noise rises, scene units per second            |
+| `flickerStrength`  | `0` (none)   | how deep the whole wall's light flickers, `0` to `1`        |
+| `flickerSpeed`     | `6`          | changes per second                                          |
+| `nearSideFade`     | `0.7`        | how much the side whose outside faces the viewer is thinned |
+| `farSideFade`      | `0`          | how much the side whose inside faces the viewer is thinned  |
+| `sideFadeSoftness` | `0.45`       | the facing (a cosine) over which the sides thin             |
+| `glintStrength`    | `0.35`       | glint where the wall is seen edge-on                        |
+| `glintPower`       | `4`          | how close to the edges the glint stays                      |
+| `preserveHue`      | `false`      | scale bright colors down instead of clipping them to white  |
 
 - The foot color blends into the top color up the wall, both multiplied by the instance color
   (`MeshComponent.color`), whose alpha scales the light.
+- The fill is a body of its own color whatever the pattern, from a faint veil to nearly opaque.
+  With `RenderState.premultipliedAlphaBlend` or `alphaBlend` it covers what is behind the wall in
+  proportion to its opacity (the output's alpha is the larger of the brightest channel and the
+  fill's cover); with the default additive blending, which keeps what is behind, its color is only
+  added. It is thinned on the near side like the rest of the wall, and the pulse raises it.
+- The noise (two octaves of value noise along the wall and up it, in world units, rising at
+  `noiseSpeed`) breaks up the light so that a dense wall is not flat; it leaves the fill alone, so
+  that it opens no holes onto what is behind. On a closed loop (`fitPatternTo`) it repeats a whole
+  number of times around it, like the pattern. The flicker multiplies the wall's light by `1 -
+  flickerStrength * n`, `n` a smooth random value changing `flickerSpeed` times a second, computed
+  on the CPU; the reaction does not flicker.
 - `nearSideFade` thins the side of a closed wall whose outside faces the viewer, by up to
   `nearSideFade` where it faces the viewer squarely, so that it does not veil what stands inside,
-  while the far side shows fully behind it. It reads the normals, which must point out of the
-  enclosed area (as those of `BarrierMesh` do); impacts are not thinned.
-- `appear` raises the wall from its foot: everything below a soft front at that fraction of the
-  height is drawn, and the front glows while the wall rises or sinks (`0 < appear < 1`). At `0`
-  every vertex is moved out of view, so the wall costs its draw call but no pixels; set the
-  component's `visible` to `false` as well to skip the draw.
-- Advance `time` every frame: the pattern, the twinkle of its motifs and the impacts follow it.
-  Like every material value, changes are read when the material is bound; a retained
-  `Scene3DComponent` must be marked dirty while the wall moves (see
-  [What a draw binds](#what-a-draw-binds)).
+  while the far side shows fully behind it. `farSideFade` thins the side whose inside faces the
+  viewer: for a viewer inside the wall (a dome around the camera) set it instead of
+  `nearSideFade`; with both, less of the far side shows through the near side. Both read the
+  normals, which must point out of the enclosed area (as those of `BarrierMesh` do); the reaction
+  is not thinned.
+- `preserveHue` scales the wall's own light and fill down where their brightest channel passes
+  `0.8`, so that they reach `1` smoothly instead of clipping channel by channel, which turns a
+  bright warm or cold wall white. The reaction is added after it and may go above white. It keeps
+  the wall at or below white in an HDR scene target too, so the wall does not bloom there.
 
 
 ### Pattern
 
+| Parameter             | Default    | Meaning                                                  |
+| --------------------- | ---------- | -------------------------------------------------------- |
+| `pattern`             | `chevrons` | the motif, a `BarrierPattern`                            |
+| `patternScale`        | `2.5`      | motifs per scene unit along the wall                     |
+| `patternRows`         | `1`        | rows of motifs in the band, every other shifted by half  |
+| `patternLineWidth`    | `1`        | thickness of the motifs' lines, a multiplier             |
+| `patternHeight`       | `0.45`     | the top of the band the motifs fill, a fraction          |
+| `patternStrength`     | `0.55`     | brightness of the motifs                                 |
+| `patternColor`        | `null`     | their color; `null` for the foot color lightened a third |
+| `patternSpeed`        | `0.3`      | scene units per second, negative the other way           |
+| `patternRiseSpeed`    | `0`        | rows per second up the band, negative down               |
+| `patternTwinkle`      | `0.25`     | how deeply the motifs twinkle, `0` steady to `1`         |
+| `patternTwinkleSpeed` | `1.7`      | radians per second                                       |
+| `patternLoopLength`   | `0` (open) | length of a closed loop, see below                       |
+
 `BarrierPattern.plain` has no motif; `chevrons` point the way the pattern travels; `diamonds` are
 outlines with a dot at their center; `dashes` are rune-like stems of varying length with a dot, a
-caret or a bar, different from one motif to the next. The motifs fill a band of the wall above the
-foot (`patternHeight`), twinkle slowly, and travel along the wall at `patternSpeed`. They are drawn
-in the cells of the wall's coordinates, `1 / patternScale` long and `patternHeight` of the wall's
-height tall, so their proportions follow those two lengths.
+caret or a bar, different from one motif to the next; `hexagons` are the outlines of a honeycomb,
+one hexagon per motif and per row; `grid` is a cage, a bar up each motif and a rung across each
+row's boundary. The motifs fill a band of the wall above the foot (`patternHeight`), in
+`patternRows` rows, twinkle, and travel along the wall at `patternSpeed` and up it at
+`patternRiseSpeed` (rising motifs fade in at the foot of the band and out at its top). They are
+drawn in the cells of the wall's coordinates, `1 / patternScale` long and `patternHeight /
+patternRows` of the wall's height tall, so their proportions follow those lengths. The density of
+the pattern is how many motifs (`patternScale`, `patternRows`), how thick their lines
+(`patternLineWidth`), how much of the wall they cover (`patternHeight`) and how bright they are
+(`patternStrength`); the near points brighten the motifs around them.
 
 On a closed loop the pattern has a seam where the loop closes unless a whole number of motifs fits
 the loop: `fitPatternTo(loopLength, motifLength: 0.4)` sets `patternScale` to the nearest such
@@ -1626,32 +1707,138 @@ repeat every 256 (`BarrierMaterial.openWallPeriod`).
 
 ### Impacts
 
-`impact(position, color: white, strength: 1)` starts an impact at the current `time`, at a world
-position: a ring of `color` spreading from it over the wall at `impactRingSpeed`, `impactRingWidth`
-wide, and a flash around it, both scaled by `strength` (and by the color's alpha) and fading out
-over `impactDuration`. The distance is measured in world space from the point, so the ring wraps
-around corners and over a dome. A material shows `BarrierMaterial.maxImpacts` (4) impacts at once:
-a new one takes a free slot, or replaces the oldest. It allocates nothing; `activeImpactCount`,
-`isImpactActive` and `clearImpacts` read and reset them. Impacts are not moved with the wall: a
-wall that moves while a ring spreads leaves it where it started.
+| Parameter             | Default      | Meaning                                           |
+| --------------------- | ------------ | ------------------------------------------------- |
+| `impactColor`         | `0xFFFFFFFF` | the color of an impact given none                 |
+| `impactSlots`         | `4`          | impacts shown at once, `1` to `8`                 |
+| `impactDuration`      | `0.9`        | how long an impact lasts, seconds                 |
+| `impactRingCount`     | `1`          | rings per impact, `1` to `4`, each `0.7` the last |
+| `impactRingInterval`  | `0.15`       | seconds between an impact's rings                 |
+| `impactRingSpeed`     | `2.5`        | scene units per second                            |
+| `impactRingWidth`     | `0.07`       | scene units                                       |
+| `impactRingStrength`  | `1`          | brightness of the rings                           |
+| `impactRingReach`     | `0` (none)   | where the rings have faded out (from 60 % of it)  |
+| `impactFlashRadius`   | `0.3`        | scene units                                       |
+| `impactFlashStrength` | `0.8`        | brightness of the flash around the point          |
+| `impactFlashDuration` | `1 / 3`      | the flash's length, a fraction of the duration    |
+| `wobbleAmplitude`     | `0` (none)   | how far the surface moves, scene units            |
+| `wobbleFrequency`     | `5`          | swings per second                                 |
+| `wobbleWavelength`    | `0.6`        | distance between crests, scene units              |
+| `wobbleDecay`         | `3`          | per second: amplitude times `exp(-decay * age)`   |
+| `wobbleRadius`        | `1.5`        | distance where the wobble has fallen to `1 / e`   |
+| `wobbleShading`       | `0.5`        | how much the wobble shades the light              |
+
+`impact(position, color: impactColor, strength: 1)` starts an impact at the current `time`, at a
+world position: rings of `color` spreading from it over the wall and a flash around it, both scaled
+by `strength` (and by the color's alpha) and fading out over `impactDuration`. The distance is
+measured in world space from the point, so the rings wrap around corners and over a dome. A
+material shows `impactSlots` impacts at once (`maxImpacts`, 4, by default, up to
+`maxImpactSlots`, 8): a new one takes a free slot, or replaces the oldest. It allocates nothing;
+`activeImpactCount`, `isImpactActive` and `clearImpacts` read and reset them. Impacts are not moved
+with the wall: a wall that moves while a ring spreads leaves it where it started.
+
+The wobble moves the surface along its normal around each impact: a damped wave leaves the point
+at `wobbleFrequency * wobbleWavelength` units per second, oscillates behind its front and dies out
+with time (`wobbleDecay`), distance (`wobbleRadius`) and the impact's duration, so the wall stands
+straight again when the impact is over. The vertex stage moves the vertices (the wall needs rows
+and columns, see [Wall meshes](#wall-meshes)), tilts the normals so that the glint and the
+near-side fade follow the waves, and passes the wobble on to shade the light. Raise
+`impactRingStrength` and `impactFlashStrength` well above `1` for a reaction that reads on a small
+screen.
+
+
+### Pulse and near points
+
+| Parameter               | Default      | Meaning                                               |
+| ----------------------- | ------------ | ----------------------------------------------------- |
+| `pulseColor`            | `0xFFFFFFFF` | the color of a pulse given none                       |
+| `pulseStrength`         | `1`          | the strength of a pulse given none                    |
+| `pulseDuration`         | `0.6`        | the length of a pulse given none, seconds             |
+| `pulseAttack`           | `0.15`       | the share of a pulse spent lighting up                |
+| `proximityColor`        | `0xFFFFFFFF` | the color of a near point given none                  |
+| `proximityRadius`       | `0.6`        | distance at which a near point starts to light, units |
+| `proximityStrength`     | `1`          | brightness of the near points' glow                   |
+| `proximityPatternBoost` | `1.5`        | how much near points brighten the motifs around them  |
+
+- `pulse(strength:, duration:, color:)` lights the whole wall up and lets it fall back: the value
+  rises over the first `pulseAttack` of the duration and falls back as `(1 - t)²` over the rest;
+  a pulse started while another shows rises from where that one is. It adds `color * value` to the
+  wall's light, more at the foot than at the top, and raises the fill's cover; `pulseValue` reads
+  it and `clearPulse` ends it. For a landing, or each beat of a countdown.
+- `setNearPoint(index, position, strength:, color:)` makes the wall glow where a world point comes
+  close, without a hit: the glow grows as `(1 - distance / proximityRadius)²` towards the point and
+  brightens the motifs around it. There are `maxNearPoints` (4) slots; call it every frame the
+  point moves, `clearNearPoint` and `clearNearPoints` remove them.
+
+
+### Reaction in front
+
+`reactionInFront` (`0` by default, up to `1`) draws the reaction, the impacts and the glow of the
+near points, over what stands in front of the wall: a ball that hits the far side of a wall hides
+its own rings otherwise. While it is above `0` and a reaction shows (`drawsReactionInFront`), a
+`BarrierMesh` draws its surface a second time with `reactionInFrontMaterial`: the same shaders and
+values, drawing the reaction only and scaled by `reactionInFront`, with the wall's blending but the
+depth test `CompareFunction.greater` and no depth writes. It lands only on the pixels where
+something in front of the wall hid it, so where nothing does, the picture is the same as without it,
+and the second draw shades only those pixels. A mesh of another class draws that second surface
+itself:
+
+```dart
+if (barrier.drawsReactionInFront) {
+  context.drawSurface(
+    surface,
+    transform: transform,
+    material: barrier.reactionInFrontMaterial,
+  );
+}
+```
+
+It costs one more draw call (outside the shadow and depth-normal passes) and the uniforms of a
+second material, while a reaction shows: an impact during its duration, or a near point set.
+
+
+### Blending over bright and coloured backgrounds
+
+The background behind a wall decides which blend reads best. Added light (the default
+`RenderState.additive`) only brightens: over light water or pale stone a warm or cold wall turns
+white where it is bright, since every channel of the background is raised, and its rings vanish in
+the white. Laid over (`RenderState.premultipliedAlphaBlend`), the wall replaces what is behind it in
+proportion to its alpha, the brightest channel of its light, so its bright parts keep their hue;
+its faint parts still mix with the background (an orange veil over turquoise water goes grey-green
+where it thins out).
+
+| Background                    | Blend                                                        |
+| ----------------------------- | ------------------------------------------------------------ |
+| Light water, pale stone, sand | premultiplied, `preserveHue: true`, `fillOpacity` 0.2 to 0.4 |
+| Dark water, dark ground       | additive (premultiplied where it stands over pale slabs)     |
+| HDR scene with bloom          | additive, `preserveHue: false`, `intensity` above `1`        |
+
+- With `preserveHue`, a wall at the `intensity` a game needs to read (`1` to `1.4`) keeps its
+  color instead of clipping to yellow-white or cyan-white, and the reaction, added after it, still
+  goes white where it is bright.
+- A fill gives the background less of a say: its cover replaces the background by the fill color,
+  so a warm wall over cold water stays warm where its light thins out. Keep it under `0.5` on a wall
+  whose inside must stay readable, and thin the near side (`nearSideFade` `0.7` to `0.85`).
+- The same wall stands over several backgrounds at once: in a `Scene3DComponent` the far side of a
+  wall around a platform is seen over the platform's pale slabs, the rest over the water around it.
+  Choose for the brightest of them.
 
 
 ### Blending, depth and passes
 
 - The default `RenderState.additive` adds the wall's light to what is behind it and keeps the
   target's alpha (see [Rendering](rendering.md#render-state)): in a `Scene3DComponent` the wall adds
-  onto the 2D art drawn below the layer without darkening it. Over a saturated color, such as blue
-  water, added warm light turns towards white.
+  onto the 2D art drawn below the layer without darkening it.
 - `RenderState.premultipliedAlphaBlend` and `RenderState.alphaBlend` lay it over the scene as a
-  veil whose alpha is its brightest channel, which keeps a warm wall warm over cool colors and
-  darkens what is behind its bright parts.
+  veil whose alpha is its brightest channel, or the fill's cover where larger.
 - The wall is depth tested against the scene without writing depth, both faces are drawn, and it
   is translucent: ordered among the translucent draws by the center of its bounds. It is left out
   of the shadow passes (`castsShadows` is `false`) and of the depth-normal prepass, which draws
   only opaque materials that write depth. With `OitMode3D.weightedBlended` the additive wall is
   drawn sorted after the composite, as every additive draw is.
 - It writes display colors, unclamped: in an HDR scene target (`World3D.hdrEnabled`) an
-  `intensity` above `1` and stacked impacts go above white and bloom; in an 8-bit target they clip.
+  `intensity` above `1` and stacked impacts go above white and bloom (unless `preserveHue`); in an
+  8-bit target they clip.
 - The view direction comes from the inverse of the view-projection matrix, so the glint and the
   near side are right under perspective, orthographic, oblique and mirroring projections, such as
   the affine projections of 2D art.
@@ -1659,19 +1846,40 @@ wall that moves while a ring spreads leaves it where it started.
 
 ### Costs
 
-One draw call per barrier mesh (one surface) and three uniform blocks, no texture. The fragment
-shader runs on the wall's pixels only: a gradient, one motif (a few segment distances), a glint and
-four impacts, unrolled. All the values that grow with time (the pattern's offset, the twinkle's
-phase, the age of each impact) are computed and wrapped on the CPU in `apply`, so the shader never
-sees a large time, and `apply` computes the inverse of the view-projection matrix once per batch.
-It allocates nothing per frame. In the `barrier` scene of the example, the wall (74 triangles
-around a 5 by 5 platform) adds one draw call to the layer's 13, about 600 bytes of uniforms, and
-about 10 µs of `Material.apply` per frame under `flutter test` (a debug build, measured with
-`FLAME_3D_PROFILE`, see [Rendering](rendering.md#profiling)).
+One draw call per barrier mesh (one surface), one more while the reaction in front shows, and
+three uniform blocks, no texture: `BarrierShape` (13 vectors: the appear factor, the height scale,
+the wobble and the packed impacts) and `BarrierLook` (46 vectors: the look, 8 impacts and 4 near
+points), about 950 bytes besides the camera's, against 320 before the controls.
+
+The material has two pairs of shaders and picks one each time it is drawn (`usesFullShader`):
+
+- the lean pair (`barrier_material`) draws what the barrier drew before its controls existed (one
+  row of the first four patterns, at most 4 impacts with one ring each, the near side thinned) plus
+  the pulse and the near points, with only constants turned into uniforms (the ring and flash
+  strengths, the flash's length, the twinkle, the line width, the motif color, the softness of the
+  near-side fade). It costs what the barrier cost: a gradient, one motif (a few segment distances),
+  a glint and four impacts, unrolled.
+- the full pair (`barrier_material_full`) is drawn while any option the lean one leaves out is on
+  (hexagons or a grid, rows, rising motifs, a fade off its ends, a top edge, a fill, noise, a
+  flicker, `farSideFade`, `preserveHue`, more rings or a reach, more than 4 slots, a wobble), and
+  for the reaction in front. Every option is behind a branch on a uniform, but the larger shader
+  holds more registers: on a desktop GPU (12 overlapping full-screen walls) it shaded at about 1.5
+  to 2.5 times the cost of the lean one, whichever options were on. The first frame that needs it
+  creates its pipeline. Its vertex stage evaluates the wobble of up to 8 impacts per vertex while
+  the wobble is on.
+
+All the values that grow with time (the pattern's offsets, the twinkle's phase, the noise offset,
+the flicker, the pulse, the age of each impact) are computed and wrapped on the CPU in `apply`, so
+the shaders never see a large time, and `apply` computes the inverse of the view-projection matrix
+once per batch. It allocates nothing per frame, and neither do `impact`, `pulse` and
+`setNearPoint`. In the `barrier` scene of the example, the wall (74 triangles
+around a 5 by 5 platform) adds one draw call to the layer's 13, and about 10 µs of `Material.apply`
+per frame under `flutter test` (a debug build, measured with `FLAME_3D_PROFILE`, see
+[Rendering](rendering.md#profiling)).
 
 The shaders are written for GLSL ES 1.00 too: no flat inputs, no explicit texture level of detail,
 no derivatives, no `switch`, no integer operations, and no loops besides the one-pass loops the
-compiler adds; their OpenGL ES output passes `glslangValidator` as GLSL ES 1.00.
+compiler adds; the OpenGL ES output of both pairs passes `glslangValidator` as GLSL ES 1.00.
 
 Not available on the web: there is no WebGPU build of its shaders, and creating one there throws an
 `UnsupportedError`.
@@ -2143,9 +2351,15 @@ The texture sampler options, including anisotropy up to 16, work on the web.
   soft edges. (`BillboardMaterial3D`, and so `Text3DComponent`, blends premultiplied colors and
   takes a `premultipliedTexture` flag, see [3D UI and Text](ui_3d.md#the-material).) The package
   has no single alpha convention for textures yet.
-- `BarrierMaterial`: its appear factor, pattern and impacts belong to the material, so barriers
-  that rise and are hit separately need a material each; four impacts at once; its motifs are
-  drawn without derivatives, so a pattern much finer than a few pixels per motif aliases; additive
-  light over saturated colors turns towards white; no fog.
+- `BarrierMaterial`: its appear factor, pattern, impacts, pulse and near points belong to the
+  material, so barriers that rise and are hit separately need a material each; eight impacts and
+  four near points at once; its motifs are drawn without derivatives, so a pattern much finer than
+  a few pixels per motif aliases; additive light over light or saturated colors turns towards
+  white (lay it over with `preserveHue` and a fill instead); no fog. `heightScale` scales the mesh
+  about its own `y = 0` and stretches the motifs; the wobble moves vertices, so it needs a
+  subdivided wall, and it moves the surface only along its normal; the noise measures the height
+  along the mesh's y axis. The reaction in front shows over anything in front of the wall, not only
+  over what caused it, and a near point keeps its second draw alive while it is set. Any option of
+  the full shaders costs the full shaders' price, however little of it is used.
 - KTX2: no supercompression, and no CPU decoder for BC7, ETC2, ASTC and RGBA32F.
 - `ImageTexture` has no color space option: images cannot be sampled as sRGB.
