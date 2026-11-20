@@ -2,7 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' hide FragmentShader;
 
-import 'package:flame_3d/core.dart';
+import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 
@@ -59,123 +59,41 @@ import 'package:flame_3d/resources.dart';
 /// mask.
 /// {@endtemplate}
 class WaterMaterial({
-  var Color shallowColor = const Color(0xFF38BDF8),
-  var Color deepColor = const Color(0xFF0F3460),
-  var Color foamColor = const Color(0xE6F8FAFC),
-  var double time = 0.0,
-  var double waveAmplitude = 0.08,
-  var double waveFrequency = 1.6,
-  var double waveSpeed = 1.8,
-  var double steepness = 0.45,
+  var Color _shallowColor = const Color(0xFF38BDF8),
+  var Color _deepColor = const Color(0xFF0F3460),
+  var Color _foamColor = const Color(0xE6F8FAFC),
+  var double _time = 0.0,
+  var double _waveAmplitude = 0.08,
+  var double _waveFrequency = 1.6,
+  var double _waveSpeed = 1.8,
+  var double _steepness = 0.45,
   Vector3? upAxis,
-  var double rippleStrength = 0.08,
-  var double rippleScale = 0.85,
-  var double foamThreshold = 0.68,
-  var double fresnelPower = 3.2,
-  var double specularStrength = 0.85,
-  var double specularPower = 48.0,
+  var double _rippleStrength = 0.08,
+  var double _rippleScale = 0.85,
+  var double _foamThreshold = 0.68,
+  var double _fresnelPower = 3.2,
+  var double _specularStrength = 0.85,
+  var double _specularPower = 48.0,
   double opacity = 0.86,
-
-  /// Clip-depth thickness span (`> 0` generates shoreline intersection foam
-  /// where opaque scene geometry meets the water surface when
-  /// `World3D.depthPrepassEnabled` is active).
-  var double shoreFoamDepth = 0.0,
-
-  /// Screen-UV offset multiplier applied when `World3D.grabSceneColorEnabled`
-  /// refracts opaque underwater geometry.
-  var double refractionStrength = 0.04,
-
-  /// The strength of the caustic network, the bright, wavy lines of light
-  /// a rippled surface focuses: `0` (the default) turns it off, `1` adds
-  /// [causticColor] times the light reaching the water on the lines.
-  var double causticStrength = 0,
-
-  /// The size of the cells of the caustic network, in world units, on
-  /// average.
-  var double causticScale = 0.6,
-
-  /// The color of the caustic network, times the light reaching the water.
-  var Color causticColor = const Color(0xFFFFFFFF),
-
-  /// The strength of the sparkles, tiny points that flash in the light of
-  /// the lights reaching the water: `0` (the default) turns them off.
-  var double sparkleStrength = 0,
-
-  /// The size of the cells of the sparkles, in world units: one point
-  /// flashes in each cell, twice per [animationPeriod].
-  var double sparkleScale = 0.35,
-
-  /// How much a gentle swell of small waves tilts the normals, so that the
-  /// highlights of the lights move over the water: `0` (the default) turns
-  /// it off, `1` tilts them by about 0.3 radians at most.
-  var double detailStrength = 0,
-
-  /// The length of the longest wave of the swell of [detailStrength], in
-  /// world units.
-  var double detailScale = 1.6,
-
-  /// The period, in seconds of [time], over which the caustics, the
-  /// sparkles, the swell and the edge foam loop exactly.
-  var double animationPeriod = 8,
-
-  /// The depth of the water, in world units, over which the color goes
-  /// from [shallowColor] to [deepColor] and the opacity from
-  /// [shallowOpacity] to [opacity]: `1 - exp(-depth / depthRange)` of the
-  /// way. `0` (the default) turns the ramp off: the color then follows the
-  /// height of the waves, and the opacity is [opacity].
-  var double depthRange = 0,
-
-  /// The opacity of the water where it has no depth, with [depthRange].
-  var double shallowOpacity = 0.2,
-
-  /// The depth of the water under the vertices of surfaces in the standard
-  /// layout, which do not say it, for [depthRange].
-  var double defaultDepth = 1,
-
-  /// The size of the patches the edge foam breaks into, in world units.
-  var double edgeFoamScale = 0.6,
-
-  /// The ripples this water draws, shared with the other materials of the
-  /// same body of water; `null` (the default) draws none.
-  var WaterRipples? ripples,
-
-  /// How much of the color of the light the lit foam takes (the foam of the
-  /// foam mask, of the [foamSources] and of the [ripples]), from `0` to `1`:
-  /// `1` (the default) takes the color of the light as it is, `0` only its
-  /// brightness (its luminance), so the foam keeps [foamColor] under a
-  /// colored light. About `0.25` suits a low, warm sun. The crest and shore
-  /// foam are not lit and keep [foamColor] anyway.
-  var double foamLightTint = 1,
-
-  /// The least light the lit foam takes (the foam of the foam mask, of the
-  /// [foamSources] and of the [ripples]), as a multiple of [foamColor], `0`
-  /// or more: the light reaching the water is clamped between it and
-  /// `1.15` (or it, when it is above). `0.5` (the default) lets the foam
-  /// fall to half its color in low light, where it turns grey against
-  /// lighter water; at dusk about `0.85` keeps white foam bright, with
-  /// [foamLightTint] about `0.25`. Above about `1` the foam no longer
-  /// darkens in shadow either. The crest and shore foam are not lit.
-  var double foamLightFloor = 0.5,
-
-  /// How fast the foam of the foam mask and of the [foamSources] laps and
-  /// drifts, as a multiple of its own pace: `1` (the default) laps twice per
-  /// [animationPeriod], `0` holds it still (a rim of ice along a wall, dried
-  /// salt, a painted edge), still broken up into patches but not moving. The
-  /// caustics, the sparkles, the swell and the ripples keep their pace.
-  var double edgeFoamMotion = 1,
-
-  /// The foam sources this water draws, collars of foam around the things
-  /// that move, shared with the other materials of the same body of water;
-  /// `null` (the default) draws none.
-  ///
-  /// The material draws with a lean fragment stage, whose 8 slots of foam
-  /// sources draw collars whose pattern stays in the world, and switches to
-  /// its full stage, 16 slots that can carry their pattern, 16 uniform
-  /// vectors larger and a little slower everywhere, while its set holds more
-  /// than 8 sources ([WaterFoamSources.capacity]) or one of them carries its
-  /// pattern ([WaterFoamSources.setCarryPattern]); unless its
-  /// [fragmentShader] was replaced by another one.
-  var WaterFoamSources? foamSources,
+  var double _shoreFoamDepth = 0.0,
+  var double _refractionStrength = 0.04,
+  var double _causticStrength = 0,
+  var double _causticScale = 0.6,
+  var Color _causticColor = const Color(0xFFFFFFFF),
+  var double _sparkleStrength = 0,
+  var double _sparkleScale = 0.35,
+  var double _detailStrength = 0,
+  var double _detailScale = 1.6,
+  var double _animationPeriod = 8,
+  var double _depthRange = 0,
+  var double _shallowOpacity = 0.2,
+  var double _defaultDepth = 1,
+  var double _edgeFoamScale = 0.6,
+  var WaterRipples? _ripples,
+  var double _foamLightTint = 1,
+  var double _foamLightFloor = 0.5,
+  var double _edgeFoamMotion = 1,
+  var WaterFoamSources? _foamSources,
 }) extends Material {
   /// {@macro water_material}
   this
@@ -190,9 +108,224 @@ class WaterMaterial({
         ),
       ) {
     _leanFragment = super.fragmentShader;
-    castsShadows = false;
-    renderState = _derivedState = _stateFor(opacity);
+    setInitialState(
+      renderState: _derivedState = _stateFor(opacity),
+      castsShadows: false,
+    );
+    _upAxis.addListener(markChanged);
   }
+
+  /// The changes of this material, of its [ripples] and of its
+  /// [foamSources]: adding a ripple or moving a foam source changes it.
+  @override
+  int get version =>
+      super.version + (_ripples?.version ?? 0) + (_foamSources?.version ?? 0);
+
+  /// The ripples this water draws, shared with the other materials of the
+  /// same body of water; `null` (the default) draws none.
+  WaterRipples? get ripples => _ripples;
+  set ripples(WaterRipples? value) {
+    if (identical(value, _ripples)) {
+      return;
+    }
+    final before = version;
+    _ripples = value;
+    markReplaced(before);
+  }
+
+  /// The foam sources this water draws, collars of foam around the things
+  /// that move, shared with the other materials of the same body of water;
+  /// `null` (the default) draws none.
+  ///
+  /// The material draws with a lean fragment stage, whose 8 slots of foam
+  /// sources draw collars whose pattern stays in the world, and switches to
+  /// its full stage, 16 slots that can carry their pattern, 16 uniform
+  /// vectors larger and a little slower everywhere, while its set holds more
+  /// than 8 sources ([WaterFoamSources.capacity]) or one of them carries its
+  /// pattern ([WaterFoamSources.setCarryPattern]); unless its
+  /// [fragmentShader] was replaced by another one.
+  ///
+  /// The changes of the set count as changes of this material ([version]).
+  WaterFoamSources? get foamSources => _foamSources;
+  set foamSources(WaterFoamSources? value) {
+    if (identical(value, _foamSources)) {
+      return;
+    }
+    final before = version;
+    _foamSources = value;
+    markReplaced(before);
+  }
+
+  Color get shallowColor => _shallowColor;
+  set shallowColor(Color value) =>
+      _shallowColor = noteChange(_shallowColor, value);
+
+  Color get deepColor => _deepColor;
+  set deepColor(Color value) => _deepColor = noteChange(_deepColor, value);
+
+  Color get foamColor => _foamColor;
+  set foamColor(Color value) => _foamColor = noteChange(_foamColor, value);
+
+  /// The time of the waves and of the patterns, in seconds: advance it
+  /// every frame to animate the water (see [Material] on how the layers
+  /// that draw it follow it).
+  double get time => _time;
+  set time(double value) => _time = noteTime(_time, value);
+
+  double get waveAmplitude => _waveAmplitude;
+  set waveAmplitude(double value) =>
+      _waveAmplitude = noteChange(_waveAmplitude, value);
+
+  double get waveFrequency => _waveFrequency;
+  set waveFrequency(double value) =>
+      _waveFrequency = noteChange(_waveFrequency, value);
+
+  double get waveSpeed => _waveSpeed;
+  set waveSpeed(double value) => _waveSpeed = noteChange(_waveSpeed, value);
+
+  double get steepness => _steepness;
+  set steepness(double value) => _steepness = noteChange(_steepness, value);
+
+  double get rippleStrength => _rippleStrength;
+  set rippleStrength(double value) =>
+      _rippleStrength = noteChange(_rippleStrength, value);
+
+  double get rippleScale => _rippleScale;
+  set rippleScale(double value) =>
+      _rippleScale = noteChange(_rippleScale, value);
+
+  double get foamThreshold => _foamThreshold;
+  set foamThreshold(double value) =>
+      _foamThreshold = noteChange(_foamThreshold, value);
+
+  double get fresnelPower => _fresnelPower;
+  set fresnelPower(double value) =>
+      _fresnelPower = noteChange(_fresnelPower, value);
+
+  double get specularStrength => _specularStrength;
+  set specularStrength(double value) =>
+      _specularStrength = noteChange(_specularStrength, value);
+
+  double get specularPower => _specularPower;
+  set specularPower(double value) =>
+      _specularPower = noteChange(_specularPower, value);
+
+  /// Clip-depth thickness span (`> 0` generates shoreline intersection foam
+  /// where opaque scene geometry meets the water surface when
+  /// `World3D.depthPrepassEnabled` is active).
+  double get shoreFoamDepth => _shoreFoamDepth;
+  set shoreFoamDepth(double value) =>
+      _shoreFoamDepth = noteChange(_shoreFoamDepth, value);
+
+  /// Screen-UV offset multiplier applied when `World3D.grabSceneColorEnabled`
+  /// refracts opaque underwater geometry.
+  double get refractionStrength => _refractionStrength;
+  set refractionStrength(double value) =>
+      _refractionStrength = noteChange(_refractionStrength, value);
+
+  /// The strength of the caustic network, the bright, wavy lines of light
+  /// a rippled surface focuses: `0` (the default) turns it off, `1` adds
+  /// [causticColor] times the light reaching the water on the lines.
+  double get causticStrength => _causticStrength;
+  set causticStrength(double value) =>
+      _causticStrength = noteChange(_causticStrength, value);
+
+  /// The size of the cells of the caustic network, in world units, on
+  /// average.
+  double get causticScale => _causticScale;
+  set causticScale(double value) =>
+      _causticScale = noteChange(_causticScale, value);
+
+  /// The color of the caustic network, times the light reaching the water.
+  Color get causticColor => _causticColor;
+  set causticColor(Color value) =>
+      _causticColor = noteChange(_causticColor, value);
+
+  /// The strength of the sparkles, tiny points that flash in the light of
+  /// the lights reaching the water: `0` (the default) turns them off.
+  double get sparkleStrength => _sparkleStrength;
+  set sparkleStrength(double value) =>
+      _sparkleStrength = noteChange(_sparkleStrength, value);
+
+  /// The size of the cells of the sparkles, in world units: one point
+  /// flashes in each cell, twice per [animationPeriod].
+  double get sparkleScale => _sparkleScale;
+  set sparkleScale(double value) =>
+      _sparkleScale = noteChange(_sparkleScale, value);
+
+  /// How much a gentle swell of small waves tilts the normals, so that the
+  /// highlights of the lights move over the water: `0` (the default) turns
+  /// it off, `1` tilts them by about 0.3 radians at most.
+  double get detailStrength => _detailStrength;
+  set detailStrength(double value) =>
+      _detailStrength = noteChange(_detailStrength, value);
+
+  /// The length of the longest wave of the swell of [detailStrength], in
+  /// world units.
+  double get detailScale => _detailScale;
+  set detailScale(double value) =>
+      _detailScale = noteChange(_detailScale, value);
+
+  /// The period, in seconds of [time], over which the caustics, the
+  /// sparkles, the swell and the edge foam loop exactly.
+  double get animationPeriod => _animationPeriod;
+  set animationPeriod(double value) =>
+      _animationPeriod = noteChange(_animationPeriod, value);
+
+  /// The depth of the water, in world units, over which the color goes
+  /// from [shallowColor] to [deepColor] and the opacity from
+  /// [shallowOpacity] to [opacity]: `1 - exp(-depth / depthRange)` of the
+  /// way. `0` (the default) turns the ramp off: the color then follows the
+  /// height of the waves, and the opacity is [opacity].
+  double get depthRange => _depthRange;
+  set depthRange(double value) => _depthRange = noteChange(_depthRange, value);
+
+  /// The opacity of the water where it has no depth, with [depthRange].
+  double get shallowOpacity => _shallowOpacity;
+  set shallowOpacity(double value) =>
+      _shallowOpacity = noteChange(_shallowOpacity, value);
+
+  /// The depth of the water under the vertices of surfaces in the standard
+  /// layout, which do not say it, for [depthRange].
+  double get defaultDepth => _defaultDepth;
+  set defaultDepth(double value) =>
+      _defaultDepth = noteChange(_defaultDepth, value);
+
+  /// The size of the patches the edge foam breaks into, in world units.
+  double get edgeFoamScale => _edgeFoamScale;
+  set edgeFoamScale(double value) =>
+      _edgeFoamScale = noteChange(_edgeFoamScale, value);
+
+  /// How much of the color of the light the lit foam takes (the foam of the
+  /// foam mask, of the [foamSources] and of the [ripples]), from `0` to `1`:
+  /// `1` (the default) takes the color of the light as it is, `0` only its
+  /// brightness (its luminance), so the foam keeps [foamColor] under a
+  /// colored light. About `0.25` suits a low, warm sun. The crest and shore
+  /// foam are not lit and keep [foamColor] anyway.
+  double get foamLightTint => _foamLightTint;
+  set foamLightTint(double value) =>
+      _foamLightTint = noteChange(_foamLightTint, value);
+
+  /// The least light the lit foam takes (the foam of the foam mask, of the
+  /// [foamSources] and of the [ripples]), as a multiple of [foamColor], `0`
+  /// or more: the light reaching the water is clamped between it and
+  /// `1.15` (or it, when it is above). `0.5` (the default) lets the foam
+  /// fall to half its color in low light, where it turns grey against
+  /// lighter water; at dusk about `0.85` keeps white foam bright, with
+  /// [foamLightTint] about `0.25`. Above about `1` the foam no longer
+  /// darkens in shadow either. The crest and shore foam are not lit.
+  double get foamLightFloor => _foamLightFloor;
+  set foamLightFloor(double value) =>
+      _foamLightFloor = noteChange(_foamLightFloor, value);
+
+  /// How fast the foam of the foam mask and of the [foamSources] laps and
+  /// drifts, as a multiple of its own pace: `1` (the default) laps twice per
+  /// [animationPeriod], `0` holds it still (a rim of ice along a wall, dried
+  /// salt, a painted edge), still broken up into patches but not moving. The
+  /// caustics, the sparkles, the swell and the ripples keep their pace.
+  double get edgeFoamMotion => _edgeFoamMotion;
+  set edgeFoamMotion(double value) =>
+      _edgeFoamMotion = noteChange(_edgeFoamMotion, value);
 
   /// The fragment stage this material draws with: the lean or the full one
   /// that its [foamSources] need (see [foamSources]), or the one it was
@@ -259,10 +392,14 @@ class WaterMaterial({
   double get opacity => _opacity;
   double _opacity = opacity;
   set opacity(double value) {
+    if (value == _opacity) {
+      return;
+    }
     _opacity = value;
     if (identical(renderState, _derivedState)) {
       renderState = _derivedState = _stateFor(value);
     }
+    markChanged();
   }
 
   RenderState? _derivedState;
@@ -281,8 +418,13 @@ class WaterMaterial({
   static const String _vertexBlock = 'WaterVertex';
   static const String _fragmentBlock = 'WaterMaterial';
 
-  /// World up axis perpendicular to the rest water surface.
-  Vector3 upAxis = upAxis?.clone() ?? Vector3(0, 1, 0);
+  /// World up axis perpendicular to the rest water surface. Assigning a
+  /// vector copies it; changing it in place counts as a change ([version]).
+  Vector3 get upAxis => _upAxis;
+  set upAxis(Vector3 value) => _upAxis.setFrom(value);
+  final NotifyingVector3 _upAxis = NotifyingVector3.copy(
+    upAxis ?? Vector3(0, 1, 0),
+  );
 
   /// The name of the attribute of [vertexLayout] that tells, per vertex, the
   /// depth of the water under it, its foam mask and its calm.
@@ -353,7 +495,7 @@ class WaterMaterial({
   static final Vector3 _uAxis = Vector3.zero();
   static final Vector3 _vAxis = Vector3.zero();
   static final Vector3 _cross = Vector3.zero();
-  static final Vector4 _causticColor = Vector4.zero();
+  static final Vector4 _causticColorValue = Vector4.zero();
   static final List<Vector4> _ripplePositions = List.generate(
     WaterRipples.capacity,
     (_) => Vector4.zero(),
@@ -483,7 +625,7 @@ class WaterMaterial({
     block
       ..setVector4(
         'causticColor',
-        _causticColor..setValues(
+        _causticColorValue..setValues(
           causticColor.r,
           causticColor.g,
           causticColor.b,

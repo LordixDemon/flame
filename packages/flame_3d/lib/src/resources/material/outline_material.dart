@@ -26,20 +26,10 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 /// - `MeshComponent.instanceData.y`, added to [depthBias].
 /// {@endtemplate}
 class OutlineMaterial({
-  /// Base contour color and opacity.
-  var Color color = const Color(0xFF1A1614),
-
-  /// Contour width (in world units when [screenSpace] is `false`, or in
-  /// clip-height fraction when [screenSpace] is `true`).
-  var double thickness = 0.03,
-
-  /// Whether [thickness] is evaluated in screen/clip space rather than world
-  /// units.
-  var bool screenSpace = false,
-
-  /// Clip-space depth bias (`>= 0`) nudging the extruded back faces slightly
-  /// away from the camera so interior creases do not poke through front faces.
-  var double depthBias = 0.0005,
+  var Color _color = const Color(0xFF1A1614),
+  var double _thickness = 0.03,
+  var bool _screenSpace = false,
+  var double _depthBias = 0.0005,
 }) extends Material {
   /// {@macro outline_material}
   this
@@ -53,9 +43,30 @@ class OutlineMaterial({
     if (kIsWeb) {
       throw UnsupportedError('OutlineMaterial is not supported on the web yet');
     }
-    renderState = const RenderState(cullMode: CullMode.frontFace);
-    castsShadows = false;
+    setInitialState(
+      renderState: const RenderState(cullMode: CullMode.frontFace),
+      castsShadows: false,
+    );
   }
+
+  /// Base contour color and opacity.
+  Color get color => _color;
+  set color(Color value) => _color = noteChange(_color, value);
+
+  /// Contour width (in world units when [screenSpace] is `false`, or in
+  /// clip-height fraction when [screenSpace] is `true`).
+  double get thickness => _thickness;
+  set thickness(double value) => _thickness = noteChange(_thickness, value);
+
+  /// Whether [thickness] is evaluated in screen/clip space rather than world
+  /// units.
+  bool get screenSpace => _screenSpace;
+  set screenSpace(bool value) => _screenSpace = noteChange(_screenSpace, value);
+
+  /// Clip-space depth bias (`>= 0`) nudging the extruded back faces slightly
+  /// away from the camera so interior creases do not poke through front faces.
+  double get depthBias => _depthBias;
+  set depthBias(double value) => _depthBias = noteChange(_depthBias, value);
 
   static const String _bundle =
       'packages/flame_3d/assets/shaders/outline_material.shaderbundle';

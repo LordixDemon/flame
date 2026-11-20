@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:ui' show Color;
 
 import 'package:flame_3d/game.dart';
+import 'package:flame_3d/resources.dart';
 
 /// {@template water_volume_settings}
 /// A body of water in a `World3D`: the surfaces of a `StylizedMaterial`
@@ -48,60 +49,106 @@ import 'package:flame_3d/game.dart';
 /// a few instructions per pixel of the surfaces above it, and the caustics
 /// on the pixels below it. `SpatialMaterial`, `WaterMaterial` and the other
 /// materials do not read it.
+///
+/// Its setters, and changes of [up] in place, report their changes
+/// ([version]), so that the retained layers of the worlds that use it render
+/// again; a change of [bounds] in place is reported with [markChanged].
 /// {@endtemplate}
 class WaterVolumeSettings({
-  /// The height of the water's surface along [up], in world units.
-  var double level = 0,
+  var double _level = 0,
 
   /// The up axis the [level] is measured along (normalized; `(0, 1, 0)` by
   /// default).
   Vector3? up,
 
+  var Color _shallowColor = const Color(0xFFC8F2EA),
+  var Color _deepColor = const Color(0xFF155E75),
+  var double _absorption = 0.8,
+  var double _causticStrength = 0,
+  var double _causticScale = 0.6,
+  var Color _causticColor = const Color(0xFFFFFFFF),
+  var double _animationPeriod = 8,
+  var double _time = 0,
+  var double _waterlineWidth = 0,
+  var Color _waterlineColor = const Color(0xE6FFFFFF),
+  var double _waterlineLightTint = 1,
+  var double _waterlineLightFloor = 0,
+  var double _waterlineMotion = 1,
+  var Aabb3? _bounds,
+}) with Versioned {
+  /// {@macro water_volume_settings}
+  this {
+    _up.addListener(markChanged);
+  }
+
+  /// The height of the water's surface along [up], in world units.
+  double get level => _level;
+  set level(double value) => _level = noteChange(_level, value);
+
   /// The color submerged surfaces are filtered by just below the surface
   /// (it multiplies their color, fully from a quarter of a unit deep).
-  var Color shallowColor = const Color(0xFFC8F2EA),
+  Color get shallowColor => _shallowColor;
+  set shallowColor(Color value) =>
+      _shallowColor = noteChange(_shallowColor, value);
 
   /// The color of the water the deep surfaces fade into.
-  var Color deepColor = const Color(0xFF155E75),
+  Color get deepColor => _deepColor;
+  set deepColor(Color value) => _deepColor = noteChange(_deepColor, value);
 
   /// How fast the surfaces fade into [deepColor] with their depth, per world
   /// unit: `1 - exp(-absorption * depth)` of the way.
-  var double absorption = 0.8,
+  double get absorption => _absorption;
+  set absorption(double value) => _absorption = noteChange(_absorption, value);
 
   /// The strength of the caustic network on the submerged surfaces: `0`
   /// (the default) turns it off, `1` adds [causticColor] times the direct
   /// sunlight on the lines.
-  var double causticStrength = 0,
+  double get causticStrength => _causticStrength;
+  set causticStrength(double value) =>
+      _causticStrength = noteChange(_causticStrength, value);
 
   /// The size of the caustic network, in world units (see
   /// `WaterMaterial.causticScale`).
-  var double causticScale = 0.6,
+  double get causticScale => _causticScale;
+  set causticScale(double value) =>
+      _causticScale = noteChange(_causticScale, value);
 
   /// The color of the caustic network, times the direct sunlight.
-  var Color causticColor = const Color(0xFFFFFFFF),
+  Color get causticColor => _causticColor;
+  set causticColor(Color value) =>
+      _causticColor = noteChange(_causticColor, value);
 
   /// The period over which the caustics and the waterline foam loop, in
   /// seconds of [time] (see `WaterMaterial.animationPeriod`).
-  var double animationPeriod = 8,
+  double get animationPeriod => _animationPeriod;
+  set animationPeriod(double value) =>
+      _animationPeriod = noteChange(_animationPeriod, value);
 
   /// The time of the caustics and the waterline foam, to advance every
   /// frame, in seconds (keep it equal to the water's `WaterMaterial.time`).
-  var double time = 0,
+  double get time => _time;
+  set time(double value) => _time = noteChange(_time, value);
 
   /// The width of the band of foam around the level on the surfaces that
   /// cross it, in world units: `0` (the default) turns it off.
-  var double waterlineWidth = 0,
+  double get waterlineWidth => _waterlineWidth;
+  set waterlineWidth(double value) =>
+      _waterlineWidth = noteChange(_waterlineWidth, value);
 
   /// The color of the waterline foam, lit like the surface; its alpha is
   /// how much it covers the surface.
-  var Color waterlineColor = const Color(0xE6FFFFFF),
+  Color get waterlineColor => _waterlineColor;
+  set waterlineColor(Color value) =>
+      _waterlineColor = noteChange(_waterlineColor, value);
 
   /// How much of the color of the light the waterline foam takes, from `0`
   /// to `1`: `1` (the default) takes the color of the light on the surface
   /// as it is, `0` only its brightness (its luminance), so the foam keeps
   /// [waterlineColor] under a colored light. About `0.25` suits a low, warm
   /// sun (see `WaterMaterial.foamLightTint`, its match on the water).
-  var double waterlineLightTint = 1,
+  double get waterlineLightTint => _waterlineLightTint;
+  set waterlineLightTint(double value) =>
+      _waterlineLightTint = noteChange(_waterlineLightTint, value);
 
   /// The least light the waterline foam takes, as a multiple of
   /// [waterlineColor], `0` or more: the light on the surface is clamped
@@ -109,7 +156,9 @@ class WaterVolumeSettings({
   /// the foam darken with the light, grey and weak in low light; at dusk
   /// about `0.7` keeps a white waterline bright (see
   /// `WaterMaterial.foamLightFloor`, its match on the water).
-  var double waterlineLightFloor = 0,
+  double get waterlineLightFloor => _waterlineLightFloor;
+  set waterlineLightFloor(double value) =>
+      _waterlineLightFloor = noteChange(_waterlineLightFloor, value);
 
   /// How fast the waterline foam laps and drifts, as a multiple of its own
   /// pace, `0` or more: `1` (the default) moves with the caustics, `0` holds
@@ -118,15 +167,20 @@ class WaterVolumeSettings({
   /// `time * waterlineMotion`, so a slower band still loops without a jump
   /// (see `WaterMaterial.edgeFoamMotion`, its match on the water). The
   /// caustics keep their pace.
-  var double waterlineMotion = 1,
+  double get waterlineMotion => _waterlineMotion;
+  set waterlineMotion(double value) =>
+      _waterlineMotion = noteChange(_waterlineMotion, value);
 
   /// The box the water fills, in world space: surfaces outside of it are
   /// not submerged, whatever their height. `null` (the default) fills the
   /// whole world below the level.
-  var Aabb3? bounds,
-}) {
-  /// The up axis the [level] is measured along.
-  final Vector3 up = up?.clone() ?? Vector3(0, 1, 0);
+  Aabb3? get bounds => _bounds;
+  set bounds(Aabb3? value) => _bounds = noteChange(_bounds, value);
+
+  /// The up axis the [level] is measured along, which may be changed in
+  /// place.
+  Vector3 get up => _up;
+  final NotifyingVector3 _up = NotifyingVector3.copy(up ?? Vector3(0, 1, 0));
 
   /// Whether the volume changes anything: it has an [absorption], caustics
   /// or a waterline.

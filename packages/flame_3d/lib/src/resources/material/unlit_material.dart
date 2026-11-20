@@ -24,8 +24,7 @@ import 'package:flame_3d/resources.dart';
 /// with the opaque draws.
 /// {@endtemplate}
 class UnlitMaterial({
-  /// The material's base color, multiplied with [albedoTexture].
-  var Color albedoColor = const Color(0xFFFFFFFF),
+  var Color _albedoColor = const Color(0xFFFFFFFF),
   Texture? albedoTexture,
 }) extends Material {
   /// {@macro unlit_material}
@@ -43,11 +42,21 @@ class UnlitMaterial({
           slots: ['albedoTexture', 'Material'],
         ),
       ) {
-    renderState = const RenderState(blend: BlendState.premultipliedAlpha);
+    setInitialState(
+      renderState: const RenderState(blend: BlendState.premultipliedAlpha),
+    );
   }
 
+  /// The material's base color, multiplied with [albedoTexture].
+  Color get albedoColor => _albedoColor;
+  set albedoColor(Color value) =>
+      _albedoColor = noteChange(_albedoColor, value);
+
   /// The texture to render. Multiplied by [albedoColor].
-  Texture albedoTexture = albedoTexture ?? Texture.standard;
+  Texture get albedoTexture => _albedoTexture;
+  set albedoTexture(Texture value) =>
+      _albedoTexture = noteChange(_albedoTexture, value);
+  Texture _albedoTexture = albedoTexture ?? Texture.standard;
 
   @override
   void apply(RenderContext context) {

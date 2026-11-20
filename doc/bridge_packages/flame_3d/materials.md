@@ -95,13 +95,54 @@ pipeline changes; joint matrices are written for every skinned draw.
 changes of a frame.
 
 Material values are read when the material is bound, so changing them shows on the next frame.
-The engine cannot see such changes, though: a `Scene3DComponent` with `Scene3DCacheMode.retained`
-keeps showing its cached image until something it tracks changes. After animating a material value
-in such a layer, call `world.markSceneDirty(shadows: false)` or `layer.markDirty()`. A component's
-`color`, `instanceData` (in place too) and `jointTransforms` report themselves when assigned; joint
-matrices written into the existing lists need `component.markDrawDirty()`. See
+
+
+## Changes and versions
+
+A material reports its own changes, so that retained layers, cached shadow maps and a game's idle
+rendering follow them without marks from the game: every setter of a material raises its
+`version` (and calls `Game.notifyVisualMutation()`) when it writes a value that differs from the
+one held, and writing the value already held costs nothing. A world keeps the versions of the
+materials its last render drew: a `Scene3DComponent` with `Scene3DCacheMode.retained` renders again
+when one of them changed, and reuses its image while none did (see
 [Embedding](embedding.md#retained-layer-caching) and
-[Basic Concepts](basic_concepts.md#scene-versions-and-dirty-marking).
+[Basic Concepts](basic_concepts.md#materials-report-their-changes)).
+
+- Every field of every built-in material counts: colors, numbers, textures, enums, and the base
+  fields `renderState`, `translucentOrder`, `depthPrepassGroup` and the shaders.
+- What a material reads counts as its own: a `StylizedMaterial`'s `accentPalette` and `rimPalette`
+  (lists that report their writes), a `WaterMaterial`'s `ripples` and `foamSources` (adding a
+  ripple, moving a collar), a `BarrierMaterial`'s impacts, pulses and near points (`impact`,
+  `pulse`, `setNearPoint`, writing the same near point again counts nothing), and the looks
+  applied to it (`applyLook`, `applyLookLerp`, which change nothing when the look is already
+  applied).
+- The vectors of a material (`SpatialMaterial.uvScale` and `uvOffset`, `WaterMaterial.upAxis`, the
+  wind vectors of `StylizedMaterial`, `ParticleMaterial.axis`, the sun and up of
+  `SkyboxMaterial3D`) report changes made in place (`material.uvOffset.x += dt` scrolls the
+  texture in a retained layer too); assigning a vector copies it into the material, so the
+  vector given is not shared.
+- The time of an animation (`WaterMaterial.time`, `StylizedMaterial.windTime`,
+  `BarrierMaterial.time`) is a field like the others: writing it every frame is how a material
+  says it animates, and the layers that draw it render every frame; leaving it alone holds it
+  still and lets them keep their image. `RenderStats.animatedMaterials` counts the materials a
+  render drew whose time advanced, `RenderStats.updatedMaterials` those whose other values
+  changed, since the world drew them last.
+- `Material.animated = true` declares a material that changes on every frame in ways its setters
+  do not report, such as a subclass whose `apply` reads a clock of its own: while the last render
+  of a world drew it, the world counts a change on every update, its layers render every frame
+  and the game loop keeps rendering.
+- `Material.markChanged()` reports a change the setters cannot see: new content in a texture the
+  material shows, an `EnvironmentProbe3D` changed in place.
+
+Material values move no shadow (the shadow passes draw positions with their own shaders): they
+leave the cached shadow maps alone. `castsShadows` does move them, and so does a `renderState`
+that changes whether a material casts while its `castsShadows` follows the render state (once a
+pass has drawn the material), and a surface given a material that casts differently.
+
+The cost: a setter compares its value; a render notes each material once when it binds it (never
+per draw or per instance); reading `World3D.sceneVersion` adds the versions of the materials of the
+last render (and of the palettes, ripples or foam sources they hold), one addition each. A material
+being created changes no world: constructors set their render state with `setInitialState`.
 
 
 ## SpatialMaterial
@@ -696,8 +737,8 @@ The wind moves the vertices only where they are drawn: the shadows are cast from
 positions, so the wind does not move them (see [Shadows](shadows.md)).
 
 Advance `windTime` every frame, and drive `emissiveStrength` from the time of day to light
-windows at dusk (in a retained `Scene3DComponent`, also mark the scene dirty, see
-[What a draw binds](#what-a-draw-binds)):
+windows at dusk (both report themselves to a retained `Scene3DComponent`, see
+[Changes and versions](#changes-and-versions)):
 
 ```dart
 @override
@@ -932,7 +973,7 @@ final grid = TerrainMesh3D(
 );
 world.add(MeshComponent(mesh: grid));
 
-// Every frame (and mark a retained layer dirty, see What a draw binds):
+// Every frame (a retained layer renders again, see Changes and versions):
 water.time += dt;
 ```
 
@@ -1577,7 +1618,7 @@ barrier.fitPatternTo(wall.length, motifLength: 0.45);
 final wallComponent = MeshComponent(mesh: wall, visible: false);
 layer.world.add(wallComponent);
 
-// Every frame (and mark a retained layer dirty, see What a draw binds):
+// Every frame (a retained layer renders again, see Changes and versions):
 barrier.time += dt;
 
 // When play starts: animate appear from 0 to 1 over about 0.35 s.
@@ -2068,10 +2109,11 @@ world.fog = FogSettings(
 `SpatialMaterial`, `StylizedMaterial`, `WaterMaterial` and `BillboardMaterial3D` apply the fog;
 `UnlitMaterial`, decals, outlines, particles, ribbons and the skybox do not, so they stand out in
 distant fog. Fog costs no extra pass: it is a few instructions per fragment of the materials that
-apply it. Setting `World3D.fog` to a new object marks the scene changed; changing the fields of the
-current `FogSettings` does not, which matters for a `Scene3DComponent` with
-`Scene3DCacheMode.retained` (see [Lighting](lighting.md#changing-lights-at-run-time)). How fog
-combines with lighting and HDR is described in [Lighting](lighting.md#fog-and-lighting).
+apply it. Setting `World3D.fog` to a new object marks the scene changed, and so does changing the
+fields of the current `FogSettings` (or its `up` in place), so a `Scene3DComponent` with
+`Scene3DCacheMode.retained` follows both (see
+[Lighting](lighting.md#changing-lights-at-run-time)). How fog combines with lighting and HDR is
+described in [Lighting](lighting.md#fog-and-lighting).
 
 
 ## Water volumes
@@ -2167,9 +2209,10 @@ shadow pass and the depth-normal prepass draw with their own shaders and ignore 
 objects cast the shadows they cast in the air. `SpatialMaterial`, `WaterMaterial` and the other
 materials do not read it, nor do custom shaders unless they declare the `WaterVolume` block and
 call `applyWaterVolume` from `#include <flame_3d/water_volume.glsl>`. Setting
-`World3D.waterVolume` to a new object marks the scene changed; changing the fields of the current
-one does not (see [Lighting](lighting.md#changing-lights-at-run-time)): in a retained
-`Scene3DComponent`, mark the scene dirty after advancing its `time`.
+`World3D.waterVolume` to a new object marks the scene changed, and so does changing the fields of
+the current one: a retained `Scene3DComponent` renders again on every frame its `time` advances
+(see [Lighting](lighting.md#changing-lights-at-run-time)); a change of its `bounds` in place is
+reported with `volume.markChanged()`.
 
 Cost: the volume adds 9 vectors to the pass block `StylizedMaterial` reads (written once per pass,
 about 0.2 µs) and no binding. Per pixel, surfaces above the level and its band test one plane and
@@ -2345,7 +2388,9 @@ class TintMaterial extends Material {
         ),
       );
 
-  Color tint = const Color(0xFFFFFFFF);
+  Color get tint => _tint;
+  set tint(Color value) => _tint = noteChange(_tint, value);
+  Color _tint = const Color(0xFFFFFFFF);
 
   @override
   void apply(RenderContext context) {
@@ -2353,6 +2398,12 @@ class TintMaterial extends Material {
   }
 }
 ```
+
+Give every value a setter that reports its changes with `noteChange` (`noteTime` for the time of
+an animation), so that retained layers follow it (see
+[Changes and versions](#changes-and-versions)); a public field written without a setter is a
+change the engine cannot see. In the constructor, set
+the render state and `castsShadows` with `setInitialState`, which reports nothing.
 
 The `RenderContext3D` fills these blocks and textures once per render pass for every shader that
 lists them; everything else in the slots is the material's to write in `apply`:
@@ -2472,5 +2523,10 @@ The texture sampler options, including anisotropy up to 16, work on the web.
   along the mesh's y axis. The reaction in front shows over anything in front of the wall, not only
   over what caused it, and a near point keeps its second draw alive while it is set. Any option of
   the full shaders costs the full shaders' price, however little of it is used.
+- Change tracking sees the setters, the vectors, palettes and state objects listed in
+  [Changes and versions](#changes-and-versions); a texture whose contents change, an
+  `EnvironmentProbe3D` changed in place, or values a custom material computes from state of its
+  own are reported with `markChanged()` (or `animated`). A world follows the materials of its last
+  render only: with several cameras, the version follows the camera that rendered last.
 - KTX2: no supercompression, and no CPU decoder for BC7, ETC2, ASTC and RGBA32F.
 - `ImageTexture` has no color space option: images cannot be sampled as sRGB.

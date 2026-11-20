@@ -39,7 +39,7 @@ class Surface extends Resource<GpuBuffer> {
     List<MorphTargetData> morphTargets = const [],
     bool calculateNormals = true,
     this.topology = PrimitiveTopology.triangles,
-  }) : material = material ?? Material.defaultMaterial,
+  }) : _material = material ?? Material.defaultMaterial,
        morphTargets = List.unmodifiable(morphTargets) {
     final normalizedVertices = _normalize(
       vertices: vertices,
@@ -79,7 +79,7 @@ class Surface extends Resource<GpuBuffer> {
     List<MorphTargetData> morphTargets = const [],
     Aabb3? aabb,
     this.topology = PrimitiveTopology.triangles,
-  }) : material = material ?? Material.defaultMaterial,
+  }) : _material = material ?? Material.defaultMaterial,
        _layout = layout ?? VertexLayout.standard,
        morphTargets = List.unmodifiable(morphTargets) {
     final stride = _layout.strideInFloats;
@@ -112,7 +112,22 @@ class Surface extends Resource<GpuBuffer> {
   final int id = _nextId++;
 
   /// The material the surface is drawn with.
-  Material material;
+  ///
+  /// Assigning another material marks every `World3D` changed (see
+  /// `World3D.sceneVersion`), and their shadow casters too when the two
+  /// materials differ in `Material.castsShadows`, since the surface may be
+  /// drawn in any world.
+  Material get material => _material;
+  set material(Material value) {
+    if (identical(value, _material)) {
+      return;
+    }
+    final shadows = value.castsShadows != _material.castsShadows;
+    _material = value;
+    Material.noteAssignment(shadows: shadows);
+  }
+
+  Material _material;
 
   /// Primitive assembly topology (`triangles` by default).
   PrimitiveTopology topology;

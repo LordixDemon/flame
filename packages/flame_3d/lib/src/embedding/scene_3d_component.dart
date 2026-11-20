@@ -1099,6 +1099,8 @@ class Scene3DComponent({
       ..shadowReusedDrawCalls =
           after.shadowReusedDrawCalls - before.shadowReusedDrawCalls
       ..shadowReusedTriangles =
-          after.shadowReusedTriangles - before.shadowReusedTriangles;
+          after.shadowReusedTriangles - before.shadowReusedTriangles
+      ..updatedMaterials = after.updatedMaterials - before.updatedMaterials
+      ..animatedMaterials = after.animatedMaterials - before.animatedMaterials;
   }
 }

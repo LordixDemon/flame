@@ -43,10 +43,10 @@ class SceneSpatialIndex3D() {
 
   /// Ensures the BVH is up to date for [world].
   void ensureBuilt(World3D world) {
-    if (_builtSceneVersion == world.sceneVersion) {
+    if (_builtSceneVersion == world.componentsVersion) {
       return;
     }
-    _builtSceneVersion = world.sceneVersion;
+    _builtSceneVersion = world.componentsVersion;
     _rebuild(world);
   }
 

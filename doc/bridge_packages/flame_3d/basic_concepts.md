@@ -138,7 +138,10 @@ A world counts its changes in two numbers:
   `jointTransforms` of a `MeshComponent`, `ModelComponent` or `LodMeshComponent`, the `shadowMesh`
   of a `LodMeshComponent`); a light is added, removed or moved, changes its `lightMask`, or a field
   of its `source` is assigned (`color`, `intensity`, `direction`, `shadows`, `range`, ...); a
-  material's `castsShadows` changes; a world setting (`fog`, `bloom`, `postProcess`,
+  material's `castsShadows` changes, or a surface gets another material; a value of a material
+  that the world's last render drew changes (see [Materials report their
+  changes](#materials-report-their-changes)); a field of the world's `fog`, `waterVolume`, `bloom`
+  or `postProcess` changes; a world setting (`fog`, `waterVolume`, `bloom`, `postProcess`,
   `hdrEnabled`, `renderScale`, `oitMode`, `grabSceneColorEnabled`, `renderDebugMode3D`,
   `lightProbeGrid`, `depthPrepassEnabled`, `prioritizeNearestLights`) is assigned a new value; an
   animation advances a model's pose, a particle system or ribbon has live particles, particles are
@@ -148,8 +151,10 @@ A world counts its changes in two numbers:
   text, look, `worldHeight` or `orientation`;
 - `castersVersion` increases with the subset of these changes that can move shadows: all of them
   except colors, `instanceData`, intensities and other light fields that move no shadow, the world
-  settings, `lightMask`, showing or hiding a light, reflection probes, and the changes of
-  components that cast no shadows. A move counts only when it can move a shadow: when the
+  settings and their fields, the values of materials (only a material's `castsShadows`, the
+  `renderState` it follows, and a surface's material that casts differently can move a shadow),
+  `lightMask`, showing or hiding a light, reflection probes, and the changes of components that
+  cast no shadows. A move counts only when it can move a shadow: when the
   component has 3D children, is an `Object3D` that casts shadows, or is a light whose source has
   `shadows`. A moving point light without shadows, collider or sound leaves a cached static shadow
   map alone.
@@ -160,9 +165,9 @@ counts the changes of its lights in a third number, `lightsVersion`, which the b
 to their `sceneVersion`, the part of it that can move shadows to their `castersVersion`.
 
 Assigning a value equal to the current one is not a change: writing an unchanged position,
-rotation or scale (the transform's vectors notify only when their value changes), color or light
-field marks nothing, so a component whose transform is set to the same value every frame does not
-keep its world dirty.
+rotation or scale (the transform's vectors notify only when their value changes), color, light
+field, material field or setting marks nothing, so a component whose transform is set to the same
+value every frame does not keep its world dirty.
 
 `markSceneDirty()` raises both (pass `shadows: false` to raise only `sceneVersion`), and
 `markShadowsDirty()` is the same as `markSceneDirty()`. Every increase also calls
@@ -174,9 +179,56 @@ place too (`camera.position.x += 1`), renders the next frame; the unmounted came
 The versions drive three caches: a retained `Scene3DComponent` reuses its image while nothing
 changed (see [Embedding 3D in a 2D Game](embedding.md)), `ShadowSettings.cacheWhenStatic` reuses a
 shadow map while the casters did not change (see [Shadows](shadows.md)), and `SceneSpatialIndex3D`
-rebuilds itself when `sceneVersion` changed. `ShadowSettings.cacheStillCasters` also tracks which
+rebuilds itself when `sceneVersion` changed for another reason than a material or a world
+setting's field. `ShadowSettings.cacheStillCasters` also tracks which
 objects changed, to draw only those in the shadow pass (see
 [Still casters](shadows.md#still-casters)).
+
+
+### Materials report their changes
+
+Every material, and the small objects that materials and worlds read, carry a `version` that their
+own setters raise when the value written differs from the one held (the `Versioned` mixin):
+`Material.version`, `FogSettings`, `WaterVolumeSettings`, `BloomSettings`,
+`PostProcessSettings`, `WaterRipples` and `WaterFoamSources`. A `StylizedMaterial`'s palettes and
+the vectors of the materials and settings (`SpatialMaterial.uvOffset`, `WaterMaterial.upAxis`,
+`StylizedMaterial.windDirection`, `FogSettings.up`, ...) report changes made in place as well;
+assigning a vector copies it into the material. A `WaterMaterial` counts the changes of its
+`ripples` and `foamSources`, so adding a ripple or moving a foam collar is a change of the
+material. Every change also calls `Game.notifyVisualMutation()`.
+
+A world keeps the materials its last render drew, with the versions they had then, and adds their
+versions to its `sceneVersion`; the fields of its settings count likewise. A retained layer
+therefore renders again when a material it shows changes, and reuses its image when nothing
+changed: a game deletes the marks it made after changing a material. A material that the last
+render did not draw (hidden, culled, drawn by another world only) changes nothing; a change while
+a render records counts on the next frame.
+
+The time of an animation is a field like the others (`WaterMaterial.time`, `BarrierMaterial.time`,
+`StylizedMaterial.windTime`, `WaterVolumeSettings.time`): writing it every frame is how a material
+says it animates, and the layers that draw it render every frame; leaving it alone holds the
+material still and lets them keep their image. Each render counts, in `RenderStats`, the materials
+it shows that changed since the world drew them last: `updatedMaterials` for those whose values
+changed, `animatedMaterials` for those whose animation time advanced and nothing else (and those
+marked `Material.animated`). A retained layer whose `renderStats` show animated materials on every
+frame renders every frame because of them: move them to a layer of their own, or stop advancing
+their time while they should hold still. `Material.animated = true` declares a material that
+changes on every frame in ways its setters do not report (a subclass whose `apply` reads a clock
+of its own, a texture rendered again every frame): while the last render drew it, the world's
+`sceneVersion` increases on every update, so its layers render every frame and the game loop keeps
+rendering.
+
+Costs: a setter compares the value and, when it changed, raises two counters. A render notes each
+material when the render context binds it (once per material and pass, never per draw or per
+instance), and reading `sceneVersion` adds the versions of the materials of the last render, one
+addition each. Nothing is allocated after the first renders.
+
+Material values move no shadow (the shadow passes draw positions with their own shaders), so they
+leave `castersVersion` and the cached shadow maps alone; only `castsShadows`, a `renderState` that
+changes whether a material that follows it casts, and a surface given a material that casts
+differently can move a shadow.
+
+### Changes the engine does not see
 
 Changes made in place, to data the engine only reads when it draws, are not seen. Report them,
 with `shadows: false` when no shadow can move:
@@ -187,13 +239,14 @@ with `shadows: false` when no shadow can move:
   can call it on every frame it changes;
 - a vector of a light source changed in place (`sun.direction!.setValues(...)`,
   `HemisphereLight.up`), or a field of its `ShadowSettings`: call `source.markChanged()`;
-- a material's fields, including animated ones such as `StylizedMaterial.windTime` and
-  `WaterMaterial.time`, a new texture, or new content in a texture: call
-  `world.markSceneDirty(shadows: false)` on every world that draws the material (or
-  `markDrawDirty(shadows: false)` on a component that draws it);
-- a field of `fog`, of the `bloom` or `postProcess` settings, or `customPasses`: call
-  `world.markSceneDirty(shadows: false)` (a retained layer also compares the `bloom` and
-  `postProcess` values on every frame, see [Embedding 3D in a 2D Game](embedding.md)).
+- new content in a texture (a `RenderTexture3D` rendered again), an object a material holds
+  changed in place (the coefficients or the intensity of its `EnvironmentProbe3D`), or values a
+  custom material's `apply` computes from state of its own: call `material.markChanged()`, or mark
+  the material `animated` when it changes on every frame;
+- an object a setting holds changed in place (the `Aabb3` of `WaterVolumeSettings.bounds`, the
+  content of the `ColorLut3D` of `postProcess`): call `markChanged()` of the setting;
+- the world's `LightProbeGrid3D` changed in place, or `customPasses`: call
+  `world.markSceneDirty(shadows: false)`.
 
 ```dart
 // A custom object that draws points it collects itself.

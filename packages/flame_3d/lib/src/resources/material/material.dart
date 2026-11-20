@@ -22,11 +22,37 @@ import 'package:meta/meta.dart';
 /// the material is bound. Otherwise every object is drawn on its own and
 /// [apply] runs before each draw, with [RenderContext3D.model] set to its
 /// model matrix.
+///
+/// ## Changes
+///
+/// A material reports its own changes: every setter of a material, and of
+/// the state objects it reads (its palettes, `WaterRipples`,
+/// `WaterFoamSources`, ...), raises its [version] when the value written
+/// differs from the one held, and wakes idle-throttled game loops. A world
+/// keeps the versions of the materials it drew in its last render, so that
+/// a retained layer (`Scene3DCacheMode.retained`) renders again when one of
+/// them changed and reuses its image otherwise, see `World3D.sceneVersion`.
+/// Writing the value already held costs nothing.
+///
+/// The fields a material reads every frame by design, the time of its
+/// animation (`WaterMaterial.time`, `BarrierMaterial.time`,
+/// `StylizedMaterial.windTime`), raise the version too: writing one every
+/// frame is how a material says that it animates, and the layers that draw
+/// it render every frame (counted in `RenderStats.animatedMaterials`);
+/// leaving it alone holds the material still, and its layers keep their
+/// images. What the setters cannot see (a texture whose contents are
+/// rendered again, values a subclass's [apply] computes from a clock of its
+/// own) is reported with [markChanged], or with [animated] when it changes
+/// on every frame.
+///
+/// No field of a material moves a shadow besides [castsShadows] (and the
+/// [renderState] it defaults to): the shadow passes draw positions only, so
+/// a change of a material's version keeps the cached shadow maps.
 /// {@endtemplate}
 abstract class Material({
   required var Shader _vertexShader,
   required var Shader _fragmentShader,
-}) {
+}) with Versioned {
   /// Checks that the device can run the material's shaders, see
   /// [Shader.checkDeviceSupport]: a material the device cannot draw throws
   /// an [UnsupportedError] here rather than drawing nothing.
@@ -45,14 +71,22 @@ abstract class Material({
 
   Shader get vertexShader => _vertexShader;
   set vertexShader(Shader shader) {
+    if (identical(shader, _vertexShader)) {
+      return;
+    }
     _vertexShader = shader;
     pipelineCache = null;
+    markChanged();
   }
 
   Shader get fragmentShader => _fragmentShader;
   set fragmentShader(Shader shader) {
+    if (identical(shader, _fragmentShader)) {
+      return;
+    }
     _fragmentShader = shader;
     pipelineCache = null;
+    markChanged();
   }
 
   /// The blending, depth and culling state this material draws with, and
@@ -69,7 +103,39 @@ abstract class Material({
   /// ```dart
   /// material.renderState = const RenderState(cullMode: CullMode.backFace);
   /// ```
-  RenderState renderState = RenderState.opaque;
+  ///
+  /// Assigning a state that changes whether it is translucent, while
+  /// [castsShadows] follows it, marks the shadow casters of every `World3D`
+  /// dirty, as assigning [castsShadows] does, once a pass has drawn the
+  /// material (until then, no shadow map holds it).
+  RenderState get renderState => _renderState;
+  set renderState(RenderState value) {
+    if (value == _renderState) {
+      return;
+    }
+    final casts = castsShadows;
+    _renderState = value;
+    if (castsShadows != casts && wasRecorded) {
+      _castsShadowsRevision++;
+    }
+    markChanged();
+  }
+
+  RenderState _renderState = RenderState.opaque;
+
+  /// Sets the [renderState] and [castsShadows] of a material being created,
+  /// which no world has drawn yet, those given: unlike their setters, it
+  /// reports no change and leaves the cached shadow maps of the worlds
+  /// alone.
+  @protected
+  void setInitialState({RenderState? renderState, bool? castsShadows}) {
+    if (renderState != null) {
+      _renderState = renderState;
+    }
+    if (castsShadows != null) {
+      _castsShadows = castsShadows;
+    }
+  }
 
   /// The depth prepass this material's draws share, when its [renderState]
   /// is translucent with [RenderState.depthPrepass]: `null` (the default)
@@ -80,7 +146,10 @@ abstract class Material({
   /// depth first, and are then shaded with [CompareFunction.lessEqual]: where
   /// several overlap on screen, only the nearest is shaded. See
   /// `ShadowCatcherMaterial.nearestOnly`.
-  Object? depthPrepassGroup;
+  Object? get depthPrepassGroup => _depthPrepassGroup;
+  set depthPrepassGroup(Object? value) =>
+      _depthPrepassGroup = noteChange(_depthPrepassGroup, value);
+  Object? _depthPrepassGroup;
 
   /// Whether the surfaces drawn with this material cast shadows (see
   /// [ShadowSettings]).
@@ -116,6 +185,24 @@ abstract class Material({
   @internal
   static int get castsShadowsRevision => _castsShadowsRevision;
 
+  static int _assignmentRevision = 0;
+
+  /// The number of times a surface was given another material, added to
+  /// the scene versions of every `World3D`.
+  @internal
+  static int get assignmentRevision => _assignmentRevision;
+
+  /// Reports that a surface was given another material, which casts
+  /// differently when [shadows].
+  @internal
+  static void noteAssignment({required bool shadows}) {
+    _assignmentRevision++;
+    if (shadows) {
+      _castsShadowsRevision++;
+    }
+    Game.notifyVisualMutation();
+  }
+
   /// The layer of this material's translucent draws: translucent draws are
   /// drawn in increasing order of it, and back to front within one order.
   ///
@@ -125,7 +212,56 @@ abstract class Material({
   /// so that it is drawn first and they blend over it, rather than being
   /// sorted by the centers of their bounds. Opaque draws ignore it; under
   /// `OitMode3D.weightedBlended` translucent draws are not sorted at all.
-  int translucentOrder = 0;
+  int get translucentOrder => _translucentOrder;
+  set translucentOrder(int value) =>
+      _translucentOrder = noteChange(_translucentOrder, value);
+  int _translucentOrder = 0;
+
+  /// Whether this material changes on every frame in ways its setters do
+  /// not report, `false` by default: a subclass whose [apply] computes its
+  /// values from a clock of its own, a texture whose contents are rendered
+  /// again every frame.
+  ///
+  /// While a world draws an animated material, it counts as changed on
+  /// every frame: the retained layers that show it render every frame, the
+  /// game loop keeps rendering while it updates (it does not idle), and
+  /// each render counts it in `RenderStats.animatedMaterials`. The built-in
+  /// materials need not be marked: they animate through the time a game
+  /// advances (`WaterMaterial.time`, for instance), whose writes they report
+  /// themselves. A change that happens once is reported with [markChanged].
+  bool get animated => _animated;
+  set animated(bool value) => _animated = noteChange(_animated, value);
+  bool _animated = false;
+
+  /// Returns [next], having reported a change when it differs from
+  /// [current], for the setters of the time of a material's animation (see
+  /// [Material]): like [noteChange], and counted as an animation by
+  /// `RenderStats.animatedMaterials`.
+  @protected
+  double noteTime(double current, double next) {
+    if (current != next) {
+      _animationVersion++;
+      markChanged();
+    }
+    return next;
+  }
+
+  /// The number of changes of the time of this material's animation (see
+  /// [noteTime]), part of [version].
+  @internal
+  int get animationVersion => _animationVersion;
+  int _animationVersion = 0;
+
+  /// The mark of the last render that noted this material, managed by the
+  /// world that drew it.
+  @internal
+  int trackingStamp = 0;
+
+  /// Whether a render pass has recorded a draw of this material (a main
+  /// pass, which made its pipeline, or a shadow pass), managed by the render
+  /// context.
+  @internal
+  bool wasRecorded = false;
 
   /// Whether the per-instance inputs of this material's draws hold model
   /// matrices (`instanceModel0` to `instanceModel3`), as `drawSurface` and

@@ -2,7 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flame_3d/game.dart';
-import 'package:flame_3d/src/resources/material/water_material.dart';
+import 'package:flame_3d/resources.dart';
 import 'package:meta/meta.dart';
 
 /// {@template water_ripples}
@@ -37,8 +37,13 @@ import 'package:meta/meta.dart';
 /// `wavelength` apart, trail over `trail` wavelengths behind the front, and
 /// fade out with the square of the fraction of `lifetime` left; a ripple is
 /// gone after its `lifetime`.
+///
+/// Adding, removing and clearing ripples raise its [version] (clearing an
+/// empty set does not), which counts as a change of the materials that
+/// draw it (`WaterMaterial.version`), so that their retained layers render
+/// again; the rings then spread with the time of those materials.
 /// {@endtemplate}
-class WaterRipples() {
+class WaterRipples() with Versioned {
   /// The number of ripples a set holds.
   static const int capacity = 8;
 
@@ -64,11 +69,6 @@ class WaterRipples() {
     }
     return count;
   }
-
-  /// Changes every time a ripple is added or the set is cleared, so that
-  /// a cached picture can tell it is out of date.
-  int get version => _version;
-  int _version = 0;
 
   /// Starts a ripple at the world point [position] at [time] (of the clock
   /// of the materials that draw it, [WaterMaterial.time]) and returns its
@@ -138,7 +138,7 @@ class WaterRipples() {
       ..[o + 8] = trail
       ..[o + 9] = radius;
     _used[slot] = true;
-    _version++;
+    markChanged();
     return slot;
   }
 
@@ -147,16 +147,20 @@ class WaterRipples() {
     RangeError.checkValueInInterval(slot, 0, capacity - 1, 'slot');
     if (_used[slot]) {
       _used[slot] = false;
-      _version++;
+      markChanged();
     }
   }
 
   /// Removes every ripple.
   void clear() {
+    var changed = false;
     for (var i = 0; i < capacity; i++) {
+      changed = changed || _used[i];
       _used[i] = false;
     }
-    _version++;
+    if (changed) {
+      markChanged();
+    }
   }
 
   /// The number of ripples alive at [time]: started at or before it, and not

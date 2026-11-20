@@ -71,6 +71,27 @@ class RenderStats() {
   /// [shadowReusedDrawCalls].
   int shadowReusedTriangles = 0;
 
+  /// The number of materials whose values changed, through their setters
+  /// (or `Material.markChanged`), since the world drew them last: the
+  /// changes a render shows besides animations. A world counts them each
+  /// time it renders; a retained layer that renders again because of them
+  /// shows them in its `Scene3DComponent.renderStats`.
+  ///
+  /// Not to be confused with [materialChanges], the number of times the
+  /// bound material changed.
+  int updatedMaterials = 0;
+
+  /// The number of the materials a render drew that animate: those whose
+  /// animation time (`WaterMaterial.time`, `BarrierMaterial.time`,
+  /// `StylizedMaterial.windTime`, ...) advanced, and nothing else, since the
+  /// world drew them last, and those marked `Material.animated`.
+  ///
+  /// A retained layer whose stats show animated materials on every frame
+  /// renders every frame because of them: move them to a layer of their own
+  /// for the rest of the scene to keep its image, or stop advancing their
+  /// time while they should hold still.
+  int animatedMaterials = 0;
+
   /// Resets every counter to zero.
   void reset() {
     renderPasses = 0;
@@ -90,6 +111,8 @@ class RenderStats() {
     shadowLayersRendered = 0;
     shadowReusedDrawCalls = 0;
     shadowReusedTriangles = 0;
+    updatedMaterials = 0;
+    animatedMaterials = 0;
   }
 
   /// Copies every counter from [other].
@@ -111,6 +134,8 @@ class RenderStats() {
     shadowLayersRendered = other.shadowLayersRendered;
     shadowReusedDrawCalls = other.shadowReusedDrawCalls;
     shadowReusedTriangles = other.shadowReusedTriangles;
+    updatedMaterials = other.updatedMaterials;
+    animatedMaterials = other.animatedMaterials;
   }
 
   @override
@@ -125,6 +150,8 @@ class RenderStats() {
         'shadowLayersReused: $shadowLayersReused, '
         'shadowLayersRendered: $shadowLayersRendered, '
         'shadowReusedDrawCalls: $shadowReusedDrawCalls, '
-        'shadowReusedTriangles: $shadowReusedTriangles)';
+        'shadowReusedTriangles: $shadowReusedTriangles, '
+        'updatedMaterials: $updatedMaterials, '
+        'animatedMaterials: $animatedMaterials)';
   }
 }

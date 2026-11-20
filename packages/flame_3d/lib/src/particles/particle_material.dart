@@ -82,18 +82,10 @@ class ParticleMaterial({
   ParticleSprite? sprite,
   Texture? texture,
 
-  /// The tint of every particle.
-  var Color color = const Color(0xFFFFFFFF),
-
-  /// The width of the soft edge of [ParticleSprite.softCircle] and
-  /// [ParticleSprite.softBlob], as a fraction of the radius.
-  var double softness = 0.5,
-
-  /// How lumpy [ParticleSprite.softBlob] puffs are, from 0 (round) to 1.
-  var double lumpiness = 0.6,
-
-  /// How quads face the camera.
-  var ParticleBillboard billboard = ParticleBillboard.spherical,
+  var Color _color = const Color(0xFFFFFFFF),
+  var double _softness = 0.5,
+  var double _lumpiness = 0.6,
+  var ParticleBillboard _billboard = ParticleBillboard.spherical,
   Vector3? axis,
 
   /// The number of columns of flipbook frames in the [texture].
@@ -103,20 +95,9 @@ class ParticleMaterial({
   final int flipbookRows = 1,
   int? frameCount,
 
-  /// Whether the frames of a flipbook blend into each other as they play.
-  var bool frameBlending = false,
-
-  /// Fragments whose alpha is below this are discarded, for cut-out
-  /// particles drawn with an opaque [renderState].
-  var double alphaCutoff = 0,
-
-  /// How far in front of opaque geometry a particle fades out (soft
-  /// particles), `0` for no fade: a span of the depth of the camera's clip
-  /// space, from `0` at its near plane to `1` at its far plane, so `1` world
-  /// unit is `1 / (far - near)` for an orthographic or affine projection.
-  /// It needs the depth-normal prepass (`World3D.depthPrepassEnabled`, or a
-  /// post effect that uses it); without it particles do not fade.
-  var double softDepthFade = 0,
+  var bool _frameBlending = false,
+  var double _alphaCutoff = 0,
+  var double _softDepthFade = 0,
   RenderState renderState = RenderState.premultipliedAlphaBlend,
 }) extends Material {
   /// {@macro particle_material}
@@ -149,24 +130,72 @@ class ParticleMaterial({
         'shaders.',
       );
     }
-    this.renderState = renderState;
+    setInitialState(renderState: renderState);
+    _axisValue.addListener(markChanged);
   }
+
+  /// The tint of every particle.
+  Color get color => _color;
+  set color(Color value) => _color = noteChange(_color, value);
+
+  /// The width of the soft edge of [ParticleSprite.softCircle] and
+  /// [ParticleSprite.softBlob], as a fraction of the radius.
+  double get softness => _softness;
+  set softness(double value) => _softness = noteChange(_softness, value);
+
+  /// How lumpy [ParticleSprite.softBlob] puffs are, from 0 (round) to 1.
+  double get lumpiness => _lumpiness;
+  set lumpiness(double value) => _lumpiness = noteChange(_lumpiness, value);
+
+  /// How quads face the camera.
+  ParticleBillboard get billboard => _billboard;
+  set billboard(ParticleBillboard value) =>
+      _billboard = noteChange(_billboard, value);
+
+  /// Whether the frames of a flipbook blend into each other as they play.
+  bool get frameBlending => _frameBlending;
+  set frameBlending(bool value) =>
+      _frameBlending = noteChange(_frameBlending, value);
+
+  /// Fragments whose alpha is below this are discarded, for cut-out
+  /// particles drawn with an opaque [renderState].
+  double get alphaCutoff => _alphaCutoff;
+  set alphaCutoff(double value) =>
+      _alphaCutoff = noteChange(_alphaCutoff, value);
+
+  /// How far in front of opaque geometry a particle fades out (soft
+  /// particles), `0` for no fade: a span of the depth of the camera's clip
+  /// space, from `0` at its near plane to `1` at its far plane, so `1` world
+  /// unit is `1 / (far - near)` for an orthographic or affine projection.
+  /// It needs the depth-normal prepass (`World3D.depthPrepassEnabled`, or a
+  /// post effect that uses it); without it particles do not fade.
+  double get softDepthFade => _softDepthFade;
+  set softDepthFade(double value) =>
+      _softDepthFade = noteChange(_softDepthFade, value);
 
   static const _bundle =
       'packages/flame_3d/assets/shaders/particle_material.shaderbundle';
 
   /// What each quad shows: [ParticleSprite.texture] when a [texture] is
   /// given, [ParticleSprite.softCircle] otherwise, unless set.
-  ParticleSprite sprite =
+  ParticleSprite get sprite => _sprite;
+  set sprite(ParticleSprite value) => _sprite = noteChange(_sprite, value);
+  ParticleSprite _sprite =
       sprite ??
       (texture == null ? ParticleSprite.softCircle : ParticleSprite.texture);
 
   /// The texture each quad is multiplied by, white by default.
-  Texture texture = texture ?? Texture.standard;
+  Texture get texture => _texture;
+  set texture(Texture value) => _texture = noteChange(_texture, value);
+  Texture _texture = texture ?? Texture.standard;
 
   /// The axis of [ParticleBillboard.cylindrical] billboards, and the normal
-  /// of the plane of [ParticleBillboard.flat] ones; `+y` by default.
-  final Vector3 axis = axis?.clone() ?? Vector3(0, 1, 0);
+  /// of the plane of [ParticleBillboard.flat] ones; `+y` by default. Changing
+  /// it in place counts as a change ([version]).
+  Vector3 get axis => _axisValue;
+  final NotifyingVector3 _axisValue = NotifyingVector3.copy(
+    axis ?? Vector3(0, 1, 0),
+  );
 
   /// The number of flipbook frames in the [texture]: all the cells of the
   /// grid unless set.

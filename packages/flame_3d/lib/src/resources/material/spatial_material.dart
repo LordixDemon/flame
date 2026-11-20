@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'dart:ui' hide FragmentShader;
 
+import 'package:flame/game.dart' show NotifyingVector2;
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
@@ -28,68 +29,27 @@ const bool _kIsWeb = identical(0, 0.0);
 /// inputs: see [usesSimpleShader].
 /// {@endtemplate}
 class SpatialMaterial({
-  /// Base color multiplier (`rgb` and `a`).
-  var Color albedoColor = const Color(0xFFFFFFFF),
+  var Color _albedoColor = const Color(0xFFFFFFFF),
   Texture? albedoTexture,
-  var double metallic = 0.8,
-  var double roughness = 0.6,
-
-  /// Optional tangent-space RGB normal map (uses `vertexTangent`
-  /// when present in the surface's `VertexLayout`, or a screen-space cotangent
-  /// frame otherwise).
-  var Texture? normalTexture,
-
-  /// Strength multiplier applied to the XY perturbation of [normalTexture].
-  var double normalScale = 1.0,
-
-  /// Optional glTF metallic-roughness map (`G` = roughness, `B` = metallic).
-  var Texture? metallicRoughnessTexture,
-
-  /// Optional ambient-occlusion map (`R` channel).
-  var Texture? occlusionTexture,
-
-  /// Blend factor `[0..1]` for [occlusionTexture].
-  var double occlusionStrength = 1.0,
-
-  /// Emissive color added before tone mapping (`0xFF000000` = no emission).
-  var Color emissiveColor = const Color(0xFF000000),
-
-  /// Multiplier on [emissiveColor] and [emissiveTexture].
-  var double emissiveStrength = 1.0,
-
-  /// Optional emissive RGB texture multiplied by [emissiveColor].
-  var Texture? emissiveTexture,
-
-  /// Optional equirectangular environment reflection map sampled along the
-  /// view reflection vector.
-  var Texture? environmentTexture,
-
-  /// Reflection strength for [environmentTexture] (`0` when unset).
-  var double environmentIntensity = 1.0,
-
-  /// Optional pre-filtered `SH9` diffuse irradiance + specular reflection
-  /// probe (`EnvironmentProbe3D`).
-  var EnvironmentProbe3D? environmentProbe,
-
-  /// Optional baked diffuse lightmap texture sampled with secondary UV channel
-  /// `vertexTexCoord1` (`TEXCOORD_1`, falling back to `vertexTexCoord`).
-  var Texture? lightmapTexture,
-
-  /// Multiplier applied to [lightmapTexture].
-  var double lightmapIntensity = 1.0,
-
-  /// Clearcoat layer intensity (`0..1`, `F0 = 0.04` polyurethane/car-paint
-  /// specular coat).
-  var double clearcoat = 0.0,
-
-  /// Perceptual roughness (`0.04..1.0`) of the [clearcoat] layer.
-  var double clearcoatRoughness = 0.1,
-
-  /// Dielectric physical transmission factor (`0..1` for refractive glass).
-  var double transmission = 0.0,
-
-  /// Index of refraction (`1.0..3.0`; `1.5` = crown glass, `F0 = 0.04`).
-  var double ior = 1.5,
+  var double _metallic = 0.8,
+  var double _roughness = 0.6,
+  var Texture? _normalTexture,
+  var double _normalScale = 1.0,
+  var Texture? _metallicRoughnessTexture,
+  var Texture? _occlusionTexture,
+  var double _occlusionStrength = 1.0,
+  var Color _emissiveColor = const Color(0xFF000000),
+  var double _emissiveStrength = 1.0,
+  var Texture? _emissiveTexture,
+  var Texture? _environmentTexture,
+  var double _environmentIntensity = 1.0,
+  var EnvironmentProbe3D? _environmentProbe,
+  var Texture? _lightmapTexture,
+  var double _lightmapIntensity = 1.0,
+  var double _clearcoat = 0.0,
+  var double _clearcoatRoughness = 0.1,
+  var double _transmission = 0.0,
+  var double _ior = 1.5,
 
   /// UV scale (`(1, 1)` by default).
   Vector2? uvScale,
@@ -97,14 +57,9 @@ class SpatialMaterial({
   /// UV offset (`(0, 0)` by default).
   Vector2? uvOffset,
 
-  /// Alpha threshold below which fragments are discarded (`0` disables cutout).
-  var double alphaCutoff = 0.0,
-
-  /// Reverses back-face normals before shading when `CullMode.none` is used.
-  var bool doubleSided = false,
-
-  /// Dissolves opaque draws via a `4x4` Bayer screen-space dither pattern.
-  var bool ditherFade = false,
+  var double _alphaCutoff = 0.0,
+  var bool _doubleSided = false,
+  var bool _ditherFade = false,
 
   /// Convenience flag configuring [renderState] for translucent blending (with
   /// [RenderState.singlePieceAlphaBlend] when `singlePieceTranslucent` is
@@ -127,19 +82,137 @@ class SpatialMaterial({
           slots: _simpleShader ? _webFragmentSlots : _pbrFragmentSlots,
         ),
       ) {
+    _lastUv.setValues(_uvScale.x, _uvScale.y, _uvOffset.x, _uvOffset.y);
+    _uvScale.addListener(_onUvChanged);
+    _uvOffset.addListener(_onUvChanged);
     final needsTranslucent = translucent || transmission > 1e-4;
     if (doubleSided && !needsTranslucent) {
-      renderState = RenderState.opaque;
+      setInitialState(renderState: RenderState.opaque);
     }
     if (needsTranslucent) {
       final base = singlePieceTranslucent
           ? RenderState.singlePieceAlphaBlend
           : RenderState.alphaBlend;
-      renderState = (transmission > 1e-4 && !doubleSided)
-          ? base.copyWith(cullMode: CullMode.backFace)
-          : base;
+      setInitialState(
+        renderState: (transmission > 1e-4 && !doubleSided)
+            ? base.copyWith(cullMode: CullMode.backFace)
+            : base,
+      );
     }
   }
+
+  /// Base color multiplier (`rgb` and `a`).
+  Color get albedoColor => _albedoColor;
+  set albedoColor(Color value) =>
+      _albedoColor = noteChange(_albedoColor, value);
+
+  double get metallic => _metallic;
+  set metallic(double value) => _metallic = noteChange(_metallic, value);
+
+  double get roughness => _roughness;
+  set roughness(double value) => _roughness = noteChange(_roughness, value);
+
+  /// Optional tangent-space RGB normal map (uses `vertexTangent`
+  /// when present in the surface's `VertexLayout`, or a screen-space cotangent
+  /// frame otherwise).
+  Texture? get normalTexture => _normalTexture;
+  set normalTexture(Texture? value) =>
+      _normalTexture = noteChange(_normalTexture, value);
+
+  /// Strength multiplier applied to the XY perturbation of [normalTexture].
+  double get normalScale => _normalScale;
+  set normalScale(double value) =>
+      _normalScale = noteChange(_normalScale, value);
+
+  /// Optional glTF metallic-roughness map (`G` = roughness, `B` = metallic).
+  Texture? get metallicRoughnessTexture => _metallicRoughnessTexture;
+  set metallicRoughnessTexture(Texture? value) =>
+      _metallicRoughnessTexture = noteChange(_metallicRoughnessTexture, value);
+
+  /// Optional ambient-occlusion map (`R` channel).
+  Texture? get occlusionTexture => _occlusionTexture;
+  set occlusionTexture(Texture? value) =>
+      _occlusionTexture = noteChange(_occlusionTexture, value);
+
+  /// Blend factor `[0..1]` for [occlusionTexture].
+  double get occlusionStrength => _occlusionStrength;
+  set occlusionStrength(double value) =>
+      _occlusionStrength = noteChange(_occlusionStrength, value);
+
+  /// Emissive color added before tone mapping (`0xFF000000` = no emission).
+  Color get emissiveColor => _emissiveColor;
+  set emissiveColor(Color value) =>
+      _emissiveColor = noteChange(_emissiveColor, value);
+
+  /// Multiplier on [emissiveColor] and [emissiveTexture].
+  double get emissiveStrength => _emissiveStrength;
+  set emissiveStrength(double value) =>
+      _emissiveStrength = noteChange(_emissiveStrength, value);
+
+  /// Optional emissive RGB texture multiplied by [emissiveColor].
+  Texture? get emissiveTexture => _emissiveTexture;
+  set emissiveTexture(Texture? value) =>
+      _emissiveTexture = noteChange(_emissiveTexture, value);
+
+  /// Optional equirectangular environment reflection map sampled along the
+  /// view reflection vector.
+  Texture? get environmentTexture => _environmentTexture;
+  set environmentTexture(Texture? value) =>
+      _environmentTexture = noteChange(_environmentTexture, value);
+
+  /// Reflection strength for [environmentTexture] (`0` when unset).
+  double get environmentIntensity => _environmentIntensity;
+  set environmentIntensity(double value) =>
+      _environmentIntensity = noteChange(_environmentIntensity, value);
+
+  /// Optional pre-filtered `SH9` diffuse irradiance + specular reflection
+  /// probe (`EnvironmentProbe3D`).
+  EnvironmentProbe3D? get environmentProbe => _environmentProbe;
+  set environmentProbe(EnvironmentProbe3D? value) =>
+      _environmentProbe = noteChange(_environmentProbe, value);
+
+  /// Optional baked diffuse lightmap texture sampled with secondary UV channel
+  /// `vertexTexCoord1` (`TEXCOORD_1`, falling back to `vertexTexCoord`).
+  Texture? get lightmapTexture => _lightmapTexture;
+  set lightmapTexture(Texture? value) =>
+      _lightmapTexture = noteChange(_lightmapTexture, value);
+
+  /// Multiplier applied to [lightmapTexture].
+  double get lightmapIntensity => _lightmapIntensity;
+  set lightmapIntensity(double value) =>
+      _lightmapIntensity = noteChange(_lightmapIntensity, value);
+
+  /// Clearcoat layer intensity (`0..1`, `F0 = 0.04` polyurethane/car-paint
+  /// specular coat).
+  double get clearcoat => _clearcoat;
+  set clearcoat(double value) => _clearcoat = noteChange(_clearcoat, value);
+
+  /// Perceptual roughness (`0.04..1.0`) of the [clearcoat] layer.
+  double get clearcoatRoughness => _clearcoatRoughness;
+  set clearcoatRoughness(double value) =>
+      _clearcoatRoughness = noteChange(_clearcoatRoughness, value);
+
+  /// Dielectric physical transmission factor (`0..1` for refractive glass).
+  double get transmission => _transmission;
+  set transmission(double value) =>
+      _transmission = noteChange(_transmission, value);
+
+  /// Index of refraction (`1.0..3.0`; `1.5` = crown glass, `F0 = 0.04`).
+  double get ior => _ior;
+  set ior(double value) => _ior = noteChange(_ior, value);
+
+  /// Alpha threshold below which fragments are discarded (`0` disables cutout).
+  double get alphaCutoff => _alphaCutoff;
+  set alphaCutoff(double value) =>
+      _alphaCutoff = noteChange(_alphaCutoff, value);
+
+  /// Reverses back-face normals before shading when `CullMode.none` is used.
+  bool get doubleSided => _doubleSided;
+  set doubleSided(bool value) => _doubleSided = noteChange(_doubleSided, value);
+
+  /// Dissolves opaque draws via a `4x4` Bayer screen-space dither pattern.
+  bool get ditherFade => _ditherFade;
+  set ditherFade(bool value) => _ditherFade = noteChange(_ditherFade, value);
 
   /// Whether this material draws with the simpler shader, without the IBL,
   /// lightmap, clearcoat, transmission and reflection probe inputs: on the
@@ -249,13 +322,43 @@ class SpatialMaterial({
   }
 
   /// Base albedo texture multiplied by [albedoColor].
-  Texture albedoTexture = albedoTexture ?? Texture.standard;
+  Texture get albedoTexture => _albedoTexture;
+  set albedoTexture(Texture value) =>
+      _albedoTexture = noteChange(_albedoTexture, value);
+  Texture _albedoTexture = albedoTexture ?? Texture.standard;
 
-  /// UV tiling scale.
-  Vector2 uvScale = uvScale ?? Vector2.all(1);
+  /// UV tiling scale. Assigning a vector copies it; changing it in place
+  /// counts as a change ([version]).
+  Vector2 get uvScale => _uvScale;
+  set uvScale(Vector2 value) => _uvScale.setFrom(value);
+  final NotifyingVector2 _uvScale = NotifyingVector2.copy(
+    uvScale ?? Vector2.all(1),
+  );
 
-  /// UV translation offset.
-  Vector2 uvOffset = uvOffset ?? Vector2.zero();
+  /// UV translation offset. Assigning a vector copies it; changing it in
+  /// place counts as a change ([version]).
+  Vector2 get uvOffset => _uvOffset;
+  set uvOffset(Vector2 value) => _uvOffset.setFrom(value);
+  final NotifyingVector2 _uvOffset = NotifyingVector2.copy(
+    uvOffset ?? Vector2.zero(),
+  );
+
+  // The UV transform the version was last raised for: the vectors notify
+  // every write, also of the values they hold.
+  final Vector4 _lastUv = Vector4.zero();
+
+  void _onUvChanged() {
+    final scale = _uvScale;
+    final offset = _uvOffset;
+    final last = _lastUv;
+    if (scale.x != last.x ||
+        scale.y != last.y ||
+        offset.x != last.z ||
+        offset.y != last.w) {
+      last.setValues(scale.x, scale.y, offset.x, offset.y);
+      markChanged();
+    }
+  }
 
   static final Vector4 _emissiveVec = Vector4.zero();
   static final Vector4 _uvVec = Vector4.zero();

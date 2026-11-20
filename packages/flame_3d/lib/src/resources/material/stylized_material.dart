@@ -4,6 +4,7 @@ import 'dart:ui' hide FragmentShader;
 import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/resources/material/versioned_list.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 /// {@template stylized_material}
@@ -226,90 +227,41 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 /// [UnsupportedError].
 /// {@endtemplate}
 class StylizedMaterial({
-  /// Multiplies the vertex color.
-  var Color albedoColor = const Color(0xFFFFFFFF),
-
-  /// Multiplies the color of the vertices of the accent mask.
-  var Color accentColor = const Color(0xFFFFFFFF),
+  var Color _albedoColor = const Color(0xFFFFFFFF),
+  var Color _accentColor = const Color(0xFFFFFFFF),
 
   /// Optional palette of up to [maxAccentPaletteSize] (`16`) accent colors that
   /// individual instances can select through [packAccentAndFade] in
   /// `instanceData.w` without breaking instanced batching.
   List<Color> accentPalette = const [],
 
-  /// The color the vertices of the emissive mask glow with, unless
-  /// [emissiveColorSource] takes it from each instance.
-  var Color emissiveColor = const Color(0xFFFFFFFF),
-
-  /// Where the vertices of the emissive mask take the color they glow with:
-  /// the material's [emissiveColor] ([EmissiveColorSource.emissiveColor], the
-  /// default), or a color of each instance, so that the instances of one mesh
-  /// glow in colors of their own and still share one draw: its color
-  /// ([EmissiveColorSource.instanceColor]), its accent
-  /// ([EmissiveColorSource.accent]) or its [rimPalette] entry
-  /// ([EmissiveColorSource.rim]). See "Glow colors".
-  var EmissiveColorSource emissiveColorSource =
+  var Color _emissiveColor = const Color(0xFFFFFFFF),
+  var EmissiveColorSource _emissiveColorSource =
       EmissiveColorSource.emissiveColor,
-
-  /// How strongly the vertices of the emissive mask glow, from `0` (lit like
-  /// the others) to `1` (their glow color alone).
-  var double emissiveStrength = 1.0,
-
-  /// The color the vertices of the emissive mask glow with in objects whose
-  /// emissive boost (the `x` of their instance data) is `1`; the color moves
-  /// from their glow color ([emissiveColor], or the instance's color picked
-  /// by [emissiveColorSource]) towards it as the boost goes from `0` to `1`.
-  /// `null` (the default) keeps the glow color of each object.
-  var Color? emissiveBoostColor,
-
-  /// The color added to objects in proportion to their highlight (the `y` of
-  /// their instance data).
-  var Color highlightColor = const Color(0xFFFFFFFF),
-
-  /// The ambient light a hemisphere light gives every surface, whatever its
-  /// orientation, per unit of the hemisphere light's intensity.
-  var Color ambientBase = const Color.from(
+  var double _emissiveStrength = 1.0,
+  var Color? _emissiveBoostColor,
+  var Color _highlightColor = const Color(0xFFFFFFFF),
+  var Color _ambientBase = const Color.from(
     alpha: 1,
     red: 0.65,
     green: 0.65,
     blue: 0.65,
   ),
-
-  /// How much of the hemisphere light's sky color surfaces facing up get,
-  /// times [skyFillWeight].
-  var double skyFill = 0.35,
+  var double _skyFill = 0.35,
 
   /// The weight of each channel (red, green, blue) of the sky fill, `(1, 1,
   /// 1)` by default: a surface facing up gets `skyFill * skyFillWeight`
   /// times the hemisphere light's sky color.
   Vector3? skyFillWeight,
 
-  /// How much of the hemisphere light's ground color surfaces facing down
-  /// get.
-  var double groundBounce = 0.1,
-
-  /// The least a point light lights a surface, even facing away from it, as
-  /// a fraction of its light.
-  var double pointLightWrap = 0.18,
-
-  /// The strength of the highlights of a vertex of gloss `1`.
-  var double specularStrength = 0.28,
-
-  /// The exponent of the highlights: higher is tighter.
-  var double specularPower = 8,
-
-  /// Vertices with no more gloss than this have no highlights.
-  var double specularThreshold = 0.12,
-
-  /// The strength of the rim light, on the edges facing away from the
-  /// viewer.
-  var double rimStrength = 0.14,
-
-  /// The exponent of the rim light: higher is thinner.
-  var double rimPower = 3,
-
-  /// Added to the hemisphere light's sky color for the rim light.
-  var Color rimColor = const Color(0xFF000000),
+  var double _groundBounce = 0.1,
+  var double _pointLightWrap = 0.18,
+  var double _specularStrength = 0.28,
+  var double _specularPower = 8,
+  var double _specularThreshold = 0.12,
+  var double _rimStrength = 0.14,
+  var double _rimPower = 3,
+  var Color _rimColor = const Color(0xFF000000),
 
   /// Optional palette of up to [maxRimPaletteSize] (`8`) rim highlight
   /// colors that individual instances select with [packPaletteAndFade]
@@ -320,110 +272,48 @@ class StylizedMaterial({
   /// material's own rim light. See "Rim highlight palette".
   List<Color> rimPalette = const [],
 
-  /// The exponent of the [rimPalette] rims: higher is thinner.
-  var double rimPalettePower = 2,
-
-  /// Multiplies the [rimPalette] rims (whose colors' alpha is their own
-  /// strength), so that they can be brighter than `1`.
-  var double rimPaletteStrength = 1,
-
-  /// An optional MatCap texture, a sheen added where vertices have more gloss
-  /// than [matCapThreshold] (and no more than [gemThreshold] when there is a
-  /// [gemMatCapTexture]).
-  var Texture? matCapTexture,
-
-  /// The strength of the [matCapTexture] (for a vertex of gloss `1` when
-  /// [matCapGlossWeight] is `1`).
-  var double matCapStrength = 1.0,
-
-  /// Vertices with no more gloss than this get no [matCapTexture].
-  var double matCapThreshold = 0,
-
-  /// How much the gloss of a vertex scales its [matCapTexture]: `1` (the
-  /// default) in proportion to the gloss, `0` at [matCapStrength] whatever
-  /// the gloss.
-  var double matCapGlossWeight = 1,
-
-  /// An optional second MatCap texture, for the glossiest vertices (gems, for
-  /// instance): those with more gloss than [gemThreshold] get it at
-  /// [gemMatCapStrength] instead of the [matCapTexture].
-  var Texture? gemMatCapTexture,
-
-  /// The strength of the [gemMatCapTexture].
-  var double gemMatCapStrength = 1.0,
-
-  /// Vertices with more gloss than this get the [gemMatCapTexture], when
-  /// there is one.
-  var double gemThreshold = 1.0,
-
-  /// How the MatCap textures combine with the lit surface: `0` (the
-  /// default) adds them, as a sheen; `1` multiplies the lit surface (at most
-  /// `1`) by them, as the reflection of a metal; values in between blend the
-  /// two. See the "Metals" section of [StylizedMaterial].
-  var double matCapMetallic = 0,
-
-  /// How saturated the final color stays: `1` (the default) leaves it as it
-  /// is, `0` turns it into its luminosity, a grey (see "Shading").
-  var double saturation = 1,
-
-  /// A color laid over the final color as far as its alpha goes: transparent
-  /// (the default) leaves the color as it is (see "Shading").
-  var Color overlayColor = const Color(0x00000000),
+  var double _rimPalettePower = 2,
+  var double _rimPaletteStrength = 1,
+  var Texture? _matCapTexture,
+  var double _matCapStrength = 1.0,
+  var double _matCapThreshold = 0,
+  var double _matCapGlossWeight = 1,
+  var Texture? _gemMatCapTexture,
+  var double _gemMatCapStrength = 1.0,
+  var double _gemThreshold = 1.0,
+  var double _matCapMetallic = 0,
+  var double _saturation = 1,
+  var Color _overlayColor = const Color(0x00000000),
 
   /// The direction vertices sway in, in [windSpace].
   Vector3? windDirection,
 
-  /// How far vertices of sway weight `1` sway, in [windSpace] units.
-  var double windAmplitude = 0.032,
-
-  /// The space of [windDirection] and of the amplitudes of the wind: the
-  /// world (the default), the model space of each object, or the world
-  /// scaled by the size of each object (see [WindSpace]).
-  var WindSpace windSpace = WindSpace.world,
+  var double _windAmplitude = 0.032,
+  var WindSpace _windSpace = WindSpace.world,
 
   /// The up axis of the objects, in their model space, along which
   /// [WindSpace.worldScaled] measures their scale: `(0, 1, 0)` by default.
   /// It is normalized.
   Vector3? windUpAxis,
 
-  /// The angular frequency of the sway, in radians per unit of [windTime].
-  var double windFrequency = 2.3,
+  var double _windFrequency = 2.3,
 
   /// How the phase of the sway (and of the flutter) changes with the world
   /// position of objects, in radians per unit along each axis, so that they
   /// do not sway in unison.
   Vector3? windPhase,
 
-  /// How far vertices of flutter weight `1` flutter, in [windSpace] units:
-  /// `0` (the default) turns the flutter off.
-  var double windFlutterAmplitude = 0,
-
-  /// The angular frequency of the flutter, in radians per unit of
-  /// [windTime]: a fast sway, faster than [windFrequency].
-  var double windFlutterFrequency = 12,
-
-  /// How much gusts strengthen and weaken the wind, as a fraction of it:
-  /// the wind of an object goes from `1 - windGustAmplitude` to
-  /// `1 + windGustAmplitude` times its strength as gusts cross it. `0` (the
-  /// default) turns the gusts off.
-  var double windGustAmplitude = 0,
-
-  /// The angular frequency of the gusts, in radians per unit of [windTime]:
-  /// a slow wave, slower than [windFrequency].
-  var double windGustFrequency = 0.8,
+  var double _windFlutterAmplitude = 0,
+  var double _windFlutterFrequency = 12,
+  var double _windGustAmplitude = 0,
+  var double _windGustFrequency = 0.8,
 
   /// The direction the gusts travel in, in world space: `(1, 0, 0)` by
   /// default. It is normalized.
   Vector3? windGustDirection,
 
-  /// How fast the phase of the gusts changes along [windGustDirection], in
-  /// radians per world unit: gusts travel at
-  /// `windGustFrequency / windGustPhaseScale` world units per unit of
-  /// [windTime], and `0` gusts the whole scene in unison.
-  var double windGustPhaseScale = 0.5,
-
-  /// The time of the wind, to advance every frame (in seconds).
-  var double windTime = 0,
+  var double _windGustPhaseScale = 0.5,
+  var double _windTime = 0,
 
   /// Whether the material is drawn translucent: blended with premultiplied
   /// alpha, without depth writes, sorted back to front (see [renderState]).
@@ -435,18 +325,8 @@ class StylizedMaterial({
   /// piece.
   bool singlePieceTranslucent = false,
 
-  /// Whether opaque draws dissolve via a `4x4` screen-space Bayer dither
-  /// pattern driven by `albedoColor.a * instanceColor.a * (1 - fade)`, writing
-  /// full depth on kept fragments with zero translucent overdraw.
-  var bool ditherFade = false,
-
-  /// A clip-space depth bias: every vertex's depth (in the `0..1` depth
-  /// range of the picture) is lowered by it, so the objects of this material
-  /// are drawn in front of surfaces up to that much depth nearer the camera,
-  /// without moving on screen. Negative values push them behind. The shadow
-  /// pass and the depth-normal prepass ignore it: the object casts its shadow
-  /// from where it is. See "Depth bias".
-  var double depthBias = 0,
+  var bool _ditherFade = false,
+  var double _depthBias = 0,
 }) extends Material {
   /// {@macro stylized_material}
   this
@@ -474,11 +354,262 @@ class StylizedMaterial({
       );
     }
     if (translucent) {
-      renderState = singlePieceTranslucent
-          ? RenderState.singlePiecePremultipliedAlphaBlend
-          : translucentRenderState;
+      setInitialState(
+        renderState: singlePieceTranslucent
+            ? RenderState.singlePiecePremultipliedAlphaBlend
+            : translucentRenderState,
+      );
     }
+    _accentPalette.onChanged = markChanged;
+    _rimPalette.onChanged = markChanged;
+    _skyFillWeight.addListener(markChanged);
+    _windDirection.addListener(markChanged);
+    _windPhase.addListener(markChanged);
+    _windUpAxis.addListener(markChanged);
+    _windGustDirection.addListener(markChanged);
   }
+
+  /// Multiplies the vertex color.
+  Color get albedoColor => _albedoColor;
+  set albedoColor(Color value) =>
+      _albedoColor = noteChange(_albedoColor, value);
+
+  /// Multiplies the color of the vertices of the accent mask.
+  Color get accentColor => _accentColor;
+  set accentColor(Color value) =>
+      _accentColor = noteChange(_accentColor, value);
+
+  /// The color the vertices of the emissive mask glow with, unless
+  /// [emissiveColorSource] takes it from each instance.
+  Color get emissiveColor => _emissiveColor;
+  set emissiveColor(Color value) =>
+      _emissiveColor = noteChange(_emissiveColor, value);
+
+  /// Where the vertices of the emissive mask take the color they glow with:
+  /// the material's [emissiveColor] ([EmissiveColorSource.emissiveColor], the
+  /// default), or a color of each instance, so that the instances of one mesh
+  /// glow in colors of their own and still share one draw: its color
+  /// ([EmissiveColorSource.instanceColor]), its accent
+  /// ([EmissiveColorSource.accent]) or its [rimPalette] entry
+  /// ([EmissiveColorSource.rim]). See "Glow colors".
+  EmissiveColorSource get emissiveColorSource => _emissiveColorSource;
+  set emissiveColorSource(EmissiveColorSource value) =>
+      _emissiveColorSource = noteChange(_emissiveColorSource, value);
+
+  /// How strongly the vertices of the emissive mask glow, from `0` (lit like
+  /// the others) to `1` (their glow color alone).
+  double get emissiveStrength => _emissiveStrength;
+  set emissiveStrength(double value) =>
+      _emissiveStrength = noteChange(_emissiveStrength, value);
+
+  /// The color the vertices of the emissive mask glow with in objects whose
+  /// emissive boost (the `x` of their instance data) is `1`; the color moves
+  /// from their glow color ([emissiveColor], or the instance's color picked
+  /// by [emissiveColorSource]) towards it as the boost goes from `0` to `1`.
+  /// `null` (the default) keeps the glow color of each object.
+  Color? get emissiveBoostColor => _emissiveBoostColor;
+  set emissiveBoostColor(Color? value) =>
+      _emissiveBoostColor = noteChange(_emissiveBoostColor, value);
+
+  /// The color added to objects in proportion to their highlight (the `y` of
+  /// their instance data).
+  Color get highlightColor => _highlightColor;
+  set highlightColor(Color value) =>
+      _highlightColor = noteChange(_highlightColor, value);
+
+  /// The ambient light a hemisphere light gives every surface, whatever its
+  /// orientation, per unit of the hemisphere light's intensity.
+  Color get ambientBase => _ambientBase;
+  set ambientBase(Color value) =>
+      _ambientBase = noteChange(_ambientBase, value);
+
+  /// How much of the hemisphere light's sky color surfaces facing up get,
+  /// times [skyFillWeight].
+  double get skyFill => _skyFill;
+  set skyFill(double value) => _skyFill = noteChange(_skyFill, value);
+
+  /// How much of the hemisphere light's ground color surfaces facing down
+  /// get.
+  double get groundBounce => _groundBounce;
+  set groundBounce(double value) =>
+      _groundBounce = noteChange(_groundBounce, value);
+
+  /// The least a point light lights a surface, even facing away from it, as
+  /// a fraction of its light.
+  double get pointLightWrap => _pointLightWrap;
+  set pointLightWrap(double value) =>
+      _pointLightWrap = noteChange(_pointLightWrap, value);
+
+  /// The strength of the highlights of a vertex of gloss `1`.
+  double get specularStrength => _specularStrength;
+  set specularStrength(double value) =>
+      _specularStrength = noteChange(_specularStrength, value);
+
+  /// The exponent of the highlights: higher is tighter.
+  double get specularPower => _specularPower;
+  set specularPower(double value) =>
+      _specularPower = noteChange(_specularPower, value);
+
+  /// Vertices with no more gloss than this have no highlights.
+  double get specularThreshold => _specularThreshold;
+  set specularThreshold(double value) =>
+      _specularThreshold = noteChange(_specularThreshold, value);
+
+  /// The strength of the rim light, on the edges facing away from the
+  /// viewer.
+  double get rimStrength => _rimStrength;
+  set rimStrength(double value) =>
+      _rimStrength = noteChange(_rimStrength, value);
+
+  /// The exponent of the rim light: higher is thinner.
+  double get rimPower => _rimPower;
+  set rimPower(double value) => _rimPower = noteChange(_rimPower, value);
+
+  /// Added to the hemisphere light's sky color for the rim light.
+  Color get rimColor => _rimColor;
+  set rimColor(Color value) => _rimColor = noteChange(_rimColor, value);
+
+  /// The exponent of the [rimPalette] rims: higher is thinner.
+  double get rimPalettePower => _rimPalettePower;
+  set rimPalettePower(double value) =>
+      _rimPalettePower = noteChange(_rimPalettePower, value);
+
+  /// Multiplies the [rimPalette] rims (whose colors' alpha is their own
+  /// strength), so that they can be brighter than `1`.
+  double get rimPaletteStrength => _rimPaletteStrength;
+  set rimPaletteStrength(double value) =>
+      _rimPaletteStrength = noteChange(_rimPaletteStrength, value);
+
+  /// An optional MatCap texture, a sheen added where vertices have more gloss
+  /// than [matCapThreshold] (and no more than [gemThreshold] when there is a
+  /// [gemMatCapTexture]).
+  Texture? get matCapTexture => _matCapTexture;
+  set matCapTexture(Texture? value) =>
+      _matCapTexture = noteChange(_matCapTexture, value);
+
+  /// The strength of the [matCapTexture] (for a vertex of gloss `1` when
+  /// [matCapGlossWeight] is `1`).
+  double get matCapStrength => _matCapStrength;
+  set matCapStrength(double value) =>
+      _matCapStrength = noteChange(_matCapStrength, value);
+
+  /// Vertices with no more gloss than this get no [matCapTexture].
+  double get matCapThreshold => _matCapThreshold;
+  set matCapThreshold(double value) =>
+      _matCapThreshold = noteChange(_matCapThreshold, value);
+
+  /// How much the gloss of a vertex scales its [matCapTexture]: `1` (the
+  /// default) in proportion to the gloss, `0` at [matCapStrength] whatever
+  /// the gloss.
+  double get matCapGlossWeight => _matCapGlossWeight;
+  set matCapGlossWeight(double value) =>
+      _matCapGlossWeight = noteChange(_matCapGlossWeight, value);
+
+  /// An optional second MatCap texture, for the glossiest vertices (gems, for
+  /// instance): those with more gloss than [gemThreshold] get it at
+  /// [gemMatCapStrength] instead of the [matCapTexture].
+  Texture? get gemMatCapTexture => _gemMatCapTexture;
+  set gemMatCapTexture(Texture? value) =>
+      _gemMatCapTexture = noteChange(_gemMatCapTexture, value);
+
+  /// The strength of the [gemMatCapTexture].
+  double get gemMatCapStrength => _gemMatCapStrength;
+  set gemMatCapStrength(double value) =>
+      _gemMatCapStrength = noteChange(_gemMatCapStrength, value);
+
+  /// Vertices with more gloss than this get the [gemMatCapTexture], when
+  /// there is one.
+  double get gemThreshold => _gemThreshold;
+  set gemThreshold(double value) =>
+      _gemThreshold = noteChange(_gemThreshold, value);
+
+  /// How the MatCap textures combine with the lit surface: `0` (the
+  /// default) adds them, as a sheen; `1` multiplies the lit surface (at most
+  /// `1`) by them, as the reflection of a metal; values in between blend the
+  /// two. See the "Metals" section of [StylizedMaterial].
+  double get matCapMetallic => _matCapMetallic;
+  set matCapMetallic(double value) =>
+      _matCapMetallic = noteChange(_matCapMetallic, value);
+
+  /// How saturated the final color stays: `1` (the default) leaves it as it
+  /// is, `0` turns it into its luminosity, a grey (see "Shading").
+  double get saturation => _saturation;
+  set saturation(double value) => _saturation = noteChange(_saturation, value);
+
+  /// A color laid over the final color as far as its alpha goes: transparent
+  /// (the default) leaves the color as it is (see "Shading").
+  Color get overlayColor => _overlayColor;
+  set overlayColor(Color value) =>
+      _overlayColor = noteChange(_overlayColor, value);
+
+  /// How far vertices of sway weight `1` sway, in [windSpace] units.
+  double get windAmplitude => _windAmplitude;
+  set windAmplitude(double value) =>
+      _windAmplitude = noteChange(_windAmplitude, value);
+
+  /// The space of [windDirection] and of the amplitudes of the wind: the
+  /// world (the default), the model space of each object, or the world
+  /// scaled by the size of each object (see [WindSpace]).
+  WindSpace get windSpace => _windSpace;
+  set windSpace(WindSpace value) => _windSpace = noteChange(_windSpace, value);
+
+  /// The angular frequency of the sway, in radians per unit of [windTime].
+  double get windFrequency => _windFrequency;
+  set windFrequency(double value) =>
+      _windFrequency = noteChange(_windFrequency, value);
+
+  /// How far vertices of flutter weight `1` flutter, in [windSpace] units:
+  /// `0` (the default) turns the flutter off.
+  double get windFlutterAmplitude => _windFlutterAmplitude;
+  set windFlutterAmplitude(double value) =>
+      _windFlutterAmplitude = noteChange(_windFlutterAmplitude, value);
+
+  /// The angular frequency of the flutter, in radians per unit of
+  /// [windTime]: a fast sway, faster than [windFrequency].
+  double get windFlutterFrequency => _windFlutterFrequency;
+  set windFlutterFrequency(double value) =>
+      _windFlutterFrequency = noteChange(_windFlutterFrequency, value);
+
+  /// How much gusts strengthen and weaken the wind, as a fraction of it:
+  /// the wind of an object goes from `1 - windGustAmplitude` to
+  /// `1 + windGustAmplitude` times its strength as gusts cross it. `0` (the
+  /// default) turns the gusts off.
+  double get windGustAmplitude => _windGustAmplitude;
+  set windGustAmplitude(double value) =>
+      _windGustAmplitude = noteChange(_windGustAmplitude, value);
+
+  /// The angular frequency of the gusts, in radians per unit of [windTime]:
+  /// a slow wave, slower than [windFrequency].
+  double get windGustFrequency => _windGustFrequency;
+  set windGustFrequency(double value) =>
+      _windGustFrequency = noteChange(_windGustFrequency, value);
+
+  /// How fast the phase of the gusts changes along [windGustDirection], in
+  /// radians per world unit: gusts travel at
+  /// `windGustFrequency / windGustPhaseScale` world units per unit of
+  /// [windTime], and `0` gusts the whole scene in unison.
+  double get windGustPhaseScale => _windGustPhaseScale;
+  set windGustPhaseScale(double value) =>
+      _windGustPhaseScale = noteChange(_windGustPhaseScale, value);
+
+  /// The time of the wind, to advance every frame (in seconds).
+  double get windTime => _windTime;
+  set windTime(double value) => _windTime = noteTime(_windTime, value);
+
+  /// Whether opaque draws dissolve via a `4x4` screen-space Bayer dither
+  /// pattern driven by `albedoColor.a * instanceColor.a * (1 - fade)`, writing
+  /// full depth on kept fragments with zero translucent overdraw.
+  bool get ditherFade => _ditherFade;
+  set ditherFade(bool value) => _ditherFade = noteChange(_ditherFade, value);
+
+  /// A clip-space depth bias: every vertex's depth (in the `0..1` depth
+  /// range of the picture) is lowered by it, so the objects of this material
+  /// are drawn in front of surfaces up to that much depth nearer the camera,
+  /// without moving on screen. Negative values push them behind. The shadow
+  /// pass and the depth-normal prepass ignore it: the object casts its shadow
+  /// from where it is. See "Depth bias".
+  double get depthBias => _depthBias;
+  set depthBias(double value) => _depthBias = noteChange(_depthBias, value);
 
   /// The render state of translucent stylized materials: blended with
   /// premultiplied alpha, depth tested, without depth writes.
@@ -489,15 +620,18 @@ class StylizedMaterial({
   static const int maxAccentPaletteSize = 16;
 
   /// Optional per-instance accent palette (up to [maxAccentPaletteSize]
-  /// colors).
-  final List<Color> accentPalette = List.of(accentPalette);
+  /// colors). Its changes count as changes of the material ([version]).
+  List<Color> get accentPalette => _accentPalette;
+  final VersionedList<Color> _accentPalette = VersionedList(accentPalette);
 
   /// Maximum number of entries supported in [rimPalette].
   static const int maxRimPaletteSize = 8;
 
   /// Optional per-instance rim highlight palette (up to [maxRimPaletteSize]
-  /// colors), see [packPaletteAndFade].
-  final List<Color> rimPalette = List.of(rimPalette);
+  /// colors), see [packPaletteAndFade]. Its changes count as changes of the
+  /// material ([version]).
+  List<Color> get rimPalette => _rimPalette;
+  final VersionedList<Color> _rimPalette = VersionedList(rimPalette);
 
   /// Encodes an [accentIndex] (`0` to `maxAccentPaletteSize - 1`) into
   /// [accentPalette] together with a [fade] in `[0, 1]` as a single float for
@@ -551,20 +685,43 @@ class StylizedMaterial({
     return slot * 4.0 + f;
   }
 
+  // Assigning one of the vectors below copies it; changing one in place
+  // counts as a change of the material.
+
   /// The weight of each channel of the sky fill, see [skyFill].
-  Vector3 skyFillWeight = skyFillWeight ?? Vector3.all(1);
+  Vector3 get skyFillWeight => _skyFillWeight;
+  set skyFillWeight(Vector3 value) => _skyFillWeight.setFrom(value);
+  final NotifyingVector3 _skyFillWeight = NotifyingVector3.copy(
+    skyFillWeight ?? Vector3.all(1),
+  );
 
   /// The direction vertices sway in, in [windSpace].
-  Vector3 windDirection = windDirection ?? Vector3(1, 0, 0);
+  Vector3 get windDirection => _windDirection;
+  set windDirection(Vector3 value) => _windDirection.setFrom(value);
+  final NotifyingVector3 _windDirection = NotifyingVector3.copy(
+    windDirection ?? Vector3(1, 0, 0),
+  );
 
   /// How the phase of the sway changes with the world position of objects.
-  Vector3 windPhase = windPhase ?? Vector3(0.7, 0, 0.5);
+  Vector3 get windPhase => _windPhase;
+  set windPhase(Vector3 value) => _windPhase.setFrom(value);
+  final NotifyingVector3 _windPhase = NotifyingVector3.copy(
+    windPhase ?? Vector3(0.7, 0, 0.5),
+  );
 
   /// The up axis of the objects, in their model space, see [windSpace].
-  Vector3 windUpAxis = windUpAxis ?? Vector3(0, 1, 0);
+  Vector3 get windUpAxis => _windUpAxis;
+  set windUpAxis(Vector3 value) => _windUpAxis.setFrom(value);
+  final NotifyingVector3 _windUpAxis = NotifyingVector3.copy(
+    windUpAxis ?? Vector3(0, 1, 0),
+  );
 
   /// The direction the gusts travel in, in world space.
-  Vector3 windGustDirection = windGustDirection ?? Vector3(1, 0, 0);
+  Vector3 get windGustDirection => _windGustDirection;
+  set windGustDirection(Vector3 value) => _windGustDirection.setFrom(value);
+  final NotifyingVector3 _windGustDirection = NotifyingVector3.copy(
+    windGustDirection ?? Vector3(1, 0, 0),
+  );
 
   static const _bundle =
       'packages/flame_3d/assets/shaders/stylized_material.shaderbundle';
@@ -718,7 +875,7 @@ class StylizedMaterial({
       ..setColor('Material.ambientBase', ambientBase)
       ..setVector4(
         'Material.skyFill',
-        _skyFill..setValues(
+        _skyFillValue..setValues(
           skyFill * weight.x,
           skyFill * weight.y,
           skyFill * weight.z,
@@ -797,7 +954,7 @@ class StylizedMaterial({
     }
   }
 
-  final Vector4 _skyFill = Vector4.zero();
+  final Vector4 _skyFillValue = Vector4.zero();
   final Vector3 _upAxis = Vector3.zero();
   final Vector3 _gustWave = Vector3.zero();
 

@@ -345,13 +345,19 @@ receivers, and changing them shows on the next frame without rendering the map a
 it moves, if it is an `Object3D` that casts shadows, a component with 3D children, or a light whose
 source has `ShadowSettings` (a move of anything else, such as a `Collider3D` or an object with
 `castsShadows: false`, leaves the cached map alone); when `Object3D.castsShadows` or
-`Material.castsShadows` is set; when the `jointTransforms` of a caster (`MeshComponent`,
+`Material.castsShadows` is set, a material's `renderState` changes whether it casts (while its
+`castsShadows` follows the render state, once a pass has drawn it), or a surface is given a
+material that casts differently; when the `jointTransforms` of a caster (`MeshComponent`,
 `ModelComponent`, `LodMeshComponent`) are assigned; when a field of a light source that can move
 its shadows is set (a direction, a range or cone, the `shadows` settings; not a color or an
 intensity); when a `ModelComponent` that casts shadows poses its nodes, an `InstancedGroup3D` or a
 `SkinnedCrowdBatch3D` that casts shadows changes, or a particle system with mesh particles has live
 particles; and when `World3D.markShadowsDirty()` (or `markSceneDirty()`) is called. A color, the
-`instanceData` of a mesh or the color or intensity of a light change `World3D.sceneVersion` only.
+`instanceData` of a mesh, the color or intensity of a light, and every other value of a material
+(its colors, textures, wind and animation time, which report themselves, see
+[Materials and Textures](materials.md#changes-and-versions)) change `World3D.sceneVersion` only:
+the shadow pass draws positions with its own shaders, so they move no shadow, and a retained layer
+renders again for them with the cached map.
 
 The engine cannot see changes made in place; the cached map then shows the old shadows until the
 next change it sees. Report them:

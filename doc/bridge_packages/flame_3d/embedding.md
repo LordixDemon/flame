@@ -256,8 +256,12 @@ The layer compares, on every frame:
   properties (`color`, `instanceData`, `jointTransforms`, `castsShadows`) and light source fields
   assigned, lights added, removed or moved, animations that advance, particle systems and ribbons
   with live particles, particles spawned or cleared (`burst`, `spawn`, `clear`, from anywhere in
-  the frame), running effects, batch changes, world settings assigned a new value, and
-  the changes of the lights it borrows with `World3D.lightsFrom` (see
+  the frame), running effects, batch changes, world settings assigned a new value, the changes of
+  the lights it borrows with `World3D.lightsFrom`, and the values that report their own changes:
+  every field of a material the layer's last render drew (the time of its animation included:
+  `WaterMaterial.time`, `StylizedMaterial.windTime`, `BarrierMaterial.time`), its palettes, its
+  vectors changed in place, the `WaterRipples` and `WaterFoamSources` it reads, a surface given
+  another material, and every field of `fog`, `waterVolume`, `bloom` and `postProcess` (see
   [Basic Concepts](basic_concepts.md#scene-versions-and-dirty-marking) for the full list);
 - the `castersVersion` of the world, or of its `ShadowGroup` (all the worlds of the group), and
   the group's `viewsVersion`, which changes when a layer of the group moves on the screen (see
@@ -277,14 +281,16 @@ The layer compares, on every frame:
 These do not render it again, because the engine does not see them; report them as described in
 [Basic Concepts](basic_concepts.md#scene-versions-and-dirty-marking), or call `layer.markDirty()`:
 
-- material fields, including the animated ones (`StylizedMaterial.windTime`, `WaterMaterial.time`):
-  wind and water freeze while the image is reused;
 - joint matrices written in place into `jointTransforms` (skinning driven that way freezes until
   `markDrawDirty()` is called on the component, while `ModelComponent` animations do count), and
   vectors or `ShadowSettings` of a light source changed in place (`source.markChanged()`);
 - what a custom `Object3D` draws (`markDrawDirty()`), and textures whose content changes, such as a
-  `RenderTexture3D` shown in the layer;
-- the fields of `fog` and `customPasses`.
+  `RenderTexture3D` shown in the layer (`markChanged()` on the material that shows it), and an
+  object a material or a setting holds changed in place (an `Aabb3`, an `EnvironmentProbe3D`, the
+  content of a `ColorLut3D`);
+- values a custom material computes in its `apply` from state of its own: report them with
+  `material.markChanged()`, or set `material.animated` when they change on every frame;
+- `customPasses`.
 
 `markDirty()` only renders the layer again; `world.markSceneDirty()` does too, and also marks the
 shadow casters as changed (use `shadows: false` when none moved).
@@ -292,17 +298,21 @@ shadow casters as changed (use `shadows: false` when none moved).
 Anything that changes on every frame keeps the layer rendering every frame, with the cost of the
 comparison on top: particle systems with live particles, playing animations, a `FoliageSystem3D`
 with a `windStrength` above `0` (it marks the world dirty on every update, see
-[Large Worlds](world_scale.md#foliage)), and components whose transform or drawing properties
-change every frame (writing an unchanged value is not a change). Put such objects in a layer of
-their own without caching, above or below the retained one, and share shadows between the two with
-a `ShadowGroup`.
+[Large Worlds](world_scale.md#foliage)), materials whose animation time advances every frame (water,
+wind, barriers) or that are marked `animated`, and components whose transform or drawing
+properties change every frame (writing an unchanged value is not a change). The layer's
+`renderStats` tell which materials made it render: `updatedMaterials` counts those whose values
+changed since its last render, `animatedMaterials` those that animate. Put such objects in a layer
+of their own without caching, above or below the retained one, and share shadows between the two
+with a `ShadowGroup`.
 
 
 ### What it costs
 
 A frame served from the image costs one image draw and the comparison: about forty values compared
-one by one with those of the kept image, and the two camera matrices, without allocating; a layer
-of a `ShadowGroup` also reports its camera to the group (a few matrix products). A frame
+one by one with those of the kept image, and the two camera matrices, without allocating, plus one
+addition per material of the last render to read the scene version; a layer of a `ShadowGroup`
+also reports its camera to the group (a few matrix products). A frame
 that renders costs what it costs without caching. The layer's render targets are not taken from the
 device's pool: one for the plain path and one for the post-processing path (`bloom`, `postProcess`,
 `hdrEnabled`), each created on its first render and again whenever its size changes. Each keeps up
@@ -442,7 +452,8 @@ size, in 8-bit color, without multisampling, bloom or post-processing. Notes:
 - Call it from `update`, not while the world is being rendered. The draws are recorded into the
   optional `context` on `device` when both are given, otherwise into those of the world's game (or
   of a renderer of its own for a world in no game, whose lights are then gathered from its tree).
-- A retained layer that shows the texture does not notice new content: call `markDirty()`.
+- A retained layer that shows the texture does not notice new content: call `markDirty()` on it,
+  or `markChanged()` on the material that shows the texture.
 - `dispose()` drops the GPU texture; `texture` shows white again until the next `renderWorld`.
 
 

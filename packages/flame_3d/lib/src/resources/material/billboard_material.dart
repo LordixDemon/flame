@@ -27,21 +27,13 @@ enum BillboardOrientation3D() {
 /// without writing depth.
 class BillboardMaterial3D({
   Texture? albedoTexture,
-  var Color albedoColor = const Color(0xFFFFFFFF),
-  var double alphaCutoff = 0.4,
-  var double shadeWeight = 0.65,
-  var bool ditherFade = false,
+  var Color _albedoColor = const Color(0xFFFFFFFF),
+  var double _alphaCutoff = 0.4,
+  var double _shadeWeight = 0.65,
+  var bool _ditherFade = false,
   bool translucent = false,
 
-  /// Whether the colors of [albedoTexture] are premultiplied by their alpha.
-  ///
-  /// Textures made from a `dart:ui` `Image` (`ImageTexture.create`, decoded
-  /// assets, rasterized pictures) are, and so is the default. Set it to
-  /// `false` for a texture built from straight-alpha bytes. The shader
-  /// divides premultiplied texels by their alpha before tinting and
-  /// lighting them, so that translucent and cut-out edges keep their color
-  /// instead of darkening.
-  var bool premultipliedTexture = true,
+  var bool _premultipliedTexture = true,
 }) extends Material {
   this
     : super(
@@ -64,19 +56,52 @@ class BillboardMaterial3D({
           ],
         ),
       ) {
-    castsShadows = false;
     if (translucent) {
-      alphaCutoff = 0.0;
-      renderState = RenderState.premultipliedAlphaBlend;
-    } else {
-      renderState = RenderState.opaque;
+      _alphaCutoff = 0.0;
     }
+    setInitialState(
+      renderState: translucent
+          ? RenderState.premultipliedAlphaBlend
+          : RenderState.opaque,
+      castsShadows: false,
+    );
   }
+
+  Color get albedoColor => _albedoColor;
+  set albedoColor(Color value) =>
+      _albedoColor = noteChange(_albedoColor, value);
+
+  double get alphaCutoff => _alphaCutoff;
+  set alphaCutoff(double value) =>
+      _alphaCutoff = noteChange(_alphaCutoff, value);
+
+  double get shadeWeight => _shadeWeight;
+  set shadeWeight(double value) =>
+      _shadeWeight = noteChange(_shadeWeight, value);
+
+  bool get ditherFade => _ditherFade;
+  set ditherFade(bool value) => _ditherFade = noteChange(_ditherFade, value);
+
+  /// Whether the colors of [albedoTexture] are premultiplied by their alpha.
+  ///
+  /// Textures made from a `dart:ui` `Image` (`ImageTexture.create`, decoded
+  /// assets, rasterized pictures) are, and so is the default. Set it to
+  /// `false` for a texture built from straight-alpha bytes. The shader
+  /// divides premultiplied texels by their alpha before tinting and
+  /// lighting them, so that translucent and cut-out edges keep their color
+  /// instead of darkening.
+  bool get premultipliedTexture => _premultipliedTexture;
+  set premultipliedTexture(bool value) =>
+      _premultipliedTexture = noteChange(_premultipliedTexture, value);
 
   static const String _bundle =
       'packages/flame_3d/assets/shaders/billboard_material.shaderbundle';
 
-  Texture albedoTexture = albedoTexture ?? Texture.standard;
+  /// The texture of the billboards, multiplied by [albedoColor].
+  Texture get albedoTexture => _albedoTexture;
+  set albedoTexture(Texture value) =>
+      _albedoTexture = noteChange(_albedoTexture, value);
+  Texture _albedoTexture = albedoTexture ?? Texture.standard;
 
   static final Vector3 _right = Vector3.zero();
   static final Vector3 _up = Vector3.zero();

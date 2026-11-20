@@ -2,7 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flame_3d/game.dart';
-import 'package:flame_3d/src/resources/material/water_material.dart';
+import 'package:flame_3d/resources.dart';
 import 'package:meta/meta.dart';
 
 /// {@template water_foam_sources}
@@ -63,12 +63,17 @@ import 'package:meta/meta.dart';
 /// them: the vertices of the surface tell the pixels where none does, so the
 /// cost follows the area the collars cover (on a surface subdivided finely
 /// enough for its waves).
+///
+/// Adding, moving, changing and removing sources raise its [version] when a
+/// value really changes (moving a source to where it is does not), which
+/// counts as a change of the materials that draw it
+/// (`WaterMaterial.version`), so that their retained layers render again.
 /// {@endtemplate}
 class WaterFoamSources({
   /// The number of sources the set holds, from `1` to [maxCapacity]:
   /// [defaultCapacity] by default.
   final int capacity = defaultCapacity,
-}) {
+}) with Versioned {
   /// {@macro water_foam_sources}
   this {
     RangeError.checkValueInInterval(capacity, 1, maxCapacity, 'capacity');
@@ -101,11 +106,6 @@ class WaterFoamSources({
     }
     return count;
   }
-
-  /// Changes every time a source is added, changed, moved or removed, so
-  /// that a cached picture can tell it is out of date.
-  int get version => _version;
-  int _version = 0;
 
   /// Whether [slot] holds a source.
   bool isUsed(int slot) {
@@ -238,7 +238,7 @@ class WaterFoamSources({
       changed = _write(o + 3, axis.x, axis.y, axis.z) || changed;
     }
     if (changed) {
-      _version++;
+      markChanged();
     }
   }
 
@@ -250,7 +250,7 @@ class WaterFoamSources({
     _checkStrength(strength);
     if (_sources[o + 10] != strength) {
       _sources[o + 10] = strength;
-      _version++;
+      markChanged();
     }
   }
 
@@ -275,7 +275,7 @@ class WaterFoamSources({
     final value = carry ? 1.0 : 0.0;
     if (_sources[o + 11] != value) {
       _sources[o + 11] = value;
-      _version++;
+      markChanged();
     }
   }
 
@@ -299,16 +299,20 @@ class WaterFoamSources({
     RangeError.checkValueInInterval(slot, 0, capacity - 1, 'slot');
     if (_used[slot]) {
       _used[slot] = false;
-      _version++;
+      markChanged();
     }
   }
 
   /// Removes every source.
   void clear() {
+    var changed = false;
     for (var i = 0; i < capacity; i++) {
+      changed = changed || _used[i];
       _used[i] = false;
     }
-    _version++;
+    if (changed) {
+      markChanged();
+    }
   }
 
   int _freeSlot() {
@@ -368,7 +372,7 @@ class WaterFoamSources({
     changed = _write(o + 9, width, strength, carryPattern ? 1 : 0) || changed;
     _used[slot] = true;
     if (changed) {
-      _version++;
+      markChanged();
     }
   }
 

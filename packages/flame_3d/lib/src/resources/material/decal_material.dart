@@ -10,39 +10,17 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 /// marks, puddles, drop shadows) drawn with `DecalBatch3D` or [PlaneMesh].
 /// {@endtemplate}
 class DecalMaterial({
-  /// Optional decal or atlas texture (`null` draws a procedural disc/ring).
-  var Texture? texture,
-
-  /// Base color multiplied by each decal's per-instance color.
-  var Color albedoColor = const Color(0xFFFFFFFF),
-
-  /// Clip-space depth bias (`>= 0`) preventing coplanar Z-fighting.
-  var double depthBias = 0.0005,
-
-  /// Radial edge softness in `[0, 1]` (feathering of the procedural disc/ring,
-  /// or circular edge vignette when [texture] is set).
-  var double softness = 0.15,
-
-  /// Inner radius in `[0, 1)` when drawing a procedural ring (`0` draws a
-  /// filled disc).
-  var double innerRadius = 0.0,
-
-  /// Fragments with final alpha below [alphaCutoff] are discarded.
-  var double alphaCutoff = 0.001,
+  var Texture? _texture,
+  var Color _albedoColor = const Color(0xFFFFFFFF),
+  var double _depthBias = 0.0005,
+  var double _softness = 0.15,
+  var double _innerRadius = 0.0,
+  var double _alphaCutoff = 0.001,
 
   /// Render state (defaults to premultiplied alpha without depth writes).
   RenderState renderState = RenderState.premultipliedAlphaBlend,
 
-  /// Whether [texture] holds premultiplied colors, as the images Flutter
-  /// decodes and atlases built by drawing them do.
-  ///
-  /// With `false` (the default) the texels are taken as straight colors and
-  /// multiplied by their alpha. With `true` they are taken as premultiplied
-  /// and scaled as a whole by the edge softness and the tint's alpha, then
-  /// tinted, so the filtered and mipmapped texels of a premultiplied atlas
-  /// keep their colors instead of darkening at translucent edges. It has no
-  /// effect on the procedural disc and ring (no [texture]).
-  var bool premultipliedTexture = false,
+  var bool _premultipliedTexture = false,
 }) extends Material {
   /// {@macro decal_material}
   this
@@ -59,9 +37,50 @@ class DecalMaterial({
     if (kIsWeb) {
       throw UnsupportedError('DecalMaterial is not supported on the web yet');
     }
-    this.renderState = renderState;
-    castsShadows = false;
+    setInitialState(renderState: renderState, castsShadows: false);
   }
+
+  /// Optional decal or atlas texture (`null` draws a procedural disc/ring).
+  Texture? get texture => _texture;
+  set texture(Texture? value) => _texture = noteChange(_texture, value);
+
+  /// Base color multiplied by each decal's per-instance color.
+  Color get albedoColor => _albedoColor;
+  set albedoColor(Color value) =>
+      _albedoColor = noteChange(_albedoColor, value);
+
+  /// Clip-space depth bias (`>= 0`) preventing coplanar Z-fighting.
+  double get depthBias => _depthBias;
+  set depthBias(double value) => _depthBias = noteChange(_depthBias, value);
+
+  /// Radial edge softness in `[0, 1]` (feathering of the procedural disc/ring,
+  /// or circular edge vignette when [texture] is set).
+  double get softness => _softness;
+  set softness(double value) => _softness = noteChange(_softness, value);
+
+  /// Inner radius in `[0, 1)` when drawing a procedural ring (`0` draws a
+  /// filled disc).
+  double get innerRadius => _innerRadius;
+  set innerRadius(double value) =>
+      _innerRadius = noteChange(_innerRadius, value);
+
+  /// Fragments with final alpha below [alphaCutoff] are discarded.
+  double get alphaCutoff => _alphaCutoff;
+  set alphaCutoff(double value) =>
+      _alphaCutoff = noteChange(_alphaCutoff, value);
+
+  /// Whether [texture] holds premultiplied colors, as the images Flutter
+  /// decodes and atlases built by drawing them do.
+  ///
+  /// With `false` (the default) the texels are taken as straight colors and
+  /// multiplied by their alpha. With `true` they are taken as premultiplied
+  /// and scaled as a whole by the edge softness and the tint's alpha, then
+  /// tinted, so the filtered and mipmapped texels of a premultiplied atlas
+  /// keep their colors instead of darkening at translucent edges. It has no
+  /// effect on the procedural disc and ring (no [texture]).
+  bool get premultipliedTexture => _premultipliedTexture;
+  set premultipliedTexture(bool value) =>
+      _premultipliedTexture = noteChange(_premultipliedTexture, value);
 
   static const String _bundle =
       'packages/flame_3d/assets/shaders/decal_material.shaderbundle';

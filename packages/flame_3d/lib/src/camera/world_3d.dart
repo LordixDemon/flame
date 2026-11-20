@@ -10,6 +10,7 @@ import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/embedding/embedded_renderer.dart';
+import 'package:flame_3d/src/graphics/material_tracker.dart';
 import 'package:meta/meta.dart';
 
 part 'shadow_group.dart';
@@ -72,7 +73,49 @@ class World3D({
       _ownSceneVersion +
       Material.castsShadowsRevision +
       GpuBackend.renderEpoch +
-      (_lightsFrom?._lightsVersion ?? 0);
+      (_lightsFrom?._lightsVersion ?? 0) +
+      _valuesVersion;
+
+  // The versions of the values this world draws with, which report their
+  // own changes: its settings, and the materials of its last render (see
+  // [MaterialTracker]), plus one per update while one of those is marked
+  // `Material.animated`, and the materials given to surfaces (shared by
+  // every world, as Material.castsShadows).
+  int get _valuesVersion =>
+      _settingsOffset +
+      _settingsVersion +
+      _drawnMaterials.version +
+      _animationTicks +
+      Material.assignmentRevision;
+
+  int get _settingsVersion =>
+      (_fog?.version ?? 0) +
+      (_waterVolume?.version ?? 0) +
+      (_bloom?.version ?? 0) +
+      (_postProcess?.version ?? 0);
+
+  // Keeps [_valuesVersion] from going back when a setting is replaced by one
+  // of a lower version.
+  int _settingsOffset = 0;
+  int _animationTicks = 0;
+  final MaterialTracker _drawnMaterials = MaterialTracker();
+
+  /// Replaces a setting by [assign], keeping [_valuesVersion] as it was:
+  /// the setter marks the scene dirty.
+  void _replaceSetting(void Function() assign) {
+    final before = _settingsVersion;
+    assign();
+    _settingsOffset += before - _settingsVersion;
+  }
+
+  /// The part of [sceneVersion] that follows the components of this world
+  /// (and the lights and world settings it draws with), without the values
+  /// that report their own changes (materials, fog, water, bloom and
+  /// post-processing settings): what a spatial index of the components is
+  /// built for.
+  @internal
+  int get componentsVersion => _sceneVersion - _valuesVersion;
+
   int get _castersVersion =>
       _ownCastersVersion +
       Material.castsShadowsRevision +
@@ -97,12 +140,27 @@ class World3D({
   /// [depthPrepassEnabled], ...); and when the lights it borrows change (see
   /// [lightsFrom] and [lightsVersion]).
   ///
-  /// The engine cannot see changes made in place: a field of a material, a
-  /// field of [fog], of [waterVolume] or of a light's `ShadowSettings`, a
-  /// vector of a light
-  /// source, joint matrices written into an existing list, the buffers of a
-  /// custom `Object3D.draw`, [customPasses]. Report them with
-  /// `Component3D.markDrawDirty`, `LightSource.markChanged` or
+  /// It also increases when a value this world draws with changes, as those
+  /// values report their own changes ([Versioned]): a field of [fog], of
+  /// [waterVolume], of [bloom] or of [postProcess], a field of one of the
+  /// materials its last render drew (`Material.version`), of their palettes
+  /// or of the state they read (`WaterRipples`, `WaterFoamSources`), and a
+  /// `Surface` given another material. A material this world did not draw
+  /// in its last render (one hidden, culled, or drawn in another world
+  /// only) does not change it; neither does writing the value a field
+  /// already holds. While the last render drew a material marked
+  /// `Material.animated`, it increases on every update. None of these
+  /// changes [castersVersion]: a material moves no shadow, besides its
+  /// `Material.castsShadows` (and the `Material.renderState` it follows).
+  ///
+  /// The engine cannot see changes made in place: a field of a light's
+  /// `ShadowSettings`, a vector of a light source, joint matrices written
+  /// into an existing list, the buffers of a custom `Object3D.draw`,
+  /// [customPasses], the contents of a texture rendered again, an object a
+  /// material or a setting holds changed in place (an `Aabb3`, an
+  /// `EnvironmentProbe3D`), and the [lightProbeGrid] changed in place. Report
+  /// them with `Component3D.markDrawDirty`, `LightSource.markChanged`,
+  /// `Material.markChanged` (or [Versioned.markChanged] of the setting) or
   /// [markSceneDirty].
   int get sceneVersion => _sceneVersion;
 
@@ -368,7 +426,7 @@ class World3D({
     if (identical(value, _fog)) {
       return;
     }
-    _fog = value;
+    _replaceSetting(() => _fog = value);
     markSceneDirty(shadows: false);
   }
 
@@ -377,8 +435,8 @@ class World3D({
   /// with caustics), and foam where they cross it (`null`, the default, for
   /// none). See [WaterVolumeSettings].
   ///
-  /// Assigning another object marks the scene changed; changing the fields
-  /// of the current one (its `time`, for instance) does not, see
+  /// Assigning another object marks the scene changed, and so does changing
+  /// the fields of the current one (its `time`, for instance), see
   /// [sceneVersion].
   WaterVolumeSettings? get waterVolume => _waterVolume;
   WaterVolumeSettings? _waterVolume = waterVolume;
@@ -386,7 +444,7 @@ class World3D({
     if (identical(value, _waterVolume)) {
       return;
     }
-    _waterVolume = value;
+    _replaceSetting(() => _waterVolume = value);
     markSceneDirty(shadows: false);
   }
 
@@ -398,7 +456,7 @@ class World3D({
     if (identical(value, _bloom)) {
       return;
     }
-    _bloom = value;
+    _replaceSetting(() => _bloom = value);
     markSceneDirty(shadows: false);
   }
 
@@ -410,7 +468,7 @@ class World3D({
     if (identical(value, _postProcess)) {
       return;
     }
-    _postProcess = value;
+    _replaceSetting(() => _postProcess = value);
     markSceneDirty(shadows: false);
   }
 
@@ -619,6 +677,17 @@ class World3D({
   void onRemove() {
     super.onRemove();
     _host = null;
+  }
+
+  @override
+  void update(double dt) {
+    super.update(dt);
+    // A material marked animated changes on every frame: so does the scene
+    // while the last render drew one.
+    if (_drawnMaterials.animatedCount > 0) {
+      _animationTicks++;
+      Game.notifyVisualMutation();
+    }
   }
 
   RenderContext3D? get _contextOrNull {
@@ -850,8 +919,48 @@ class World3D({
   ///
   /// [visibleFrame], in the pixels of the target, is the part of it that is
   /// seen, which the vignette is centered on (the whole target by default).
+  ///
+  /// The materials the render binds are kept with their versions, so that
+  /// [sceneVersion] follows their changes; the materials of the previous
+  /// render that changed since are counted in [RenderStats.updatedMaterials]
+  /// and [RenderStats.animatedMaterials] of the device.
   @internal
   Image executeWorldRenderPipeline({
+    required GraphicsDevice device,
+    required RenderContext3D renderContext,
+    required int width,
+    required int height,
+    required int msaaSampleCount,
+    required Color clearValue,
+    required void Function() recordDraws,
+    GpuRenderTarget? ownedOutputTarget,
+    Rect? visibleFrame,
+  }) {
+    final tracker = _drawnMaterials..begin();
+    final previous = renderContext.materialTracker;
+    renderContext.materialTracker = tracker;
+    var completed = false;
+    try {
+      final image = _executeWorldRenderPipeline(
+        device: device,
+        renderContext: renderContext,
+        width: width,
+        height: height,
+        msaaSampleCount: msaaSampleCount,
+        clearValue: clearValue,
+        recordDraws: recordDraws,
+        ownedOutputTarget: ownedOutputTarget,
+        visibleFrame: visibleFrame,
+      );
+      completed = true;
+      return image;
+    } finally {
+      renderContext.materialTracker = previous;
+      tracker.end(device.stats, completed: completed);
+    }
+  }
+
+  Image _executeWorldRenderPipeline({
     required GraphicsDevice device,
     required RenderContext3D renderContext,
     required int width,

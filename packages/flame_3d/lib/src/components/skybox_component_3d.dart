@@ -3,25 +3,25 @@ import 'dart:typed_data';
 import 'dart:ui' hide FragmentShader;
 
 import 'package:flame_3d/components.dart';
-import 'package:flame_3d/core.dart';
+import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 
 /// Material rendered by [SkyboxComponent3D] at clip depth `1.0` behind all
 /// opaque geometry.
 class SkyboxMaterial3D({
-  var Color zenithColor = const Color(0xFF0F2952),
-  var Color horizonColor = const Color(0xFF5BA4CF),
-  var Color groundColor = const Color(0xFF1E293B),
-  var Color sunColor = const Color(0xFFFFF3C4),
-  var double sunIntensity = 1.25,
+  var Color _zenithColor = const Color(0xFF0F2952),
+  var Color _horizonColor = const Color(0xFF5BA4CF),
+  var Color _groundColor = const Color(0xFF1E293B),
+  var Color _sunColor = const Color(0xFFFFF3C4),
+  var double _sunIntensity = 1.25,
   Vector3? sunDirection,
-  var double sunAngularRadius = 0.045,
-  var double sunHaloStrength = 0.35,
-  var double horizonExponent = 0.55,
-  var double exposure = 1.0,
+  var double _sunAngularRadius = 0.045,
+  var double _sunHaloStrength = 0.35,
+  var double _horizonExponent = 0.55,
+  var double _exposure = 1.0,
   Vector3? upAxis,
-  var Texture? panoramaTexture,
+  var Texture? _panoramaTexture,
 }) extends Material {
   this
     : super(
@@ -31,22 +31,74 @@ class SkyboxMaterial3D({
           slots: const ['panoramaTexture', 'Skybox'],
         ),
       ) {
-    renderState = const RenderState(
-      depthCompare: CompareFunction.lessEqual,
-      depthWrite: false,
+    setInitialState(
+      renderState: const RenderState(
+        depthCompare: CompareFunction.lessEqual,
+        depthWrite: false,
+      ),
+      castsShadows: false,
     );
-    castsShadows = false;
+    _sunDirection.addListener(markChanged);
+    _upAxis.addListener(markChanged);
   }
+
+  Color get zenithColor => _zenithColor;
+  set zenithColor(Color value) =>
+      _zenithColor = noteChange(_zenithColor, value);
+
+  Color get horizonColor => _horizonColor;
+  set horizonColor(Color value) =>
+      _horizonColor = noteChange(_horizonColor, value);
+
+  Color get groundColor => _groundColor;
+  set groundColor(Color value) =>
+      _groundColor = noteChange(_groundColor, value);
+
+  Color get sunColor => _sunColor;
+  set sunColor(Color value) => _sunColor = noteChange(_sunColor, value);
+
+  double get sunIntensity => _sunIntensity;
+  set sunIntensity(double value) =>
+      _sunIntensity = noteChange(_sunIntensity, value);
+
+  double get sunAngularRadius => _sunAngularRadius;
+  set sunAngularRadius(double value) =>
+      _sunAngularRadius = noteChange(_sunAngularRadius, value);
+
+  double get sunHaloStrength => _sunHaloStrength;
+  set sunHaloStrength(double value) =>
+      _sunHaloStrength = noteChange(_sunHaloStrength, value);
+
+  double get horizonExponent => _horizonExponent;
+  set horizonExponent(double value) =>
+      _horizonExponent = noteChange(_horizonExponent, value);
+
+  double get exposure => _exposure;
+  set exposure(double value) => _exposure = noteChange(_exposure, value);
+
+  Texture? get panoramaTexture => _panoramaTexture;
+  set panoramaTexture(Texture? value) =>
+      _panoramaTexture = noteChange(_panoramaTexture, value);
 
   static const String _bundle =
       'packages/flame_3d/assets/shaders/skybox_material.shaderbundle';
 
   /// Direction light travels FROM the sun (`-sunDir` points towards the sun),
-  /// matching [DirectionalLight.direction].
-  Vector3 sunDirection = sunDirection?.clone() ?? Vector3(-0.45, -0.65, -0.6);
+  /// matching [DirectionalLight.direction]. Assigning a vector copies it;
+  /// changing it in place counts as a change ([version]).
+  Vector3 get sunDirection => _sunDirection;
+  set sunDirection(Vector3 value) => _sunDirection.setFrom(value);
+  final NotifyingVector3 _sunDirection = NotifyingVector3.copy(
+    sunDirection ?? Vector3(-0.45, -0.65, -0.6),
+  );
 
-  /// World up axis (`(0, 1, 0)` by default).
-  Vector3 upAxis = upAxis?.clone() ?? Vector3(0, 1, 0);
+  /// World up axis (`(0, 1, 0)` by default). Assigning a vector copies it;
+  /// changing it in place counts as a change ([version]).
+  Vector3 get upAxis => _upAxis;
+  set upAxis(Vector3 value) => _upAxis.setFrom(value);
+  final NotifyingVector3 _upAxis = NotifyingVector3.copy(
+    upAxis ?? Vector3(0, 1, 0),
+  );
 
   static final Matrix4 _rotOnlyView = Matrix4.identity();
   static final Matrix4 _invVp = Matrix4.identity();

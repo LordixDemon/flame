@@ -642,7 +642,10 @@ instances, triangles, pipeline changes, render state changes, material changes, 
 uploaded bytes, the particles drawn by particle systems, how many of the passes, draw calls and
 triangles rendered shadow maps (`shadowPasses`, `shadowDrawCalls` and `shadowTriangles`), and what
 the kept layers of still casters saved (`shadowLayersReused`, `shadowLayersRendered`,
-`shadowReusedDrawCalls`, `shadowReusedTriangles`, see [Shadows](shadows.md#still-casters)).
+`shadowReusedDrawCalls`, `shadowReusedTriangles`, see [Shadows](shadows.md#still-casters)), and the
+materials a render shows changed since the world drew them last (`updatedMaterials`, and
+`animatedMaterials` for those whose animation time advanced, see
+[Materials](materials.md#changes-and-versions)).
 `GraphicsDevice.cachedPipelineCount`
 counts the pipelines created so far, and `estimatedTargetVramBytes` estimates the memory of the
 pooled render and texture targets.

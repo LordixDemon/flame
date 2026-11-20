@@ -7,6 +7,7 @@ export 'src/resources/mesh.dart';
 export 'src/resources/resource.dart';
 export 'src/resources/shader.dart';
 export 'src/resources/texture.dart';
+export 'src/resources/versioned.dart';
 
 extension TextureCache on Images {
   Future<Texture> loadTexture(String path) {

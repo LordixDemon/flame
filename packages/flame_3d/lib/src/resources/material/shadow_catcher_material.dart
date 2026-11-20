@@ -51,8 +51,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 /// [UnsupportedError].
 /// {@endtemplate}
 class ShadowCatcherMaterial({
-  /// The color of the shadows, and their opacity at full strength.
-  var Color color = const Color(0x80000000),
+  var Color _color = const Color(0x80000000),
   bool nearestOnly = false,
 }) extends Material {
   /// {@macro shadow_catcher_material}
@@ -77,8 +76,16 @@ class ShadowCatcherMaterial({
         'no WebGPU shaders.',
       );
     }
-    this.nearestOnly = nearestOnly;
+    _nearestOnly = nearestOnly;
+    setInitialState(renderState: _stateFor(nearestOnly));
+    if (nearestOnly) {
+      depthPrepassGroup = _nearestCatchers;
+    }
   }
+
+  /// The color of the shadows, and their opacity at full strength.
+  Color get color => _color;
+  set color(Color value) => _color = noteChange(_color, value);
 
   /// The key of the depth prepass every catcher with [nearestOnly] shares.
   static final Object _nearestCatchers = Object();
@@ -97,13 +104,15 @@ class ShadowCatcherMaterial({
   bool get nearestOnly => _nearestOnly;
   set nearestOnly(bool value) {
     _nearestOnly = value;
-    renderState = value
-        ? RenderState.singlePiecePremultipliedAlphaBlend
-        : RenderState.premultipliedAlphaBlend;
+    renderState = _stateFor(value);
     depthPrepassGroup = value ? _nearestCatchers : null;
   }
 
   bool _nearestOnly = false;
+
+  static RenderState _stateFor(bool nearestOnly) => nearestOnly
+      ? RenderState.singlePiecePremultipliedAlphaBlend
+      : RenderState.premultipliedAlphaBlend;
 
   static const _bundle =
       'packages/flame_3d/assets/shaders/shadow_catcher.shaderbundle';

@@ -8,6 +8,7 @@ import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/extensions/clip_space.dart';
 import 'package:flame_3d/src/graphics/material_pipeline_cache.dart';
+import 'package:flame_3d/src/graphics/material_tracker.dart';
 import 'package:flame_3d/src/graphics/prefixed_uniform_block.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:meta/meta.dart';
@@ -273,6 +274,11 @@ class RenderContext3D(super.device) extends RenderContext {
   int get drawCount => _lastDrawCount;
   int _lastDrawCount = 0;
 
+  /// Notes the materials bound while a world renders, so that its version
+  /// follows their changes; set by the world for its render.
+  @internal
+  MaterialTracker? materialTracker;
+
   final Float64List _depthRow = Float64List(4);
 
   final Map<String, PassUniformWriter> _passUniforms = {};
@@ -451,6 +457,9 @@ class RenderContext3D(super.device) extends RenderContext {
   }) {
     final drawMaterial = material ?? surface.material;
     final shadowPass = _shadows.recording;
+    if (shadowPass) {
+      drawMaterial.wasRecorded = true;
+    }
     if (shadowPass &&
         (!drawMaterial.castsShadows ||
             !drawMaterial.instancesHoldModelMatrices)) {
@@ -564,6 +573,9 @@ class RenderContext3D(super.device) extends RenderContext {
       'instances holds fewer than $count instances',
     );
     final drawMaterial = material ?? surface.material;
+    if (_shadows.recording) {
+      drawMaterial.wasRecorded = true;
+    }
     if (_shadows.recording &&
         (!drawMaterial.castsShadows ||
             !drawMaterial.instancesHoldModelMatrices)) {
@@ -639,6 +651,7 @@ class RenderContext3D(super.device) extends RenderContext {
       return cache.pipeline;
     }
     final pipeline = device.pipelineFor(vertexShader, fragmentShader, layout);
+    material.wasRecorded = true;
     material.pipelineCache = MaterialPipelineCache(
       device: device,
       layout: layout,
@@ -1330,6 +1343,7 @@ class RenderContext3D(super.device) extends RenderContext {
     RenderProfile.lap(RenderPhase.binding);
     _boundProbeSlot = _drawProbeSlot;
     _boundProbeWeight = _drawProbeWeight;
+    materialTracker?.note(material);
     material.apply(this);
     RenderProfile.lap(RenderPhase.materialApply);
     _bindSlots(vertexShader, _materialScope);

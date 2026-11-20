@@ -111,280 +111,89 @@ class BarrierMaterial({
   /// The color at the top of the wall; its alpha scales the light there.
   Color topColor = const Color(0x4DFFF2D6),
 
-  /// A multiplier of all the light of the wall. Above `1` the bright parts
-  /// go above white, which an HDR scene target keeps (and bloom picks up).
-  var double intensity = 0.8,
-
-  /// Whether the output keeps its hue where it would go above white: the
-  /// color is scaled down where its brightest channel passes `0.8`, so that
-  /// it reaches `1` smoothly instead of clipping channel by channel (which
-  /// turns a bright warm or cold wall white). `false` by default. It also
-  /// keeps the wall at or below white in an HDR scene target, so it does not
-  /// bloom there.
-  var bool preserveHue = false,
-
-  /// How tall the wall stands, as a scale of the height its mesh was built
-  /// with: `1` (the default) as built, `0.5` half as tall, `1.3` taller, `0`
-  /// or below not drawn at all. It scales the mesh along its own y axis
-  /// about `y = 0` (the foot of a `BarrierMesh` wall) in the vertex stage,
-  /// so a game can raise, lower or breathe the wall without rebuilding the
-  /// mesh, independently of [appear]; the profile, the top edge and the
-  /// motifs follow the wall's height.
-  var double heightScale = 1,
-
-  /// How fast the light thins out up the wall: it is multiplied by
-  /// `(1 - u) ^ heightFalloff`, `u` running from `0` at [fadeStart] to `1`
-  /// at [fadeEnd] (from the foot to the top by default). Below `1` the light
-  /// holds and drops near the end of the fade, above `1` it drops soon and
-  /// tails off.
-  var double heightFalloff = 1.8,
-
-  /// The fraction of the wall's height up to which the light stays full,
-  /// `0` by default (the fade starts at the foot).
-  var double fadeStart = 0,
-
-  /// The fraction of the wall's height where the light has faded out, `1`
-  /// by default (at the top). Above it only the fill, the top edge and the
-  /// reactions show.
-  var double fadeEnd = 1,
-
-  /// The strength of a thin bright line along the foot.
-  var double footGlow = 0.7,
+  var double _intensity = 0.8,
+  var bool _preserveHue = false,
+  var double _heightScale = 1,
+  var double _heightFalloff = 1.8,
+  var double _fadeStart = 0,
+  var double _fadeEnd = 1,
+  var double _footGlow = 0.7,
 
   /// The color of the glowing top edge; its alpha scales it.
   Color topEdgeColor = const Color(0xFFFFFFFF),
 
-  /// The strength of a glowing line along the top of the wall, its upper
-  /// boundary, whatever the fade below it: `0` (the default) for none.
-  var double topEdgeStrength = 0,
-
-  /// The width of the top edge, a fraction of the wall's height.
-  var double topEdgeWidth = 0.04,
-
-  /// How far the wall has risen from its foot, from `0` (not drawn at all)
-  /// to `1` (all of it). Animate it to raise and lower the wall.
-  var double appear = 1,
-
-  /// The softness of the rising front, as a fraction of the wall's height.
-  var double appearSoftness = 0.15,
+  var double _topEdgeStrength = 0,
+  var double _topEdgeWidth = 0.04,
+  var double _appear = 1,
+  var double _appearSoftness = 0.15,
 
   /// The color of the body fill; its alpha scales [fillOpacity].
   Color fillColor = const Color(0xFFFFB45A),
 
-  /// The opacity of a body of [fillColor] that fills the wall whatever its
-  /// pattern, from `0` (the default: none) through a faint veil to `1`
-  /// (opaque). With [RenderState.premultipliedAlphaBlend] or
-  /// [RenderState.alphaBlend] it covers what is behind the wall in that
-  /// proportion; with [RenderState.additive], which keeps what is behind,
-  /// its color is only added. It is thinned on the near side like the rest
-  /// of the wall.
-  var double fillOpacity = 0,
-
-  /// How much the fill follows the fade of the light, from `0` (the
-  /// default: even up the whole wall) to `1` (as the light).
-  var double fillFade = 0,
-
-  /// The motif repeated along the wall.
-  var BarrierPattern pattern = BarrierPattern.chevrons,
-
-  /// The number of motifs per scene unit along the wall; see
-  /// [fitPatternTo].
-  var double patternScale = 2.5,
-
-  /// The number of rows of motifs in the band ([patternHeight]), `1` by
-  /// default; every other row is shifted by half a motif.
-  var int patternRows = 1,
-
-  /// The thickness of the motifs' lines, a multiplier: `1` by default.
-  var double patternLineWidth = 1,
-
-  /// How fast the pattern travels along the wall, in scene units per second
-  /// (negative values travel the other way).
-  var double patternSpeed = 0.3,
-
-  /// How fast the rows of motifs rise up the band, in rows per second (`0`,
-  /// the default: they stay; negative values sink). Rising motifs fade in at
-  /// the foot of the band and out at its top.
-  var double patternRiseSpeed = 0,
-
-  /// The brightness of the motifs.
-  var double patternStrength = 0.55,
-
-  /// The top of the band of the wall the motifs fill, as a fraction of its
-  /// height from the foot.
-  var double patternHeight = 0.45,
+  var double _fillOpacity = 0,
+  var double _fillFade = 0,
+  var BarrierPattern _pattern = BarrierPattern.chevrons,
+  var double _patternScale = 2.5,
+  var int _patternRows = 1,
+  var double _patternLineWidth = 1,
+  var double _patternSpeed = 0.3,
+  var double _patternRiseSpeed = 0,
+  var double _patternStrength = 0.55,
+  var double _patternHeight = 0.45,
 
   /// The color of the motifs, or `null` (the default) for the foot color
   /// lightened by a third towards white.
   Color? patternColor,
 
-  /// How deeply the motifs twinkle, from `0` (steady) to `1` (each going
-  /// dark in turn); `0.25` by default.
-  var double patternTwinkle = 0.25,
-
-  /// How fast the motifs twinkle, in radians per second; `1.7` by default.
-  var double patternTwinkleSpeed = 1.7,
-
-  /// The length of the wall's closed loop, in scene units along it, or `0`
-  /// for a wall that is not closed; see [fitPatternTo].
-  var double patternLoopLength = 0,
-
-  /// The strength of a value noise that breaks up the light and the fill of
-  /// the wall so that a dense wall is not flat: `0` (the default) for none,
-  /// `1` for patches from dark to twice as bright.
-  var double noiseStrength = 0,
-
-  /// The size of the noise: cells per scene unit, along the wall and up it.
-  var double noiseScale = 3,
-
-  /// How fast the noise rises up the wall, in scene units per second.
-  var double noiseSpeed = 0.3,
-
-  /// How deep a flicker of the whole wall's light goes: `0` (the default)
-  /// for none, `1` for down to dark. The impacts do not flicker.
-  var double flickerStrength = 0,
-
-  /// How fast the wall flickers, in changes per second.
-  var double flickerSpeed = 6,
-
-  /// How much the near side of the wall, the side whose outside faces the
-  /// viewer, is thinned out, from `0` (not at all) to `1` (only its impacts
-  /// show): the far side shows behind what stands inside, the near side does
-  /// not veil it. The wall's normals must point out of the enclosed area, as
-  /// those of `BarrierMesh` do.
-  var double nearSideFade = 0.7,
-
-  /// How much the side of the wall whose inside faces the viewer is thinned
-  /// out, from `0` (the default: not at all) to `1`: the far side of a
-  /// closed wall seen from outside, every side seen from inside. Set it
-  /// instead of [nearSideFade] for a viewer inside the wall, or with it to
-  /// show less of the far side through the near side.
-  var double farSideFade = 0,
-
-  /// Over how much of the facing (the cosine between the normal and the
-  /// direction towards the viewer) the near and far sides thin out: `0.45`
-  /// by default, lower for a sharper turn between thinned and full.
-  var double sideFadeSoftness = 0.45,
-
-  /// The strength of the glint where the wall is seen edge-on.
-  var double glintStrength = 0.35,
-
-  /// How narrow that glint is: higher values keep it closer to the edges.
-  var double glintPower = 4,
+  var double _patternTwinkle = 0.25,
+  var double _patternTwinkleSpeed = 1.7,
+  var double _patternLoopLength = 0,
+  var double _noiseStrength = 0,
+  var double _noiseScale = 3,
+  var double _noiseSpeed = 0.3,
+  var double _flickerStrength = 0,
+  var double _flickerSpeed = 6,
+  var double _nearSideFade = 0.7,
+  var double _farSideFade = 0,
+  var double _sideFadeSoftness = 0.45,
+  var double _glintStrength = 0.35,
+  var double _glintPower = 4,
 
   /// The color of an [impact] given no color.
   Color impactColor = const Color(0xFFFFFFFF),
 
-  /// The number of impacts shown at once, from `1` to [maxImpactSlots]: a new
-  /// one replaces the oldest when all are in use. [maxImpacts] (`4`) by
-  /// default.
-  var int impactSlots = BarrierMaterial.maxImpacts,
-
-  /// How fast an impact's ring spreads, in scene units per second.
-  var double impactRingSpeed = 2.5,
-
-  /// The width of an impact's ring, in scene units.
-  var double impactRingWidth = 0.07,
-
-  /// How long an impact lasts, in seconds.
-  var double impactDuration = 0.9,
-
-  /// The radius of the flash around an impact's point, in scene units.
-  var double impactFlashRadius = 0.3,
-
-  /// The number of rings each impact sends, from `1` (the default) to `4`,
-  /// [impactRingInterval] apart, each `0.7` times as bright as the one
-  /// before.
-  var int impactRingCount = 1,
-
-  /// The seconds between the rings of an impact.
-  var double impactRingInterval = 0.15,
-
-  /// The brightness of the rings, `1` by default.
-  var double impactRingStrength = 1,
-
-  /// The distance from the point hit at which the rings have faded out, in
-  /// scene units; they start fading at 60 % of it. `0` (the default) for no
-  /// limit but the impact's duration.
-  var double impactRingReach = 0,
-
-  /// The brightness of the flash around an impact's point, `0.8` by default.
-  var double impactFlashStrength = 0.8,
-
-  /// How long the flash lasts, a fraction of [impactDuration]: a third by
-  /// default.
-  var double impactFlashDuration = 1 / 3,
-
-  /// How far the surface moves along its normal around an impact, in scene
-  /// units: `0` (the default) for no wobble. A damped wave spreads from the
-  /// point hit at `wobbleFrequency * wobbleWavelength` units per second and
-  /// dies out with time ([wobbleDecay]), distance ([wobbleRadius]) and the
-  /// impact's duration. It moves vertices, so the wall needs rows and columns
-  /// a fraction of [wobbleWavelength] apart (`BarrierMesh` takes
-  /// `heightSegments` and `maxSegmentLength`); it also tilts the normals, so
-  /// the glint and the near-side fade follow it, and shades the light
-  /// ([wobbleShading]).
-  var double wobbleAmplitude = 0,
-
-  /// How many times a second the wobbling surface swings.
-  var double wobbleFrequency = 5,
-
-  /// The distance between the wobble's crests, in scene units.
-  var double wobbleWavelength = 0.6,
-
-  /// How fast the wobble dies out, per second: its amplitude is multiplied
-  /// by `exp(-wobbleDecay * age)`.
-  var double wobbleDecay = 3,
-
-  /// The distance from the point hit at which the wobble has fallen to
-  /// `1 / e` of its amplitude, in scene units.
-  var double wobbleRadius = 1.5,
-
-  /// How much the wobble brightens the wall where it pushes it out and
-  /// darkens it where it pulls it in, from `0` (not at all); `0.5` by
-  /// default.
-  var double wobbleShading = 0.5,
+  var int _impactSlots = BarrierMaterial.maxImpacts,
+  var double _impactRingSpeed = 2.5,
+  var double _impactRingWidth = 0.07,
+  var double _impactDuration = 0.9,
+  var double _impactFlashRadius = 0.3,
+  var int _impactRingCount = 1,
+  var double _impactRingInterval = 0.15,
+  var double _impactRingStrength = 1,
+  var double _impactRingReach = 0,
+  var double _impactFlashStrength = 0.8,
+  var double _impactFlashDuration = 1 / 3,
+  var double _wobbleAmplitude = 0,
+  var double _wobbleFrequency = 5,
+  var double _wobbleWavelength = 0.6,
+  var double _wobbleDecay = 3,
+  var double _wobbleRadius = 1.5,
+  var double _wobbleShading = 0.5,
 
   /// The color of a [pulse] given no color.
   Color pulseColor = const Color(0xFFFFFFFF),
 
-  /// The strength of a [pulse] given none.
-  var double pulseStrength = 1,
-
-  /// The length of a [pulse] given none, in seconds.
-  var double pulseDuration = 0.6,
-
-  /// The share of a pulse spent lighting up, the rest falling back: `0.15`
-  /// by default.
-  var double pulseAttack = 0.15,
+  var double _pulseStrength = 1,
+  var double _pulseDuration = 0.6,
+  var double _pulseAttack = 0.15,
 
   /// The color of a near point given no color.
   Color proximityColor = const Color(0xFFFFFFFF),
 
-  /// The distance from a near point at which it starts to light the wall,
-  /// in scene units: the glow grows as `(1 - distance / radius)²` towards
-  /// the point.
-  var double proximityRadius = 0.6,
-
-  /// The brightness of the glow of the near points.
-  var double proximityStrength = 1,
-
-  /// How much the near points brighten the motifs around them: the motifs
-  /// are multiplied by `1 + proximityPatternBoost * nearness`.
-  var double proximityPatternBoost = 1.5,
-
-  /// How strongly the reaction (the impacts and the glow of the near points)
-  /// shows over what stands in front of the wall, from `0` (the default:
-  /// hidden by it, as the rest of the wall) to `1` (as bright as where
-  /// nothing is in front).
-  ///
-  /// Above `0`, a `BarrierMesh` draws its surface a second time while a
-  /// reaction shows ([drawsReactionInFront]), with [reactionInFrontMaterial]:
-  /// the same shaders drawing the reaction only, depth tested with
-  /// [CompareFunction.greater], so that it lands only on the pixels where
-  /// something in front of the wall hid it, and adds nothing where the wall
-  /// was drawn. A mesh of another class draws that second surface itself.
-  var double reactionInFront = 0,
+  var double _proximityRadius = 0.6,
+  var double _proximityStrength = 1,
+  var double _proximityPatternBoost = 1.5,
+  var double _reactionInFront = 0,
   RenderState renderState = RenderState.additive,
 }) extends Material {
   /// {@macro barrier_material}
@@ -405,8 +214,7 @@ class BarrierMaterial({
         'shaders.',
       );
     }
-    this.renderState = renderState;
-    castsShadows = false;
+    setInitialState(renderState: renderState, castsShadows: false);
     this.footColor = footColor;
     this.topColor = topColor;
     this.topEdgeColor = topEdgeColor;
@@ -416,6 +224,365 @@ class BarrierMaterial({
     this.pulseColor = pulseColor;
     this.proximityColor = proximityColor;
   }
+
+  /// A multiplier of all the light of the wall. Above `1` the bright parts
+  /// go above white, which an HDR scene target keeps (and bloom picks up).
+  double get intensity => _intensity;
+  set intensity(double value) => _intensity = noteChange(_intensity, value);
+
+  /// Whether the output keeps its hue where it would go above white: the
+  /// color is scaled down where its brightest channel passes `0.8`, so that
+  /// it reaches `1` smoothly instead of clipping channel by channel (which
+  /// turns a bright warm or cold wall white). `false` by default. It also
+  /// keeps the wall at or below white in an HDR scene target, so it does not
+  /// bloom there.
+  bool get preserveHue => _preserveHue;
+  set preserveHue(bool value) => _preserveHue = noteChange(_preserveHue, value);
+
+  /// How tall the wall stands, as a scale of the height its mesh was built
+  /// with: `1` (the default) as built, `0.5` half as tall, `1.3` taller, `0`
+  /// or below not drawn at all. It scales the mesh along its own y axis
+  /// about `y = 0` (the foot of a `BarrierMesh` wall) in the vertex stage,
+  /// so a game can raise, lower or breathe the wall without rebuilding the
+  /// mesh, independently of [appear]; the profile, the top edge and the
+  /// motifs follow the wall's height.
+  double get heightScale => _heightScale;
+  set heightScale(double value) =>
+      _heightScale = noteChange(_heightScale, value);
+
+  /// How fast the light thins out up the wall: it is multiplied by
+  /// `(1 - u) ^ heightFalloff`, `u` running from `0` at [fadeStart] to `1`
+  /// at [fadeEnd] (from the foot to the top by default). Below `1` the light
+  /// holds and drops near the end of the fade, above `1` it drops soon and
+  /// tails off.
+  double get heightFalloff => _heightFalloff;
+  set heightFalloff(double value) =>
+      _heightFalloff = noteChange(_heightFalloff, value);
+
+  /// The fraction of the wall's height up to which the light stays full,
+  /// `0` by default (the fade starts at the foot).
+  double get fadeStart => _fadeStart;
+  set fadeStart(double value) => _fadeStart = noteChange(_fadeStart, value);
+
+  /// The fraction of the wall's height where the light has faded out, `1`
+  /// by default (at the top). Above it only the fill, the top edge and the
+  /// reactions show.
+  double get fadeEnd => _fadeEnd;
+  set fadeEnd(double value) => _fadeEnd = noteChange(_fadeEnd, value);
+
+  /// The strength of a thin bright line along the foot.
+  double get footGlow => _footGlow;
+  set footGlow(double value) => _footGlow = noteChange(_footGlow, value);
+
+  /// The strength of a glowing line along the top of the wall, its upper
+  /// boundary, whatever the fade below it: `0` (the default) for none.
+  double get topEdgeStrength => _topEdgeStrength;
+  set topEdgeStrength(double value) =>
+      _topEdgeStrength = noteChange(_topEdgeStrength, value);
+
+  /// The width of the top edge, a fraction of the wall's height.
+  double get topEdgeWidth => _topEdgeWidth;
+  set topEdgeWidth(double value) =>
+      _topEdgeWidth = noteChange(_topEdgeWidth, value);
+
+  /// How far the wall has risen from its foot, from `0` (not drawn at all)
+  /// to `1` (all of it). Animate it to raise and lower the wall.
+  double get appear => _appear;
+  set appear(double value) => _appear = noteChange(_appear, value);
+
+  /// The softness of the rising front, as a fraction of the wall's height.
+  double get appearSoftness => _appearSoftness;
+  set appearSoftness(double value) =>
+      _appearSoftness = noteChange(_appearSoftness, value);
+
+  /// The opacity of a body of [fillColor] that fills the wall whatever its
+  /// pattern, from `0` (the default: none) through a faint veil to `1`
+  /// (opaque). With [RenderState.premultipliedAlphaBlend] or
+  /// [RenderState.alphaBlend] it covers what is behind the wall in that
+  /// proportion; with [RenderState.additive], which keeps what is behind,
+  /// its color is only added. It is thinned on the near side like the rest
+  /// of the wall.
+  double get fillOpacity => _fillOpacity;
+  set fillOpacity(double value) =>
+      _fillOpacity = noteChange(_fillOpacity, value);
+
+  /// How much the fill follows the fade of the light, from `0` (the
+  /// default: even up the whole wall) to `1` (as the light).
+  double get fillFade => _fillFade;
+  set fillFade(double value) => _fillFade = noteChange(_fillFade, value);
+
+  /// The motif repeated along the wall.
+  BarrierPattern get pattern => _pattern;
+  set pattern(BarrierPattern value) => _pattern = noteChange(_pattern, value);
+
+  /// The number of motifs per scene unit along the wall; see
+  /// [fitPatternTo].
+  double get patternScale => _patternScale;
+  set patternScale(double value) =>
+      _patternScale = noteChange(_patternScale, value);
+
+  /// The number of rows of motifs in the band ([patternHeight]), `1` by
+  /// default; every other row is shifted by half a motif.
+  int get patternRows => _patternRows;
+  set patternRows(int value) => _patternRows = noteChange(_patternRows, value);
+
+  /// The thickness of the motifs' lines, a multiplier: `1` by default.
+  double get patternLineWidth => _patternLineWidth;
+  set patternLineWidth(double value) =>
+      _patternLineWidth = noteChange(_patternLineWidth, value);
+
+  /// How fast the pattern travels along the wall, in scene units per second
+  /// (negative values travel the other way).
+  double get patternSpeed => _patternSpeed;
+  set patternSpeed(double value) =>
+      _patternSpeed = noteChange(_patternSpeed, value);
+
+  /// How fast the rows of motifs rise up the band, in rows per second (`0`,
+  /// the default: they stay; negative values sink). Rising motifs fade in at
+  /// the foot of the band and out at its top.
+  double get patternRiseSpeed => _patternRiseSpeed;
+  set patternRiseSpeed(double value) =>
+      _patternRiseSpeed = noteChange(_patternRiseSpeed, value);
+
+  /// The brightness of the motifs.
+  double get patternStrength => _patternStrength;
+  set patternStrength(double value) =>
+      _patternStrength = noteChange(_patternStrength, value);
+
+  /// The top of the band of the wall the motifs fill, as a fraction of its
+  /// height from the foot.
+  double get patternHeight => _patternHeight;
+  set patternHeight(double value) =>
+      _patternHeight = noteChange(_patternHeight, value);
+
+  /// How deeply the motifs twinkle, from `0` (steady) to `1` (each going
+  /// dark in turn); `0.25` by default.
+  double get patternTwinkle => _patternTwinkle;
+  set patternTwinkle(double value) =>
+      _patternTwinkle = noteChange(_patternTwinkle, value);
+
+  /// How fast the motifs twinkle, in radians per second; `1.7` by default.
+  double get patternTwinkleSpeed => _patternTwinkleSpeed;
+  set patternTwinkleSpeed(double value) =>
+      _patternTwinkleSpeed = noteChange(_patternTwinkleSpeed, value);
+
+  /// The length of the wall's closed loop, in scene units along it, or `0`
+  /// for a wall that is not closed; see [fitPatternTo].
+  double get patternLoopLength => _patternLoopLength;
+  set patternLoopLength(double value) =>
+      _patternLoopLength = noteChange(_patternLoopLength, value);
+
+  /// The strength of a value noise that breaks up the light and the fill of
+  /// the wall so that a dense wall is not flat: `0` (the default) for none,
+  /// `1` for patches from dark to twice as bright.
+  double get noiseStrength => _noiseStrength;
+  set noiseStrength(double value) =>
+      _noiseStrength = noteChange(_noiseStrength, value);
+
+  /// The size of the noise: cells per scene unit, along the wall and up it.
+  double get noiseScale => _noiseScale;
+  set noiseScale(double value) => _noiseScale = noteChange(_noiseScale, value);
+
+  /// How fast the noise rises up the wall, in scene units per second.
+  double get noiseSpeed => _noiseSpeed;
+  set noiseSpeed(double value) => _noiseSpeed = noteChange(_noiseSpeed, value);
+
+  /// How deep a flicker of the whole wall's light goes: `0` (the default)
+  /// for none, `1` for down to dark. The impacts do not flicker.
+  double get flickerStrength => _flickerStrength;
+  set flickerStrength(double value) =>
+      _flickerStrength = noteChange(_flickerStrength, value);
+
+  /// How fast the wall flickers, in changes per second.
+  double get flickerSpeed => _flickerSpeed;
+  set flickerSpeed(double value) =>
+      _flickerSpeed = noteChange(_flickerSpeed, value);
+
+  /// How much the near side of the wall, the side whose outside faces the
+  /// viewer, is thinned out, from `0` (not at all) to `1` (only its impacts
+  /// show): the far side shows behind what stands inside, the near side does
+  /// not veil it. The wall's normals must point out of the enclosed area, as
+  /// those of `BarrierMesh` do.
+  double get nearSideFade => _nearSideFade;
+  set nearSideFade(double value) =>
+      _nearSideFade = noteChange(_nearSideFade, value);
+
+  /// How much the side of the wall whose inside faces the viewer is thinned
+  /// out, from `0` (the default: not at all) to `1`: the far side of a
+  /// closed wall seen from outside, every side seen from inside. Set it
+  /// instead of [nearSideFade] for a viewer inside the wall, or with it to
+  /// show less of the far side through the near side.
+  double get farSideFade => _farSideFade;
+  set farSideFade(double value) =>
+      _farSideFade = noteChange(_farSideFade, value);
+
+  /// Over how much of the facing (the cosine between the normal and the
+  /// direction towards the viewer) the near and far sides thin out: `0.45`
+  /// by default, lower for a sharper turn between thinned and full.
+  double get sideFadeSoftness => _sideFadeSoftness;
+  set sideFadeSoftness(double value) =>
+      _sideFadeSoftness = noteChange(_sideFadeSoftness, value);
+
+  /// The strength of the glint where the wall is seen edge-on.
+  double get glintStrength => _glintStrength;
+  set glintStrength(double value) =>
+      _glintStrength = noteChange(_glintStrength, value);
+
+  /// How narrow that glint is: higher values keep it closer to the edges.
+  double get glintPower => _glintPower;
+  set glintPower(double value) => _glintPower = noteChange(_glintPower, value);
+
+  /// The number of impacts shown at once, from `1` to [maxImpactSlots]: a new
+  /// one replaces the oldest when all are in use. [maxImpacts] (`4`) by
+  /// default.
+  int get impactSlots => _impactSlots;
+  set impactSlots(int value) => _impactSlots = noteChange(_impactSlots, value);
+
+  /// How fast an impact's ring spreads, in scene units per second.
+  double get impactRingSpeed => _impactRingSpeed;
+  set impactRingSpeed(double value) =>
+      _impactRingSpeed = noteChange(_impactRingSpeed, value);
+
+  /// The width of an impact's ring, in scene units.
+  double get impactRingWidth => _impactRingWidth;
+  set impactRingWidth(double value) =>
+      _impactRingWidth = noteChange(_impactRingWidth, value);
+
+  /// How long an impact lasts, in seconds.
+  double get impactDuration => _impactDuration;
+  set impactDuration(double value) =>
+      _impactDuration = noteChange(_impactDuration, value);
+
+  /// The radius of the flash around an impact's point, in scene units.
+  double get impactFlashRadius => _impactFlashRadius;
+  set impactFlashRadius(double value) =>
+      _impactFlashRadius = noteChange(_impactFlashRadius, value);
+
+  /// The number of rings each impact sends, from `1` (the default) to `4`,
+  /// [impactRingInterval] apart, each `0.7` times as bright as the one
+  /// before.
+  int get impactRingCount => _impactRingCount;
+  set impactRingCount(int value) =>
+      _impactRingCount = noteChange(_impactRingCount, value);
+
+  /// The seconds between the rings of an impact.
+  double get impactRingInterval => _impactRingInterval;
+  set impactRingInterval(double value) =>
+      _impactRingInterval = noteChange(_impactRingInterval, value);
+
+  /// The brightness of the rings, `1` by default.
+  double get impactRingStrength => _impactRingStrength;
+  set impactRingStrength(double value) =>
+      _impactRingStrength = noteChange(_impactRingStrength, value);
+
+  /// The distance from the point hit at which the rings have faded out, in
+  /// scene units; they start fading at 60 % of it. `0` (the default) for no
+  /// limit but the impact's duration.
+  double get impactRingReach => _impactRingReach;
+  set impactRingReach(double value) =>
+      _impactRingReach = noteChange(_impactRingReach, value);
+
+  /// The brightness of the flash around an impact's point, `0.8` by default.
+  double get impactFlashStrength => _impactFlashStrength;
+  set impactFlashStrength(double value) =>
+      _impactFlashStrength = noteChange(_impactFlashStrength, value);
+
+  /// How long the flash lasts, a fraction of [impactDuration]: a third by
+  /// default.
+  double get impactFlashDuration => _impactFlashDuration;
+  set impactFlashDuration(double value) =>
+      _impactFlashDuration = noteChange(_impactFlashDuration, value);
+
+  /// How far the surface moves along its normal around an impact, in scene
+  /// units: `0` (the default) for no wobble. A damped wave spreads from the
+  /// point hit at `wobbleFrequency * wobbleWavelength` units per second and
+  /// dies out with time ([wobbleDecay]), distance ([wobbleRadius]) and the
+  /// impact's duration. It moves vertices, so the wall needs rows and columns
+  /// a fraction of [wobbleWavelength] apart (`BarrierMesh` takes
+  /// `heightSegments` and `maxSegmentLength`); it also tilts the normals, so
+  /// the glint and the near-side fade follow it, and shades the light
+  /// ([wobbleShading]).
+  double get wobbleAmplitude => _wobbleAmplitude;
+  set wobbleAmplitude(double value) =>
+      _wobbleAmplitude = noteChange(_wobbleAmplitude, value);
+
+  /// How many times a second the wobbling surface swings.
+  double get wobbleFrequency => _wobbleFrequency;
+  set wobbleFrequency(double value) =>
+      _wobbleFrequency = noteChange(_wobbleFrequency, value);
+
+  /// The distance between the wobble's crests, in scene units.
+  double get wobbleWavelength => _wobbleWavelength;
+  set wobbleWavelength(double value) =>
+      _wobbleWavelength = noteChange(_wobbleWavelength, value);
+
+  /// How fast the wobble dies out, per second: its amplitude is multiplied
+  /// by `exp(-wobbleDecay * age)`.
+  double get wobbleDecay => _wobbleDecay;
+  set wobbleDecay(double value) =>
+      _wobbleDecay = noteChange(_wobbleDecay, value);
+
+  /// The distance from the point hit at which the wobble has fallen to
+  /// `1 / e` of its amplitude, in scene units.
+  double get wobbleRadius => _wobbleRadius;
+  set wobbleRadius(double value) =>
+      _wobbleRadius = noteChange(_wobbleRadius, value);
+
+  /// How much the wobble brightens the wall where it pushes it out and
+  /// darkens it where it pulls it in, from `0` (not at all); `0.5` by
+  /// default.
+  double get wobbleShading => _wobbleShading;
+  set wobbleShading(double value) =>
+      _wobbleShading = noteChange(_wobbleShading, value);
+
+  /// The strength of a [pulse] given none.
+  double get pulseStrength => _pulseStrength;
+  set pulseStrength(double value) =>
+      _pulseStrength = noteChange(_pulseStrength, value);
+
+  /// The length of a [pulse] given none, in seconds.
+  double get pulseDuration => _pulseDuration;
+  set pulseDuration(double value) =>
+      _pulseDuration = noteChange(_pulseDuration, value);
+
+  /// The share of a pulse spent lighting up, the rest falling back: `0.15`
+  /// by default.
+  double get pulseAttack => _pulseAttack;
+  set pulseAttack(double value) =>
+      _pulseAttack = noteChange(_pulseAttack, value);
+
+  /// The distance from a near point at which it starts to light the wall,
+  /// in scene units: the glow grows as `(1 - distance / radius)²` towards
+  /// the point.
+  double get proximityRadius => _proximityRadius;
+  set proximityRadius(double value) =>
+      _proximityRadius = noteChange(_proximityRadius, value);
+
+  /// The brightness of the glow of the near points.
+  double get proximityStrength => _proximityStrength;
+  set proximityStrength(double value) =>
+      _proximityStrength = noteChange(_proximityStrength, value);
+
+  /// How much the near points brighten the motifs around them: the motifs
+  /// are multiplied by `1 + proximityPatternBoost * nearness`.
+  double get proximityPatternBoost => _proximityPatternBoost;
+  set proximityPatternBoost(double value) =>
+      _proximityPatternBoost = noteChange(_proximityPatternBoost, value);
+
+  /// How strongly the reaction (the impacts and the glow of the near points)
+  /// shows over what stands in front of the wall, from `0` (the default:
+  /// hidden by it, as the rest of the wall) to `1` (as bright as where
+  /// nothing is in front).
+  ///
+  /// Above `0`, a `BarrierMesh` draws its surface a second time while a
+  /// reaction shows ([drawsReactionInFront]), with [reactionInFrontMaterial]:
+  /// the same shaders drawing the reaction only, depth tested with
+  /// [CompareFunction.greater], so that it lands only on the pixels where
+  /// something in front of the wall hid it, and adds nothing where the wall
+  /// was drawn. A mesh of another class draws that second surface itself.
+  double get reactionInFront => _reactionInFront;
+  set reactionInFront(double value) =>
+      _reactionInFront = noteChange(_reactionInFront, value);
 
   /// A material with the settings of [look], raised to [appear].
   factory BarrierMaterial.fromLook(BarrierLook look, {double appear = 1}) {
@@ -498,7 +665,9 @@ class BarrierMaterial({
 
   /// The time, in seconds, the pattern and the impacts follow: advance it
   /// every frame.
-  double time = 0;
+  double get time => _time;
+  set time(double value) => _time = noteTime(_time, value);
+  double _time = 0;
 
   // r, g, b, a of each color, by the indices below.
   final Float64List _colors = Float64List(8 * 4);
@@ -533,7 +702,10 @@ class BarrierMaterial({
   Color? get patternColor =>
       _hasPatternColor ? _readColor(_patternColor) : null;
   set patternColor(Color? value) {
-    _hasPatternColor = value != null;
+    if (_hasPatternColor != (value != null)) {
+      _hasPatternColor = value != null;
+      markChanged();
+    }
     if (value != null) {
       _writeColor(_patternColor, value);
     }
@@ -562,12 +734,26 @@ class BarrierMaterial({
   }
 
   void _writeColor(int index, Color color) {
+    _writeChannels(index, color.r, color.g, color.b, color.a);
+  }
+
+  /// Writes the channels of the color at [index], reporting a change when
+  /// one of them differs.
+  void _writeChannels(int index, double r, double g, double b, double a) {
     final o = index * 4;
-    _colors
-      ..[o] = color.r
-      ..[o + 1] = color.g
-      ..[o + 2] = color.b
-      ..[o + 3] = color.a;
+    final colors = _colors;
+    if (colors[o] == r &&
+        colors[o + 1] == g &&
+        colors[o + 2] == b &&
+        colors[o + 3] == a) {
+      return;
+    }
+    colors
+      ..[o] = r
+      ..[o + 1] = g
+      ..[o + 2] = b
+      ..[o + 3] = a;
+    markChanged();
   }
 
   // x, y, z, start time, r, g, b, strength per impact slot.
@@ -679,6 +865,7 @@ class BarrierMaterial({
         ..[o + 6] = color.b
         ..[o + 7] = strength * color.a;
     }
+    markChanged();
     return slot;
   }
 
@@ -708,7 +895,18 @@ class BarrierMaterial({
   }
 
   /// Removes every impact.
-  void clearImpacts() => _impacts.fillRange(0, _impacts.length, 0);
+  void clearImpacts() => _clear(_impacts);
+
+  /// Zeroes [values], reporting a change when one of them was not `0`.
+  void _clear(Float64List values) {
+    for (var i = 0; i < values.length; i++) {
+      if (values[i] != 0) {
+        values.fillRange(0, values.length, 0);
+        markChanged();
+        return;
+      }
+    }
+  }
 
   /// Lights the whole wall up with [color] ([pulseColor] when `null`) to
   /// [strength] ([pulseStrength] when `null`) and lets it fall back over
@@ -737,6 +935,7 @@ class BarrierMaterial({
         ..[1] = color.g * color.a
         ..[2] = color.b * color.a;
     }
+    markChanged();
   }
 
   /// The strength of the [pulse] at the current [time], `0` when none shows.
@@ -758,8 +957,12 @@ class BarrierMaterial({
 
   /// Ends the [pulse] at once.
   void clearPulse() {
+    if (_pulseLength == 0 && _pulseFrom == 0) {
+      return;
+    }
     _pulseLength = 0;
     _pulseFrom = 0;
+    markChanged();
   }
 
   /// Makes the wall glow where the world point [position] comes close to it,
@@ -779,30 +982,43 @@ class BarrierMaterial({
   }) {
     RangeError.checkValueInInterval(index, 0, maxNearPoints - 1, 'index');
     final o = index * 8;
-    _nearPoints
-      ..[o] = position.x
-      ..[o + 1] = position.y
-      ..[o + 2] = position.z
-      ..[o + 3] = strength;
+    final points = _nearPoints;
+    var changed = _setValue(points, o, position.x);
+    changed = _setValue(points, o + 1, position.y) || changed;
+    changed = _setValue(points, o + 2, position.z) || changed;
+    changed = _setValue(points, o + 3, strength) || changed;
     if (color == null) {
-      _nearPoints[o + 7] = 1;
+      changed = _setValue(points, o + 7, 1) || changed;
     } else {
-      _nearPoints
-        ..[o + 4] = color.r * color.a
-        ..[o + 5] = color.g * color.a
-        ..[o + 6] = color.b * color.a
-        ..[o + 7] = 0;
+      changed = _setValue(points, o + 4, color.r * color.a) || changed;
+      changed = _setValue(points, o + 5, color.g * color.a) || changed;
+      changed = _setValue(points, o + 6, color.b * color.a) || changed;
+      changed = _setValue(points, o + 7, 0) || changed;
     }
+    if (changed) {
+      markChanged();
+    }
+  }
+
+  /// Writes [value] at [index] of [values], returning whether it changed.
+  static bool _setValue(Float64List values, int index, double value) {
+    if (values[index] == value) {
+      return false;
+    }
+    values[index] = value;
+    return true;
   }
 
   /// Removes the near point in slot [index].
   void clearNearPoint(int index) {
     RangeError.checkValueInInterval(index, 0, maxNearPoints - 1, 'index');
-    _nearPoints[index * 8 + 3] = 0;
+    if (_setValue(_nearPoints, index * 8 + 3, 0)) {
+      markChanged();
+    }
   }
 
   /// Removes every near point.
-  void clearNearPoints() => _nearPoints.fillRange(0, _nearPoints.length, 0);
+  void clearNearPoints() => _clear(_nearPoints);
 
   /// Whether the near point in slot [index] is set, with a strength above
   /// `0`.
@@ -1001,9 +1217,12 @@ class BarrierMaterial({
     if (patternEnd != null) {
       patternColor = patternEnd.patternColor;
     } else if (a.patternColor == null && b.patternColor == null) {
-      _hasPatternColor = false;
+      patternColor = null;
     } else {
-      _hasPatternColor = true;
+      if (!_hasPatternColor) {
+        _hasPatternColor = true;
+        markChanged();
+      }
       _lerpColor(
         _patternColor,
         a.effectivePatternColor,
@@ -1059,12 +1278,13 @@ class BarrierMaterial({
   }
 
   void _lerpColor(int index, Color a, Color b, double t) {
-    final o = index * 4;
-    _colors
-      ..[o] = BarrierLook.lerpLookChannel(a.r, b.r, t)
-      ..[o + 1] = BarrierLook.lerpLookChannel(a.g, b.g, t)
-      ..[o + 2] = BarrierLook.lerpLookChannel(a.b, b.b, t)
-      ..[o + 3] = BarrierLook.lerpLookChannel(a.a, b.a, t);
+    _writeChannels(
+      index,
+      BarrierLook.lerpLookChannel(a.r, b.r, t),
+      BarrierLook.lerpLookChannel(a.g, b.g, t),
+      BarrierLook.lerpLookChannel(a.b, b.b, t),
+      BarrierLook.lerpLookChannel(a.a, b.a, t),
+    );
   }
 
   /// [scale] rounded to a whole number of motifs on the closed loop of
@@ -1530,8 +1750,12 @@ class _BarrierReactionMaterial(final BarrierMaterial _source) extends Material {
           slots: const ['BarrierLook'],
         ),
       ) {
-    castsShadows = false;
+    setInitialState(castsShadows: false);
   }
+
+  /// The changes of this material and of its source, whose values it draws.
+  @override
+  int get version => super.version + _source.version;
 
   RenderState? _sourceState;
 

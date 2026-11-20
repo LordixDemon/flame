@@ -32,12 +32,13 @@ final layer = Scene3DComponent(
 ```
 
 `World3D.bloom`, `postProcess`, `hdrEnabled`, `renderDebugMode3D` and `depthPrepassEnabled` can be
-changed at any time, and changing them marks the scene as changed. Assign a new `BloomSettings` or
-`PostProcessSettings` object to change the settings: their fields can be changed in place too and
-are read every frame, but changing a field does not mark the scene as changed, so a game loop that
-idles until something changes does not render again. A retained `Scene3DComponent` compares the
-bloom and post-processing settings by value, SSAO and depth of field included, and does render
-again (see [Embedding](embedding.md#what-renders-the-layer-again)).
+changed at any time, and changing them marks the scene as changed. The fields of a `BloomSettings`
+or `PostProcessSettings` object can be changed in place too: they report their changes (their
+`version`), so the scene is marked changed, a game loop that idles until something changes renders
+again, and a retained `Scene3DComponent`, which also compares the bloom and post-processing
+settings by value, SSAO and depth of field included, renders again (see
+[Embedding](embedding.md#what-renders-the-layer-again)). The content of a `ColorLut3D` is not
+seen.
 
 
 ## The composite pass

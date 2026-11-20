@@ -11,22 +11,11 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 /// `RibbonTrail3D` and `StrokeBatch3D`.
 /// {@endtemplate}
 class RibbonMaterial3D({
-  /// Optional strip texture mapped `(u, v)` along and across the ribbon.
-  var Texture? texture,
-
-  /// Base tint multiplied by each segment's color.
-  var Color albedoColor = const Color(0xFFFFFFFF),
-
-  /// Share of each half-width in `[0, 1]` that fades smoothly to zero at the
-  /// outer edges.
-  var double edgeSoftness = 0.35,
-
-  /// Clip-space depth bias (`>= 0`) pulling ribbons slightly towards the
-  /// camera.
-  var double depthBias = 0.0,
-
-  /// Fragments whose final alpha is below [alphaCutoff] are discarded.
-  var double alphaCutoff = 0.0,
+  var Texture? _texture,
+  var Color _albedoColor = const Color(0xFFFFFFFF),
+  var double _edgeSoftness = 0.35,
+  var double _depthBias = 0.0,
+  var double _alphaCutoff = 0.0,
 
   /// Render state (defaults to additive glow).
   RenderState renderState = RenderState.additive,
@@ -48,12 +37,36 @@ class RibbonMaterial3D({
         'RibbonMaterial3D is not supported on the web yet',
       );
     }
-    this.renderState = renderState;
-    castsShadows = false;
+    setInitialState(renderState: renderState, castsShadows: false);
   }
 
   static const String _bundle =
       'packages/flame_3d/assets/shaders/ribbon_material.shaderbundle';
+
+  /// Optional strip texture mapped `(u, v)` along and across the ribbon.
+  Texture? get texture => _texture;
+  set texture(Texture? value) => _texture = noteChange(_texture, value);
+
+  /// Base tint multiplied by each segment's color.
+  Color get albedoColor => _albedoColor;
+  set albedoColor(Color value) =>
+      _albedoColor = noteChange(_albedoColor, value);
+
+  /// Share of each half-width in `[0, 1]` that fades smoothly to zero at the
+  /// outer edges.
+  double get edgeSoftness => _edgeSoftness;
+  set edgeSoftness(double value) =>
+      _edgeSoftness = noteChange(_edgeSoftness, value);
+
+  /// Clip-space depth bias (`>= 0`) pulling ribbons slightly towards the
+  /// camera.
+  double get depthBias => _depthBias;
+  set depthBias(double value) => _depthBias = noteChange(_depthBias, value);
+
+  /// Fragments whose final alpha is below [alphaCutoff] are discarded.
+  double get alphaCutoff => _alphaCutoff;
+  set alphaCutoff(double value) =>
+      _alphaCutoff = noteChange(_alphaCutoff, value);
 
   final Vector4 _viewer = Vector4.zero();
   final Vector4 _eye = Vector4.zero();

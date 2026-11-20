@@ -586,11 +586,12 @@ A light source cannot see a change made in place, inside one of its objects: a d
 changed with `setValues`, or a field of its `ShadowSettings`. Call `source.markChanged()` after such
 a change (`markChanged(shadows: false)` when it cannot move a shadow).
 
-The engine cannot see changes to the fields of the current `FogSettings` or
-`WaterVolumeSettings` (its `time`, advanced every frame), of a probe
-(`LightProbeGrid3D.setProbeSh9`, an `EnvironmentProbe3D`'s `intensity`) or of a material: a
-retained `Scene3DComponent` keeps showing the old image until something else changes. Call
-`world.markSceneDirty(shadows: false)` (or `Scene3DComponent.markDirty()`) after such changes, see
+The fields of the current `FogSettings` and `WaterVolumeSettings` (its `time`, advanced every
+frame) report their changes, as the fields of materials do: a retained `Scene3DComponent` renders
+again when they change. The engine cannot see changes to a probe (`LightProbeGrid3D.setProbeSh9`,
+an `EnvironmentProbe3D`'s `intensity`): a retained `Scene3DComponent` keeps showing the old image
+until something else changes. Call `world.markSceneDirty(shadows: false)` (or
+`Scene3DComponent.markDirty()`) after such changes, see
 [Embedding](embedding.md#retained-layer-caching) and
 [Basic Concepts](basic_concepts.md#scene-versions-and-dirty-marking).
 
@@ -652,6 +653,5 @@ material's slots (see [Materials](materials.md#custom-shaders)):
   uploaded mip levels.
 - Light probe grids are baked without occlusion, and on the GPU they drop the mixed terms of band 2
   of each probe's spherical harmonics (see [Light probe grids](#light-probe-grids)).
-- Changing the fields of the current `FogSettings` or of a probe in place does not invalidate a
-  retained `Scene3DComponent` image (see
+- Changing a probe in place does not invalidate a retained `Scene3DComponent` image (see
   [Changing lights at run time](#changing-lights-at-run-time)).
