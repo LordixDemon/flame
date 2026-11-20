@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:flame_3d/src/graphics/backend/flutter_gpu/gpu_backend.dart'
     if (dart.library.js_interop) 'package:flame_3d/src/graphics/backend/web_gpu/gpu_backend.dart'
     as backend;
+import 'package:flame_3d/src/graphics/backend/gpu_device.dart';
 import 'package:flame_3d/src/graphics/backend/gpu_enums.dart';
 import 'package:flame_3d/src/graphics/backend/gpu_handles.dart';
 import 'package:flame_3d/src/graphics/render_state.dart';
@@ -25,6 +26,12 @@ abstract base class GpuBackend() {
   }
 
   static GpuBackend? _instance;
+
+  /// The active backend, or `null` when none was created yet.
+  ///
+  /// Unlike [instance], it never creates one, so it can be read where no GPU
+  /// may be available (a plain `flutter test`).
+  static GpuBackend? get activeOrNull => _instance;
 
   /// The active backend.
   ///
@@ -82,7 +89,15 @@ abstract base class GpuBackend() {
 
   /// A [GpuTexture] that shares the GPU memory of [image] without copying it,
   /// or `null` when this backend cannot wrap it.
+  ///
+  /// On a backend that [supportsTexturesFromImages], `null` means the image
+  /// has no GPU texture yet: an image from `Picture.toImageSync` is
+  /// rasterized later, on devices; one from `Picture.toImage` has one.
   GpuTexture? createTextureFromImage(Image image) => null;
+
+  /// Whether [createTextureFromImage] can wrap images (Flutter GPU) or never
+  /// does (WebGPU).
+  bool get supportsTexturesFromImages => false;
 
   /// Creates a [GpuBuffer] of [sizeInBytes] bytes.
   ///
@@ -170,6 +185,68 @@ abstract base class GpuBackend() {
 
   /// Begins a new frame.
   GpuFrame beginFrame();
+
+  /// What this backend's GPU device offers, as far as it was detected.
+  ///
+  /// [initialize] detects it: before, and on backends that detect nothing,
+  /// it is [GpuDeviceCapabilities.unknown] or what the backend knows without
+  /// asking the device.
+  GpuDeviceCapabilities get capabilities => GpuDeviceCapabilities.unknown;
+
+  /// Completes once [capabilities] are final: checks that need the app to
+  /// render frames (the float targets on OpenGL ES) finish after
+  /// [initialize] returned.
+  Future<void> get capabilitiesSettled => Future.value();
+
+  /// Whether [initialize] checks by rendering, on OpenGL ES, whether the
+  /// device renders into float textures (16-bit for HDR, 32-bit for shadow
+  /// maps). `false` by default: float targets are then not used on OpenGL
+  /// ES. Set it before [initialize].
+  ///
+  /// The check runs once the app renders its first frame, only when the
+  /// driver lists `GL_EXT_color_buffer_half_float` or
+  /// `GL_EXT_color_buffer_float`, and never on the Android emulator, whose
+  /// GPU it stopped (the driver lists both extensions there). See
+  /// [capabilities] and [capabilitiesSettled].
+  static bool probeFloatTargets = false;
+
+  /// What the shader [entryPoint] of the shader bundle [assetName] needs
+  /// from the device, or `null` when this backend does not read it.
+  ///
+  /// The Flutter GPU backend reads it from the bundle's OpenGL ES build when
+  /// it renders with OpenGL ES; other backends and APIs return `null`.
+  GpuShaderRequirements? shaderRequirements(
+    String assetName,
+    String entryPoint,
+  ) => null;
+
+  /// Whether the shader [entryPoint] of the shader bundle [assetName] can
+  /// run on this device, or `null` when that is not known (and the shader is
+  /// assumed to run).
+  ///
+  /// It compares [shaderRequirements] with [capabilities]: the extensions
+  /// the shader requires, its uniform vectors and its textures per stage.
+  GpuShaderSupport? shaderSupport(String assetName, String entryPoint) {
+    final requirements = shaderRequirements(assetName, entryPoint);
+    if (requirements == null) {
+      return null;
+    }
+    final caps = capabilities;
+    final vertex = requirements.stage == GpuShaderStage.vertex;
+    return GpuShaderSupport(
+      requirements: requirements,
+      missingExtensions: caps.shaderExtensionsKnown
+          ? [
+              for (final extension in requirements.extensions)
+                if (!caps.shaderExtensions.contains(extension)) extension,
+            ]
+          : const [],
+      uniformVectorLimit: vertex
+          ? caps.maxVertexUniformVectors
+          : caps.maxFragmentUniformVectors,
+      samplerLimit: vertex ? caps.maxVertexSamplers : caps.maxFragmentSamplers,
+    );
+  }
 }
 
 /// A single frame of rendering.

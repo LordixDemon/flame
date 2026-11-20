@@ -102,7 +102,13 @@ These exist, partly, and are described with their limits in the documentation:
 - [ ] Rebuild the shipped WGSL bundles with `naga`: `billboard_material.wgslbundle` was edited by
   hand after the billboard changes, and the outline bundles predate the outline normal fix.
 - [ ] `Text3DComponent` and `WidgetSurface3D` on the web (images as textures on WebGPU).
-- [ ] Detect float render targets on OpenGL ES instead of assuming none.
+- [x] Detect float render targets on OpenGL ES instead of assuming none
+  (`GpuBackend.probeFloatTargets`, off by default: rendering into a float target stopped the
+  Android emulator's GPU).
+- [ ] Turn the float target check on by default once it has run on OpenGL ES phones.
+- [x] Detect OpenGL ES limits and shader extensions, and refuse materials the device cannot run.
+- [ ] Split the joint matrices out of the standard vertex stages (269 to 275 uniform vectors, above
+  the 256 an OpenGL ES 3.0 driver may offer).
 - [ ] Detect a lost GPU device and recover without the app's help.
 - [ ] Run the GPU tests in CI, and on Android, iOS and browser devices.
 

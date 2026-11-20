@@ -4,6 +4,7 @@ import 'dart:ui' hide FragmentShader;
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 
 const bool _kIsWeb = identical(0, 0.0);
 
@@ -19,6 +20,12 @@ const bool _kIsWeb = identical(0, 0.0);
 /// Point shadows, [FogSettings], `MASK` [alphaCutoff], `4x4` Bayer
 /// [ditherFade], and HDR output (extended-range sRGB, see
 /// `World3D.hdrEnabled`).
+///
+/// On the web, and on OpenGL ES devices that cannot run its full shader (it
+/// samples the environment at explicit mip levels, which needs the
+/// `GL_EXT_shader_texture_lod` extension there), it draws with a simpler
+/// shader without the IBL, lightmap, clearcoat, transmission and probe
+/// inputs: see [usesSimpleShader].
 /// {@endtemplate}
 class SpatialMaterial({
   /// Base color multiplier (`rgb` and `a`).
@@ -109,15 +116,15 @@ class SpatialMaterial({
   this
     : super(
         vertexShader: VertexShader.fromAsset(
-          _kIsWeb ? _webBundle : _pbrBundle,
+          _simpleShader ? _webBundle : _pbrBundle,
           slots: [
             RenderContext3D.cameraMatricesBlock,
             RenderContext3D.jointMatricesBlock,
           ],
         ),
         fragmentShader: FragmentShader.fromAsset(
-          _kIsWeb ? _webBundle : _pbrBundle,
-          slots: _kIsWeb ? _webFragmentSlots : _pbrFragmentSlots,
+          _simpleShader ? _webBundle : _pbrBundle,
+          slots: _simpleShader ? _webFragmentSlots : _pbrFragmentSlots,
         ),
       ) {
     final needsTranslucent = translucent || transmission > 1e-4;
@@ -133,6 +140,44 @@ class SpatialMaterial({
           : base;
     }
   }
+
+  /// Whether this material draws with the simpler shader, without the IBL,
+  /// lightmap, clearcoat, transmission and reflection probe inputs: on the
+  /// web, and on OpenGL ES devices that cannot run the full shader (see
+  /// `GpuBackend.shaderSupport`; the choice is made when the material is
+  /// created, after `GpuBackend.initialize`).
+  bool get usesSimpleShader => identical(fragmentShader.assetName, _webBundle);
+
+  /// Whether new materials use the simpler shader: on the web, or when the
+  /// device of the active backend cannot run the full fragment shader but
+  /// can run the simpler one.
+  static bool get _simpleShader {
+    if (_kIsWeb) {
+      return true;
+    }
+    final backend = GpuBackend.activeOrNull;
+    if (backend == null) {
+      return false;
+    }
+    final full = backend.shaderSupport(_pbrBundle, _fragmentEntryPoint);
+    if (full == null || full.isSupported) {
+      return false;
+    }
+    if (!_warnedSimpleShader) {
+      _warnedSimpleShader = true;
+      debugPrint(
+        'flame_3d: SpatialMaterial uses its simpler shader on this device: '
+        'the full one ${full.problems.join('; ')}.',
+      );
+    }
+    return backend
+            .shaderSupport(_webBundle, _fragmentEntryPoint)
+            ?.isSupported ??
+        true;
+  }
+
+  static bool _warnedSimpleShader = false;
+  static const String _fragmentEntryPoint = 'TextureFragment';
 
   static const String _webBundle =
       'packages/flame_3d/assets/shaders/spatial_material.shaderbundle';
@@ -189,7 +234,7 @@ class SpatialMaterial({
 
   @override
   Shader vertexShaderFor(VertexLayout layout) {
-    if (!_kIsWeb &&
+    if (!usesSimpleShader &&
         layout.attribute(VertexLayout.tangentAttribute) != null &&
         layout.attribute(VertexLayout.texCoord1Attribute) != null) {
       return _tangentVertexShader ??= VertexShader.fromAsset(
@@ -306,7 +351,7 @@ class SpatialMaterial({
         ),
       );
 
-    if (!_kIsWeb) {
+    if (!usesSimpleShader) {
       var maxMip = 0.0;
       if (envTex != null) {
         envTex.resource;

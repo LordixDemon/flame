@@ -1,17 +1,23 @@
 // ignore_for_file: avoid_redundant_argument_values
 
+import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flame_3d/game.dart';
+import 'package:flame_3d/src/graphics/backend/flutter_gpu/gles_driver_probe.dart';
 import 'package:flame_3d/src/graphics/backend/flutter_gpu/shader_bundle_reflection.dart';
 import 'package:flame_3d/src/graphics/backend/gpu_backend.dart' as base;
+import 'package:flame_3d/src/graphics/backend/gpu_device.dart';
 import 'package:flame_3d/src/graphics/backend/gpu_enums.dart';
 import 'package:flame_3d/src/graphics/backend/gpu_handles.dart';
 import 'package:flame_3d/src/graphics/render_state.dart';
 import 'package:flame_3d/src/resources/texture/texture_sampler.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show WidgetsBinding;
 import 'package:flutter_gpu/gpu.dart' as gpu;
 import 'package:meta/meta.dart';
 
@@ -21,7 +27,12 @@ import 'package:meta/meta.dart';
 /// `flutter_gpu` context.
 base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
   static Future<void> initialize() async {
-    await create()?._preloadShaderLibraries();
+    final backend = create();
+    if (backend == null) {
+      return;
+    }
+    await backend._preloadShaderLibraries();
+    await backend._detectCapabilities();
   }
 
   static GpuBackend? create() => GpuBackend();
@@ -62,12 +73,213 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
       return _depthStencilFormat != gpu.PixelFormat.unknown;
     }
     final pf = _pixelFormat(format);
-    if (format == GpuPixelFormat.rgbaFloat16 ||
-        format == GpuPixelFormat.rgbaFloat32 ||
+    if (format == GpuPixelFormat.rgbaFloat16) {
+      return capabilities.halfFloatTextureTargets &&
+          _context.supportsTextureFormat(pf);
+    }
+    if (format == GpuPixelFormat.rgbaFloat32 ||
         format == GpuPixelFormat.r32Float) {
-      return supportsFloatTextureTargets && _context.supportsTextureFormat(pf);
+      return capabilities.floatTextureTargets &&
+          _context.supportsTextureFormat(pf);
     }
     return _context.supportsTextureFormat(pf);
+  }
+
+  /// The graphics API Flutter GPU renders with.
+  ///
+  /// Flutter GPU does not say: on Android, rendering into mip levels is
+  /// documented as supported on Vulkan and not on OpenGL ES, which tells
+  /// them apart; iOS and macOS apps render with Metal; the renderer of
+  /// `flutter test` is not known.
+  late final GpuGraphicsApi api = () {
+    final renderMipmaps = _context.doesSupportFramebufferRenderMipmap;
+    if (Platform.isAndroid) {
+      return renderMipmaps ? GpuGraphicsApi.vulkan : GpuGraphicsApi.openGLES;
+    }
+    if (!renderMipmaps) {
+      return GpuGraphicsApi.openGLES;
+    }
+    if (Platform.isIOS ||
+        (Platform.isMacOS &&
+            !Platform.environment.containsKey('FLUTTER_TEST'))) {
+      return GpuGraphicsApi.metal;
+    }
+    return GpuGraphicsApi.unknown;
+  }();
+
+  GpuDeviceCapabilities? _capabilities;
+
+  @override
+  GpuDeviceCapabilities get capabilities =>
+      _capabilities ??= _assumedCapabilities();
+
+  /// What is known without asking the device: Metal and Vulkan devices
+  /// render into 16/32-bit float textures (Vulkan requires it of every
+  /// device), OpenGL ES devices only with extensions, assumed absent until
+  /// [_detectCapabilities] checks.
+  GpuDeviceCapabilities _assumedCapabilities() {
+    final gles = api == GpuGraphicsApi.openGLES;
+    return GpuDeviceCapabilities(
+      api: api,
+      floatTextureTargets: !gles,
+      halfFloatTextureTargets: !gles,
+      floatTargetDetection: gles ? 'none' : 'api',
+      offscreenMsaa: _context.doesSupportOffscreenMSAA,
+      manualMipmaps: _context.doesSupportManuallyMippedTextures,
+    );
+  }
+
+  /// Asks an OpenGL ES device for its limits and extensions, and, when
+  /// [base.GpuBackend.probeFloatTargets] allows it, starts checking by
+  /// rendering whether it can render into float textures.
+  ///
+  /// Impeller's OpenGL ES backend runs submitted commands only when it
+  /// renders a frame, so the float target check waits for the first frame
+  /// of the app: until it completes (see [capabilitiesSettled]) float
+  /// targets are assumed absent, as they are without the check.
+  Future<void> _detectCapabilities() async {
+    final assumed = _assumedCapabilities();
+    if (api != GpuGraphicsApi.openGLES) {
+      _capabilities = assumed;
+      _settled.complete();
+      return;
+    }
+    final driver = probeGlesDriver(
+      shaderExtensions: {
+        for (final bundle in _requirements.values)
+          for (final shader in bundle.values) ...shader.extensions,
+      },
+    );
+    GpuDeviceCapabilities detected({
+      bool full = false,
+      bool half = false,
+      String detection = 'pending',
+      Map<String, String> notes = const {},
+    }) {
+      return GpuDeviceCapabilities(
+        api: api,
+        renderer: driver?.renderer,
+        vendor: driver?.vendor,
+        version: driver?.version,
+        shadingLanguageVersion: driver?.shadingLanguageVersion,
+        extensions: driver?.extensions ?? const {},
+        extensionsKnown: driver != null,
+        shaderExtensions: driver?.shaderExtensions ?? const {},
+        shaderExtensionsKnown: driver != null,
+        maxVertexUniformVectors: driver?.maxVertexUniformVectors,
+        maxFragmentUniformVectors: driver?.maxFragmentUniformVectors,
+        maxVertexSamplers: driver?.maxVertexSamplers,
+        maxFragmentSamplers: driver?.maxFragmentSamplers,
+        maxTextureSize: driver?.maxTextureSize,
+        floatTextureTargets: full,
+        halfFloatTextureTargets: half,
+        floatTargetDetection: detection,
+        offscreenMsaa: assumed.offscreenMsaa,
+        manualMipmaps: assumed.manualMipmaps,
+        notes: notes,
+      );
+    }
+
+    final skip = _floatProbeSkipReason(driver);
+    if (skip != null) {
+      _capabilities = detected(
+        detection: 'none',
+        notes: {'floatTargets': skip},
+      );
+      _settled.complete();
+      return;
+    }
+    _capabilities = detected();
+    unawaited(
+      _probeFloatTargets()
+          .then((result) {
+            final (full, half, notes) = result;
+            _capabilities = detected(
+              full: full,
+              half: half,
+              detection: notes.containsKey('deviceCheck') ? 'probe' : 'none',
+              notes: notes,
+            );
+          })
+          .whenComplete(_settled.complete),
+    );
+  }
+
+  /// Why the float targets of an OpenGL ES device are not checked by
+  /// rendering, or `null` when they are.
+  static String? _floatProbeSkipReason(GlesDriverInfo? driver) {
+    if (!base.GpuBackend.probeFloatTargets) {
+      return 'not checked: GpuBackend.probeFloatTargets is off';
+    }
+    if (driver == null) {
+      return 'not checked: the driver could not be queried';
+    }
+    if (driver.renderer.contains('Android Emulator')) {
+      // Rendering into a float texture there stopped the emulator's GPU.
+      return 'not checked on the Android emulator';
+    }
+    final extensions = driver.extensions;
+    if (!extensions.contains('GL_EXT_color_buffer_float') &&
+        !extensions.contains('GL_EXT_color_buffer_half_float')) {
+      return 'absent: the driver lists neither GL_EXT_color_buffer_float '
+          'nor GL_EXT_color_buffer_half_float';
+    }
+    return null;
+  }
+
+  /// Renders into float textures once the app renders frames, see
+  /// [_detectCapabilities].
+  Future<(bool, bool, Map<String, String>)> _probeFloatTargets() async {
+    try {
+      await WidgetsBinding.instance.waitUntilFirstFrameRasterized;
+      // Without a binding there are no frames to wait for.
+      // ignore: avoid_catches_without_on_clauses
+    } catch (_) {}
+    final probe = _DeviceProbe.create(this);
+    if (probe == null) {
+      return (false, false, const <String, String>{});
+    }
+    final check = await probe.checkRenders();
+    final half = await probe.checkFloatTexture(GpuPixelFormat.rgbaFloat16);
+    final full = await probe.checkFloatTexture(GpuPixelFormat.r32Float);
+    return (
+      // Without a working check, a float target cannot be trusted either.
+      check == null && full == null,
+      check == null && half == null,
+      {
+        'deviceCheck': check ?? 'ok',
+        'rgbaFloat16': half ?? 'ok',
+        'r32Float': full ?? 'ok',
+      },
+    );
+  }
+
+  final Completer<void> _settled = Completer<void>();
+
+  @override
+  Future<void> get capabilitiesSettled => _settled.future;
+
+  /// Checks by rendering, as [initialize] does on OpenGL ES, whether a
+  /// texture target can render into [format] (a float format) and later
+  /// passes sample it, keeping values above 1 for
+  /// [GpuPixelFormat.rgbaFloat16].
+  ///
+  /// With [checkRange] the range check runs whatever the format (an 8-bit
+  /// format then fails it), for tests.
+  @visibleForTesting
+  Future<bool> debugProbeFloatTarget(
+    GpuPixelFormat format, {
+    bool? checkRange,
+  }) async {
+    final probe = _DeviceProbe.create(this);
+    return probe != null &&
+        await probe.rendersIntoFloatTexture(format, checkRange: checkRange);
+  }
+
+  /// Sets the detected capabilities, for tests.
+  @visibleForTesting
+  set debugCapabilities(GpuDeviceCapabilities? capabilities) {
+    _capabilities = capabilities;
   }
 
   // The sampler options of every distinct sampler, by key, created once per
@@ -163,6 +375,9 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
   }
 
   @override
+  bool get supportsTexturesFromImages => true;
+
+  @override
   GpuBuffer createBuffer({
     required GpuStorageMode storageMode,
     required int sizeInBytes,
@@ -173,6 +388,10 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
   }
 
   final Map<String, _FlutterGpuShaderLibrary> _shaderLibraries = {};
+
+  // What the shaders of each bundle need from an OpenGL ES device, read only
+  // when rendering with OpenGL ES.
+  final Map<String, Map<String, GpuShaderRequirements>> _requirements = {};
 
   /// Loads every `.shaderbundle` shader asset declared by the app.
   ///
@@ -192,9 +411,31 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
             assetName,
             reflectShaderBundleInputs(bytes),
           );
+          _readRequirements(assetName, bytes);
         }
       }
     }
+  }
+
+  void _readRequirements(String assetName, ByteData bytes) {
+    if (api != GpuGraphicsApi.openGLES) {
+      return;
+    }
+    final requirements = reflectShaderBundleGlesRequirements(bytes);
+    if (requirements != null) {
+      _requirements[assetName] = requirements;
+    }
+  }
+
+  @override
+  GpuShaderRequirements? shaderRequirements(
+    String assetName,
+    String entryPoint,
+  ) {
+    final bundle =
+        _requirements[assetName] ??
+        _requirements[_withoutPackagePrefix(assetName)];
+    return bundle?[entryPoint];
   }
 
   @override
@@ -208,6 +449,7 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
       assetName,
       reflectShaderBundleInputs(bytes),
     );
+    _readRequirements(assetName, bytes);
   }
 
   @override
@@ -292,14 +534,10 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
   @override
   bool get supportsTextureTargets => true;
 
-  // Flutter GPU has no query for the formats a texture can be rendered into.
-  // Metal and Vulkan render into 16/32-bit float textures (Vulkan requires it
-  // of every device), OpenGL ES only with an extension; framebuffer render
-  // mipmaps are documented as supported on Metal and Vulkan and not on
-  // OpenGL ES, which tells the backends apart.
+  // Flutter GPU has no query for the formats a texture can be rendered into:
+  // see [capabilities], detected by rendering on OpenGL ES.
   @override
-  late final bool supportsFloatTextureTargets =
-      _context.doesSupportFramebufferRenderMipmap;
+  bool get supportsFloatTextureTargets => capabilities.floatTextureTargets;
 
   @override
   GpuTextureTarget createTextureTarget({
@@ -1031,5 +1269,309 @@ class _FlutterGpuRenderPass(
     destinationColorBlendFactor: gpu.BlendFactor.oneMinusSourceAlpha,
     sourceAlphaBlendFactor: gpu.BlendFactor.zero,
     destinationAlphaBlendFactor: gpu.BlendFactor.oneMinusSourceAlpha,
+  );
+}
+
+/// Renders small passes and reads them back: the check that the device
+/// renders (after a loss, on resume) and, on OpenGL ES, the check whether it
+/// renders into float textures.
+///
+/// It draws with the texture copy shader of flame_3d, into 4 by 4 targets,
+/// and creates its objects anew on every use.
+class _DeviceProbe._(
+  final GpuBackend _backend,
+  final gpu.Shader _vertex,
+  final gpu.Shader _fragment,
+  final gpu.UniformSlot _source,
+) {
+  static const _copyBundle =
+      'packages/flame_3d/assets/shaders/texture_copy.shaderbundle';
+  static const _size = 4;
+
+  /// A probe, or `null` when the copy shader is not loaded.
+  static _DeviceProbe? create(GpuBackend backend) {
+    try {
+      final library = backend.loadShaderLibrary(_copyBundle);
+      final vertex = (library['TextureVertex'] as _FlutterGpuShader).raw;
+      final fragment = (library['TextureFragment'] as _FlutterGpuShader).raw;
+      return _DeviceProbe._(
+        backend,
+        vertex,
+        fragment,
+        fragment.getUniformSlot('sourceTexture'),
+      );
+      // Without the shader there is nothing to probe with.
+      // ignore: avoid_catches_without_on_clauses
+    } catch (_) {
+      return null;
+    }
+  }
+
+  gpu.GpuContext get _context => _backend._context;
+
+  /// Whether a draw renders and reads back the right color.
+  Future<bool> renders() async => await checkRenders() == null;
+
+  /// `null` when a draw renders and reads back the right color, otherwise
+  /// what went wrong.
+  Future<String?> checkRenders() async {
+    try {
+      const color = [51, 102, 204, 255];
+      final (texture, target) = _target(
+        GpuBackend._colorFormat,
+        Vector4(1, 0, 0, 1),
+      );
+      final commands = _context.createCommandBuffer();
+      _draw(commands, target, [(_solid(color), null)]);
+      if (!await _submit(commands)) {
+        return 'the command buffer failed';
+      }
+      return _compare(await _read(texture), color, 3);
+      // Any failure means the device does not render.
+      // ignore: avoid_catches_without_on_clauses
+    } catch (error) {
+      return '$error';
+    }
+  }
+
+  /// Whether a texture target of [format] renders and is sampled by a later
+  /// pass, see [checkFloatTexture].
+  Future<bool> rendersIntoFloatTexture(
+    GpuPixelFormat format, {
+    bool? checkRange,
+  }) async {
+    return await checkFloatTexture(format, checkRange: checkRange) == null;
+  }
+
+  /// `null` when a texture target of [format] renders and is sampled by a
+  /// later pass, keeping values above 1 for [GpuPixelFormat.rgbaFloat16]
+  /// (or whenever [checkRange] is `true`), otherwise what went wrong.
+  ///
+  /// The range check clears the target to 0.75, adds 0.75 (1.5, which an
+  /// 8-bit or clamped target keeps at 1) and subtracts 0.75 again (0.75, or
+  /// 0.25 when clamped), then copies it into an 8-bit target: 191 or 64.
+  /// Otherwise the target is cleared to 0.5 and copied into an 8-bit target,
+  /// red only (128).
+  Future<String?> checkFloatTexture(
+    GpuPixelFormat format, {
+    bool? checkRange,
+  }) async {
+    try {
+      final range = checkRange ?? format == GpuPixelFormat.rgbaFloat16;
+      final (floatTexture, floatTarget) = _target(
+        _backend._pixelFormat(format),
+        range ? Vector4(0.75, 0.75, 0.75, 1) : Vector4(0.5, 0.5, 0.5, 1),
+      );
+      final first = _context.createCommandBuffer();
+      final quarter = _solid(const [191, 191, 191, 255]);
+      _draw(
+        first,
+        floatTarget,
+        range ? [(quarter, _add), (quarter, _subtract)] : [(quarter, _keep)],
+      );
+      final (texture, target) = _target(
+        GpuBackend._colorFormat,
+        Vector4(0, 0, 0, 1),
+      );
+      final second = _context.createCommandBuffer();
+      _draw(second, target, [(floatTexture, null)]);
+      final firstDone = _submit(first);
+      if (!await _submit(second) || !await firstDone) {
+        return 'a command buffer failed';
+      }
+      return _compare(
+        await _read(texture),
+        range ? const [191, 191, 191, 255] : const [128, 0, 0, 255],
+        10,
+      );
+      // A format the device cannot render into fails somewhere on the way.
+      // ignore: avoid_catches_without_on_clauses
+    } catch (error) {
+      return '$error';
+    }
+  }
+
+  /// `null` when [pixel] is within [tolerance] of [expected], otherwise a
+  /// description of the difference.
+  static String? _compare(
+    List<int>? pixel,
+    List<int> expected,
+    int tolerance,
+  ) {
+    if (pixel == null) {
+      return 'the pixels could not be read back';
+    }
+    return _near(pixel, expected, tolerance)
+        ? null
+        : 'read back $pixel instead of $expected';
+  }
+
+  (gpu.Texture, gpu.RenderTarget) _target(
+    gpu.PixelFormat format,
+    Vector4 clear,
+  ) {
+    final texture = _context.createTexture(
+      gpu.StorageMode.devicePrivate,
+      _size,
+      _size,
+      format: format,
+    );
+    final depth = _context.createTexture(
+      gpu.StorageMode.deviceTransient,
+      _size,
+      _size,
+      format: _backend._depthStencilFormat,
+      enableShaderReadUsage: false,
+    );
+    return (
+      texture,
+      gpu.RenderTarget.singleColor(
+        gpu.ColorAttachment(texture: texture, clearValue: clear),
+        depthStencilAttachment: gpu.DepthStencilAttachment(
+          texture: depth,
+          depthClearValue: 1.0,
+        ),
+      ),
+    );
+  }
+
+  gpu.Texture _solid(List<int> rgba) {
+    return _context.createTexture(
+      gpu.StorageMode.hostVisible,
+      1,
+      1,
+      format: GpuBackend._colorFormat,
+    )..overwrite(ByteData.sublistView(Uint8List.fromList(rgba)));
+  }
+
+  /// Draws each source over the whole [target], blended with its equation
+  /// (none when `null`).
+  void _draw(
+    gpu.CommandBuffer commands,
+    gpu.RenderTarget target,
+    List<(gpu.Texture, gpu.ColorBlendEquation?)> draws,
+  ) {
+    final quad = _context.createDeviceBufferWithCopy(
+      ByteData.sublistView(
+        Float32List.fromList(const [
+          -1, -1, 0, 1, -1, 0, 1, 1, 0, //
+          -1, -1, 0, 1, 1, 0, -1, 1, 0, //
+        ]),
+      ),
+    );
+    final pipeline = _context.createRenderPipeline(
+      _vertex,
+      _fragment,
+      vertexLayout: const gpu.VertexLayout(
+        buffers: [
+          gpu.VertexBuffer(
+            strideInBytes: 12,
+            attributes: [
+              gpu.VertexAttribute(
+                name: 'vertexPosition',
+                offsetInBytes: 0,
+                format: gpu.VertexFormat.float32x3,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+    final pass = commands.createRenderPass(target)
+      ..setWindingOrder(gpu.WindingOrder.counterClockwise)
+      ..setCullMode(gpu.CullMode.none)
+      ..setDepthWriteEnable(false)
+      ..setDepthCompareOperation(gpu.CompareFunction.always);
+    for (final (source, blend) in draws) {
+      pass
+        ..bindPipeline(pipeline)
+        ..bindVertexBuffer(
+          gpu.BufferView(quad, offsetInBytes: 0, lengthInBytes: 72),
+        )
+        ..bindTexture(_source, source, sampler: gpu.SamplerOptions())
+        ..setColorBlendEnable(blend != null);
+      if (blend != null) {
+        pass.setColorBlendEquation(blend);
+      }
+      pass.draw(6);
+    }
+  }
+
+  static Future<bool> _submit(gpu.CommandBuffer commands) {
+    final done = Completer<bool>();
+    commands.submit(completionCallback: done.complete);
+    return done.future.timeout(
+      const Duration(seconds: 3),
+      onTimeout: () => false,
+    );
+  }
+
+  /// The pixel at the center of [texture], once the GPU rendered it.
+  ///
+  /// Every probe target ends opaque. On OpenGL ES, Impeller runs the
+  /// commands of a submitted command buffer later (when it renders a frame),
+  /// and reports it complete before: until then the texture reads back
+  /// transparent, so it is read again, frame after frame, for at most two
+  /// seconds.
+  static Future<List<int>?> _read(gpu.Texture texture) async {
+    final image = texture.asImage();
+    final waited = Stopwatch()..start();
+    try {
+      while (true) {
+        final data = await image.toByteData();
+        if (data == null) {
+          return null;
+        }
+        final i = ((image.height ~/ 2) * image.width + image.width ~/ 2) * 4;
+        final pixel = [
+          data.getUint8(i),
+          data.getUint8(i + 1),
+          data.getUint8(i + 2),
+          data.getUint8(i + 3),
+        ];
+        if (pixel[3] != 0 || waited.elapsed > const Duration(seconds: 2)) {
+          return pixel;
+        }
+        try {
+          SchedulerBinding.instance.scheduleFrame();
+          // Without a binding, waiting is all there is to do.
+          // ignore: avoid_catches_without_on_clauses
+        } catch (_) {}
+        await Future<void>.delayed(const Duration(milliseconds: 16));
+      }
+    } finally {
+      image.dispose();
+    }
+  }
+
+  static bool _near(List<int> pixel, List<int> expected, int tolerance) {
+    for (var i = 0; i < 4; i++) {
+      if ((pixel[i] - expected[i]).abs() > tolerance) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  static final _add = gpu.ColorBlendEquation(
+    sourceColorBlendFactor: gpu.BlendFactor.one,
+    destinationColorBlendFactor: gpu.BlendFactor.one,
+    sourceAlphaBlendFactor: gpu.BlendFactor.zero,
+    destinationAlphaBlendFactor: gpu.BlendFactor.one,
+  );
+
+  static final _keep = gpu.ColorBlendEquation(
+    sourceColorBlendFactor: gpu.BlendFactor.zero,
+    destinationColorBlendFactor: gpu.BlendFactor.one,
+    sourceAlphaBlendFactor: gpu.BlendFactor.zero,
+    destinationAlphaBlendFactor: gpu.BlendFactor.one,
+  );
+
+  static final _subtract = gpu.ColorBlendEquation(
+    colorBlendOperation: gpu.BlendOperation.reverseSubtract,
+    sourceColorBlendFactor: gpu.BlendFactor.one,
+    destinationColorBlendFactor: gpu.BlendFactor.one,
+    sourceAlphaBlendFactor: gpu.BlendFactor.zero,
+    destinationAlphaBlendFactor: gpu.BlendFactor.one,
   );
 }

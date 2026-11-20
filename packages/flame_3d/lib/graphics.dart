@@ -1,4 +1,5 @@
 export 'src/graphics/backend/gpu_backend.dart';
+export 'src/graphics/backend/gpu_device.dart';
 export 'src/graphics/backend/gpu_enums.dart';
 export 'src/graphics/backend/gpu_handles.dart';
 export 'src/graphics/bloom_settings.dart';

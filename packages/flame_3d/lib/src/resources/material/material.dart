@@ -27,6 +27,14 @@ abstract class Material({
   required var Shader _vertexShader,
   required var Shader _fragmentShader,
 }) {
+  /// Checks that the device can run the material's shaders, see
+  /// [Shader.checkDeviceSupport]: a material the device cannot draw throws
+  /// an [UnsupportedError] here rather than drawing nothing.
+  this {
+    _vertexShader.checkDeviceSupport(owner: runtimeType);
+    _fragmentShader.checkDeviceSupport(owner: runtimeType);
+  }
+
   static Material defaultMaterial = SpatialMaterial()
     ..albedoColor = const Color(0xFFFF00FF);
 

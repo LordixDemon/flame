@@ -112,6 +112,22 @@ final class FakeGpuBackend({
   /// Callbacks of submitted passes waiting for completion.
   final List<void Function()> pendingCompletions = [];
 
+  /// The capabilities reported by [capabilities].
+  GpuDeviceCapabilities fakeCapabilities = GpuDeviceCapabilities.unknown;
+
+  /// The shader requirements reported by [shaderRequirements], by bundle
+  /// asset and entry point.
+  final Map<String, Map<String, GpuShaderRequirements>> fakeRequirements = {};
+
+  @override
+  GpuDeviceCapabilities get capabilities => fakeCapabilities;
+
+  @override
+  GpuShaderRequirements? shaderRequirements(
+    String assetName,
+    String entryPoint,
+  ) => fakeRequirements[assetName]?[entryPoint];
+
   /// Whether submitted passes complete immediately.
   bool completeImmediately = false;
 
@@ -131,6 +147,9 @@ final class FakeGpuBackend({
   @override
   GpuTexture? createTextureFromImage(Image image) =>
       wrapsImages ? FakeTexture(image.width, image.height, 1) : null;
+
+  @override
+  bool get supportsTexturesFromImages => wrapsImages;
 
   @override
   GpuTexture createTexture({

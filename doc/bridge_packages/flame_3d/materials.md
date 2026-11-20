@@ -110,7 +110,11 @@ matrices written into the existing lists need `component.markDrawDirty()`. See
 distribution, Smith-Schlick geometry, Schlick Fresnel) over a Lambert diffuse, the glTF 2.0 maps,
 a clear-coat layer, refraction for glass, and image-based lighting. On native backends it uses the
 `spatial_material_pbr` shaders; on the web an older shader without the extensions described below
-(see [Web](#web)).
+(see [Web](#web)). On OpenGL ES devices where the full shader cannot run (it samples at explicit mip
+levels, which needs `GL_EXT_shader_texture_lod`; the Android emulator lacks it) a new material uses
+that older shader too, as on the web but with shadows, and prints that once; `usesSimpleShader`
+tells which one a material uses (see
+[What the device offers](getting_started.md#what-the-device-offers)).
 
 ```dart
 final brick = SpatialMaterial(
@@ -2333,7 +2337,11 @@ shader of a pass shares with `RenderContext3D.registerPassUniform` and `register
 
 Shaders are compiled into `.shaderbundle` files with `impellerc` (see
 [Rendering](rendering.md#shaders)); bundles declared as assets are loaded by
-`GpuBackend.initialize()`.
+`GpuBackend.initialize()`. On OpenGL ES a material checks its shaders when it is created and
+throws an `UnsupportedError` when the device cannot run them: a custom shader's uniform blocks and
+loose uniforms must fit the device's uniform vectors (`GpuBackend.instance.capabilities`), and the
+extensions its OpenGL ES build requires must be accepted (see
+[What the device offers](getting_started.md#what-the-device-offers)).
 
 
 ## Web

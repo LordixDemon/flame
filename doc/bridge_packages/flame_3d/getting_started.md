@@ -30,17 +30,70 @@ Flutter GPU and Impeller are experimental, and so is this package: its API may c
 | Windows, Linux      | none (no Flutter GPU)       | Only `Canvas3DFallbackComponent`            |
 
 The package's GPU tests run headless with `flutter test --enable-impeller --enable-flutter-gpu`;
-behavior on Android and iOS devices is not covered by them.
+what has been run on Android, and how to repeat it on a phone, is in
+[Running on a device](debugging_and_testing.md#running-on-a-device).
 
-On OpenGL ES, `flame_3d` does not render into floating-point textures (Flutter GPU cannot tell
-whether the device supports it), so `World3D.hdrEnabled` falls back to an 8-bit target and shadow
-depths are packed into 8-bit channels. A device without offscreen multisampling silently renders
-without MSAA.
+Flutter chooses the backend when the app starts: Vulkan where the device's Vulkan driver is usable,
+OpenGL ES otherwise. The Android emulator (with `-gpu host` on a Mac) gets OpenGL ES; its Vulkan,
+forced with the manifest meta-data `io.flutter.embedding.android.ImpellerBackend` set to `vulkan`,
+showed no 3D at all and crashed in Flutter's raster thread, so treat the emulator as an OpenGL ES
+device. Flutter's log names the backend it uses ("Using the Impeller rendering backend
+(OpenGLES)"), and `GpuBackend.instance.capabilities.api` tells the app. An emulator draws with the
+Mac's GPU through a translator: it is not a phone.
 
-`GpuBackend.isAvailable` tells whether the GPU backend can run in this process: it is `false` when
-Flutter GPU is not enabled, when Impeller is off, on Windows and Linux, and in browsers without
-WebGPU. Without it, constructing a `FlameGame3D` (or anything else with the `Game3D` mixin) throws,
-and so does the first render of a `Scene3DComponent`.
+
+### What the device offers
+
+`GpuBackend.initialize()` detects what the device offers, in `GpuBackend.instance.capabilities`
+(a `GpuDeviceCapabilities`, also printable as JSON with `toJson()`):
+
+- `api`: `vulkan` or `openGLES` on Android (Flutter GPU does not say; rendering into mip levels,
+  which it reports as supported on Vulkan only, tells them apart), `metal` on iOS and macOS,
+  `unknown` under `flutter test`;
+- `offscreenMsaa` and `manualMipmaps` (from Flutter GPU): a device without offscreen multisampling
+  renders without MSAA, one that cannot sample mip levels uploaded by hand gets textures without
+  mipmaps;
+- on OpenGL ES, what the driver reports, asked through EGL in a private context: `renderer`,
+  `vendor`, `version`, the uniform vectors a vertex and a fragment shader may use
+  (`maxVertexUniformVectors`, `maxFragmentUniformVectors`), the textures each may sample, the
+  largest texture, its `extensions`, and `shaderExtensions`: the extensions the loaded shaders
+  require that the driver really accepts, checked by compiling a small shader that requires each
+  one (drivers accept some extensions they do not list, and the reverse).
+
+On OpenGL ES the shaders are GLSL ES 1.00 programs whose uniform blocks become plain uniforms,
+limited by those vector counts (OpenGL ES 3.0 guarantees 256 per vertex shader and 224 per fragment
+shader). The backend reads from each shader bundle what every shader needs (`shaderRequirements`:
+uniform vectors, textures, required extensions) and `GpuBackend.instance.shaderSupport(asset,
+entryPoint)` compares it with the device. Every material checks its shaders when it is created:
+one the device cannot run throws an `UnsupportedError` that names the shader, what it needs and
+what the device allows, instead of drawing nothing; a shader is checked again when it is first
+resolved. Watch for:
+
+- the vertex stages that read joint matrices: the skinned layouts and the standard vertex stages of
+  `SpatialMaterial`, `UnlitMaterial` and `StylizedMaterial` (`stylized_material_standard`) declare
+  64 joint matrices, 269 to 275 vectors in all, more than the 256 an OpenGL ES 3.0 driver may
+  offer: such a driver cannot run them (the emulator offers 1,024);
+- `WaterMaterial`'s fragment stage uses 197 vectors, `StylizedMaterial`'s 183;
+- `SpatialMaterial`'s full shader samples 11 textures and needs `GL_EXT_shader_texture_lod`. On a
+  device without it (the emulator) a new `SpatialMaterial` draws with the simpler shader the web
+  uses, without the IBL, lightmap, clearcoat, transmission and reflection probe inputs, and prints
+  that once (`usesSimpleShader` tells); create materials after `GpuBackend.initialize()` for the
+  choice to see the device.
+
+Float render targets: Metal and Vulkan render into 16- and 32-bit float textures (Vulkan requires
+it of every device). On OpenGL ES they are not used unless `GpuBackend.probeFloatTargets` is set
+before `initialize()`: the backend then checks by rendering, once the app shows its first frame,
+whether a 16-bit float target keeps a value above 1 and whether a 32-bit one renders and is
+sampled (`floatTextureTargets`, `halfFloatTextureTargets`, and `notes` with what each check read
+back; wait for `capabilitiesSettled`). The check runs only when the driver lists
+`GL_EXT_color_buffer_half_float` or `GL_EXT_color_buffer_float`, and never on the Android
+emulator: there, rendering into a float texture stopped the emulator's GPU (and with it the whole
+emulated system). Without float targets `World3D.hdrEnabled` falls back to an 8-bit target and
+shadow depths are packed into 8-bit channels.
+
+Impeller's OpenGL ES backend runs the commands of a submitted command buffer when it next renders
+a frame, and reports the command buffer complete before: reading a rendered image back at once
+(`Image.toByteData`) gives transparent pixels there, a frame or two later the right ones.
 
 
 ### The web

@@ -33,6 +33,9 @@ class Shader._(
   /// struct blocks have a non-null [GpuUniformSlot.sizeInBytes],
   /// samplers return `null`.
   required final List<String> slots,
+
+  /// The shader bundle asset the shader is loaded from.
+  final String? assetName,
 }) extends Resource<GpuShader> {
   /// Load a [Shader] from asset.
   Shader.fromAsset(
@@ -43,7 +46,44 @@ class Shader._(
          _assetLibrary(assetName),
          entryPoint: entryPoint,
          slots: slots,
+         assetName: assetName,
        );
+
+  /// Whether this shader can run on the device of the active backend:
+  /// `null` when that is not known (no backend yet, or a backend that does
+  /// not check), see [GpuBackend.shaderSupport].
+  GpuShaderSupport? get deviceSupport {
+    final asset = assetName;
+    final backend = GpuBackend.activeOrNull;
+    if (asset == null || backend == null) {
+      return null;
+    }
+    return backend.shaderSupport(asset, entryPoint);
+  }
+
+  /// Throws an [UnsupportedError] naming what is missing when this shader
+  /// needs more than the device of the active backend offers (an extension,
+  /// uniform vectors or textures, see [GpuBackend.shaderSupport]); does
+  /// nothing when it can run or when that is not known.
+  ///
+  /// Materials check their shaders when they are created, and every shader
+  /// is checked when its GPU shader is first resolved, so that a material the
+  /// device cannot draw fails with this error instead of drawing nothing.
+  void checkDeviceSupport({Object? owner}) {
+    final support = deviceSupport;
+    if (support == null || support.isSupported) {
+      return;
+    }
+    final caps = GpuBackend.activeOrNull!.capabilities;
+    final device = [
+      caps.api.name,
+      if (caps.renderer != null) caps.renderer,
+    ].join(', ');
+    throw UnsupportedError(
+      '${owner ?? 'A material'} cannot run on this device ($device): the '
+      'shader "$entryPoint" of $assetName ${support.problems.join('; ')}.',
+    );
+  }
 
   final Map<String, GpuUniformSlot> _slots = {};
   final Map<String, UniformBlock> _blocks = {};
@@ -155,6 +195,7 @@ class Shader._(
     _generation++;
     renderCache = null;
 
+    checkDeviceSupport();
     final shader = _getShader(entryPoint);
     for (final name in slots) {
       _slots[name] = shader.getUniformSlot(name);
