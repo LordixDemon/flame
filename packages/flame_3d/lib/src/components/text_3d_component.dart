@@ -19,7 +19,10 @@ import 'package:flutter/painting.dart'
 ///
 /// It needs a GPU backend that can use a `dart:ui` image as a texture
 /// (Flutter GPU on Android, iOS and macOS): on another one, such as WebGPU on
-/// the web, creating a label throws an [UnsupportedError].
+/// the web, creating a label throws an [UnsupportedError]. On devices the
+/// text is rasterized asynchronously: a new label shows nothing, and a
+/// changed one its previous text, for a frame or two. After a GPU device
+/// loss the label rasterizes its text again.
 class Text3DComponent({
   required String text,
   TextStyle style = const TextStyle(
@@ -197,29 +200,52 @@ class Text3DComponent({
     painter.dispose();
 
     final picture = recorder.endRecording();
-    final img = picture.toImageSync(texW, texH);
-    picture.dispose();
-
-    final GpuTexture? gpuTex;
-    try {
-      gpuTex = textureOfRasterizedImage(img, 'Text3DComponent');
-    } finally {
-      img.dispose();
-    }
-    _disposeTexture();
-    if (gpuTex != null) {
-      _material.albedoTexture = _texture = ImageTexture(
-        null,
-        width: texW,
-        height: texH,
-        sampler: TextureSampler.linear,
-        gpuTexture: gpuTex,
-      );
-    } else {
-      // Without a GPU (a plain `flutter test`) nothing is drawn.
-      _material.albedoTexture = ColorTexture(const ui.Color(0xFFFFFFFF));
+    final request = ++_rasterRequest;
+    final ready = rasterizePictureTexture(
+      picture,
+      texW,
+      texH,
+      'Text3DComponent',
+      (gpuTex) {
+        // A later rebuild, or the label's removal, replaced this request.
+        if (request != _rasterRequest || _textureReleased) {
+          return;
+        }
+        _disposeTexture();
+        if (gpuTex != null) {
+          _material.albedoTexture = _texture = ImageTexture(
+            null,
+            width: texW,
+            height: texH,
+            sampler: TextureSampler.linear,
+            gpuTexture: gpuTex,
+          );
+        } else {
+          // Without a GPU (a plain `flutter test`) nothing is drawn.
+          _material.albedoTexture = ColorTexture(const ui.Color(0xFFFFFFFF));
+        }
+        worldOrNull?.markSceneDirty(shadows: false);
+      },
+    );
+    if (!ready && _texture == null) {
+      // Nothing to show until the picture is rasterized (on devices).
+      _material.albedoTexture = Texture.empty;
     }
   }
+
+  // The number of texture rebuilds requested, so that a rasterization that
+  // completes after a newer request is dropped.
+  int _rasterRequest = 0;
+
+  // Rebuilds the texture after a GPU device loss: it wrapped an image of the
+  // lost device.
+  late final GpuDeviceListener _deviceListener = GpuDeviceListener(
+    onRecovered: (_) {
+      if (!_textureReleased) {
+        _rebuildTexture();
+      }
+    },
+  );
 
   void _disposeTexture() {
     final texture = _texture;
@@ -232,6 +258,7 @@ class Text3DComponent({
   @override
   void onMount() {
     super.onMount();
+    GpuBackend.addDeviceListener(_deviceListener);
     if (_textureReleased) {
       _textureReleased = false;
       _rebuildTexture();
@@ -243,6 +270,7 @@ class Text3DComponent({
 
   @override
   void onRemove() {
+    GpuBackend.removeDeviceListener(_deviceListener);
     _disposeTexture();
     _textureReleased = true;
     super.onRemove();

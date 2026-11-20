@@ -130,8 +130,11 @@ a slot or the transform changes.
 
 `Text3DComponent` lays its text out with Flutter's `TextPainter`, so any font, weight and script
 that Flutter renders works (accented Latin, Cyrillic, CJK, emoji). It draws the text, an optional
-rounded background and a border into a picture, rasterizes it with `Picture.toImageSync` and uses
-the image as the texture of one billboard, without copying it on Flutter GPU.
+rounded background and a border into a picture, rasterizes it and uses the image as the texture of
+one billboard, without copying it on Flutter GPU. The image of `Picture.toImageSync` is used when it
+already has a GPU texture (as under `flutter test`); on devices it is rasterized later, so the
+picture is rasterized with the asynchronous `Picture.toImage` instead: a new label shows nothing,
+and a changed one its previous text, for a frame or two.
 
 ```dart
 final label = Text3DComponent(
@@ -170,7 +173,9 @@ and a new GPU texture; do not change it every frame.
   uses a white placeholder texture, and nothing is drawn anyway.
 - The texture it replaces, and its last one when it is removed, are disposed (their handle is
   dropped; the GPU memory is freed when nothing refers to it any more). A label added again
-  rasterizes its texture again.
+  rasterizes its texture again, and so does a mounted label after the GPU device was recovered
+  from a loss.
+- On devices the text appears a frame or two after the label is created or changed (see above).
 
 
 ## Many strings with the built-in font
@@ -316,8 +321,11 @@ game.add(PointerRouter3D.forCamera(world: world, camera: camera));
 A panel is rasterized once when created, then only when it is dirty: after `markDirty()`, a
 control's `invalidate()`, or a hover or press that changes a control's look. On the next update or
 draw (not sooner than `minUploadInterval` after the previous one), it records the background,
-`paintSurface` and the controls into a picture, rasterizes it with `Picture.toImageSync`, wraps the
-image as a GPU texture without copying, and disposes the previous texture. `flushDirty()` does it
+`paintSurface` and the controls into a picture, rasterizes it (with `Picture.toImageSync`, or on
+devices, where that image has no GPU texture yet, with the asynchronous `Picture.toImage`, so the
+previous picture stays a frame or two longer), wraps the image as a GPU texture without copying,
+and disposes the previous texture. After a GPU device loss a mounted panel is marked dirty and
+rasterized again. `flushDirty()` does it
 at once; `uploadCount` counts the rasterizations, so a test can check that a static panel is not
 rasterized again. Each rasterization allocates a new texture of `pixelWidth × pixelHeight × 4`
 bytes (600 KB at the default size): throttle animated panels with `minUploadInterval`.

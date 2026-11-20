@@ -377,6 +377,7 @@ class WidgetSurface3D({
   @override
   void onMount() {
     super.onMount();
+    GpuBackend.addDeviceListener(_deviceListener);
     if (_textureReleased) {
       _textureReleased = false;
       _refreshTextureNow();
@@ -385,6 +386,7 @@ class WidgetSurface3D({
 
   @override
   void onRemove() {
+    GpuBackend.removeDeviceListener(_deviceListener);
     final texture = _surfaceTexture;
     if (texture != null && texture.hasResource) {
       texture.dispose();
@@ -667,16 +669,36 @@ class WidgetSurface3D({
     }
 
     final picture = recorder.endRecording();
-    final image = picture.toImageSync(pixelWidth, pixelHeight);
-    picture.dispose();
-
-    final GpuTexture? gpuTex;
-    try {
-      gpuTex = textureOfRasterizedImage(image, 'WidgetSurface3D');
-    } finally {
-      image.dispose();
+    final request = ++_rasterRequest;
+    final ready = rasterizePictureTexture(
+      picture,
+      pixelWidth,
+      pixelHeight,
+      'WidgetSurface3D',
+      (gpuTex) {
+        // A later refresh, or the panel's removal, replaced this request.
+        if (request == _rasterRequest && !_textureReleased) {
+          _useTexture(gpuTex);
+        }
+      },
+    );
+    if (!ready && _surfaceTexture == null) {
+      // Nothing to show until the picture is rasterized (on devices).
+      _material.albedoTexture = Texture.empty;
     }
+  }
 
+  // The number of texture refreshes requested, so that a rasterization that
+  // completes after a newer request is dropped.
+  int _rasterRequest = 0;
+
+  // Rasterizes the panel again after a GPU device loss: its texture wrapped
+  // an image of the lost device.
+  late final GpuDeviceListener _deviceListener = GpuDeviceListener(
+    onRecovered: (_) => markDirty(),
+  );
+
+  void _useTexture(GpuTexture? gpuTex) {
     final prevTex = _surfaceTexture;
     if (gpuTex != null) {
       _surfaceTexture = ImageTexture(
@@ -700,6 +722,7 @@ class WidgetSurface3D({
     if (prevTex != null && prevTex.hasResource) {
       prevTex.dispose();
     }
+    worldOrNull?.markSceneDirty(shadows: false);
   }
 
   static Mesh _buildPanelMesh(

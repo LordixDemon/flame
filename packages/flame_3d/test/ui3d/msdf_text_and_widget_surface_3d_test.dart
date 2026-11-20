@@ -325,6 +325,29 @@ void main() {
 
   group('Rasterized textures', () {
     test(
+      'come from Picture.toImage when the image of toImageSync has no GPU '
+      'texture yet, as on devices',
+      () async {
+        final backend = FakeGpuBackend()..unrasterizedImages = 2;
+        addTearDown(FakeGpuBackend.new);
+        final label = Text3DComponent(text: 'label');
+        final panel = WidgetSurface3D();
+        expect(backend.imageWraps, 2);
+        for (var i = 0; i < 100 && backend.imageWraps < 4; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        // Each asked again with the image of the asynchronous rasterization.
+        expect(backend.imageWraps, 4);
+        expect(label.text, 'label');
+        expect(panel.uploadCount, 1);
+      },
+      skip: GpuBackend.isAvailable
+          ? false
+          : 'Without a GPU backend nothing is rasterized; run with '
+                '--enable-impeller --enable-flutter-gpu',
+    );
+
+    test(
       'Text3DComponent and WidgetSurface3D fail loudly on a backend that '
       'cannot use an image as a texture',
       () {

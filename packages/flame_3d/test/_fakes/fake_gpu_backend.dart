@@ -163,8 +163,22 @@ final class FakeGpuBackend({
   final List<FakeTexture> textures = [];
 
   @override
-  GpuTexture? createTextureFromImage(Image image) =>
-      wrapsImages ? FakeTexture(image.width, image.height, 1) : null;
+  GpuTexture? createTextureFromImage(Image image) {
+    imageWraps++;
+    if (unrasterizedImages > 0) {
+      unrasterizedImages--;
+      return null;
+    }
+    return wrapsImages ? FakeTexture(image.width, image.height, 1) : null;
+  }
+
+  /// The number of calls to [createTextureFromImage].
+  int imageWraps = 0;
+
+  /// How many of the next images [createTextureFromImage] cannot wrap yet, as
+  /// Flutter GPU on a device cannot wrap an image of `Picture.toImageSync`
+  /// that is not rasterized yet.
+  int unrasterizedImages = 0;
 
   @override
   bool get supportsTexturesFromImages => wrapsImages;
