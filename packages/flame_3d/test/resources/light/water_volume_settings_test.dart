@@ -32,6 +32,28 @@ void main() {
       expect(water.phase, 0);
     });
 
+    test('moves the waterline with a phase of its own', () {
+      final water = WaterVolumeSettings(animationPeriod: 6);
+      for (final time in [0.0, 1.3, 7.9, 123.4]) {
+        water
+          ..time = time
+          ..waterlineMotion = 1;
+        // At its own pace, the phase of the caustics, exactly.
+        expect(water.waterlinePhase, water.phase);
+        water.waterlineMotion = 0;
+        expect(water.waterlinePhase, 0);
+        water.waterlineMotion = -1;
+        expect(water.waterlinePhase, 0);
+        water.waterlineMotion = 0.5;
+        expect(
+          water.waterlinePhase,
+          (WaterVolumeSettings(animationPeriod: 6)..time = time * 0.5).phase,
+        );
+      }
+      water.waterlineMotion = double.nan;
+      expect(water.waterlinePhase, 0);
+    });
+
     test('fills the water volume block of a pass', () {
       final backend = FakeGpuBackend();
       final context = RenderContext3D(GraphicsDevice(backend: backend));
@@ -83,8 +105,13 @@ void main() {
       RenderContext3D.writeWaterVolumeUniforms(context, block);
       expect(read('causticColor')[3], 1);
 
-      // The waterline foam has no light floor by default.
+      // The waterline foam moves with the caustics and has no light floor
+      // by default.
+      expect(read('waterlineFoam')[0], caustics[2]);
       expect(read('waterlineFoam')[1], 0);
+      context.waterVolume!.waterlineMotion = 0;
+      RenderContext3D.writeWaterVolumeUniforms(context, block);
+      expect(read('waterlineFoam')[0], 0);
       context.waterVolume!.waterlineLightFloor = 0.7;
       RenderContext3D.writeWaterVolumeUniforms(context, block);
       expect(read('waterlineFoam')[1], closeTo(0.7, 1e-6));

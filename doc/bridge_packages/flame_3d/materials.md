@@ -2077,6 +2077,7 @@ world.waterVolume!.time = water.time;
 | `waterlineColor`     | `0xE6FFFFFF` | its color (lit like the surface); its alpha, how much     |
 | `waterlineLightTint` | `1`          | how much of the light's color the waterline foam takes    |
 | `waterlineLightFloor`| `0`          | the least light the waterline foam takes                  |
+| `waterlineMotion`    | `1`          | the pace of the waterline foam, `0` still                 |
 | `bounds`             | none         | the box the water fills; outside it, nothing is submerged |
 
 Where a fragment is `depth = level - dot(position, up)` below the level (and inside `bounds`, when
@@ -2115,6 +2116,12 @@ color     = clamp(mix(color * filter, deepColor, absorbed), 0, 1)
   the light is clamped to `[waterlineLightFloor, max(1.25, waterlineLightFloor)]`. The default,
   `0`, lets the band darken with the light; at dusk about `0.7` keeps it bright, as
   `WaterMaterial.foamLightFloor` does for the foam on the water.
+- `waterlineMotion` multiplies the pace at which the band laps and drifts, as
+  `WaterMaterial.edgeFoamMotion` does for the foam on the water: `1` (the default) moves with the
+  caustics, `0.5` half as fast, `0` holds it still, broken up as before but not moving (rime or a
+  crust of ice or salt on the stones of a winter pond, to go with a still band on the water). Its
+  phase is `2π * fract(time * waterlineMotion / animationPeriod)`, computed on the CPU, so a slower
+  band still loops without a jump; the caustics keep their pace. It costs nothing per pixel.
 
 The volume works with every vertex stage of `StylizedMaterial` (its own layout, skinned or not,
 and the standard layout), instancing, palettes, translucency, dither fades, shadows and HDR. The
@@ -2397,7 +2404,8 @@ The texture sampler options, including anisotropy up to 16, work on the web.
   surface): foam sources (`WaterFoamSources`) follow them, but only as circles or rectangles with
   rounded corners lying in the plane of the water, 16 at most per set, and each one costs every
   pixel of the surface. `edgeFoamMotion` and `foamLightTint` belong to the material, not to the
-  vertices: a still band on part of a surface takes a surface and a material of its own.
+  vertices: a still band on part of a surface takes a surface and a material of its own. The
+  volume's `waterlineMotion` holds for every waterline of the world alike.
 - A water volume has a flat level: it ignores the waves of the surface, so its waterline band does
   not follow them (keep the waves small, as in a basin). It submerges `StylizedMaterial` surfaces
   only, takes its caustics from one directional light, and has no fog of its own: the distance

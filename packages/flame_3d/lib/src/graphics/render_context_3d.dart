@@ -1915,7 +1915,7 @@ class RenderContext3D(super.device) extends RenderContext {
       ..setVector4(
         'waterlineFoam',
         v..setValues(
-          0,
+          water.waterlinePhase,
           water.waterlineLightFloor > 0 ? water.waterlineLightFloor : 0,
           0,
           0,

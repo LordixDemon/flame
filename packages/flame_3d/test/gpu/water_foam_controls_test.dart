@@ -842,6 +842,73 @@ void main() {
       timeout: const Timeout(Duration(minutes: 2)),
     );
 
+    testGpu('waterlineMotion slows the waterline down or holds it still', (
+      tester,
+    ) async {
+      Future<Pixels> render(
+        double time,
+        double motion, {
+        double caustics = 0.8,
+      }) async {
+        return (await _render(
+          tester,
+          World3D(
+            waterVolume: WaterVolumeSettings(
+              causticStrength: caustics,
+              waterlineWidth: 0.12,
+              waterlineColor: const Color(0xFFFFFFFF),
+              waterlineMotion: motion,
+              time: time,
+            ),
+            children: [
+              LightComponent.directional(
+                direction: Vector3(0.3, -0.5, -1),
+                intensity: 1.2,
+              ),
+              LightComponent.hemisphere(),
+              MeshComponent(mesh: _wall(StylizedMaterial(rimStrength: 0))),
+            ],
+          ),
+          view: _wallView,
+          projection: _wallProjection,
+        )).pixels;
+      }
+
+      /// The pixels of [a] and [b] that differ in the rows [from] to [to].
+      int differing(Pixels a, Pixels b, int from, int to) {
+        var count = 0;
+        for (var y = from; y < to; y++) {
+          for (var x = 0; x < _size; x++) {
+            if (!_same(a, b, x, y)) {
+              count++;
+            }
+          }
+        }
+        return count;
+      }
+
+      // Above the level (rows 0 to 63) only the band draws: at its pace it
+      // laps, held still it is the same at any moment.
+      final laps = differing(await render(0.6, 1), await render(2.3, 1), 0, 64);
+      expect(laps, greaterThan(_size * 2));
+      final still = await render(0.6, 0);
+      final later = await render(2.3, 0);
+      expect(differing(still, later, 0, 64), 0);
+      expect(differing(still, await render(5.9, 0), 0, 64), 0);
+      // Below the band, the caustics keep moving.
+      expect(differing(still, later, 96, _size), greaterThan(_size * 4));
+      // At half the pace, the band at a moment is the band at half that
+      // moment at its own pace.
+      expect(
+        differingPixels(
+          await render(3, 0.5, caustics: 0),
+          await render(1.5, 1, caustics: 0),
+          tolerance: 0,
+        ),
+        0,
+      );
+    });
+
     testGpu('waterlineLightFloor keeps the waterline bright in low light', (
       tester,
     ) async {

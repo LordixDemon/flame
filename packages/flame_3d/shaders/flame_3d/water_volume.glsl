@@ -32,8 +32,10 @@ uniform WaterVolume {
   vec4 boundsMin;
   // xyz: the maximum corner of the box.
   vec4 boundsMax;
-  // y: the least light the waterline foam takes, a multiple of its color
-  // (WaterVolumeSettings.waterlineLightFloor, 0 by default); xzw: unused.
+  // x: the phase of the waterline foam (0 to 2π, the caustics' own slowed
+  // down by WaterVolumeSettings.waterlineMotion), y: the least light it
+  // takes, a multiple of its color (waterlineLightFloor, 0 by default), zw:
+  // unused.
   vec4 waterlineFoam;
 } waterVolume;
 #define FLAME_WATER_VOLUME(member) waterVolume.member
@@ -116,13 +118,15 @@ vec3 applyWaterVolume(
 
   if (band > 0.0) {
     // A band of foam around the level, lapping up and down and broken up
-    // along the surface's outline.
+    // along the surface's outline, at a pace of its own (waterlineMotion: 0
+    // holds it still).
+    float foamPhase = FLAME_WATER_VOLUME(waterlineFoam).x;
     vec2 uv = waterVolumePlaneUv(position, up) / band;
-    float lap = waterNoise(uv * 0.35, phase) * 0.45 +
-      0.25 * sin(phase * 3.0 + uv.x * 0.21 + uv.y * 0.17);
+    float lap = waterNoise(uv * 0.35, foamPhase) * 0.45 +
+      0.25 * sin(foamPhase * 3.0 + uv.x * 0.21 + uv.y * 0.17);
     float distance = abs(depth / band + lap);
     float foam = 1.0 - smoothstep(0.35, 1.0, distance);
-    float breakup = waterNoise(uv * 0.9 + vec2(2.3, 0.7), -phase * 2.0);
+    float breakup = waterNoise(uv * 0.9 + vec2(2.3, 0.7), -foamPhase * 2.0);
     // Sparser on faces that lie flat in the water (the top of a slab passing
     // through it), where the whole face is in the band at once.
     float lying = abs(dot(normal, up));

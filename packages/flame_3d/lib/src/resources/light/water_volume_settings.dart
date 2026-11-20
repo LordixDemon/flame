@@ -40,8 +40,9 @@ import 'package:flame_3d/game.dart';
 /// sunlight. With [waterlineWidth] above `0`, the surfaces also foam in a
 /// band about that wide around the level, broken up and lapping, so an
 /// object rising through the water gets its foam ring; [waterlineLightTint]
-/// says how much of the color of the light that foam takes and
-/// [waterlineLightFloor] the least light it takes.
+/// says how much of the color of the light that foam takes,
+/// [waterlineLightFloor] the least light it takes and [waterlineMotion] how
+/// fast it moves.
 ///
 /// The shadow pass and the depth-normal prepass ignore it; it costs no pass,
 /// a few instructions per pixel of the surfaces above it, and the caustics
@@ -110,6 +111,15 @@ class WaterVolumeSettings({
   /// `WaterMaterial.foamLightFloor`, its match on the water).
   var double waterlineLightFloor = 0,
 
+  /// How fast the waterline foam laps and drifts, as a multiple of its own
+  /// pace, `0` or more: `1` (the default) moves with the caustics, `0` holds
+  /// the band still (rime, a crust of salt or ice where the water meets the
+  /// stones), still broken up but not moving. Its phase is [phase] of
+  /// `time * waterlineMotion`, so a slower band still loops without a jump
+  /// (see `WaterMaterial.edgeFoamMotion`, its match on the water). The
+  /// caustics keep their pace.
+  var double waterlineMotion = 1,
+
   /// The box the water fills, in world space: surfaces outside of it are
   /// not submerged, whatever their height. `null` (the default) fills the
   /// whole world below the level.
@@ -125,7 +135,21 @@ class WaterVolumeSettings({
 
   /// The phase of [time] in the loop of [animationPeriod], from `0` to `2π`
   /// (see `WaterMaterial.patternPhase`).
-  double get phase {
+  double get phase => _phaseAt(time);
+
+  /// The phase of the waterline foam: [phase] of `time * waterlineMotion`
+  /// (with [waterlineMotion] at least `0`), `0` (still) when
+  /// [waterlineMotion] is `0`, and [phase] itself when it is `1` (see
+  /// `WaterMaterial.edgeFoamPhase`).
+  double get waterlinePhase {
+    final motion = waterlineMotion;
+    if (!(motion > 0)) {
+      return 0;
+    }
+    return _phaseAt(time * motion);
+  }
+
+  double _phaseAt(double time) {
     final period = animationPeriod;
     if (!(period > 0) || !time.isFinite) {
       return 0;
