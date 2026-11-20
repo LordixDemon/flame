@@ -350,6 +350,45 @@ void main() {
         expect(stylized.renderState.polygonMode, PolygonFillMode.wireframe);
       }
     });
+
+    test("a stylized material's base color texture round-trips", () {
+      final texture = ColorTexture(const Color(0xFFC08040));
+      final serializer = SceneSerializer3D()..registerTexture('wood', texture);
+      final material = StylizedMaterial(
+        baseColorTexture: texture,
+        baseColorTextureMode: BaseColorTextureMode.replace,
+        alphaCutoff: 0.5,
+      );
+      final world = World3D(
+        children: [
+          MeshComponent(
+            mesh: Mesh()
+              ..addSurface(
+                StylizedMaterial.buildSurface(
+                  positions: const [0, 0, 0, 1, 0, 0, 0, 1, 0],
+                  normals: const [0, 0, 1, 0, 0, 1, 0, 0, 1],
+                  texCoords: const [0, 0, 1, 0, 0, 1],
+                  indices: const [0, 1, 2],
+                  material: material,
+                ),
+              ),
+          ),
+        ],
+      );
+      for (final loaded in _roundTrip(serializer, world)) {
+        final surface = loaded.children
+            .cast<MeshComponent>()
+            .single
+            .mesh
+            .surfaces
+            .single;
+        expect(surface.layout, same(StylizedMaterial.texturedVertexLayout));
+        final stylized = surface.material as StylizedMaterial;
+        expect(stylized.baseColorTexture, same(texture));
+        expect(stylized.baseColorTextureMode, BaseColorTextureMode.replace);
+        expect(stylized.alphaCutoff, 0.5);
+      }
+    });
   });
 
   group('SceneSerializer3D reports what it cannot represent', () {

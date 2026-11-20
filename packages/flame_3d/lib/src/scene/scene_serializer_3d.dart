@@ -1401,6 +1401,8 @@ class SceneSerializer3D({
       VertexLayout.standard,
       VertexLayout.pbrStandard,
       StylizedMaterial.vertexLayout,
+      StylizedMaterial.texturedVertexLayout,
+      StylizedMaterial.texturedSkinnedVertexLayout,
     ]) {
       if (known == layout) {
         return known;
@@ -1541,6 +1543,13 @@ class SceneSerializer3D({
         'windGustPhaseScale': m.windGustPhaseScale,
         'windTime': m.windTime,
         'ditherFade': m.ditherFade,
+        'baseColorTex': ?_textureKey(
+          m.baseColorTexture,
+          '$path.baseColorTexture',
+        ),
+        if (m.baseColorTextureMode != BaseColorTextureMode.multiply)
+          'baseColorTextureMode': m.baseColorTextureMode.name,
+        if (m.alphaCutoff != 0) 'alphaCutoff': m.alphaCutoff,
       };
     }
     if (type == ShadowCatcherMaterial) {
@@ -1676,6 +1685,14 @@ class SceneSerializer3D({
           windGustPhaseScale: _asDouble(data['windGustPhaseScale']) ?? 0.5,
           windTime: _asDouble(data['windTime']) ?? 0,
           ditherFade: data['ditherFade'] == true,
+          baseColorTexture: _decodeTexture(data['baseColorTex']),
+          baseColorTextureMode:
+              _enumByName(
+                BaseColorTextureMode.values,
+                data['baseColorTextureMode'],
+              ) ??
+              BaseColorTextureMode.multiply,
+          alphaCutoff: _asDouble(data['alphaCutoff']) ?? 0,
         );
       case 'spatial':
       case _:

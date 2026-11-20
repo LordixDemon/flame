@@ -4,7 +4,11 @@
 // The vertex stage of StylizedMaterial for its own vertex layout
 // (StylizedMaterial.vertexLayout): stylized_material.vert draws the vertices
 // as they are, stylized_material_skinned.vert skins them first. Both feed
-// flame_3d/stylized_material_fragment.glsl.
+// flame_3d/stylized_material_fragment.glsl. With FLAME_STYLIZED_TEXTURED
+// defined (stylized_material_textured.vert and
+// stylized_material_textured_skinned.vert), the vertices also have the
+// texture coordinates of the base color texture, passed on in
+// `fragTexCoord`.
 
 in vec3 vertexPosition;
 in vec3 vertexNormal;
@@ -18,6 +22,11 @@ in float vertexOcclusion;
 // phase of its sway and flutter, in turns (1 is a full turn), z: how much it
 // flutters (its flutter weight).
 in vec3 vertexWind;
+#ifdef FLAME_STYLIZED_TEXTURED
+// The texture coordinates of the base color texture, in the textured layouts
+// (StylizedMaterial.texturedVertexLayout) only.
+in vec2 vertexTexCoord;
+#endif
 
 #include <flame_3d/instancing.glsl>
 #include <flame_3d/camera.glsl>
@@ -76,6 +85,9 @@ out vec4 fragInstanceData;
 // flame_3d/stylized_instance_data.glsl. Last, so that the outputs of before
 // keep their locations.
 out vec3 fragInstanceColorFine;
+#ifdef FLAME_STYLIZED_TEXTURED
+out vec2 fragTexCoord;
+#endif
 
 // Transforms normals by the model matrix: its cofactor matrix, which is the
 // inverse transpose up to a scale, keeps them perpendicular to the surface
@@ -128,6 +140,9 @@ void emitStylizedVertex(vec3 position, vec3 normal) {
   fragInstanceColor = instanceColor;
   fragInstanceData = stylizedFragmentInstanceData(instanceData);
   fragInstanceColorFine = stylizedInstanceColorFine(instanceColor.rgb);
+#ifdef FLAME_STYLIZED_TEXTURED
+  fragTexCoord = vertexTexCoord;
+#endif
 }
 
 #endif

@@ -21,11 +21,19 @@ in vec4 fragInstanceData;
 // flame_3d/stylized_instance_data.glsl. Last, so that the inputs of before
 // keep their locations.
 in vec3 fragInstanceColorFine;
+#ifdef FLAME_STYLIZED_TEXTURED
+// The texture coordinates of the base color texture, in the textured stages
+// (StylizedMaterial.baseColorTexture) only.
+in vec2 fragTexCoord;
+#endif
 
 out vec4 outColor;
 
 uniform sampler2D matCapTexture;
 uniform sampler2D gemMatCapTexture;
+#ifdef FLAME_STYLIZED_TEXTURED
+uniform sampler2D baseColorTexture;
+#endif
 
 uniform Material {
   vec4 albedoColor;
@@ -67,6 +75,14 @@ uniform Material {
   // 1 when the boost moves towards that same color (emissiveBoostColor is
   // null), 0 when it moves towards emissiveBoostColor.
   float emissiveBoostFollows;
+#ifdef FLAME_STYLIZED_TEXTURED
+  // StylizedMaterial.baseColorTextureMode: 0 when the texture multiplies the
+  // vertex color, 1 when it replaces it.
+  float baseColorReplace;
+  // StylizedMaterial.alphaCutoff: pixels whose alpha is below it are
+  // discarded (0 keeps every pixel).
+  float alphaCutoff;
+#endif
 } material;
 
 // The camera, the lights, the shadows and the fog of the render pass, filled
@@ -166,6 +182,16 @@ float pictureMirror() {
 }
 
 void main() {
+#ifdef FLAME_STYLIZED_TEXTURED
+  // The surface color: the vertex color times the base color texture, or the
+  // texture alone. Sampled first, in uniform control flow.
+  vec4 texel = texture(baseColorTexture, fragTexCoord);
+  vec4 surfaceColor =
+    mix(fragColor, vec4(1.0), material.baseColorReplace) * texel;
+#define FLAME_STYLIZED_SURFACE_COLOR surfaceColor
+#else
+#define FLAME_STYLIZED_SURFACE_COLOR fragColor
+#endif
   vec3 n = normalize(fragNormal);
   vec3 v;
   if (scene.Camera_projection[3][3] > 0.5) {
@@ -203,7 +229,7 @@ void main() {
     rimIndex < 8;
   float fade = clamp(fragInstanceData.w, 0.0, 1.0);
 
-  vec3 base = material.albedoColor.rgb * fragColor.rgb;
+  vec3 base = material.albedoColor.rgb * FLAME_STYLIZED_SURFACE_COLOR.rgb;
   base *= mix(vec3(1.0), fragInstanceColor.rgb, tintMask);
   base *= mix(vec3(1.0), instanceAccent, accentMask);
 
@@ -404,8 +430,22 @@ void main() {
     scene.Camera_position
   );
 
+#ifdef FLAME_STYLIZED_TEXTURED
+  // Masked (an alpha cutoff above 0): the pixels whose own alpha is below
+  // the cutoff are discarded and the others are opaque, as glTF's MASK alpha
+  // mode draws them; the instance alpha and the fade still apply.
+  float surfaceAlpha = material.albedoColor.a * surfaceColor.a;
+  if (material.alphaCutoff > 0.0) {
+    if (surfaceAlpha < material.alphaCutoff) {
+      discard;
+    }
+    surfaceAlpha = 1.0;
+  }
+  float alpha = surfaceAlpha * fragInstanceColor.a * (1.0 - fade);
+#else
   float alpha = material.albedoColor.a * fragColor.a * fragInstanceColor.a *
     (1.0 - fade);
+#endif
   if (material.ditherFade > 0.5) {
     if (alpha < bayerDither4x4(gl_FragCoord.xy)) {
       discard;

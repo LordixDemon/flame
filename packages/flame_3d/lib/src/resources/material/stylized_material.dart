@@ -8,9 +8,10 @@ import 'package:flame_3d/src/resources/material/versioned_list.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 /// {@template stylized_material}
-/// A material for stylized, vertex-colored art without textures: low-poly
-/// meshes whose vertices carry a color, a baked ambient occlusion and a few
-/// masks that pick per-vertex effects.
+/// A material for stylized, vertex-colored art: low-poly meshes whose
+/// vertices carry a color, a baked ambient occlusion and a few masks that
+/// pick per-vertex effects, optionally with a base color texture (see "Base
+/// color texture").
 ///
 /// ## Vertex data
 ///
@@ -35,6 +36,28 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 /// including the built-in meshes and skinned models): their vertex color is
 /// used, they are unoccluded, tinted by the instance color everywhere, and
 /// have no accent, emission, gloss nor wind.
+///
+/// ## Base color texture
+///
+/// With a [baseColorTexture], the surface color is the vertex color times
+/// the texture ([BaseColorTextureMode.multiply], the default) or the texture
+/// alone ([BaseColorTextureMode.replace]), alpha included, sampled at the
+/// texture coordinates of the vertex (`vertexTexCoord`); everything else
+/// (lighting, masks, palettes, wind, water volume, fog) is as without one.
+/// The texture is used as it is stored, like the vertex colors (no sRGB
+/// decoding), as straight alpha: textures made from Flutter images are
+/// premultiplied, which darkens their semi-transparent texels. Textured
+/// surfaces need texture coordinates: build them in [texturedVertexLayout] or
+/// [texturedSkinnedVertexLayout] ([buildSurface] with `texCoords`), or in the
+/// standard layout, whose texture coordinates are used. Drawing a surface
+/// without them throws a [StateError].
+///
+/// A textured material draws with stages of its own, which a material without
+/// a texture never loads: one more texture and two more floats per vertex, the
+/// same uniform vectors, and its draws batch like the others (the texture is
+/// the material's: instances of one surface with one material are one draw).
+/// [alphaCutoff] discards the pixels whose alpha is below it and makes the
+/// others opaque, as glTF's `MASK` alpha mode does.
 ///
 /// ## Skinning
 ///
@@ -327,6 +350,10 @@ class StylizedMaterial({
 
   var bool _ditherFade = false,
   var double _depthBias = 0,
+  var Texture? _baseColorTexture,
+  var BaseColorTextureMode _baseColorTextureMode =
+      BaseColorTextureMode.multiply,
+  var double _alphaCutoff = 0,
 }) extends Material {
   /// {@macro stylized_material}
   this
@@ -352,6 +379,10 @@ class StylizedMaterial({
         'StylizedMaterial is not available on the web yet: it has no WebGPU '
         'shaders.',
       );
+    }
+    _plainFragment = super.fragmentShader;
+    if (baseColorTexture != null) {
+      _texturedFragment.checkDeviceSupport(owner: runtimeType);
     }
     if (translucent) {
       setInitialState(
@@ -611,6 +642,29 @@ class StylizedMaterial({
   double get depthBias => _depthBias;
   set depthBias(double value) => _depthBias = noteChange(_depthBias, value);
 
+  /// An optional base color texture, which multiplies or replaces the vertex
+  /// color as [baseColorTextureMode] says, sampled at the texture coordinates
+  /// of each vertex: `null` (the default) draws without one, at the cost of
+  /// before. See "Base color texture".
+  Texture? get baseColorTexture => _baseColorTexture;
+  set baseColorTexture(Texture? value) =>
+      _baseColorTexture = noteChange(_baseColorTexture, value);
+
+  /// How the [baseColorTexture] combines with the vertex color: it multiplies
+  /// it (the default) or replaces it.
+  BaseColorTextureMode get baseColorTextureMode => _baseColorTextureMode;
+  set baseColorTextureMode(BaseColorTextureMode value) =>
+      _baseColorTextureMode = noteChange(_baseColorTextureMode, value);
+
+  /// With a [baseColorTexture], the pixels whose alpha (`albedoColor.a` times
+  /// the alpha of the surface color) is below it are discarded and the others
+  /// are opaque (the instance alpha and the fade still apply), as glTF's
+  /// `MASK` alpha mode draws them. `0` (the default) keeps every pixel as it
+  /// is. Shadows are cast by whole triangles.
+  double get alphaCutoff => _alphaCutoff;
+  set alphaCutoff(double value) =>
+      _alphaCutoff = noteChange(_alphaCutoff, value);
+
   /// The render state of translucent stylized materials: blended with
   /// premultiplied alpha, depth tested, without depth writes.
   static const RenderState translucentRenderState =
@@ -752,6 +806,11 @@ class StylizedMaterial({
   /// The name of the joint indices attribute of [skinnedVertexLayout].
   static const String jointsAttribute = 'vertexJoints';
 
+  /// The name of the texture coordinates attribute of [texturedVertexLayout]
+  /// and [texturedSkinnedVertexLayout], the one of the standard layout, 2
+  /// floats per vertex: where the [baseColorTexture] is sampled.
+  static const String texCoordAttribute = 'vertexTexCoord';
+
   /// The name of the joint weights attribute of [skinnedVertexLayout].
   static const String weightsAttribute = 'vertexWeights';
 
@@ -760,6 +819,23 @@ class StylizedMaterial({
   /// (`vertexWeights`). See the "Skinning" section of [StylizedMaterial].
   static final VertexLayout skinnedVertexLayout = VertexLayout([
     ...vertexLayout.attributes,
+    const VertexAttribute(jointsAttribute, 4),
+    const VertexAttribute(weightsAttribute, 4),
+  ]);
+
+  /// The layout of textured vertices, 20 floats per vertex: [vertexLayout]
+  /// followed by the texture coordinates of the [baseColorTexture]
+  /// (`vertexTexCoord`, 2 floats). See "Base color texture".
+  static final VertexLayout texturedVertexLayout = VertexLayout([
+    ...vertexLayout.attributes,
+    const VertexAttribute(texCoordAttribute, 2),
+  ]);
+
+  /// The layout of textured skinned vertices, 28 floats per vertex:
+  /// [texturedVertexLayout] followed by four joint indices (`vertexJoints`)
+  /// and their four weights (`vertexWeights`).
+  static final VertexLayout texturedSkinnedVertexLayout = VertexLayout([
+    ...texturedVertexLayout.attributes,
     const VertexAttribute(jointsAttribute, 4),
     const VertexAttribute(weightsAttribute, 4),
   ]);
@@ -793,20 +869,103 @@ class StylizedMaterial({
   // Whether the standard variant drew: only then is its value written.
   bool _standardInUse = false;
 
+  static const _texturedBundle =
+      'packages/flame_3d/assets/shaders/stylized_material_textured.shaderbundle';
+
+  // The fragment stage the material was created with, and the textured one,
+  // made when a texture is first drawn.
+  late final Shader _plainFragment;
+  late final Shader _texturedFragment = FragmentShader.fromAsset(
+    _texturedBundle,
+    slots: [
+      'matCapTexture',
+      'gemMatCapTexture',
+      'baseColorTexture',
+      'Material',
+      RenderContext3D.stylizedPassBlock,
+      RenderContext3D.shadowMapSampler,
+    ],
+  );
+
+  // The textured variants of the vertex stages, made when first drawn, and
+  // whether they drew: only then are their values written.
+  late final Shader _texturedVertexShader = VertexShader.fromAsset(
+    _texturedBundle,
+    slots: [RenderContext3D.cameraMatricesBlock, 'Wind'],
+  );
+  bool _texturedInUse = false;
+  late final Shader _texturedSkinnedVertexShader = VertexShader.fromAsset(
+    'packages/flame_3d/assets/shaders/'
+    'stylized_material_textured_skinned.shaderbundle',
+    slots: [
+      RenderContext3D.cameraMatricesBlock,
+      'Wind',
+      RenderContext3D.jointMatricesBlock,
+    ],
+  );
+  bool _texturedSkinnedInUse = false;
+  late final Shader _texturedStandardVertexShader = VertexShader.fromAsset(
+    'packages/flame_3d/assets/shaders/'
+    'stylized_material_textured_standard.shaderbundle',
+    slots: [
+      RenderContext3D.cameraMatricesBlock,
+      RenderContext3D.jointMatricesBlock,
+      _depthBlock,
+    ],
+  );
+  bool _texturedStandardInUse = false;
+
+  /// Whether the material draws with its textured stages: whether it has a
+  /// [baseColorTexture] and its fragment shader is still its own.
+  bool get _textured =>
+      baseColorTexture != null &&
+      identical(super.fragmentShader, _plainFragment);
+
+  /// The fragment stage this material draws with: the textured one while it
+  /// has a [baseColorTexture], unless its fragment shader was replaced by
+  /// another one.
+  @override
+  Shader get fragmentShader =>
+      _textured ? _texturedFragment : super.fragmentShader;
+
   VertexLayout? _lastLayout;
+  bool _lastTextured = false;
   Shader? _lastShader;
 
   @override
   Shader vertexShaderFor(VertexLayout layout) {
-    if (!identical(layout, _lastLayout)) {
+    final textured = _textured;
+    if (!identical(layout, _lastLayout) || textured != _lastTextured) {
+      if (textured && layout.offsetOf(texCoordAttribute) == null) {
+        throw StateError(
+          'A StylizedMaterial with a baseColorTexture draws surfaces with '
+          'texture coordinates ("$texCoordAttribute"): the standard layout, '
+          'texturedVertexLayout or texturedSkinnedVertexLayout (buildSurface '
+          'with texCoords). This surface is laid out as $layout',
+        );
+      }
       _lastLayout = layout;
+      _lastTextured = textured;
       if (layout.offsetOf(masksAttribute) == null) {
-        _lastShader = _standardVertexShader;
-        _standardInUse = true;
+        if (textured) {
+          _lastShader = _texturedStandardVertexShader;
+          _texturedStandardInUse = true;
+        } else {
+          _lastShader = _standardVertexShader;
+          _standardInUse = true;
+        }
       } else if (layout.offsetOf(jointsAttribute) != null &&
           layout.offsetOf(weightsAttribute) != null) {
-        _lastShader = _skinnedVertexShader;
-        _skinnedInUse = true;
+        if (textured) {
+          _lastShader = _texturedSkinnedVertexShader;
+          _texturedSkinnedInUse = true;
+        } else {
+          _lastShader = _skinnedVertexShader;
+          _skinnedInUse = true;
+        }
+      } else if (textured) {
+        _lastShader = _texturedVertexShader;
+        _texturedInUse = true;
       } else {
         _lastShader = vertexShader;
       }
@@ -829,6 +988,25 @@ class StylizedMaterial({
     }
     if (_standardInUse) {
       _standardVertexShader.setFloat('$_depthBlock.bias', depthBias);
+    }
+    if (_texturedInUse) {
+      _applyWind(_texturedVertexShader, space);
+    }
+    if (_texturedSkinnedInUse) {
+      _applyWind(_texturedSkinnedVertexShader, space);
+    }
+    if (_texturedStandardInUse) {
+      _texturedStandardVertexShader.setFloat('$_depthBlock.bias', depthBias);
+    }
+    final baseColor = baseColorTexture;
+    if (baseColor != null && _textured) {
+      _texturedFragment
+        ..setTexture('baseColorTexture', baseColor)
+        ..setFloat(
+          'Material.baseColorReplace',
+          baseColorTextureMode == BaseColorTextureMode.replace ? 1 : 0,
+        )
+        ..setFloat('Material.alphaCutoff', alphaCutoff);
     }
     final matCap = matCapTexture;
     final gemMatCap = gemMatCapTexture;
@@ -980,6 +1158,10 @@ class StylizedMaterial({
   /// below [maxJoints], and their weights), the surface is skinned and laid
   /// out in [skinnedVertexLayout] instead; both must be given together.
   ///
+  /// With [texCoords], 2 floats per vertex (where the [baseColorTexture] is
+  /// sampled), the surface is laid out in [texturedVertexLayout], or in
+  /// [texturedSkinnedVertexLayout] when it is skinned.
+  ///
   /// The bounds of the surface, which culling uses, are those of [positions]
   /// unless [aabb] is given: give bounds wide enough for every pose when the
   /// joints of a skinned surface move it outside of them.
@@ -999,6 +1181,7 @@ class StylizedMaterial({
     List<double>? windFlutter,
     List<double>? joints,
     List<double>? weights,
+    List<double>? texCoords,
     Aabb3? aabb,
   }) {
     final count = positions.length ~/ 3;
@@ -1025,6 +1208,7 @@ class StylizedMaterial({
     check(windFlutter, 'windFlutter', 1);
     check(joints, 'joints', 4);
     check(weights, 'weights', 4);
+    check(texCoords, 'texCoords', 2);
     if ((joints == null) != (weights == null)) {
       throw ArgumentError(
         'joints and weights must be given together: '
@@ -1045,8 +1229,17 @@ class StylizedMaterial({
     }
 
     final skinned = joints != null;
-    final layout = skinned ? skinnedVertexLayout : vertexLayout;
+    final textured = texCoords != null;
+    final layout = switch ((skinned, textured)) {
+      (false, false) => vertexLayout,
+      (true, false) => skinnedVertexLayout,
+      (false, true) => texturedVertexLayout,
+      (true, true) => texturedSkinnedVertexLayout,
+    };
     final stride = layout.strideInFloats;
+    // The texture coordinates follow the 18 floats of vertexLayout, and the
+    // joints and weights follow them.
+    final skinOffset = textured ? 20 : 18;
     final data = Float32List(count * stride);
     for (var i = 0; i < count; i++) {
       final o = i * stride;
@@ -1069,11 +1262,16 @@ class StylizedMaterial({
         ..[o + 15] = sway?[i] ?? 0
         ..[o + 16] = windPhase?[i] ?? 0
         ..[o + 17] = windFlutter?[i] ?? 0;
+      if (textured) {
+        data
+          ..[o + 18] = texCoords[i * 2]
+          ..[o + 19] = texCoords[i * 2 + 1];
+      }
       if (skinned) {
         for (var k = 0; k < 4; k++) {
           data
-            ..[o + 18 + k] = joints[i * 4 + k]
-            ..[o + 22 + k] = weights![i * 4 + k];
+            ..[o + skinOffset + k] = joints[i * 4 + k]
+            ..[o + skinOffset + 4 + k] = weights![i * 4 + k];
         }
       }
     }
@@ -1128,6 +1326,18 @@ enum EmissiveColorSource() {
   /// instance without an entry (or with an index beyond the palette) glows
   /// in [StylizedMaterial.emissiveColor].
   rim,
+}
+
+/// How a [StylizedMaterial]'s base color texture combines with the vertex
+/// color, see [StylizedMaterial.baseColorTextureMode].
+enum BaseColorTextureMode() {
+  /// The texture multiplies the vertex color, alpha included (the default):
+  /// vertex colors tint the texture, white vertices show it as it is.
+  multiply,
+
+  /// The texture replaces the vertex color, alpha included: the vertex color
+  /// is not used.
+  replace,
 }
 
 /// The space a [StylizedMaterial]'s wind direction and amplitudes are given

@@ -12,7 +12,7 @@ to, image-based lighting and probes are described in [Lighting](lighting.md), sh
 | Material                | Use it for                             | Lit | Shadows | Fog | Web |
 | ----------------------- | -------------------------------------- | --- | ------- | --- | --- |
 | `SpatialMaterial`       | textured and glTF models, metal, glass | yes | yes     | yes | yes |
-| `StylizedMaterial`      | vertex-colored low-poly art            | yes | yes     | yes | no  |
+| `StylizedMaterial`      | vertex-colored (or textured) toon art  | yes | yes     | yes | no  |
 | `UnlitMaterial`         | self-lit surfaces, pictures, UI        | no  | no      | no  | yes |
 | `WaterMaterial`         | animated water                         | yes | yes     | yes | no  |
 | `OutlineMaterial`       | silhouette contours                    | no  | no      | no  | no  |
@@ -31,9 +31,10 @@ to, image-based lighting and probes are described in [Lighting](lighting.md), sh
   car paint and glass. It is the only material that uses image-based lighting, reflection probes,
   light probe grids and lightmaps, and that keeps light brighter than white under HDR (see
   [Lighting](lighting.md)).
-- Use `StylizedMaterial` for flat-shaded or vertex-colored low-poly art: it has no textures, a soft
-  look by default, per-vertex masks for tints, accents, glow and gloss, and wind. It is cheaper to
-  bind than `SpatialMaterial` and does not depend on physically based light intensities.
+- Use `StylizedMaterial` for flat-shaded or vertex-colored low-poly art: it has a soft look by
+  default, per-vertex masks for tints, accents, glow and gloss, wind, and an optional base color
+  texture for models that carry their look in one. It is cheaper to bind than `SpatialMaterial`
+  and does not depend on physically based light intensities.
 - Use `UnlitMaterial` where lighting would get in the way: pictures, labels, emissive signs,
   debug geometry.
 
@@ -78,7 +79,8 @@ pipeline changes; joint matrices are written for every skinned draw.
   are bound to a 1x1 white texture.
 - `StylizedMaterial`: vertex `CameraMatrices`, `Wind` (and `JointMatrices` for skinned surfaces);
   fragment `Material`, `StylizedPass` (the camera, lights, shadows, fog and water volume of the
-  pass in one block), `matCapTexture`, `gemMatCapTexture`, `shadowMap`: 7 bindings.
+  pass in one block), `matCapTexture`, `gemMatCapTexture`, `shadowMap`: 7 bindings; with a
+  `baseColorTexture`, its textured stages bind it too (8).
 - `WaterMaterial`: vertex `CameraMatrices`, `WaterVertex`; fragment `WaterMaterial`,
   `StylizedPass`, `DepthNormal`, `SceneColor`, `shadowMap`, `depthNormalTexture`,
   `sceneColorTexture`. Surfaces in `WaterMaterial.vertexLayout` draw with a vertex stage of their
@@ -472,6 +474,57 @@ arm
 
 A custom `Object3D` gives them to `RenderContext3D.drawSurface(jointTransforms: ...)` instead. A
 skinned draw is never batched with another: each costs one draw call, whatever its material.
+
+
+### Base color texture
+
+`baseColorTexture` (`null` by default) gives the surface its color from a texture: it multiplies
+the vertex color (`baseColorTextureMode: BaseColorTextureMode.multiply`, the default; white vertices
+show the texture as it is) or replaces it (`BaseColorTextureMode.replace`), alpha included. The
+rest of the shading (the masks, palettes, lighting, shadows, wind, water volume, fog and color
+grade) is the same: with a white texture that multiplies, every pixel is the one the material draws
+without a texture (a GPU test checks it at a tolerance of 0).
+
+```dart
+final material = StylizedMaterial(
+  baseColorTexture: await images.loadTexture('crate.png'),
+  accentColor: const Color(0xFF3FA796), // the masks still apply
+);
+
+final surface = StylizedMaterial.buildSurface(
+  positions: positions,
+  normals: normals,
+  texCoords: texCoords, // 2 floats per vertex
+  accent: accentMask,
+  indices: indices,
+  material: material,
+);
+```
+
+The texture is sampled at the vertex's `vertexTexCoord`: `buildSurface(texCoords:)` lays a surface
+out in `StylizedMaterial.texturedVertexLayout` (20 floats per vertex: the 18 above and the texture
+coordinates) or, with joints and weights, `texturedSkinnedVertexLayout` (28 floats: the
+coordinates come before the joints). Surfaces in the standard layout (built-in meshes, parsed
+models) use their own texture coordinates. A textured material refuses to draw a surface without
+texture coordinates (a `StateError`). The texture is used as it is stored, like the vertex colors
+(no sRGB decoding), as straight alpha: textures made from Flutter images are premultiplied, which
+darkens their semi-transparent texels.
+
+`alphaCutoff` (`0` by default) cuts a textured surface out: the pixels whose alpha (the material's
+`albedoColor.a` times the surface alpha) is below it are discarded and the others are opaque, as
+glTF's `MASK` alpha mode draws them; the instance alpha, the fade and `ditherFade` still apply on
+top. Shadows are still cast by the whole triangles.
+
+Cost: a material with a texture draws with stages of their own (`stylized_material_textured`, and
+vertex stages for the skinned and the standard layouts), which a material without one never loads,
+so materials without a texture cost what they did. The textured stages sample one more texture
+(4 of the 16 an OpenGL ES 3.0 stage may sample) and read two more floats per vertex, with the
+same uniform vectors (19, 211 and 206 in the vertex stages, 183 in the fragment stage). The texture
+belongs to the material, so the instances of one textured surface with one material are still one
+instanced draw, with their own colors and instance data; textured and untextured surfaces are
+separate draws, as different materials are. Setting or clearing `baseColorTexture` switches the
+stages (the first draw with them creates their pipelines); a material whose `fragmentShader` was
+replaced keeps it.
 
 
 ### Per-instance data
@@ -2492,8 +2545,11 @@ The texture sampler options, including anisotropy up to 16, work on the web.
   objects faded with `instanceData.w` or `ditherFade` cast their full shadow.
 - `SpatialMaterial`: the default `metallic` is `0.8`; `uvScale` and `uvOffset` are applied to every
   map but not to the lightmap, and there is no UV rotation.
-- `StylizedMaterial` is display-referred and clamped to `[0, 1]`; it has no textures besides its
-  MatCaps, and no image-based lighting.
+- `StylizedMaterial` is display-referred and clamped to `[0, 1]`; it has no image-based lighting,
+  and no textures besides its MatCaps and one base color texture (no normal, emission or gloss
+  maps: those stay per vertex). The base color texture is one per material, with no per-instance
+  atlas rectangle (the four floats of the instance data are all taken), and it has no UV
+  transform: bake one into the texture coordinates.
 - `WaterMaterial` reflects a flat sky color and needs a subdivided mesh. Its ripples tilt the
   normals but do not move the vertices, and its depth ramp and foam mask come from the vertices, so
   they do not follow objects that move under or through the water (a slab rising under the

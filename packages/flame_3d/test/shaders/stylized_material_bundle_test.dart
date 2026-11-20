@@ -49,11 +49,36 @@ void main() {
       }
     });
 
+    test('the textured variants read the textured layouts', () {
+      expect(_vertexInputs('stylized_material_textured'), {
+        for (final a in StylizedMaterial.texturedVertexLayout.attributes)
+          a.name: a.components,
+        ...instanceInputs,
+      });
+      expect(_vertexInputs('stylized_material_textured_skinned'), {
+        for (final a in StylizedMaterial.texturedSkinnedVertexLayout.attributes)
+          a.name: a.components,
+        ...instanceInputs,
+      });
+      final standard = {
+        for (final a in VertexLayout.standard.attributes) a.name: a.components,
+        ...instanceInputs,
+      };
+      final inputs = _vertexInputs('stylized_material_textured_standard');
+      expect(inputs, contains(StylizedMaterial.texCoordAttribute));
+      for (final MapEntry(:key, :value) in inputs.entries) {
+        expect(standard[key], value, reason: key);
+      }
+    });
+
     test('are native only: there is no WebGPU bundle', () {
       for (final name in [
         'stylized_material',
         'stylized_material_skinned',
         'stylized_material_standard',
+        'stylized_material_textured',
+        'stylized_material_textured_skinned',
+        'stylized_material_textured_standard',
       ]) {
         expect(File('assets/shaders/$name.wgslbundle').existsSync(), isFalse);
       }

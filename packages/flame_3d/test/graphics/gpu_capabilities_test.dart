@@ -90,6 +90,22 @@ void main() {
       // an OpenGL ES 3.0 driver must offer.
       expect(plain['TextureFragment']!.uniformVectors, 183);
       expect(plain['TextureFragment']!.samplers, 3);
+
+      // The textured stages: the same vectors (the two floats of the texture
+      // fit in the last vector of the Material block), one more texture.
+      final textured = reflectShaderBundleGlesRequirements(
+        _bundle('stylized_material_textured'),
+      )!;
+      expect(textured['TextureVertex']!.uniformVectors, 19);
+      expect(textured['TextureFragment']!.uniformVectors, 183);
+      expect(textured['TextureFragment']!.samplers, 4);
+      for (final (name, vectors) in const [
+        ('stylized_material_textured_skinned', 211),
+        ('stylized_material_textured_standard', 206),
+      ]) {
+        final stages = reflectShaderBundleGlesRequirements(_bundle(name))!;
+        expect(stages['TextureVertex']!.uniformVectors, vectors, reason: name);
+      }
     });
 
     test('every shipped stage fits what OpenGL ES 3.0 guarantees', () {
