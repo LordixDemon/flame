@@ -2,6 +2,7 @@
 
 > Note: This release has breaking changes.
 
+ - **FIX**(flame_3d): `XpbdCloth3D` and `XpbdRope3D` report the vertices they write, so retained layers and cached shadow maps follow them.
  - **FEAT**(flame_3d): Add the modules documented in `doc/bridge_packages/flame_3d`: post-processing, image-based lighting and probes, the shadow atlas, order-independent transparency, particles and ribbons, model loading and animation, collisions and physics, navigation, spatial audio, large-world helpers, scenes and assets, cinematics, 3D UI and debugging tools. ([11c8ff56](https://github.com/LordixDemon/flame/commit/11c8ff56afef16b3b4170b09d20a270bdbe927c0))
  - **DOCS**(flame_3d): Document the whole package against the code in 21 pages, each with costs, platform support and limitations, and correct them with the fixes below. ([4a757e88](https://github.com/LordixDemon/flame/commit/4a757e884a2cbf5b26751dd4c0e7a524db627953), [42252919](https://github.com/LordixDemon/flame/commit/42252919c04f4d9d550d34ad2a554cd6fdb2bc7c), [ac51592d](https://github.com/LordixDemon/flame/commit/ac51592d94611d51fadae91c2515d3dcf0ed151d))
 

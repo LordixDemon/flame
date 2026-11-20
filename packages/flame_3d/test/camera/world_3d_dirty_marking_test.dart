@@ -7,6 +7,7 @@ import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/model.dart';
 import 'package:flame_3d/particles.dart';
+import 'package:flame_3d/physics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_test/flame_test.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -407,6 +408,24 @@ void main() {
       expect(versions.take(), _sceneOnly);
       label.orientation = BillboardOrientation3D.cylindrical;
       expect(versions.take(), _nothing);
+    });
+
+    testWithGame('the vertices a cloth and a rope write', _game, (game) async {
+      final world = game.world as World3D;
+      final cloth = XpbdCloth3D(columns: 4, rows: 4, autoStep: false);
+      final rope = XpbdRope3D(
+        startPoint: Vector3.zero(),
+        endPoint: Vector3(0, -1, 0),
+        segmentCount: 4,
+        autoStep: false,
+      );
+      await world.ensureAddAll([cloth, rope]);
+      final versions = _Versions(world);
+
+      cloth.step(1 / 60);
+      expect(versions.take(), _sceneAndShadows);
+      rope.step(1 / 60);
+      expect(versions.take(), _sceneAndShadows);
     });
   });
 

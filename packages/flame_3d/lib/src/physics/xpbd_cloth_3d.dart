@@ -696,6 +696,9 @@ class XpbdCloth3D({
     );
     _surface.updateVertices(vBuf, aabb: _localAabb);
     markAabbDirty();
+    // The vertices were written in place: report it, so that retained
+    // layers and kept shadows follow.
+    markDrawDirty();
   }
 
   @override
@@ -1242,6 +1245,9 @@ class XpbdRope3D({
     _localAabb.max.setValues(maxX, maxY, maxZ);
     _surface.updateVertices(vBuf, aabb: _localAabb);
     markAabbDirty();
+    // The vertices were written in place: report it, so that retained
+    // layers and kept shadows follow.
+    markDrawDirty();
   }
 
   void _computeRopeTangent(int i, int pCount, Vector3 out) {
