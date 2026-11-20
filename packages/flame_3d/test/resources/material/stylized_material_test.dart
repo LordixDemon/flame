@@ -489,7 +489,7 @@ void main() {
     });
 
     group('pass block', () {
-      test('binds 7 resources for a draw: the pass in one block', () {
+      test('binds 8 resources for a draw: the pass in one block', () {
         final material = StylizedMaterial();
 
         draw([stylizedTriangle(material)]);
@@ -511,8 +511,9 @@ void main() {
           'matCapTexture',
           'gemMatCapTexture',
           RenderContext3D.shadowMapSampler,
+          RenderContext3D.lightGridSampler,
         });
-        expect(bound, hasLength(7));
+        expect(bound, hasLength(8));
         for (final block in [
           RenderContext3D.cameraBlock,
           RenderContext3D.ambientLightBlock,

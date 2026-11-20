@@ -340,6 +340,7 @@ class WaterMaterial({
     _fragmentBlock,
     RenderContext3D.stylizedPassBlock,
     RenderContext3D.shadowMapSampler,
+    RenderContext3D.lightGridSampler,
     RenderContext3D.depthNormalSampler,
     RenderContext3D.depthNormalBlock,
     RenderContext3D.sceneColorSampler,

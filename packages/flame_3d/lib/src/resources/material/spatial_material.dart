@@ -260,6 +260,8 @@ class SpatialMaterial({
       'packages/flame_3d/assets/shaders/'
       'spatial_material_pbr_tangent.shaderbundle';
 
+  // The slots of the simpler shader: on the web, those of its WebGPU bundle,
+  // which reads no light grid.
   static const List<String> _webFragmentSlots = [
     'albedoTexture',
     'normalTexture',
@@ -277,6 +279,10 @@ class SpatialMaterial({
     RenderContext3D.cameraBlock,
     RenderContext3D.shadowsBlock,
     RenderContext3D.fogBlock,
+    if (!_kIsWeb) ...[
+      RenderContext3D.lightGridBlock,
+      RenderContext3D.lightGridSampler,
+    ],
   ];
 
   static const List<String> _pbrFragmentSlots = [
@@ -301,6 +307,8 @@ class SpatialMaterial({
     RenderContext3D.cameraBlock,
     RenderContext3D.shadowsBlock,
     RenderContext3D.fogBlock,
+    RenderContext3D.lightGridBlock,
+    RenderContext3D.lightGridSampler,
   ];
 
   Shader? _tangentVertexShader;

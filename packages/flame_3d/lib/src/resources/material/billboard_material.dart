@@ -4,6 +4,8 @@ import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 
+const bool _kIsWeb = identical(0, 0.0);
+
 /// Orientation mode for sprites in a `BillboardBatch3D`.
 enum BillboardOrientation3D() {
   /// Faces the camera plane on both axes (icons, floating text, FX).
@@ -53,6 +55,11 @@ class BillboardMaterial3D({
             RenderContext3D.hemisphereLightBlock,
             RenderContext3D.cameraBlock,
             RenderContext3D.fogBlock,
+            // The WebGPU bundle reads no light grid.
+            if (!_kIsWeb) ...[
+              RenderContext3D.lightGridBlock,
+              RenderContext3D.lightGridSampler,
+            ],
           ],
         ),
       ) {

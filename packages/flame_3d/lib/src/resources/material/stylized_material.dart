@@ -371,6 +371,7 @@ class StylizedMaterial({
             // The camera, the lights and the shadows of the pass.
             RenderContext3D.stylizedPassBlock,
             RenderContext3D.shadowMapSampler,
+            RenderContext3D.lightGridSampler,
           ],
         ),
       ) {
@@ -884,6 +885,7 @@ class StylizedMaterial({
       'Material',
       RenderContext3D.stylizedPassBlock,
       RenderContext3D.shadowMapSampler,
+      RenderContext3D.lightGridSampler,
     ],
   );
 

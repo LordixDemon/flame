@@ -117,8 +117,9 @@ These exist, partly, and are described with their limits in the documentation:
 
 ### Rendering
 
-- [ ] Per-object light lists or clustered shading in the renderer, beyond 4 directional, 8 point
-  and 4 spot lights per pass (`LightClusterGrid3D` is a CPU helper only).
+- [x] Many small point and spot lights beyond the 8 and 4 of a pass: `World3D.lightGrid` bins
+  them into a grid of cells in world space that every lit material reads (`LightClusterGrid3D`
+  stays a CPU helper).
 - [ ] Per-instance culling and sorting in `InstancedGroup3D`.
 - [ ] Hysteresis in `LodMeshComponent`.
 - [x] `RayHit3D.instanceIndex` for hits on instanced groups and crowd agents (`surfaceIndex` still

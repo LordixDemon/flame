@@ -22,6 +22,7 @@ uniform BillboardLook {
 } bLook;
 
 #include <flame_3d/lights.glsl>
+#include <flame_3d/light_grid.glsl>
 
 uniform Camera {
   mat4 view;
@@ -70,7 +71,8 @@ void main() {
       float wrapNdotL = 0.35 + 0.65 * max(dot(n, d.xyz), 0.0);
       irr += c.rgb * (c.a * wrapNdotL);
     }
-    for (int i = 0; i < int(lights.numLights); i++) {
+    int blockPoints = int(lightGridBlockPointLights(lights.numLights));
+    for (int i = 0; i < blockPoints; i++) {
       vec3 toL = lights.positions[i] - fragPosition;
       float dist = max(length(toL), 0.001);
       vec3 l = toL / dist;
@@ -81,7 +83,28 @@ void main() {
       float wrapNdotL = 0.35 + 0.65 * max(dot(n, l), 0.0);
       irr += lights.colors[i].rgb * (lights.intensities[i].x * atten * wrapNdotL);
     }
-    for (int i = 0; i < int(spotLights.numLights); i++) {
+    // The lights of the light grid listed by this fragment's cell, as
+    // above, see flame_3d/light_grid.glsl.
+    vec4 gridCell = lightGridCell(fragPosition);
+    for (int k = 0; k < LIGHT_GRID_POINT_LIGHTS_PER_CELL; k++) {
+      if (float(k) >= gridCell.y) {
+        break;
+      }
+      vec4 gridPosition;
+      vec4 gridColor;
+      lightGridPointLight(gridCell, k, gridPosition, gridColor);
+      vec3 toL = gridPosition.xyz - fragPosition;
+      float dist = max(length(toL), 0.001);
+      float fade = max(1.0 - dist / gridPosition.w, 0.0);
+      if (fade <= 0.0) {
+        continue;
+      }
+      vec3 l = toL / dist;
+      float wrapNdotL = 0.35 + 0.65 * max(dot(n, l), 0.0);
+      irr += gridColor.rgb * (gridColor.a * pow(fade, 2.0) * wrapNdotL);
+    }
+    int blockSpots = int(lightGridBlockSpotLights(spotLights.numLights));
+    for (int i = 0; i < blockSpots; i++) {
       vec3 toL = spotLights.positions[i] - fragPosition;
       float dist = max(length(toL), 0.001);
       vec3 l = toL / dist;
@@ -99,6 +122,39 @@ void main() {
       float wrapNdotL = 0.35 + 0.65 * max(dot(n, l), 0.0);
       irr += spotLights.colors[i].rgb *
         (spotLights.colors[i].a * atten * spotMask * wrapNdotL);
+    }
+    for (int k = 0; k < LIGHT_GRID_SPOT_LIGHTS_PER_CELL; k++) {
+      if (float(k) >= gridCell.w) {
+        break;
+      }
+      vec4 gridPosition;
+      vec4 gridColor;
+      vec4 spotDir;
+      vec4 spotCone;
+      lightGridSpotLight(
+        gridCell,
+        k,
+        gridPosition,
+        gridColor,
+        spotDir,
+        spotCone
+      );
+      vec3 toL = gridPosition.xyz - fragPosition;
+      float dist = max(length(toL), 0.001);
+      float fade = max(1.0 - dist / gridPosition.w, 0.0);
+      if (fade <= 0.0) {
+        continue;
+      }
+      vec3 l = toL / dist;
+      float spotMask = clamp(
+        (dot(l, spotDir.xyz) - spotCone.x) * spotCone.y,
+        0.0,
+        1.0
+      );
+      spotMask = spotMask * spotMask * (3.0 - 2.0 * spotMask);
+      float wrapNdotL = 0.35 + 0.65 * max(dot(n, l), 0.0);
+      irr += gridColor.rgb *
+        (gridColor.a * pow(fade, 2.0) * spotMask * wrapNdotL);
     }
     color = mix(base, base * clamp(irr, 0.0, 1.6), shadeW);
   }

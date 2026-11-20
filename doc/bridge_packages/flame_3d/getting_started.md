@@ -74,7 +74,8 @@ resolved. Watch for:
   depth prepass stages) hold the top three rows of 64 joint matrices, 192 vectors: 195 to 211 in
   all, within the 256 an OpenGL ES 3.0 driver must offer (they held 64 whole matrices, 259 to 275,
   before); every other vertex stage uses at most 32;
-- `WaterMaterial`'s fragment stage uses 197 vectors, `StylizedMaterial`'s 183;
+- `WaterMaterial`'s fragment stage uses 201 vectors (185 with 8 foam slots), `StylizedMaterial`'s
+  187, the 4 of the light grid included;
 - `SpatialMaterial`'s full shader samples 11 textures and needs `GL_EXT_shader_texture_lod`. On a
   device without it (the emulator) a new `SpatialMaterial` draws with the simpler shader the web
   uses, without the IBL, lightmap, clearcoat, transmission and reflection probe inputs, and prints

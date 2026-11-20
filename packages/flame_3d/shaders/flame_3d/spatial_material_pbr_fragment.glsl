@@ -74,6 +74,7 @@ uniform PassOptions {
 } passOptions;
 
 #include <flame_3d/lights.glsl>
+#include <flame_3d/light_grid.glsl>
 
 uniform Camera {
   mat4 view;
@@ -536,7 +537,8 @@ void main() {
   vec3 lo = vec3(0.0);
   int cascadeIndexUsed = -1;
 
-  for (int i = 0; i < int(lights.numLights); i++) {
+  int blockPoints = int(lightGridBlockPointLights(lights.numLights));
+  for (int i = 0; i < blockPoints; i++) {
     vec3 lightDirVec = lights.positions[i] - fragPosition;
     float distance = length(lightDirVec) + EPSILON;
     float intensity = lights.intensities[i].x;
@@ -552,6 +554,41 @@ void main() {
     lo += processLightPbr(
       normalize(lightDirVec),
       lights.colors[i].rgb * attenuation * ptShadow,
+      1.0,
+      baseColor,
+      normal,
+      geomNormal,
+      viewDir,
+      f0,
+      metallic,
+      roughness,
+      transmission,
+      clearcoat,
+      clearcoatRoughness
+    );
+  }
+
+  // The point lights of the light grid listed by this fragment's cell, as
+  // above (they have a range and cast no shadows), see
+  // flame_3d/light_grid.glsl.
+  vec4 gridCell = lightGridCell(fragPosition);
+  for (int k = 0; k < LIGHT_GRID_POINT_LIGHTS_PER_CELL; k++) {
+    if (float(k) >= gridCell.y) {
+      break;
+    }
+    vec4 gridPosition;
+    vec4 gridColor;
+    lightGridPointLight(gridCell, k, gridPosition, gridColor);
+    vec3 lightDirVec = gridPosition.xyz - fragPosition;
+    float distance = length(lightDirVec) + EPSILON;
+    float falloff = max(1.0 - distance / gridPosition.w, 0.0);
+    if (falloff <= 0.0) {
+      continue;
+    }
+    float attenuation = gridColor.a * falloff * falloff;
+    lo += processLightPbr(
+      normalize(lightDirVec),
+      gridColor.rgb * attenuation,
       1.0,
       baseColor,
       normal,
@@ -599,7 +636,8 @@ void main() {
     );
   }
 
-  for (int i = 0; i < int(spotLights.numLights); i++) {
+  int blockSpots = int(lightGridBlockSpotLights(spotLights.numLights));
+  for (int i = 0; i < blockSpots; i++) {
     vec3 toLight = spotLights.positions[i] - fragPosition;
     float dist = length(toLight) + EPSILON;
     vec3 l = toLight / dist;
@@ -622,6 +660,53 @@ void main() {
       lo += processLightPbr(
         l,
         spotColor.rgb * (spotColor.a * attenuation * angular) * spotSh,
+        spotDir.w,
+        baseColor,
+        normal,
+        geomNormal,
+        viewDir,
+        f0,
+        metallic,
+        roughness,
+        transmission,
+        clearcoat,
+        clearcoatRoughness
+      );
+    }
+  }
+
+  // The spot lights of the light grid listed by this fragment's cell.
+  for (int k = 0; k < LIGHT_GRID_SPOT_LIGHTS_PER_CELL; k++) {
+    if (float(k) >= gridCell.w) {
+      break;
+    }
+    vec4 gridPosition;
+    vec4 gridColor;
+    vec4 spotDir;
+    vec4 spotCone;
+    lightGridSpotLight(
+      gridCell,
+      k,
+      gridPosition,
+      gridColor,
+      spotDir,
+      spotCone
+    );
+    vec3 toLight = gridPosition.xyz - fragPosition;
+    float dist = length(toLight) + EPSILON;
+    float rf = max(1.0 - dist / gridPosition.w, 0.0);
+    if (rf <= 0.0) {
+      continue;
+    }
+    vec3 l = toLight / dist;
+    float cosTheta = dot(l, spotDir.xyz);
+    float angular = clamp((cosTheta - spotCone.x) * spotCone.y, 0.0, 1.0);
+    angular *= angular;
+    if (angular > 0.0) {
+      float attenuation = rf * rf;
+      lo += processLightPbr(
+        l,
+        gridColor.rgb * (gridColor.a * attenuation * angular),
         spotDir.w,
         baseColor,
         normal,

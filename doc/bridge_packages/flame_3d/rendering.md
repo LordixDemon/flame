@@ -376,6 +376,11 @@ Shaders are GLSL, compiled ahead of time into shader bundles (see
 - `flame_3d/lights.glsl` declares the light blocks: `AmbientLight`, `Lights` (up to 8 point
   lights), `DirectionalLights` (4), `SpotLights` (4) and `HemisphereLight`, see
   [Lighting](lighting.md).
+- `flame_3d/light_grid.glsl` declares the `LightGrid` block and the `lightGridTexture` sampler of
+  the light grid (`World3D.lightGrid`) and the functions that read it: `lightGridCell()` finds the
+  cell of a fragment, `lightGridPointLight()` and `lightGridSpotLight()` read its lights, and
+  `lightGridBlockPointLights()` and `lightGridBlockSpotLights()` tell how many lights of the blocks
+  to shade before them, see [Lighting](lighting.md#light-uniform-blocks).
 - `flame_3d/shadows.glsl` declares the `Shadows` block (which also holds the tiles of the shadow
   atlas) and the `shadowMap` sampler, and the functions that receive shadows: `shadowVisibility()`
   and `shadowFactor()` for the sun and its cascades, `spotShadowFactor()` and `pointShadowFactor()`

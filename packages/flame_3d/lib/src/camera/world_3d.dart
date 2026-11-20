@@ -37,6 +37,7 @@ class World3D({
   List<CustomRenderPass3D>? customPasses,
   var bool spatialIndex3DEnabled = false,
   bool prioritizeNearestLights = false,
+  LightGridSettings? lightGrid,
   bool depthPrepassEnabled = false,
 }) extends flame.World {
   final List<Light> _lights = [];
@@ -417,6 +418,31 @@ class World3D({
   }
 
   bool _prioritizeNearestLights = prioritizeNearestLights;
+
+  /// How the passes of this world shade more point and spot lights than the
+  /// light blocks hold (8 point and 4 spot lights per pass), or `null` (the
+  /// default) to leave the lights beyond those out (see
+  /// [prioritizeNearestLights] for which stay).
+  ///
+  /// With settings, the point (or spot) lights of a pass that has more of
+  /// them than the block holds go into a grid of cells in world space, when
+  /// they have a `range` and cast no shadows, and every material that reads
+  /// the grid (`StylizedMaterial`, `SpatialMaterial`, `WaterMaterial`,
+  /// `BillboardMaterial3D`, and custom shaders through
+  /// `flame_3d/light_grid.glsl`) shades on each pixel the lights that reach
+  /// its cell. See [LightGridSettings].
+  ///
+  /// Assigning other settings increases [sceneVersion].
+  LightGridSettings? get lightGrid => _lightGrid;
+  set lightGrid(LightGridSettings? value) {
+    if (value == _lightGrid) {
+      return;
+    }
+    _lightGrid = value;
+    markSceneDirty(shadows: false);
+  }
+
+  LightGridSettings? _lightGrid = lightGrid;
 
   /// Atmospheric distance/height fog applied to materials in this world (`null`
   /// disables fog).
@@ -872,6 +898,10 @@ class World3D({
       ..lightProbeGrid = _lightProbeGrid
       ..reflectionProbes = _reflectionProbes
       ..prioritizeNearestLights = _prioritizeNearestLights
+      ..lightGrid = _lightGrid
+      ..lightGridBounds = _lightGrid == null || hasUnboundedComponents
+          ? null
+          : sceneBounds
       ..bumpPassUniforms();
   }
 

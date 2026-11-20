@@ -631,12 +631,14 @@ premultiplied by its alpha. For orthographic cameras, `v` is the camera's direct
 default `skyFill` for a fill of `(0.35, 0.35, 0.32)` times the sky color.
 
 It reads the same lights as the other materials: up to 4 directional, 8 point and 4 spot lights per
-render pass, chosen as [Lighting](lighting.md#how-many-lights-reach-a-shader) describes. It does not
-use environment probes, reflection probes, light probe grids or lightmaps. It receives the shadows
-of every light that casts them (the sun with its cascades, and spot and point lights), on the single
-shadow map and on the shadow atlas alike (see [Shadows](shadows.md)). Without a `HemisphereLight` in
-the scene, `ambientBase`, `skyFill` and `groundBounce` have no effect and only the ambient light
-lights the shadowed side.
+render pass, chosen as [Lighting](lighting.md#how-many-lights-reach-a-shader) describes, and the
+small point and spot lights of a light grid beyond those (`World3D.lightGrid`, see
+[Lighting](lighting.md#many-small-lights-the-light-grid)). It does not use environment probes,
+reflection probes, light probe grids or lightmaps. It receives the shadows of every light that casts
+them (the sun with its cascades, and spot and point lights), on the single shadow map and on the
+shadow atlas alike (see [Shadows](shadows.md)). Without a `HemisphereLight` in the scene,
+`ambientBase`, `skyFill` and `groundBounce` have no effect and only the ambient light lights the
+shadowed side.
 
 | Parameter                                     | Default                   | Meaning              |
 | --------------------------------------------- | ------------------------- | -------------------- |
@@ -1399,10 +1401,11 @@ as every built-in material does (the compiled shaders declare their values `high
 arguments stay small (the time is wrapped, the cells' values come from coordinates wrapped to 64),
 so they also hold in 16-bit floats near the origin, except the patterns that collars carry, offset
 by up to 35 units for their slot. The options add 36 uniform vectors to the lean fragment stage
-(181 in all: 16 for the ripples, 16 for 8 slots of foam sources), within the 224 that OpenGL ES 3.0
-guarantees. While the material's `foamSources` hold more than 8 sources (`capacity` above 8) or
-one of them carries its pattern, it draws with its full stage: 16 slots that can carry their
-pattern, 16 vectors more (197 in all) and a little more per pixel over the whole surface, collars
+(185 in all: 16 for the ripples, 16 for 8 slots of foam sources, 4 for the light grid), within the
+224 that OpenGL ES 3.0 guarantees. While the material's `foamSources` hold more than 8 sources
+(`capacity` above 8) or one of them carries its pattern, it draws with its full stage: 16 slots that
+can carry their pattern, 16 vectors more (201 in all) and a little more per pixel over the whole
+surface, collars
 or not. It switches by itself when the set changes (the bundle of the masked vertex stage carries
 the full stage, so no bundle is added). The sources' loops run to the number of slots and stop
 after the last source above `0`. Their circles add 16 vectors to the vertex stage (19 in its
@@ -2465,25 +2468,27 @@ the render state and `castsShadows` with `setInitialState`, which reports nothin
 The `RenderContext3D` fills these blocks and textures once per render pass for every shader that
 lists them; everything else in the slots is the material's to write in `apply`:
 
-| Slot                   | Chunk           | Holds                                      |
-| ---------------------- | --------------- | ------------------------------------------ |
-| `CameraMatrices`       | `camera.glsl`   | `view`, `projection`, `viewProjection`     |
-| `Camera`               |                 | `position` and any `CameraMatrices` member |
-| `AmbientLight`         | `lights.glsl`   | `color`, `intensity`                       |
-| `HemisphereLight`      | `lights.glsl`   | sky and ground colors, `up`, `intensity`   |
-| `DirectionalLights`    | `lights.glsl`   | up to 4 directional lights                 |
-| `Lights`               | `lights.glsl`   | up to 8 point lights                       |
-| `SpotLights`           | `lights.glsl`   | up to 4 spot lights                        |
-| `Fog`                  | `fog.glsl`      | the fog of the pass, read by `applyFog`    |
-| `Shadows`, `shadowMap` | `shadows.glsl`  | the shadow map or atlas and its tiles      |
-| `ShadowAtlas`          |                 | the atlas tiles (no built-in shader reads) |
-| `JointMatrices`        | `skinning.glsl` | 64 joint matrices (3 rows), per draw       |
-| `brdfLutTexture`       |                 | the split-sum BRDF table                   |
-| `probeGridTexture`     |                 | the light probe grid                       |
-| `DepthNormal`          |                 | the depth and normal prepass               |
-| `depthNormalTexture`   |                 | its texture                                |
-| `SceneColor`           |                 | the grab pass of the opaque scene          |
-| `sceneColorTexture`    |                 | its texture                                |
+| Slot                   | Chunk             | Holds                                      |
+| ---------------------- | ----------------- | ------------------------------------------ |
+| `CameraMatrices`       | `camera.glsl`     | `view`, `projection`, `viewProjection`     |
+| `Camera`               |                   | `position` and any `CameraMatrices` member |
+| `AmbientLight`         | `lights.glsl`     | `color`, `intensity`                       |
+| `HemisphereLight`      | `lights.glsl`     | sky and ground colors, `up`, `intensity`   |
+| `DirectionalLights`    | `lights.glsl`     | up to 4 directional lights                 |
+| `Lights`               | `lights.glsl`     | up to 8 point lights                       |
+| `SpotLights`           | `lights.glsl`     | up to 4 spot lights                        |
+| `LightGrid`            | `light_grid.glsl` | where the light grid's cells are           |
+| `lightGridTexture`     | `light_grid.glsl` | the light grid's cells and their lights    |
+| `Fog`                  | `fog.glsl`        | the fog of the pass, read by `applyFog`    |
+| `Shadows`, `shadowMap` | `shadows.glsl`    | the shadow map or atlas and its tiles      |
+| `ShadowAtlas`          |                   | the atlas tiles (no built-in shader reads) |
+| `JointMatrices`        | `skinning.glsl`   | 64 joint matrices (3 rows), per draw       |
+| `brdfLutTexture`       |                   | the split-sum BRDF table                   |
+| `probeGridTexture`     |                   | the light probe grid                       |
+| `DepthNormal`          |                   | the depth and normal prepass               |
+| `depthNormalTexture`   |                   | its texture                                |
+| `SceneColor`           |                   | the grab pass of the opaque scene          |
+| `sceneColorTexture`    |                   | its texture                                |
 
 Slots without a chunk must be declared by the shader itself, with the layout of the built-in
 shaders (`spatial_material_pbr_fragment.glsl`, `water_material.frag`).

@@ -23,10 +23,11 @@ void main() {
       )!;
       final fragment = water['TextureFragment']!;
       expect(fragment.stage, GpuShaderStage.fragment);
-      // The lean fragment stage (8 foam sources, no carried pattern): 181
-      // vectors of the 224 an OpenGL ES 3.0 driver must offer.
-      expect(fragment.uniformVectors, 181);
-      expect(fragment.samplers, 3);
+      // The lean fragment stage (8 foam sources, no carried pattern) and
+      // the 4 vectors of the light grid: 185 vectors of the 224 an OpenGL ES
+      // 3.0 driver must offer; the grid's texture is the fourth sampler.
+      expect(fragment.uniformVectors, 185);
+      expect(fragment.samplers, 4);
       expect(fragment.extensions, isEmpty);
       final vertex = water['TextureVertex']!;
       expect(vertex.stage, GpuShaderStage.vertex);
@@ -86,10 +87,11 @@ void main() {
       )!;
       // CameraMatrices 12, Wind 6 and the y flip float.
       expect(plain['TextureVertex']!.uniformVectors, 19);
-      // The Material and StylizedPass blocks and the y flip float, of the 224
-      // an OpenGL ES 3.0 driver must offer.
-      expect(plain['TextureFragment']!.uniformVectors, 183);
-      expect(plain['TextureFragment']!.samplers, 3);
+      // The Material and StylizedPass blocks (with the 4 vectors of the light
+      // grid) and the y flip float, of the 224 an OpenGL ES 3.0 driver must
+      // offer; the light grid's texture is the fourth sampler.
+      expect(plain['TextureFragment']!.uniformVectors, 187);
+      expect(plain['TextureFragment']!.samplers, 4);
 
       // The textured stages: the same vectors (the two floats of the texture
       // fit in the last vector of the Material block), one more texture.
@@ -97,8 +99,8 @@ void main() {
         _bundle('stylized_material_textured'),
       )!;
       expect(textured['TextureVertex']!.uniformVectors, 19);
-      expect(textured['TextureFragment']!.uniformVectors, 183);
-      expect(textured['TextureFragment']!.samplers, 4);
+      expect(textured['TextureFragment']!.uniformVectors, 187);
+      expect(textured['TextureFragment']!.samplers, 5);
       for (final (name, vectors) in const [
         ('stylized_material_textured_skinned', 211),
         ('stylized_material_textured_standard', 206),

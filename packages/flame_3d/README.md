@@ -154,10 +154,12 @@ Each item links to the page that describes it, its costs and its limits.
   textures with samplers and CPU-built mipmaps, and KTX2 loading (BC7, ETC2 and ASTC only on GPUs
   that support them).
 - **Lighting** ([Lighting][lighting]): ambient, hemisphere, up to 4 directional, 8 point and 4 spot
-  lights per render pass, chosen per pass (no per-object light lists); environment probes,
-  reflection probe volumes, light probe grids and lightmaps for `SpatialMaterial` on native
-  backends. `LightClusterGrid3D` is a CPU helper that finds lights for a region; the renderer does
-  not use it.
+  lights per render pass, chosen per pass, and with `World3D.lightGrid` many more small point and
+  spot lights (with a range, without shadows) binned into a grid of cells in world space, each pixel
+  shading only those that reach its cell, on OpenGL ES 3.0 too; environment probes, reflection
+  probe volumes, light probe grids and lightmaps for `SpatialMaterial` on native backends.
+  `LightClusterGrid3D` is a CPU helper that finds lights for a region; the renderer does not use
+  it.
 - **Shadows** ([Shadows][shadows]): a sun with one map or 2 to 4 cascades, up to two spot lights
   and one point light (dual-paraboloid), packed into one atlas pass when several cast; every
   built-in receiver reads them; `ShadowCatcherMaterial` for shadows on 2D art, `ShadowGroup` to

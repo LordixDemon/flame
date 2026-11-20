@@ -42,6 +42,7 @@ class RenderContext3D(super.device) extends RenderContext {
     registerPassUniform(directionalLightsBlock, writeDirectionalLightsUniforms);
     registerPassUniform(spotLightsBlock, writeSpotLightsUniforms);
     registerPassUniform(hemisphereLightBlock, writeHemisphereLightUniforms);
+    registerPassUniform(lightGridBlock, writeLightGridUniforms);
     registerPassUniform(shadowsBlock, writeShadowsUniforms);
     registerPassUniform(shadowAtlasBlock, _ShadowPass.writeAtlasUniforms);
     registerPassUniform(fogBlock, writeFogUniforms);
@@ -58,6 +59,7 @@ class RenderContext3D(super.device) extends RenderContext {
       shadowStillCastersSampler,
       _ShadowPass.stillCastersTexture,
     );
+    registerPassTexture(lightGridSampler, _lightGridTexture);
     registerPassTexture(depthNormalSampler, _DepthNormalPass.passTexture);
     registerPassTexture(
       sceneColorSampler,
@@ -97,6 +99,16 @@ class RenderContext3D(super.device) extends RenderContext {
 
   /// The name of the block holding the hemisphere light.
   static const String hemisphereLightBlock = 'HemisphereLight';
+
+  /// The name of the block describing the light grid of the pass (see
+  /// [lightGrid]): where its cells are, the size of its texture and how many
+  /// of the lights of the [lightsBlock] and [spotLightsBlock] come before
+  /// those the grid holds too. See `flame_3d/light_grid.glsl`.
+  static const String lightGridBlock = 'LightGrid';
+
+  /// The name of the sampler of the texture holding the light grid of the
+  /// pass, see [lightGridBlock].
+  static const String lightGridSampler = 'lightGridTexture';
 
   /// The name of the block holding the joint matrices of a skinned draw: the
   /// top three rows of each ([jointRowsMember]), or whole `mat4` matrices
@@ -172,6 +184,7 @@ class RenderContext3D(super.device) extends RenderContext {
     shadowsBlock,
     fogBlock,
     waterVolumeBlock,
+    lightGridBlock,
   ];
 
   /// The maximum number of point lights written to the [lightsBlock].
@@ -247,6 +260,22 @@ class RenderContext3D(super.device) extends RenderContext {
 
   /// The lights of the scene. Must be set before the draws are flushed.
   List<Light> lights = const [];
+
+  /// How the passes shade more point and spot lights than the
+  /// [lightsBlock] and [spotLightsBlock] hold, or `null` (the default) to
+  /// leave the lights beyond those out, see [LightGridSettings].
+  /// `World3D.lightGrid` sets it.
+  LightGridSettings? lightGrid;
+
+  /// What the light grid of the last pass that read one held, see
+  /// [LightGridStats].
+  LightGridStats get lightGridStats => _lightGrid.stats;
+
+  /// The world bounds of everything the pass draws, or `null` (the default)
+  /// when they are not known: the [lightGrid] covers only them.
+  /// `World3D` sets its `sceneBounds`, unless it holds a component that may
+  /// draw outside them.
+  Aabb3? lightGridBounds;
 
   /// Atmospheric fog of the current pass (`null` disables fog).
   FogSettings? fog;
@@ -1603,35 +1632,86 @@ class RenderContext3D(super.device) extends RenderContext {
   /// first [maxPointLights], or, with [prioritizeNearestLights] and more of
   /// them, the [maxPointLights] of the highest priority.
   ///
+  /// When the [lightGrid] holds the point lights of the pass, the block
+  /// holds first those the grid cannot hold (chosen among themselves as
+  /// above), then as many of the others as fit, which shaders that read the
+  /// grid skip (see [lightGridBlock]).
+  ///
   /// The shadow pass matches its lights to the block with it.
   static int _selectPointLights(RenderContext3D context, Int32List out) {
+    context._planLightGrid();
+    if (!context._gridPoints) {
+      return _pickPointLights(context, out, 0, maxPointLights, _pickAll);
+    }
+    final fixed = _pickPointLights(
+      context,
+      out,
+      0,
+      maxPointLights,
+      _pickFixed,
+    );
+    return fixed +
+        _pickPointLights(
+          context,
+          out,
+          fixed,
+          maxPointLights - fixed,
+          _pickBinnable,
+        );
+  }
+
+  // Which lights a selection picks among: all, those a light grid cannot
+  // hold, or those it can (see LightGrid3D.binnable).
+  static const int _pickAll = 0;
+  static const int _pickFixed = 1;
+  static const int _pickBinnable = 2;
+
+  @pragma('vm:prefer-inline')
+  static bool _picks(Light light, int pick) =>
+      pick == _pickAll ||
+      LightGrid3D.binnable(light) == (pick == _pickBinnable);
+
+  /// Writes into [out] from [offset] the indices of at most [capacity]
+  /// point lights among those [pick] says, as [_selectPointLights] chooses
+  /// them, and returns how many.
+  static int _pickPointLights(
+    RenderContext3D context,
+    Int32List out,
+    int offset,
+    int capacity,
+    int pick,
+  ) {
     final lights = context.lights;
     var totalPointLights = 0;
     for (var i = 0; i < lights.length; i++) {
       if ((lights[i].lightMask & context.cameraMask) != 0 &&
-          lights[i].source is PointLight) {
+          lights[i].source is PointLight &&
+          _picks(lights[i], pick)) {
         totalPointLights++;
       }
     }
 
     var count = 0;
-    if (!context.prioritizeNearestLights ||
-        totalPointLights <= maxPointLights) {
+    if (!context.prioritizeNearestLights || totalPointLights <= capacity) {
       var slots = 0;
-      for (var i = 0; i < lights.length && slots < maxPointLights; i++) {
+      for (var i = 0; i < lights.length && slots < capacity; i++) {
         final light = lights[i];
         if ((light.lightMask & context.cameraMask) == 0) {
           continue;
         }
         final source = light.source;
-        if (source is! PointLight) {
+        if (source is! PointLight || !_picks(light, pick)) {
+          continue;
+        }
+        // Beside a light grid, a light of zero intensity takes no place.
+        if (source.intensity == 0 && pick != _pickAll) {
           continue;
         }
         slots++;
         if (source.intensity == 0) {
           continue;
         }
-        out[count++] = i;
+        out[offset + count++] = i;
       }
       return count;
     }
@@ -1641,15 +1721,18 @@ class RenderContext3D(super.device) extends RenderContext {
         continue;
       }
       final source = light.source;
-      if (source is! PointLight || source.intensity <= 0) {
+      if (source is! PointLight ||
+          source.intensity <= 0 ||
+          !_picks(light, pick)) {
         continue;
       }
       count = _insertByScore(
         out,
         count,
-        maxPointLights,
+        capacity,
         i,
         _lightPriorityScore(context, light.position, source.intensity),
+        offset: offset,
       );
     }
     return count;
@@ -1661,26 +1744,58 @@ class RenderContext3D(super.device) extends RenderContext {
   /// first [maxSpotLights] when there are no more spot lights than that, the
   /// [maxSpotLights] of the highest priority otherwise.
   ///
+  /// When the [lightGrid] holds the spot lights of the pass, the block holds
+  /// first those the grid cannot hold, then as many of the others as fit
+  /// (see [_selectPointLights]).
+  ///
   /// The shadow pass matches its lights to the block with it.
   static int _selectSpotLights(RenderContext3D context, Int32List out) {
+    context._planLightGrid();
+    if (!context._gridSpots) {
+      return _pickSpotLights(context, out, 0, maxSpotLights, _pickAll);
+    }
+    final fixed = _pickSpotLights(context, out, 0, maxSpotLights, _pickFixed);
+    return fixed +
+        _pickSpotLights(
+          context,
+          out,
+          fixed,
+          maxSpotLights - fixed,
+          _pickBinnable,
+        );
+  }
+
+  /// Writes into [out] from [offset] the indices of at most [capacity] spot
+  /// lights among those [pick] says, as [_selectSpotLights] chooses them,
+  /// and returns how many.
+  static int _pickSpotLights(
+    RenderContext3D context,
+    Int32List out,
+    int offset,
+    int capacity,
+    int pick,
+  ) {
     final lights = context.lights;
     var totalSpot = 0;
     for (var i = 0; i < lights.length; i++) {
       if ((lights[i].lightMask & context.cameraMask) != 0 &&
-          lights[i].source is SpotLight) {
+          lights[i].source is SpotLight &&
+          _picks(lights[i], pick)) {
         totalSpot++;
       }
     }
 
     var count = 0;
-    if (totalSpot <= maxSpotLights) {
-      for (var i = 0; i < lights.length && count < maxSpotLights; i++) {
+    if (totalSpot <= capacity) {
+      for (var i = 0; i < lights.length && count < capacity; i++) {
         if ((lights[i].lightMask & context.cameraMask) == 0) {
           continue;
         }
         final source = lights[i].source;
-        if (source is SpotLight && source.intensity > 0) {
-          out[count++] = i;
+        if (source is SpotLight &&
+            source.intensity > 0 &&
+            _picks(lights[i], pick)) {
+          out[offset + count++] = i;
         }
       }
       return count;
@@ -1690,30 +1805,37 @@ class RenderContext3D(super.device) extends RenderContext {
         continue;
       }
       final source = lights[i].source;
-      if (source is! SpotLight || source.intensity <= 0) {
+      if (source is! SpotLight ||
+          source.intensity <= 0 ||
+          !_picks(lights[i], pick)) {
         continue;
       }
       count = _insertByScore(
         out,
         count,
-        maxSpotLights,
+        capacity,
         i,
         _lightPriorityScore(context, lights[i].position, source.intensity),
+        offset: offset,
       );
     }
     return count;
   }
 
   /// Inserts light [index] of [score] into the [count] first entries of
-  /// [out], kept by decreasing score in [_topLightScores], at most
-  /// [capacity] of them; returns the new count.
+  /// [out] from [offset], kept by decreasing score in [_topLightScores], at
+  /// most [capacity] of them; returns the new count.
   static int _insertByScore(
     Int32List out,
     int count,
     int capacity,
     int index,
-    double score,
-  ) {
+    double score, {
+    int offset = 0,
+  }) {
+    if (capacity <= 0) {
+      return count;
+    }
     int pos;
     if (count < capacity) {
       pos = count++;
@@ -1724,12 +1846,184 @@ class RenderContext3D(super.device) extends RenderContext {
     }
     while (pos > 0 && _topLightScores[pos - 1] < score) {
       _topLightScores[pos] = _topLightScores[pos - 1];
-      out[pos] = out[pos - 1];
+      out[offset + pos] = out[offset + pos - 1];
       pos--;
     }
     _topLightScores[pos] = score;
-    out[pos] = index;
+    out[offset + pos] = index;
     return count;
+  }
+
+  final LightGrid3D _lightGrid = LightGrid3D();
+
+  // The plan of the pass for its lights beyond the blocks: whether its point
+  // (and spot) lights go into the light grid, and how many lights of the
+  // blocks come before those the grid holds too. Made once per pass.
+  int _gridPlanPass = -1;
+  List<Light>? _gridPlanLights;
+  int _gridPlanMask = 0;
+  LightGridSettings? _gridPlanSettings;
+  bool _gridPlanPrioritize = false;
+  bool _gridPoints = false;
+  bool _gridSpots = false;
+  int _gridUniformPoints = maxPointLights;
+  int _gridUniformSpots = maxSpotLights;
+  int _gridBuiltPass = -1;
+  static final Int32List _gridScratch = Int32List(maxPointLights);
+
+  void _planLightGrid() {
+    if (_gridPlanPass == _pass &&
+        identical(_gridPlanLights, lights) &&
+        _gridPlanMask == cameraMask &&
+        identical(_gridPlanSettings, lightGrid) &&
+        _gridPlanPrioritize == prioritizeNearestLights) {
+      return;
+    }
+    _gridPlanPass = _pass;
+    _gridPlanLights = lights;
+    _gridPlanMask = cameraMask;
+    _gridPlanSettings = lightGrid;
+    _gridPlanPrioritize = prioritizeNearestLights;
+    _gridPoints = false;
+    _gridSpots = false;
+    _gridUniformPoints = maxPointLights;
+    _gridUniformSpots = maxSpotLights;
+    final settings = lightGrid;
+    if (settings == null) {
+      return;
+    }
+    var points = 0;
+    var spots = 0;
+    var binnablePoints = 0;
+    var binnableSpots = 0;
+    for (var i = 0; i < lights.length; i++) {
+      final light = lights[i];
+      if ((light.lightMask & cameraMask) == 0) {
+        continue;
+      }
+      final source = light.source;
+      if (source is PointLight) {
+        points++;
+        if (LightGrid3D.binnable(light)) {
+          binnablePoints++;
+        }
+      } else if (source is SpotLight) {
+        spots++;
+        if (LightGrid3D.binnable(light)) {
+          binnableSpots++;
+        }
+      }
+    }
+    final always = !settings.beyondLimitsOnly;
+    _gridPoints = binnablePoints > 0 && (always || points > maxPointLights);
+    _gridSpots = binnableSpots > 0 && (always || spots > maxSpotLights);
+    if (_gridPoints) {
+      _gridUniformPoints = _pickPointLights(
+        this,
+        _gridScratch,
+        0,
+        maxPointLights,
+        _pickFixed,
+      );
+    }
+    if (_gridSpots) {
+      _gridUniformSpots = _pickSpotLights(
+        this,
+        _gridScratch,
+        0,
+        maxSpotLights,
+        _pickFixed,
+      );
+    }
+  }
+
+  /// Builds the light grid of the pass, once per pass, when its lights need
+  /// one; returns whether it holds any light.
+  bool _buildLightGrid() {
+    _planLightGrid();
+    if (!_gridPoints && !_gridSpots) {
+      _lightGrid.stats.active = false;
+      return false;
+    }
+    if (_gridBuiltPass != _pass) {
+      _gridBuiltPass = _pass;
+      _lightGrid.build(
+        lights: lights,
+        cameraMask: cameraMask,
+        settings: lightGrid!,
+        points: _gridPoints,
+        spots: _gridSpots,
+        bounds: lightGridBounds,
+        viewProjection: _viewProjectionMatrix,
+      );
+    }
+    return _lightGrid.hasLights;
+  }
+
+  static Texture _lightGridTexture(RenderContext3D context) =>
+      context._buildLightGrid()
+      ? context._lightGrid.texture(context.device.backend)
+      : Texture.standard;
+
+  /// Writes the [lightGridBlock] of the pass: where the cells of its grid
+  /// are (`origin`: the corner of cell `(0, 0, 0)` and `1 / cell size`;
+  /// `cells`: the number of cells along x, y and z, and `x * y`), its
+  /// texture (`data`: width, `1 / width`, `1 / height`, and `1` when the
+  /// grid holds lights, else `0`), and how many lights of the
+  /// [lightsBlock] and [spotLightsBlock] a shader that reads the grid shades
+  /// from the blocks (`counts.xy`): all of them without a grid, else those
+  /// that come before the lights the grid holds too.
+  static void writeLightGridUniforms(
+    RenderContext3D context,
+    UniformBlock block,
+  ) {
+    final v = _scratchVector4;
+    if (context._buildLightGrid()) {
+      final grid = context._lightGrid;
+      final s = grid.stats;
+      block
+        ..setVector4(
+          'origin',
+          v..setValues(
+            grid.origin.x,
+            grid.origin.y,
+            grid.origin.z,
+            1 / s.cellSize,
+          ),
+        )
+        ..setVector4(
+          'cells',
+          v..setValues(
+            s.cellsX.toDouble(),
+            s.cellsY.toDouble(),
+            s.cellsZ.toDouble(),
+            (s.cellsX * s.cellsY).toDouble(),
+          ),
+        )
+        ..setVector4(
+          'data',
+          v..setValues(
+            LightGrid3D.textureWidth.toDouble(),
+            1 / LightGrid3D.textureWidth,
+            1 / s.textureHeight,
+            1,
+          ),
+        );
+    } else {
+      block
+        ..setVector4('origin', v..setZero())
+        ..setVector4('cells', v)
+        ..setVector4('data', v);
+    }
+    block.setVector4(
+      'counts',
+      v..setValues(
+        context._gridUniformPoints.toDouble(),
+        context._gridUniformSpots.toDouble(),
+        0,
+        0,
+      ),
+    );
   }
 
   static void writeLightsUniforms(RenderContext3D context, UniformBlock block) {

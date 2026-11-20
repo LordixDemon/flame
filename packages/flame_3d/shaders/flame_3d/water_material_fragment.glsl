@@ -146,6 +146,12 @@ uniform StylizedPass {
   float Lights_numLights;
   float DirectionalLights_numLights;
   float SpotLights_numLights;
+  // The light grid of the pass, see flame_3d/light_grid.glsl. Last, so that
+  // the members of before keep their offsets.
+  vec4 LightGrid_origin;
+  vec4 LightGrid_cells;
+  vec4 LightGrid_data;
+  vec4 LightGrid_counts;
 } scene;
 
 #define FLAME_SHADOWS(member) scene.Shadows_##member
@@ -153,6 +159,9 @@ uniform StylizedPass {
 
 #define FLAME_FOG(member) scene.Fog_##member
 #include <flame_3d/fog.glsl>
+
+#define FLAME_LIGHT_GRID(member) scene.LightGrid_##member
+#include <flame_3d/light_grid.glsl>
 
 #include <flame_3d/water_pattern.glsl>
 
@@ -389,7 +398,8 @@ void main() {
     incoming += col.rgb * col.a * sh;
   }
 
-  for (int i = 0; i < int(scene.Lights_numLights); i++) {
+  int blockPoints = int(lightGridBlockPointLights(scene.Lights_numLights));
+  for (int i = 0; i < blockPoints; i++) {
     vec3 toL = scene.Lights_positions[i] - fragPosition;
     float dist = max(length(toL), 0.001);
     vec3 l = toL / dist;
@@ -407,7 +417,33 @@ void main() {
     incoming += scene.Lights_colors[i].rgb * e * pointSh;
   }
 
-  for (int i = 0; i < int(scene.SpotLights_numLights); i++) {
+  // The point lights of the light grid listed by this fragment's cell, as
+  // above (they have a range and cast no shadows).
+  vec4 gridCell = lightGridCell(fragPosition);
+  for (int k = 0; k < LIGHT_GRID_POINT_LIGHTS_PER_CELL; k++) {
+    if (float(k) >= gridCell.y) {
+      break;
+    }
+    vec4 gridPosition;
+    vec4 gridColor;
+    lightGridPointLight(gridCell, k, gridPosition, gridColor);
+    vec3 toL = gridPosition.xyz - fragPosition;
+    float dist = max(length(toL), 0.001);
+    float fade = max(1.0 - dist / gridPosition.w, 0.0);
+    if (fade <= 0.0) {
+      continue;
+    }
+    vec3 l = toL / dist;
+    float e = gridColor.a * pow(fade, 2.0);
+    directDiffuse += gridColor.rgb * (e * max(dot(n, l), 0.0));
+    float ndoth = max(dot(n, normalize(l + v)), 0.0);
+    specLight += gridColor.rgb *
+      (pow(ndoth, waterMat.params.w) * waterMat.params2.y * e);
+    incoming += gridColor.rgb * e;
+  }
+
+  int blockSpots = int(lightGridBlockSpotLights(scene.SpotLights_numLights));
+  for (int i = 0; i < blockSpots; i++) {
     vec3 toL = scene.SpotLights_positions[i] - fragPosition;
     float dist = max(length(toL), 0.001);
     vec3 l = toL / dist;
@@ -431,6 +467,36 @@ void main() {
       (pow(ndoth, waterMat.params.w) * waterMat.params2.y * spotDir.w * e) *
       spotSh;
     incoming += col.rgb * e * spotSh;
+  }
+
+  // The spot lights of the light grid listed by this fragment's cell.
+  for (int k = 0; k < LIGHT_GRID_SPOT_LIGHTS_PER_CELL; k++) {
+    if (float(k) >= gridCell.w) {
+      break;
+    }
+    vec4 gridPosition;
+    vec4 col;
+    vec4 spotDir;
+    vec4 cone;
+    lightGridSpotLight(gridCell, k, gridPosition, col, spotDir, cone);
+    vec3 toL = gridPosition.xyz - fragPosition;
+    float dist = max(length(toL), 0.001);
+    float fade = max(1.0 - dist / gridPosition.w, 0.0);
+    if (fade <= 0.0) {
+      continue;
+    }
+    vec3 l = toL / dist;
+    float angular = clamp((dot(l, spotDir.xyz) - cone.x) * cone.y, 0.0, 1.0);
+    angular *= angular;
+    if (angular <= 0.0) {
+      continue;
+    }
+    float e = col.a * pow(fade, 2.0) * angular;
+    directDiffuse += col.rgb * (e * max(dot(n, l), 0.0));
+    float ndoth = max(dot(n, normalize(l + v)), 0.0);
+    specLight += col.rgb *
+      (pow(ndoth, waterMat.params.w) * waterMat.params2.y * spotDir.w * e);
+    incoming += col.rgb * e;
   }
 
   vec3 ndc = fragClipPos.xyz / max(fragClipPos.w, 1e-6);

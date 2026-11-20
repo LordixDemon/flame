@@ -3,6 +3,7 @@ export 'light/directional_light.dart';
 export 'light/fog_settings.dart';
 export 'light/hemisphere_light.dart';
 export 'light/light.dart';
+export 'light/light_grid_settings.dart';
 export 'light/light_probe_grid_3d.dart';
 export 'light/light_source.dart';
 export 'light/point_light.dart';

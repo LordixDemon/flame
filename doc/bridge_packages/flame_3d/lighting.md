@@ -2,7 +2,9 @@
 
 The lights of a `World3D` are `LightComponent`s. Once per render pass, the `RenderContext3D` writes
 them into uniform blocks that every material of the pass reads: every object drawn in a pass sees
-the same set of lights. This page describes the kinds of light, how many reach a shader, light
+the same set of lights. A world with a light grid (`World3D.lightGrid`) also bins the small point
+and spot lights beyond those blocks into cells in world space, and each pixel shades the lights of
+its cell. This page describes the kinds of light, how many reach a shader, the light grid, light
 masks, image-based lighting with environment probes, reflection probe volumes, light probe grids
 and lightmaps, and how fog relates to lighting. Shadows are described in [Shadows](shadows.md), the
 materials in [Materials and Textures](materials.md).
@@ -178,8 +180,10 @@ The limits are per render pass, not per object: there are no per-object light li
 ten street lamps along a road lights the whole road with the same eight; with
 `prioritizeNearestLights`, the eight nearest the camera, so a lamp far from the camera may stop
 lighting the object next to it. The lighting work of every fragment grows with the number of lights
-of the pass, since every material loops over all of them (a light's range zeroes its contribution
-outside it but does not skip the work).
+in the blocks, since every material loops over all of them (a light's range zeroes its contribution
+outside it but does not skip the work). With a light grid, the point and spot lights beyond the
+limits that have a range light the pixels they reach, at a cost that follows how many reach a pixel,
+see [Many small lights: the light grid](#many-small-lights-the-light-grid).
 
 
 ### Selection beyond the limits
@@ -207,6 +211,120 @@ the selection leaves out casts no shadow in that pass (see
 [Spot-light shadows](shadows.md#spot-light-shadows)).
 
 
+## Many small lights: the light grid
+
+A scene at dusk wants far more small lights than the blocks hold: lanterns round a square, the lit
+windows of a few dozen houses, the glow of effects, all in view together. Give its world a light
+grid:
+
+```dart
+final world = World3D(lightGrid: const LightGridSettings());
+// or later:
+world.lightGrid = const LightGridSettings();
+world.addAll([
+  for (final at in lanternPositions)
+    LightComponent.point(
+      position: at,
+      color: const Color(0xFFFFB45E),
+      intensity: 1.5,
+      range: 1.4, // a range is what lets a light go into the grid
+    ),
+]);
+```
+
+When a pass has more point lights than the `Lights` block holds (8), every point light of the pass
+that has a `range` above zero and no `shadows` goes into the grid (and likewise the spot lights when
+there are more than 4). The grid is a box of cubic cells in world space; each cell lists the lights
+whose reach touches it (the sphere of their range, and for a spot light its cone), and the fragment
+stage of every lit material finds the cell of its pixel and shades its lights after those of the
+blocks, with the same falloff, cone, wrap and highlights as the blocks. The work of a pixel follows
+the number of lights that reach its cell, not the number of lights of the scene. The lights without
+a range and those that cast shadows stay in the blocks, chosen among themselves as above: the
+shadows do not change.
+
+| `LightGridSettings`     | Default | Meaning                                                 |
+| ----------------------- | ------- | ------------------------------------------------------- |
+| `cellSize`              | `null`  | the edge of a cell; `null`: from the ranges (see below) |
+| `maxCells`              | `4096`  | `1..65536`; beyond, cut to the view, then larger cells  |
+| `maxLights`             | `1024`  | `1..16384` lights in the grid; beyond, the weakest go   |
+| `maxPointLightsPerCell` | `32`    | `1..32`, the bound of the fragment stage's loop         |
+| `maxSpotLightsPerCell`  | `16`    | `1..16`                                                 |
+| `beyondLimitsOnly`      | `true`  | use the grid only in passes beyond the limits           |
+
+Without a `cellSize`, a cell is the power of two nearest the geometric mean of the ranges of the
+grid's lights: cells about as large as the lights reach keep the lists short.
+
+- **Off by default, exact within the limits.** Without settings nothing changes. With them, a pass
+  whose point (and spot) lights fit the blocks uses no grid and renders exactly the pixels it
+  renders without one (checked at a tolerance of 0 against the shaders of before for every lit
+  material). With `beyondLimitsOnly: false` the lights with a range always go into the grid, so each
+  costs only the pixels it reaches; the grid shades them as the blocks do, within one level of 255
+  (the order of the additions differs).
+- **The blocks beside a grid.** In a pass that uses the grid, the `Lights` block holds first the
+  point lights the grid cannot hold, then as many of the grid's lights as fit (the first ones, or
+  the nearest with `prioritizeNearestLights`), for the shaders that read no grid; the shaders that
+  read it shade only the first `LightGrid.counts.x` lights of the block (`counts.y` for spot
+  lights), then their cell's. The shadow pass finds its casters among the lights the blocks hold, as
+  before.
+- **The box.** The grid covers the reach of its lights, cut to `World3D.sceneBounds` (unless the
+  world holds a component with `includeInSceneBounds: false`, which may draw outside them), so
+  lights with a large range do not stretch it into empty space. When it would still need more than
+  `maxCells` cells, it is cut to the box of what the camera of the pass sees (one cell more on every
+  side) and `LightGridStats.clippedToView` is set; if still too large, its cells double. A pixel
+  outside the grid shades no grid light; it lies beyond the reach of every one of them.
+- **Order.** The lights of a cell come in the order of the world's lights, so a pixel adds them up
+  in the order a block would.
+
+**What happens beyond the capacity.** A cell lists at most `maxPointLightsPerCell` point lights:
+when more reach it, it keeps those that light it the most, scored by their intensity times the
+brightness of their color times `(1 - d / range)²`, where `d` is the distance from the light to the
+nearest point of the cell (on a tie, the light that comes first), and the others light nothing in
+that cell (`LightGridStats.droppedEntries` counts them). The lights left out are thus those that
+barely reach the cell. The cells are fixed in the world (their corners are multiples of the cell
+size), so a moving camera changes nothing, even in full cells; a light that moves (or whose
+intensity changes) into a full cell can take the place of the weakest one, which then stops lighting
+that cell at once, a change as large as the light the weakest gave there. Beyond `maxLights`, the
+lights of the least `intensity * brightness * range²` are left out of the pass
+(`LightGridStats.droppedLights`).
+
+**Costs.**
+
+- CPU, once per pass that reads the grid: a pass over the lights to gather their values, and, when
+  any value, the settings or the scene bounds changed since the last build, the binning, in time
+  proportional to the cells each light touches; it allocates nothing once its buffers have grown. A
+  pass whose lights did not change reuses the grid of before (`LightGridStats.builds`).
+- GPU memory and uploads: one `RGBA32F` texture 256 texels wide, `2^n` rows high (at most 512 rows,
+  2 MB): the cells' headers (one texel each), then each cell's lights, 2 texels per point light and
+  4 per spot light, a copy per cell that lists it. It is uploaded only when it changes
+  (`LightGridStats.uploads`), into one of three textures in turn, so that a texture a frame in
+  flight may still read is not written.
+- Per pixel: one read for the header of its cell, then two reads (four for a spot light) and a
+  distance test per listed light; a light that does not reach the pixel skips its shading.
+- Uniforms and textures: the `LightGrid` block is 4 vectors and the grid one more sampler, in every
+  lit fragment stage: `StylizedMaterial` 187 vectors (4 samplers, 5 with a base color texture),
+  `WaterMaterial` 185 (201 with 16 foam slots), `SpatialMaterial` 167 (12 samplers; its simpler
+  shader 114 and 8), `BillboardMaterial3D` 85 (2), of the 224 vectors and 16 samplers OpenGL ES 3.0
+  guarantees.
+- Draws: none more, and the batching of instances does not change.
+- On the software rasteriser of `flutter test`, one plane filling a 2400 x 1080 view from above
+  costs per frame, with the lights evenly spread (range 1.2): `StylizedMaterial` 169 ms without a
+  light, 247 ms with 8 lights in the blocks, 171 ms with the same 8 lights in the grid, 182 ms with
+  64 and 231 ms with 200 lights in the grid; `SpatialMaterial` 202, 314, 202, 233 and 316 ms
+  (medians of 7 rounds on a loaded machine, within about 10 % from run to run). Compare on your
+  target device.
+
+**Platforms.** The grid is written for OpenGL ES 3.0 and GLSL ES 1.00 shaders: no storage buffers,
+no integer operations, no explicit level of detail, loops with constant bounds; the texture is read
+with nearest filtering at texel centers (sampling an `RGBA32F` texture is core in OpenGL ES 3.0,
+rendering into one is not needed). Metal, Vulkan and OpenGL ES read it. The WebGPU builds of the
+shaders read no grid (the WebGPU bundles keep their slots), so on the web the passes shade the
+lights of the blocks only.
+
+`RenderContext3D.lightGridStats` (a `LightGridStats`) tells what the grid of the last pass that read
+one held: its cell size and cells, its lights, entries and fullest cells, what it left out, its
+texture, builds and uploads. `LightGrid3D` builds a grid on its own, to inspect one.
+
+
 ### Which materials use which lights
 
 | Material              | Ambient | Hemisphere | Directional | Point | Spot | Probes, lightmaps |
@@ -215,6 +333,10 @@ the selection leaves out casts no shadow in that pass (see
 | `StylizedMaterial`    | yes     | own model  | 4           | 8     | 4    | no                |
 | `WaterMaterial`       | as sky  | as sky     | 4           | 8     | 4    | no                |
 | `BillboardMaterial3D` | yes     | yes        | 4           | 8     | 4    | no                |
+
+All four also shade the point and spot lights of a light grid, beyond the 8 and 4 of the blocks
+(see [Many small lights](#many-small-lights-the-light-grid)), except `SpatialMaterial` and
+`BillboardMaterial3D` on the web.
 
 `UnlitMaterial`, `DecalMaterial`, `OutlineMaterial`, `SkyboxMaterial3D`, `ShadowCatcherMaterial`,
 `ParticleMaterial` and `RibbonMaterial3D` are not lit. Which lights' shadows each material receives
@@ -310,15 +432,16 @@ removed in either world.
 
 ## Clustered light grid
 
-`LightClusterGrid3D` (in `package:flame_3d/world_scale.dart`) is a CPU helper, not a clustered
-renderer. It assigns point and spot lights to the cells of a camera frustum divided into
+`LightClusterGrid3D` (in `package:flame_3d/world_scale.dart`) is a CPU query helper, not the
+renderer's grid. It assigns point and spot lights to the cells of a camera frustum divided into
 `clustersX * clustersY * clustersZ` clusters (`16 x 8 x 16` by default), with depth slices growing
 exponentially from `near` to `far`. No built-in material or render pass reads it, and lights added
-to it light nothing: whatever it holds, every pass shades at most 8 point and 4 spot lights, chosen
-once per pass as [Selection beyond the limits](#selection-beyond-the-limits) describes, and leaves
-the others out. Use it to find, among many lights, those that reach a region of the screen or of
-the world, for instance to decide which lights to add to the world or which to bake into a light
-probe grid:
+to it light nothing: the passes shade the lights of the world, through the blocks and, with
+`World3D.lightGrid`, through the renderer's own grid in world space (see
+[Many small lights: the light grid](#many-small-lights-the-light-grid)), whose cells stay put as the
+camera moves and work with every projection. Use `LightClusterGrid3D` to find, among many lights,
+those that reach a region of the screen or of the world, for instance to decide which lights to add
+to the world or which to bake into a light probe grid:
 
 ```dart
 final grid = LightClusterGrid3D();
@@ -574,8 +697,8 @@ Every pass writes the current values of the lights, the fog and the probes, so c
 effect on the next frame. Adding or removing a light, changing its component's transform or its
 `lightMask`, assigning a field of a light source (`color`, `intensity`, `range`, `direction`, the
 cone, `shadows`, a hemisphere light's colors and `up`), setting `World3D.fog`,
-`World3D.waterVolume`, `World3D.lightProbeGrid` or adding a reflection probe volume also marks the
-scene changed
+`World3D.waterVolume`, `World3D.lightProbeGrid`, `World3D.lightGrid` or adding a reflection probe
+volume also marks the scene changed
 (`World3D.sceneVersion`), which wakes an idle-throttled game loop and invalidates a
 `Scene3DComponent` that caches its image (`Scene3DCacheMode.retained`). Changes that cannot move a
 shadow (a color, an intensity) keep a static shadow map cached with
@@ -600,7 +723,9 @@ until something else changes. Call `world.markSceneDirty(shadows: false)` (or
 
 - Light uniforms are written once per pass per block; selecting lights costs a pass over the light
   list. The cost that matters is per fragment: `SpatialMaterial` evaluates a full GGX term for every
-  light of the pass on every covered pixel, `StylizedMaterial` a cheaper term.
+  light of the blocks on every covered pixel, `StylizedMaterial` a cheaper term; the lights of a
+  light grid cost only the pixels of the cells they reach (see
+  [the light grid's costs](#many-small-lights-the-light-grid)).
 - Image-based lighting on native backends: 1 to 2 reflection reads and 1 to 2 lookup-table reads
   per fragment, the spherical harmonics in a few multiply-adds, and 12 reads for a light probe
   grid.
@@ -616,7 +741,8 @@ until something else changes. Call `world.markSceneDirty(shadows: false)` (or
 ## Light uniform blocks
 
 Custom shaders read the lights by including `flame_3d/lights.glsl` and listing its blocks in their
-material's slots (see [Materials](materials.md#custom-shaders)):
+material's slots (see [Materials](materials.md#custom-shaders)), and the light grid by also
+including `flame_3d/light_grid.glsl` and listing `LightGrid` and `lightGridTexture`:
 
 | Block               | Members                                                                 |
 | ------------------- | ----------------------------------------------------------------------- |
@@ -637,12 +763,55 @@ material's slots (see [Materials](materials.md#custom-shaders)):
 - The ambient intensity is `0` when a hemisphere light replaces the default ambient light, and the
   hemisphere intensity is `0` when the scene has none.
 
+The `LightGrid` block holds `origin` (the corner of cell `(0, 0, 0)` and `1 / cell size`), `cells`
+(the number of cells along x, y and z, and `x * y`), `data` (the texture's width, its inverse, the
+inverse of its height, and `1` when the grid holds lights) and `counts` (how many lights of the
+`Lights` and `SpotLights` blocks to shade before those of the grid: all of them without a grid).
+`flame_3d/light_grid.glsl` reads them for you:
+
+```glsl
+#include <flame_3d/lights.glsl>
+#include <flame_3d/light_grid.glsl>
+
+// The lights of the blocks, as many as the grid leaves to them.
+int blockPoints = int(lightGridBlockPointLights(lights.numLights));
+for (int i = 0; i < blockPoints; i++) { /* lights.positions[i] ... */ }
+// Then the lights of the pixel's cell.
+vec4 cell = lightGridCell(fragPosition);
+for (int k = 0; k < LIGHT_GRID_POINT_LIGHTS_PER_CELL; k++) {
+  if (float(k) >= cell.y) {
+    break;
+  }
+  vec4 positionRange;
+  vec4 colorIntensity;
+  lightGridPointLight(cell, k, positionRange, colorIntensity);
+  // The falloff is (1 - d / range)², as in the block.
+}
+// Spot lights: lightGridBlockSpotLights, cell.w lights and lightGridSpotLight
+// (position and range, color and intensity, direction towards the light and
+// specular, cos outer and 1 / (cos inner - cos outer)).
+```
+
+A shader that reads the lights of the blocks only keeps working beside a grid: it shades the lights
+the blocks hold (see [the blocks beside a grid](#many-small-lights-the-light-grid)). A shader that
+declares the grid's members in a block of its own defines `FLAME_LIGHT_GRID(member)` first, as
+`StylizedMaterial` does in its `StylizedPass` block. The chunk compiles to GLSL ES 1.00; its WebGPU
+build declares no grid.
+
 
 ## Limitations
 
-- At most 4 directional, 8 point and 4 spot lights light a pass, chosen per pass from the camera's
-  point of view. There are no per-object light lists and no clustered or tiled shading: the
-  `LightClusterGrid3D` is not used by the renderer.
+- At most 4 directional, 8 point and 4 spot lights light a pass through the blocks, chosen per pass
+  from the camera's point of view. With `World3D.lightGrid`, the point and spot lights beyond those
+  that have a range and cast no shadows light it through the grid; the lights without a range, the
+  directional lights and the shadow casters keep the limits. There are no per-object light lists;
+  the renderer does not use `LightClusterGrid3D`.
+- The light grid: a cell lists at most 32 point and 16 spot lights (beyond, those that light it the
+  least are left out, and a light moving into a full cell can make another stop lighting it at
+  once); the grid holds at most `maxLights` lights and 131,072 texels; a component that may draw
+  outside `World3D.sceneBounds` keeps the grid from being cut to them; the WebGPU builds read no
+  grid. Each light listed by a cell is copied into it, so the texture grows with the cells each
+  light touches, and is uploaded whole on every change.
 - A shadow-casting spot or point light that the per-pass selection leaves out casts no shadow in
   that pass.
 - Reflections: one volume per object (one per instanced draw of your own), no blending between

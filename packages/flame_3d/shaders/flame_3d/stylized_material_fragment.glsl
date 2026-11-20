@@ -2,7 +2,8 @@
 #define FLAME_STYLIZED_MATERIAL_FRAGMENT_GLSL_
 
 // The fragment stage of StylizedMaterial: vertex-colored surfaces lit by the
-// hemisphere, directional and point lights of the scene, with per-vertex
+// hemisphere, directional, point and spot lights of the scene (and those of
+// its light grid, see flame_3d/light_grid.glsl), with per-vertex
 // masks for the instance tint, the accent color, emission and gloss, and per
 // instance data for an emissive boost, a highlight, a fade and optional
 // per-instance accent and rim palette indices. The emissive mask glows in the
@@ -145,6 +146,12 @@ uniform StylizedPass {
   vec4 WaterVolume_boundsMin;
   vec4 WaterVolume_boundsMax;
   vec4 WaterVolume_waterlineFoam;
+  // The light grid of the pass, see flame_3d/light_grid.glsl. Last, so that
+  // the members of before keep their offsets.
+  vec4 LightGrid_origin;
+  vec4 LightGrid_cells;
+  vec4 LightGrid_data;
+  vec4 LightGrid_counts;
 } scene;
 
 #define FLAME_SHADOWS(member) scene.Shadows_##member
@@ -156,6 +163,9 @@ uniform StylizedPass {
 
 #define FLAME_WATER_VOLUME(member) scene.WaterVolume_##member
 #include <flame_3d/water_volume.glsl>
+
+#define FLAME_LIGHT_GRID(member) scene.LightGrid_##member
+#include <flame_3d/light_grid.glsl>
 
 // The instance color as the instance holds it. `fragInstanceColor` arrives
 // interpolated across the triangle (or extrapolated to the MSAA samples
@@ -284,7 +294,8 @@ void main() {
   }
   specular *= gloss * material.specularStrength;
 
-  for (int i = 0; i < int(scene.Lights_numLights); i++) {
+  int blockPoints = int(lightGridBlockPointLights(scene.Lights_numLights));
+  for (int i = 0; i < blockPoints; i++) {
     vec3 toLight = scene.Lights_positions[i] - fragPosition;
     float dist = length(toLight);
     vec3 l = toLight / max(dist, 0.0001);
@@ -301,8 +312,31 @@ void main() {
       scene.Lights_colors[i].rgb * pointShadowFactor(i, fragPosition, n);
   }
 
+  // The point lights of the light grid listed by this fragment's cell, as
+  // above (they have a range and cast no shadows).
+  vec4 gridCell = lightGridCell(fragPosition);
+  for (int k = 0; k < LIGHT_GRID_POINT_LIGHTS_PER_CELL; k++) {
+    if (float(k) >= gridCell.y) {
+      break;
+    }
+    vec4 gridPosition;
+    vec4 gridColor;
+    lightGridPointLight(gridCell, k, gridPosition, gridColor);
+    vec3 toLight = gridPosition.xyz - fragPosition;
+    float dist = length(toLight);
+    float rangeFade = max(1.0 - dist / gridPosition.w, 0.0);
+    if (rangeFade <= 0.0) {
+      continue;
+    }
+    vec3 l = toLight / max(dist, 0.0001);
+    float falloff = rangeFade * rangeFade;
+    float wrapped = max(material.pointLightWrap, dot(n, l));
+    lit += gridColor.a * falloff * wrapped * gridColor.rgb;
+  }
+
   float spotSpecular = 0.0;
-  for (int i = 0; i < int(scene.SpotLights_numLights); i++) {
+  int blockSpots = int(lightGridBlockSpotLights(scene.SpotLights_numLights));
+  for (int i = 0; i < blockSpots; i++) {
     vec3 toLight = scene.SpotLights_positions[i] - fragPosition;
     float dist = length(toLight);
     vec3 l = toLight / max(dist, 0.0001);
@@ -329,6 +363,44 @@ void main() {
         float ndoth = max(dot(n, normalize(l + v)), 0.0);
         spotSpecular += pow(ndoth, material.specularPower) * spotDir.w * atten *
           (spotSh.r + spotSh.g + spotSh.b) / 3.0;
+      }
+    }
+  }
+  // The spot lights of the light grid listed by this fragment's cell.
+  for (int k = 0; k < LIGHT_GRID_SPOT_LIGHTS_PER_CELL; k++) {
+    if (float(k) >= gridCell.w) {
+      break;
+    }
+    vec4 gridPosition;
+    vec4 gridColor;
+    vec4 spotDir;
+    vec4 spotCone;
+    lightGridSpotLight(
+      gridCell,
+      k,
+      gridPosition,
+      gridColor,
+      spotDir,
+      spotCone
+    );
+    vec3 toLight = gridPosition.xyz - fragPosition;
+    float dist = length(toLight);
+    float rf = max(1.0 - dist / gridPosition.w, 0.0);
+    if (rf <= 0.0) {
+      continue;
+    }
+    vec3 l = toLight / max(dist, 0.0001);
+    float cosTheta = dot(l, spotDir.xyz);
+    float angular = clamp((cosTheta - spotCone.x) * spotCone.y, 0.0, 1.0);
+    angular *= angular;
+    if (angular > 0.0) {
+      float falloff = rf * rf;
+      float atten = gridColor.a * falloff * angular;
+      float wrapped = max(material.pointLightWrap * 0.5, dot(n, l));
+      lit += atten * max(wrapped, 0.0) * gridColor.rgb;
+      if (glossy && dot(n, l) > 0.0) {
+        float ndoth = max(dot(n, normalize(l + v)), 0.0);
+        spotSpecular += pow(ndoth, material.specularPower) * spotDir.w * atten;
       }
     }
   }

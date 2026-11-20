@@ -13,8 +13,9 @@ Only frustum culling is automatic. Everything else is opt-in: components you add
 so they behave the same on every backend (Metal, Vulkan, OpenGL ES and WebGPU).
 
 The library also exports `LightClusterGrid3D`, a CPU grid that finds which of many lights reach a
-part of the view without raising the per-pass light limits (see
-[Clustered light grid](lighting.md#clustered-light-grid)).
+part of the view (see [Clustered light grid](lighting.md#clustered-light-grid)); the renderer
+shades many small lights through its own grid, `World3D.lightGrid` (see
+[Many small lights](lighting.md#many-small-lights-the-light-grid)).
 
 
 ## Frustum culling and bounds
