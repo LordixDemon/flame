@@ -178,6 +178,43 @@ WaterMaterial _plain({
   );
 }
 
+/// A wall in the plane z = 0 facing +z, from y = -1 to 1, x = -1.5 to 1.5,
+/// crossing the level of the water volumes of the tests (y = 0).
+Mesh _wall(Material material) {
+  return Mesh()..addSurface(
+    StylizedMaterial.buildSurface(
+      positions: [
+        for (var j = 0; j <= 16; j++)
+          for (final x in [-1.5, 1.5]) ...[x, 1 - j / 8, 0.0],
+      ],
+      normals: [
+        for (var i = 0; i < 34; i++) ...[0.0, 0.0, 1.0],
+      ],
+      colors: [
+        for (var i = 0; i < 34; i++) ...[0.75, 0.72, 0.66, 1.0],
+      ],
+      indices: [
+        for (var j = 0; j < 16; j++) ...[
+          j * 2,
+          j * 2 + 2,
+          j * 2 + 3,
+          j * 2,
+          j * 2 + 3,
+          j * 2 + 1,
+        ],
+      ],
+      material: material,
+    ),
+  );
+}
+
+/// The front view of [_wall]: 128 pixels for 2.2 world units, the level
+/// (y = 0) on row 64.
+final Matrix4 _wallView = Matrix4.identity()
+  ..setAsViewMatrix(Vector3(0, 0, 5), Vector3.zero(), Vector3(0, 1, 0));
+final Matrix4 _wallProjection = Matrix4.identity()
+  ..setAsOrthographic(2.2, 1, 0.1, 20);
+
 void main() {
   setUpGpu();
 
@@ -406,6 +443,94 @@ void main() {
       }
     });
 
+    testGpu('foamLightFloor keeps the lit foam bright in low light', (
+      tester,
+    ) async {
+      Future<Pixels> render(
+        double floor, {
+        bool dim = true,
+        double foam = 1,
+      }) async {
+        final water = _plain(time: 0.4, foamLightTint: 0)
+          ..foamLightFloor = floor;
+        return (await _render(
+          tester,
+          World3D(
+            children: [
+              if (dim) ...[
+                // Dusk: a low sun and a dark sky.
+                LightComponent.directional(
+                  direction: Vector3(0.5, -0.45, 0.3),
+                  color: const Color(0xFFFF8A4C),
+                  intensity: 0.2,
+                ),
+                LightComponent.hemisphere(
+                  skyColor: const Color(0xFF6A6890),
+                  groundColor: const Color(0xFF3E3040),
+                  intensity: 0.3,
+                ),
+              ] else ...[
+                LightComponent.directional(
+                  direction: Vector3(0.3, -1, 0.2),
+                  intensity: 1.2,
+                ),
+                LightComponent.hemisphere(intensity: 0.8),
+              ],
+              MeshComponent(
+                mesh: _grid(water, foam: (x, z) => x < -0.5 ? foam : 0),
+              ),
+            ],
+          ),
+        )).pixels;
+      }
+
+      final half = await render(0.5);
+      final bright = await render(0.85);
+      final noFoam = await render(0.85, foam: 0);
+
+      // The solid foam, left of x = -1.25: half its color by default,
+      // 0.85 of it with the raised floor.
+      var halfBright = 0.0;
+      var raisedBright = 0.0;
+      var count = 0;
+      final (x0, _) = _pixel(-1.25, 0);
+      for (var y = 8; y < _size - 8; y += 3) {
+        for (var x = 0; x < x0; x += 3) {
+          final (r, g, b, _) = bright.at(x, y);
+          if (r + g + b < 3 * 190) {
+            continue; // a hole in the foam, or its edge
+          }
+          final (hr, hg, hb, _) = half.at(x, y);
+          halfBright += (hr + hg + hb) / 3;
+          raisedBright += (r + g + b) / 3;
+          count++;
+        }
+      }
+      expect(count, greaterThan(100));
+      // 0.5 and 0.85 of white (linear output): about 128 and 217.
+      expect(halfBright / count, closeTo(128, 6));
+      expect(raisedBright / count, closeTo(217, 6));
+
+      // The water without foam is the same whatever the floor.
+      final (x1, _) = _pixel(0, 0);
+      for (var y = 0; y < _size; y++) {
+        for (var x = x1; x < _size; x++) {
+          expect(_same(half, bright, x, y), isTrue, reason: '$x, $y');
+          expect(_same(bright, noFoam, x, y), isTrue, reason: '$x, $y');
+        }
+      }
+
+      // In a light brighter than the floor, the floor changes nothing.
+      expect(
+        differingPixels(
+          await render(0.5, dim: false),
+          await render(0.85, dim: false),
+          tolerance: 0,
+        ),
+        0,
+      );
+    });
+
     testGpu('edgeFoamMotion slows the mask foam down or holds it still', (
       tester,
     ) async {
@@ -610,35 +735,6 @@ void main() {
       'the waterline keeps its pixels by default and its color with a tint '
       'of 0',
       (tester) async {
-        Mesh wall(Material material) {
-          // A wall in the plane z = 0 facing +z, from y = -1 to 1.
-          return Mesh()..addSurface(
-            StylizedMaterial.buildSurface(
-              positions: [
-                for (var j = 0; j <= 16; j++)
-                  for (final x in [-1.5, 1.5]) ...[x, 1 - j / 8, 0.0],
-              ],
-              normals: [
-                for (var i = 0; i < 34; i++) ...[0.0, 0.0, 1.0],
-              ],
-              colors: [
-                for (var i = 0; i < 34; i++) ...[0.75, 0.72, 0.66, 1.0],
-              ],
-              indices: [
-                for (var j = 0; j < 16; j++) ...[
-                  j * 2,
-                  j * 2 + 2,
-                  j * 2 + 3,
-                  j * 2,
-                  j * 2 + 3,
-                  j * 2 + 1,
-                ],
-              ],
-              material: material,
-            ),
-          );
-        }
-
         StylizedMaterial material({required bool before}) {
           final material = StylizedMaterial(
             rimStrength: 0,
@@ -694,7 +790,7 @@ void main() {
                   skyColor: const Color(0xFF8F86C0),
                   groundColor: const Color(0xFF3E3040),
                 ),
-                MeshComponent(mesh: wall(material)),
+                MeshComponent(mesh: _wall(material)),
               ],
             ),
             view: view,
@@ -745,5 +841,81 @@ void main() {
       },
       timeout: const Timeout(Duration(minutes: 2)),
     );
+
+    testGpu('waterlineLightFloor keeps the waterline bright in low light', (
+      tester,
+    ) async {
+      Future<Pixels> render(double floor, {double width = 0.12}) async {
+        return (await _render(
+          tester,
+          World3D(
+            waterVolume: WaterVolumeSettings(
+              waterlineWidth: width,
+              waterlineColor: const Color(0xFFFFFFFF),
+              waterlineLightTint: 0,
+              waterlineLightFloor: floor,
+              time: 0.6,
+            ),
+            children: [
+              // Dusk: a low sun and a dark sky.
+              LightComponent.directional(
+                direction: Vector3(0.3, -0.5, -1),
+                color: const Color(0xFFFF8A4C),
+                intensity: 0.25,
+              ),
+              LightComponent.hemisphere(
+                skyColor: const Color(0xFF6A6890),
+                groundColor: const Color(0xFF3E3040),
+                intensity: 0.3,
+              ),
+              MeshComponent(mesh: _wall(StylizedMaterial(rimStrength: 0))),
+            ],
+          ),
+          view: _wallView,
+          projection: _wallProjection,
+        )).pixels;
+      }
+
+      final dark = await render(0);
+      final bright = await render(0.7);
+      // The band, on the level's rows (y = 0 at row 64): the solid foam is
+      // dim by default and 0.7 of white with the floor.
+      var dimFoam = 0.0;
+      var brightFoam = 0.0;
+      var count = 0;
+      for (var y = 60; y <= 68; y++) {
+        for (var x = 0; x < _size; x++) {
+          final (r, g, b, _) = bright.at(x, y);
+          if (r + g + b < 3 * 165) {
+            continue; // not solid foam
+          }
+          final (dr, dg, db, _) = dark.at(x, y);
+          dimFoam += (dr + dg + db) / 3;
+          brightFoam += (r + g + b) / 3;
+          count++;
+        }
+      }
+      expect(count, greaterThan(100));
+      // 0.7 of white (linear output): about 178.
+      expect(brightFoam / count, closeTo(178, 8));
+      expect(dimFoam / count, lessThan(brightFoam / count - 40));
+      // Away from the band, the same pixels.
+      for (final rows in [(0, 52), (76, _size)]) {
+        for (var y = rows.$1; y < rows.$2; y++) {
+          for (var x = 0; x < _size; x++) {
+            expect(_same(dark, bright, x, y), isTrue, reason: '$x, $y');
+          }
+        }
+      }
+      // Without a waterline, the floor changes nothing.
+      expect(
+        differingPixels(
+          await render(0, width: 0),
+          await render(0.7, width: 0),
+          tolerance: 0,
+        ),
+        0,
+      );
+    });
   });
 }

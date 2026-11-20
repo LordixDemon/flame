@@ -36,7 +36,7 @@ void main() {
       final backend = FakeGpuBackend();
       final context = RenderContext3D(GraphicsDevice(backend: backend));
       final block = UniformBlock(
-        FakeUniformSlot(RenderContext3D.waterVolumeBlock, 8 * 1024),
+        FakeUniformSlot(RenderContext3D.waterVolumeBlock, 9 * 1024),
       );
       List<double> read(String member) {
         final offset = block.memberOffset(member)!;
@@ -82,6 +82,15 @@ void main() {
       context.waterVolume!.waterlineLightTint = 2;
       RenderContext3D.writeWaterVolumeUniforms(context, block);
       expect(read('causticColor')[3], 1);
+
+      // The waterline foam has no light floor by default.
+      expect(read('waterlineFoam')[1], 0);
+      context.waterVolume!.waterlineLightFloor = 0.7;
+      RenderContext3D.writeWaterVolumeUniforms(context, block);
+      expect(read('waterlineFoam')[1], closeTo(0.7, 1e-6));
+      context.waterVolume!.waterlineLightFloor = -1;
+      RenderContext3D.writeWaterVolumeUniforms(context, block);
+      expect(read('waterlineFoam')[1], 0);
 
       // An inactive volume is off.
       context.waterVolume = WaterVolumeSettings(absorption: 0);

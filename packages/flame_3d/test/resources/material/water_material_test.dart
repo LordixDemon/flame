@@ -418,10 +418,12 @@ void main() {
         expect(member(water, uniforms, 'ramp')[0], 0);
         expect(member(water, uniforms, 'ramp')[2], 0);
         expect(member(water, uniforms, 'ramp')[3], 0);
-        // The foam takes the color of the light and moves at its pace.
+        // The foam takes the color of the light and moves at its pace, and
+        // its light falls to half its color at least.
         final shore = member(water, uniforms, 'shoreParams');
         expect(shore[2], member(water, uniforms, 'pattern')[0]);
         expect(shore[3], 1);
+        expect(member(water, uniforms, 'upAxis'), [0, 1, 0, 0.5]);
       });
 
       test('writes the foam controls', () {
@@ -431,6 +433,7 @@ void main() {
         final water = WaterMaterial(
           time: 3,
           foamLightTint: 0.25,
+          foamLightFloor: 0.85,
           edgeFoamMotion: 0.5,
           foamSources: sources,
         );
@@ -439,6 +442,7 @@ void main() {
         // Half the pace: 1.5 s of an 8 s period.
         expect(shore[2], closeTo(math.pi * 3 / 8, 1e-6));
         expect(shore[3], 0.25);
+        expect(member(water, uniforms, 'upAxis')[3], closeTo(0.85, 1e-6));
         // The pattern keeps its own phase: 3 s of 8.
         expect(
           member(water, uniforms, 'pattern')[0],
@@ -459,6 +463,8 @@ void main() {
         expect(shore[3], 1);
         water.foamLightTint = -1;
         expect(member(water, draw(water), 'shoreParams')[3], 0);
+        water.foamLightFloor = -1;
+        expect(member(water, draw(water), 'upAxis')[3], 0);
       });
 
       test('writes the options it is given', () {

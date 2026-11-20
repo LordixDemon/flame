@@ -128,6 +128,7 @@ uniform StylizedPass {
   vec4 WaterVolume_waterline;
   vec4 WaterVolume_boundsMin;
   vec4 WaterVolume_boundsMax;
+  vec4 WaterVolume_waterlineFoam;
 } scene;
 
 #define FLAME_SHADOWS(member) scene.Shadows_##member

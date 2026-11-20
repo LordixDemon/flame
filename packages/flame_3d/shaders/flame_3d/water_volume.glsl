@@ -32,6 +32,9 @@ uniform WaterVolume {
   vec4 boundsMin;
   // xyz: the maximum corner of the box.
   vec4 boundsMax;
+  // y: the least light the waterline foam takes, a multiple of its color
+  // (WaterVolumeSettings.waterlineLightFloor, 0 by default); xzw: unused.
+  vec4 waterlineFoam;
 } waterVolume;
 #define FLAME_WATER_VOLUME(member) waterVolume.member
 #endif
@@ -136,7 +139,14 @@ vec3 applyWaterVolume(
         max(tint, 0.0)
       );
     }
-    vec3 foamColor = waterline.rgb * min(foamLight, vec3(1.25));
+    // At most 1.25, at least the floor (waterlineLightFloor), which raises
+    // the top when it is above it.
+    float lightFloor = FLAME_WATER_VOLUME(waterlineFoam).y;
+    foamLight = min(foamLight, vec3(max(1.25, lightFloor)));
+    if (lightFloor > 0.0) {
+      foamLight = max(foamLight, vec3(lightFloor));
+    }
+    vec3 foamColor = waterline.rgb * foamLight;
     result = mix(result, foamColor, foam * waterline.a);
   }
   return clamp(result, 0.0, 1.0);

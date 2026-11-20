@@ -40,7 +40,8 @@ import 'package:flame_3d/game.dart';
 /// sunlight. With [waterlineWidth] above `0`, the surfaces also foam in a
 /// band about that wide around the level, broken up and lapping, so an
 /// object rising through the water gets its foam ring; [waterlineLightTint]
-/// says how much of the color of the light that foam takes.
+/// says how much of the color of the light that foam takes and
+/// [waterlineLightFloor] the least light it takes.
 ///
 /// The shadow pass and the depth-normal prepass ignore it; it costs no pass,
 /// a few instructions per pixel of the surfaces above it, and the caustics
@@ -100,6 +101,14 @@ class WaterVolumeSettings({
   /// [waterlineColor] under a colored light. About `0.25` suits a low, warm
   /// sun (see `WaterMaterial.foamLightTint`, its match on the water).
   var double waterlineLightTint = 1,
+
+  /// The least light the waterline foam takes, as a multiple of
+  /// [waterlineColor], `0` or more: the light on the surface is clamped
+  /// between it and `1.25` (or it, when it is above). `0` (the default) lets
+  /// the foam darken with the light, grey and weak in low light; at dusk
+  /// about `0.7` keeps a white waterline bright (see
+  /// `WaterMaterial.foamLightFloor`, its match on the water).
+  var double waterlineLightFloor = 0,
 
   /// The box the water fills, in world space: surfaces outside of it are
   /// not submerged, whatever their height. `null` (the default) fills the

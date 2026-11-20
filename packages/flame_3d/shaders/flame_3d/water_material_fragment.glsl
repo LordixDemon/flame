@@ -11,7 +11,8 @@
 // color and opacity ramp by the depth of the water under each vertex, foam
 // where the vertices' foam mask says, rings of ripples (WaterRipples), collars
 // of foam around moving things (WaterFoamSources), how much of the light's
-// color the lit foam takes, and how fast the mask's foam moves.
+// color the lit foam takes, how fast the mask's foam moves and the least light
+// it takes.
 // They are procedural (flame_3d/water_pattern.glsl) and need neither the
 // depth prepass nor the scene color grab.
 
@@ -52,7 +53,8 @@ uniform WaterMaterial {
   // down by edgeFoamMotion), w: how much of the light's color the lit foam
   // takes (foamLightTint, 0 to 1).
   vec4 shoreParams;
-  // xyz: the world up axis of the rest surface (unit), w: unused
+  // xyz: the world up axis of the rest surface (unit), w: the least light the
+  // lit foam takes, a multiple of its color (foamLightFloor, 0.5 by default).
   vec4 upAxis;
   // The options. rgb: the caustics' color, a: their strength.
   vec4 causticColor;
@@ -450,7 +452,13 @@ void main() {
         max(waterMat.shoreParams.w, 0.0)
       );
     }
-    foamLight = clamp(foamLight, vec3(0.5), vec3(1.15));
+    // Between the floor (foamLightFloor) and 1.15, or the floor when above.
+    float lightFloor = waterMat.upAxis.w;
+    foamLight = clamp(
+      foamLight,
+      vec3(lightFloor),
+      vec3(max(1.15, lightFloor))
+    );
     color = mix(color, waterMat.foamColor.rgb * foamLight,
       litFoam * waterMat.foamColor.a);
     foamMask = max(foamMask, litFoam);

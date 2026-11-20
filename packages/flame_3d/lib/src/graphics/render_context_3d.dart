@@ -1911,7 +1911,16 @@ class RenderContext3D(super.device) extends RenderContext {
           water.waterlineLightTint.clamp(0.0, 1.0),
         ),
       )
-      ..setVector4('waterline', v..setValues(line.r, line.g, line.b, line.a));
+      ..setVector4('waterline', v..setValues(line.r, line.g, line.b, line.a))
+      ..setVector4(
+        'waterlineFoam',
+        v..setValues(
+          0,
+          water.waterlineLightFloor > 0 ? water.waterlineLightFloor : 0,
+          0,
+          0,
+        ),
+      );
     final bounds = water.bounds;
     if (bounds == null) {
       block.setVector4('boundsMin', v..setZero());

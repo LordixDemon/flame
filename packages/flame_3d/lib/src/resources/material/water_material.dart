@@ -47,7 +47,9 @@ import 'package:flame_3d/resources.dart';
 ///   [WaterFoamSources];
 /// - [foamLightTint]: how much of the color of the light the foam of the
 ///   foam mask, of the foam sources and of the ripples takes (`1`, the
-///   default, all of it; less keeps the foam white under a colored sun).
+///   default, all of it; less keeps the foam white under a colored sun);
+/// - [foamLightFloor]: the least light that foam takes (`0.5`, the default,
+///   half its color; more keeps it bright in low light, at dusk).
 ///
 /// The caustics, the sparkles, the swell and the edge foam loop over
 /// [animationPeriod] seconds of [time]. Surfaces in [vertexLayout] (built
@@ -144,6 +146,16 @@ class WaterMaterial({
   /// colored light. About `0.25` suits a low, warm sun. The crest and shore
   /// foam are not lit and keep [foamColor] anyway.
   var double foamLightTint = 1,
+
+  /// The least light the lit foam takes (the foam of the foam mask, of the
+  /// [foamSources] and of the [ripples]), as a multiple of [foamColor], `0`
+  /// or more: the light reaching the water is clamped between it and
+  /// `1.15` (or it, when it is above). `0.5` (the default) lets the foam
+  /// fall to half its color in low light, where it turns grey against
+  /// lighter water; at dusk about `0.85` keeps white foam bright, with
+  /// [foamLightTint] about `0.25`. Above about `1` the foam no longer
+  /// darkens in shadow either. The crest and shore foam are not lit.
+  var double foamLightFloor = 0.5,
 
   /// How fast the foam of the foam mask and of the [foamSources] laps and
   /// drifts, as a multiple of its own pace: `1` (the default) laps twice per
@@ -336,7 +348,12 @@ class WaterMaterial({
       )
       ..setVector4(
         'upAxis',
-        _upVec..setValues(upAxis.x, upAxis.y, upAxis.z, 0),
+        _upVec..setValues(
+          upAxis.x,
+          upAxis.y,
+          upAxis.z,
+          foamLightFloor > 0 ? foamLightFloor : 0,
+        ),
       );
     if (!block.hasMember('pattern')) {
       return;

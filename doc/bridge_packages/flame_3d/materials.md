@@ -1026,6 +1026,7 @@ final water = WaterMaterial(
 | `edgeFoamScale`                | `0.6`        | the patches of the foam mask's foam      |
 | `edgeFoamMotion`               | `1`          | the pace of that foam, `0` still         |
 | `foamLightTint`                | `1`          | how much of the light's color foam takes |
+| `foamLightFloor`               | `0.5`        | the least light that foam takes          |
 | `animationPeriod`              | `8`          | seconds over which the options loop      |
 | `ripples`                      | none         | a shared `WaterRipples`, see below       |
 | `foamSources`                  | none         | a shared `WaterFoamSources`, see below   |
@@ -1076,6 +1077,14 @@ final water = WaterMaterial(
   keeps the light's color, `0` keeps only its brightness. About `0.25` suits a low, warm sun: the
   foam stays white with a trace of warmth, about as bright. The water volume's waterline has the
   same control, `WaterVolumeSettings.waterlineLightTint` (see [Water volumes](#water-volumes)).
+- **Foam in low light**: `foamLightFloor` is the lower end of that clamp, the least light the lit
+  foam takes as a multiple of `foamColor`: `clamp(light, foamLightFloor, max(1.15,
+  foamLightFloor))`. The default, `0.5`, lets the foam fall to half its color when the light is
+  low, so at dusk white foam turns grey and weak against lighter water. For dusk, raise it to about
+  `0.85` with `foamLightTint` about `0.25` (and the waterline's `waterlineLightFloor` to about
+  `0.7`): the foam stays bright and white, a little warm where the sun reaches it. Under brighter
+  light (noon), the light is above the floor and nothing changes. Above about `1` the foam no longer
+  darkens in shadow either. It costs one `max` per pixel where the foam is.
 - **Light added over the water**: the caustics, the sparkles and the highlights of the ripples are
   added over the translucent surface with an opacity of their own (their luminosity), so they keep
   their brightness however clear the water is.
@@ -2067,6 +2076,7 @@ world.waterVolume!.time = water.time;
 | `waterlineWidth`     | `0` (off)    | the width of the foam band around the level               |
 | `waterlineColor`     | `0xE6FFFFFF` | its color (lit like the surface); its alpha, how much     |
 | `waterlineLightTint` | `1`          | how much of the light's color the waterline foam takes    |
+| `waterlineLightFloor`| `0`          | the least light the waterline foam takes                  |
 | `bounds`             | none         | the box the water fills; outside it, nothing is submerged |
 
 Where a fragment is `depth = level - dot(position, up)` below the level (and inside `bounds`, when
@@ -2101,6 +2111,10 @@ color     = clamp(mix(color * filter, deepColor, absorbed), 0, 1)
   `mix(vec3(luminance), light, waterlineLightTint)`, so `1` (the default) keeps its color and `0`
   only its brightness. Under a low, warm sun, about `0.25` keeps the band white, matching the foam
   of the water beside it.
+- `waterlineLightFloor` is the least light the band takes, as a multiple of `waterlineColor`:
+  the light is clamped to `[waterlineLightFloor, max(1.25, waterlineLightFloor)]`. The default,
+  `0`, lets the band darken with the light; at dusk about `0.7` keeps it bright, as
+  `WaterMaterial.foamLightFloor` does for the foam on the water.
 
 The volume works with every vertex stage of `StylizedMaterial` (its own layout, skinned or not,
 and the standard layout), instancing, palettes, translucency, dither fades, shadows and HDR. The
@@ -2112,11 +2126,11 @@ call `applyWaterVolume` from `#include <flame_3d/water_volume.glsl>`. Setting
 one does not (see [Lighting](lighting.md#changing-lights-at-run-time)): in a retained
 `Scene3DComponent`, mark the scene dirty after advancing its `time`.
 
-Cost: the volume adds 8 vectors to the pass block `StylizedMaterial` reads (written once per pass,
+Cost: the volume adds 9 vectors to the pass block `StylizedMaterial` reads (written once per pass,
 about 0.2 µs) and no binding. Per pixel, surfaces above the level and its band test one plane and
 stop; submerged pixels pay two exponentials and, with caustics, the 22 transcendentals of the
-network; pixels in the band pay two noise lookups (13 sines), and with `waterlineLightTint` below
-`1` a dot product and a mix. On the software rasterizer of `flutter test`, a full-screen submerged
+network; pixels in the band pay two noise lookups (13 sines), with `waterlineLightTint` below
+`1` a dot product and a mix, and with `waterlineLightFloor` above `0` a `max`. On the software rasterizer of `flutter test`, a full-screen submerged
 stylized surface costs about 25 % more without caustics and 40 % more with them than a dry one.
 Like `StylizedMaterial`, it does not run on the web.
 
