@@ -41,7 +41,7 @@ the platform support and a "Limitations" section of its feature. This README is 
 
 This package is **experimental**. It depends on Flutter GPU and Impeller, which are experimental
 themselves, its API may change at any time without following semver, and many of its modules are
-recent. Behavior is covered by the package's tests (1,200 of them; the GPU tests render headless
+recent. Behavior is covered by the package's tests (1,354 of them; the GPU tests render headless
 on Flutter GPU, see [Testing](#testing)), not by runs on Android or iOS devices. Read the
 "Limitations" section of a page before you rely on a feature, and expect to work around gaps.
 

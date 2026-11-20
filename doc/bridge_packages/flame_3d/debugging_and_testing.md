@@ -361,8 +361,8 @@ from 2D golden tests.
 
 ### What runs where
 
-`packages/flame_3d` has 1,200 tests in 166 files (49 of them under `test/gpu`); with the flags all of
-them pass at the time of writing, in about a minute. Without the flags every GPU test of the package
+`packages/flame_3d` has 1,354 tests in 185 files (60 of them under `test/gpu`); with the flags all of
+them pass at the time of writing, in a minute or two. Without the flags every GPU test of the package
 skips. The repository's CI runs `flutter test` without the flags, so the GPU tests run only when
 someone runs them locally with the flags:
 
