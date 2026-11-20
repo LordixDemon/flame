@@ -179,9 +179,13 @@ void main() {
 
       expect(member('Wind', 'time', 1), [1.5]);
       expect(member('Wind', 'modelDirection', 3), [0, 1, 0]);
-      final matrices = member('JointMatrices', 'joints', 48);
-      expect(matrices.sublist(16, 32), joints[1].storage);
-      expect(matrices.sublist(32, 48), joints[2].storage);
+      // The top three rows of each matrix.
+      final rows = member('JointMatrices', RenderContext3D.jointRowsMember, 36);
+      List<double> topRows(Matrix4 m) => [
+        for (var row = 0; row < 3; row++) ...m.getRow(row).storage,
+      ];
+      expect(rows.sublist(12, 24), topRows(joints[1]));
+      expect(rows.sublist(24, 36), topRows(joints[2]));
     });
 
     test('writes its color grade, neutral by default', () {

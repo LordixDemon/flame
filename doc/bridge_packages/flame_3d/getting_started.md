@@ -69,10 +69,11 @@ one the device cannot run throws an `UnsupportedError` that names the shader, wh
 what the device allows, instead of drawing nothing; a shader is checked again when it is first
 resolved. Watch for:
 
-- the vertex stages that read joint matrices: the skinned layouts and the standard vertex stages of
-  `SpatialMaterial`, `UnlitMaterial` and `StylizedMaterial` (`stylized_material_standard`) declare
-  64 joint matrices, 269 to 275 vectors in all, more than the 256 an OpenGL ES 3.0 driver may
-  offer: such a driver cannot run them (the emulator offers 1,024);
+- the vertex stages that read joint matrices (the skinned layouts, the standard vertex stages of
+  `SpatialMaterial`, `UnlitMaterial` and `StylizedMaterial`, the skinned outline, shadow caster and
+  depth prepass stages) hold the top three rows of 64 joint matrices, 192 vectors: 195 to 211 in
+  all, within the 256 an OpenGL ES 3.0 driver must offer (they held 64 whole matrices, 259 to 275,
+  before); every other vertex stage uses at most 32;
 - `WaterMaterial`'s fragment stage uses 197 vectors, `StylizedMaterial`'s 183;
 - `SpatialMaterial`'s full shader samples 11 textures and needs `GL_EXT_shader_texture_lod`. On a
   device without it (the emulator) a new `SpatialMaterial` draws with the simpler shader the web

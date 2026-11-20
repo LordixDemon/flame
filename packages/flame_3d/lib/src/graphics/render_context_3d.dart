@@ -98,9 +98,16 @@ class RenderContext3D(super.device) extends RenderContext {
   /// The name of the block holding the hemisphere light.
   static const String hemisphereLightBlock = 'HemisphereLight';
 
-  /// The name of the block holding the joint matrices (`joints`) of a skinned
-  /// draw.
+  /// The name of the block holding the joint matrices of a skinned draw: the
+  /// top three rows of each ([jointRowsMember]), or whole `mat4` matrices
+  /// (`joints`) in shaders that declare them so.
   static const String jointMatricesBlock = 'JointMatrices';
+
+  /// The member of [jointMatricesBlock] holding the top three rows of each
+  /// joint matrix, `vec4 jointRows[192]` in `flame_3d/skinning.glsl`: row `r`
+  /// of joint `j` is `jointRows[j * 3 + r]`. The bottom row of a joint matrix
+  /// is taken to be `(0, 0, 0, 1)`, as it is for affine transforms.
+  static const String jointRowsMember = 'jointRows';
 
   /// The name of the block describing the shadow map of the pass.
   static const String shadowsBlock = 'Shadows';
@@ -1470,7 +1477,44 @@ class RenderContext3D(super.device) extends RenderContext {
     return _jointBlocks[slot] ??= UniformBlock(slot);
   }
 
+  /// Writes [joints] into the joint matrices [block] of a skinned draw: the
+  /// top three rows of each matrix into its `jointRows` (the layout of
+  /// `flame_3d/skinning.glsl`, whose matrices' bottom row is `(0, 0, 0, 1)`),
+  /// or each whole matrix into its `joints` when it declares `mat4` matrices
+  /// instead (shaders of before, and the WebGPU bundles).
   static void _writeJoints(UniformBlock block, List<Matrix4> joints) {
+    final rows = block.memberOffset(jointRowsMember);
+    if (rows != null) {
+      final capacity = (block.data.length - rows) ~/ 12;
+      if (joints.length > capacity) {
+        throw StateError(
+          'At most $capacity joints per surface are supported;'
+          ' found ${joints.length}',
+        );
+      }
+      final data = block.data;
+      for (var i = 0; i < joints.length; i++) {
+        final m = joints[i].storage;
+        final o = rows + i * 12;
+        // The storage is column-major: row r is m[r], m[4 + r], m[8 + r],
+        // m[12 + r].
+        data
+          ..[o] = m[0]
+          ..[o + 1] = m[4]
+          ..[o + 2] = m[8]
+          ..[o + 3] = m[12]
+          ..[o + 4] = m[1]
+          ..[o + 5] = m[5]
+          ..[o + 6] = m[9]
+          ..[o + 7] = m[13]
+          ..[o + 8] = m[2]
+          ..[o + 9] = m[6]
+          ..[o + 10] = m[10]
+          ..[o + 11] = m[14];
+      }
+      block.markDirty();
+      return;
+    }
     final base = block.memberOffset('joints') ?? 0;
     final capacity = (block.data.length - base) ~/ 16;
     if (joints.length > capacity) {

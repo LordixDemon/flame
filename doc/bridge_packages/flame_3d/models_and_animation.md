@@ -273,9 +273,13 @@ makes the pose evaluate every frame anyway.
   surface's).
 
 All built-in skinned shaders (`SpatialMaterial`, `UnlitMaterial`, `StylizedMaterial` for both the
-standard layout and its own skinned layout, the outline, shadow-caster and depth-prepass shaders,
-and the WebGPU bundles of `SpatialMaterial` and `UnlitMaterial`) declare the same 64-matrix block
-from `flame_3d/skinning.glsl`.
+standard layout and its own skinned layout, the outline, shadow-caster and depth-prepass shaders)
+declare the same block of 64 joints from `flame_3d/skinning.glsl`: the top three rows of each
+matrix, 192 uniform vectors, so that they fit the 256 an OpenGL ES 3.0 vertex shader may be limited
+to. The bottom row of a joint matrix is taken to be `(0, 0, 0, 1)`: joint matrices are affine (a
+world transform times an inverse bind matrix), and the pixels are those of whole matrices. The
+WebGPU bundles of `SpatialMaterial` and `UnlitMaterial` still declare 64 whole matrices, which the
+renderer writes as they are.
 
 
 ### How joints reach the shader
@@ -796,6 +800,8 @@ the main isolate; `AsyncModelLoader3D` moves the geometry work to an isolate.
 
 - **Meshopt**: `KHR_meshopt_compression` and its `COLOR` filter are not read.
 - **Crossfades**: at most 4 nested interrupted fades; a fifth interruption completes the oldest.
+- **Joint matrices** are drawn as affine transforms: the renderer sends their top three rows and
+  the shaders take the bottom row to be `(0, 0, 0, 1)`.
 - **Layers** override only; no additive layers.
 - **glTF**: no second UV set, no tangents, at most 4 joint influences per vertex (the largest
   are kept), no points or lines, only `KHR_materials_unlit`, `KHR_materials_emissive_strength`,

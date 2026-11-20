@@ -162,12 +162,23 @@ void main() {
       final base =
           shader
               .slot(RenderContext3D.jointMatricesBlock)
-              .getMemberOffsetInBytes('joints')! ~/
+              .getMemberOffsetInBytes(RenderContext3D.jointRowsMember)! ~/
           4;
       final jointData = backend.uniforms[RenderContext3D.jointMatricesBlock]!;
-      final joint = Matrix4.fromFloat32List(
-        jointData.sublist(base, base + 16),
-      );
+      // The top three rows of the matrix; its bottom row is (0, 0, 0, 1).
+      final joint = Matrix4.identity();
+      for (var row = 0; row < 3; row++) {
+        final at = base + row * 4;
+        joint.setRow(
+          row,
+          Vector4(
+            jointData[at],
+            jointData[at + 1],
+            jointData[at + 2],
+            jointData[at + 3],
+          ),
+        );
+      }
 
       final v = Vector3(1, 0, 0);
       final got = _rendered(instance, joint, v);

@@ -15,8 +15,9 @@ void main() {
     late RenderContext3D context;
 
     setUp(() {
-      // Joint matrix blocks hold 64 matrices, like the built-in shaders.
-      backend = FakeGpuBackend(blockSizes: {'JointMatrices': 4096});
+      // Joint matrix blocks hold the top three rows of 64 matrices, like the
+      // built-in shaders.
+      backend = FakeGpuBackend(blockSizes: {'JointMatrices': 3072});
       device = GraphicsDevice(backend: backend);
       context = RenderContext3D(device);
     });
@@ -66,6 +67,29 @@ void main() {
             Matrix4.translationValues(i.toDouble(), i * 2, i * 3),
         ];
         final material = create();
+
+        final data = draw(material, joints: joints)['JointMatrices']!;
+
+        final base = offsetOf(material, 'JointMatrices', 'jointRows');
+        for (final (i, joint) in joints.indexed) {
+          expect(
+            data.sublist(base + i * 12, base + (i + 1) * 12),
+            orderedEquals([
+              for (var row = 0; row < 3; row++) ...joint.getRow(row).storage,
+            ]),
+          );
+        }
+      });
+
+      test('$name writes whole matrices into a block of mat4 joints', () {
+        final joints = [
+          for (var i = 0; i < 16; i++)
+            Matrix4.translationValues(i.toDouble(), i * 2, i * 3),
+        ];
+        final material = create();
+        // A shader of before, or a WebGPU bundle: `mat4 joints[64]`.
+        (material.vertexShader.slot('JointMatrices') as FakeUniformSlot).missing
+            .add(RenderContext3D.jointRowsMember);
 
         final data = draw(material, joints: joints)['JointMatrices']!;
 

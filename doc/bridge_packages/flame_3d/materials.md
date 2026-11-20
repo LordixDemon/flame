@@ -2420,7 +2420,7 @@ lists them; everything else in the slots is the material's to write in `apply`:
 | `Fog`                  | `fog.glsl`      | the fog of the pass, read by `applyFog`    |
 | `Shadows`, `shadowMap` | `shadows.glsl`  | the shadow map or atlas and its tiles      |
 | `ShadowAtlas`          |                 | the atlas tiles (no built-in shader reads) |
-| `JointMatrices`        | `skinning.glsl` | 64 joint matrices, per skinned draw        |
+| `JointMatrices`        | `skinning.glsl` | 64 joint matrices (3 rows), per draw       |
 | `brdfLutTexture`       |                 | the split-sum BRDF table                   |
 | `probeGridTexture`     |                 | the light probe grid                       |
 | `DepthNormal`          |                 | the depth and normal prepass               |
@@ -2430,6 +2430,12 @@ lists them; everything else in the slots is the material's to write in `apply`:
 
 Slots without a chunk must be declared by the shader itself, with the layout of the built-in
 shaders (`spatial_material_pbr_fragment.glsl`, `water_material.frag`).
+
+`JointMatrices` holds the top three rows of each joint matrix (`vec4 jointRows[192]`, row `r` of
+joint `j` at `j * 3 + r`, `RenderContext3D.jointRowsMember`): `computeSkinMatrix()` of
+`skinning.glsl` rebuilds the matrix with a bottom row of `(0, 0, 0, 1)`, as every affine transform
+has, so a joint matrix that is not affine (a projection) is not drawn as given. A shader that
+declares `mat4 joints[64]` in the block instead, as the built-in ones did, gets whole matrices.
 
 The members of the light blocks are listed in [Lighting](lighting.md#light-uniform-blocks); shadows
 in [Shadows](shadows.md#receiving-shadows). Register blocks and textures of your own that every

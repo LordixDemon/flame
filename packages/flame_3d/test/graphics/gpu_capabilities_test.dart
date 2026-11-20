@@ -53,10 +53,71 @@ void main() {
     });
 
     test('count the joint matrices of skinned vertex stages', () {
-      final skinned = reflectShaderBundleGlesRequirements(
-        _bundle('stylized_material_skinned'),
+      // The top three rows of 64 joint matrices take 192 vectors
+      // (flame_3d/skinning.glsl, 256 when they were whole matrices); the
+      // CameraMatrices block 12 more and the y flip float 1.
+      const vectors = {
+        // Wind 92 bytes.
+        'stylized_material_skinned': 211,
+        // StylizedDepth 4 bytes.
+        'stylized_material_standard': 206,
+        'spatial_material': 205,
+        'spatial_material_pbr': 205,
+        'spatial_material_pbr_tangent': 205,
+        'unlit_material': 205,
+        // Outline 32 bytes.
+        'outline_material_skinned': 207,
+        'depth_normal_prepass_skinned': 205,
+        'shadow_caster_skinned': 205,
+        'shadow_caster_moving_skinned': 205,
+        // ParaboloidLight 32 bytes, no camera.
+        'shadow_caster_paraboloid_skinned': 195,
+        'shadow_caster_paraboloid_moving_skinned': 195,
+      };
+      for (final MapEntry(key: name, value: count) in vectors.entries) {
+        final stages = reflectShaderBundleGlesRequirements(_bundle(name))!;
+        expect(stages['TextureVertex']!.uniformVectors, count, reason: name);
+      }
+    });
+
+    test("StylizedMaterial's stages", () {
+      final plain = reflectShaderBundleGlesRequirements(
+        _bundle('stylized_material'),
       )!;
-      expect(skinned['TextureVertex']!.uniformVectors, greaterThan(256));
+      // CameraMatrices 12, Wind 6 and the y flip float.
+      expect(plain['TextureVertex']!.uniformVectors, 19);
+      // The Material and StylizedPass blocks and the y flip float, of the 224
+      // an OpenGL ES 3.0 driver must offer.
+      expect(plain['TextureFragment']!.uniformVectors, 183);
+      expect(plain['TextureFragment']!.samplers, 3);
+    });
+
+    test('every shipped stage fits what OpenGL ES 3.0 guarantees', () {
+      final bundles =
+          Directory('assets/shaders')
+              .listSync()
+              .whereType<File>()
+              .where((f) => f.path.endsWith('.shaderbundle'))
+              .toList()
+            ..sort((a, b) => a.path.compareTo(b.path));
+      expect(bundles, isNotEmpty);
+      for (final file in bundles) {
+        final name = file.uri.pathSegments.last;
+        final stages = reflectShaderBundleGlesRequirements(
+          ByteData.sublistView(file.readAsBytesSync()),
+        )!;
+        for (final MapEntry(key: entry, value: stage) in stages.entries) {
+          final vertex = stage.stage == GpuShaderStage.vertex;
+          // 256 vectors per vertex stage and 224 per fragment stage, 16
+          // textures per stage.
+          expect(
+            stage.uniformVectors,
+            lessThanOrEqualTo(vertex ? 256 : 224),
+            reason: '$name $entry',
+          );
+          expect(stage.samplers, lessThanOrEqualTo(16), reason: '$name $entry');
+        }
+      }
     });
 
     test('are null for data that is not a shader bundle', () {

@@ -84,11 +84,16 @@ void main() {
         });
         for (final MapEntry(key: block, value: members) in blocks.entries) {
           final slot = slots[block] as Map<String, dynamic>;
-          expect(
-            (slot['memberOffsets'] as Map).keys.toSet(),
-            members.toSet(),
-            reason: 'members of $block',
-          );
+          final names = (slot['memberOffsets'] as Map).keys.toSet();
+          // The WebGPU bundles were built when flame_3d/skinning.glsl held
+          // 64 whole joint matrices; they keep them (WebGPU has room for
+          // them), and the renderer writes the joints as each block declares
+          // them.
+          if (block == 'JointMatrices' && names.contains('joints')) {
+            expect(members, ['jointRows'], reason: 'members of $block');
+            continue;
+          }
+          expect(names, members.toSet(), reason: 'members of $block');
         }
 
         // What the vertex stage outputs, the fragment stage reads.

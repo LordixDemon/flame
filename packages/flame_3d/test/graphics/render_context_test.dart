@@ -218,9 +218,12 @@ void main() {
       final base =
           shader
               .slot(RenderContext3D.jointMatricesBlock)
-              .getMemberOffsetInBytes('joints')! ~/
+              .getMemberOffsetInBytes(RenderContext3D.jointRowsMember)! ~/
           4;
-      expect(data.sublist(base + 16, base + 32), joints[1].storage);
+      // The top three rows of each matrix.
+      expect(data.sublist(base + 12, base + 24), [
+        for (var row = 0; row < 3; row++) ...joints[1].getRow(row).storage,
+      ]);
       expect(backend.commands.where((c) => c.startsWith('drawIndexed')), [
         'drawIndexed 3 x1',
       ]);
