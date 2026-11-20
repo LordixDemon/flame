@@ -144,7 +144,8 @@ void main() {
   group('WaterFoamSources', () {
     test('adds sources into free slots, and throws when full', () {
       final sources = WaterFoamSources();
-      for (var i = 0; i < WaterFoamSources.capacity; i++) {
+      expect(sources.capacity, 8);
+      for (var i = 0; i < sources.capacity; i++) {
         final slot = i.isEven
             ? sources.addCircle(Vector3.zero(), radius: 0.2)
             : sources.addRectangle(
@@ -155,7 +156,7 @@ void main() {
         expect(slot, i);
         expect(sources.isUsed(i), isTrue);
       }
-      expect(sources.length, WaterFoamSources.capacity);
+      expect(sources.length, sources.capacity);
       expect(
         () => sources.addCircle(Vector3.zero(), radius: 0.2),
         throwsStateError,
@@ -163,6 +164,18 @@ void main() {
       sources.remove(3);
       expect(sources.isUsed(3), isFalse);
       expect(sources.addCircle(Vector3.zero(), radius: 0.1), 3);
+      // A larger set, up to 16.
+      final large = WaterFoamSources(capacity: WaterFoamSources.maxCapacity);
+      for (var i = 0; i < 16; i++) {
+        expect(large.addCircle(Vector3.zero(), radius: 0.1), i);
+      }
+      expect(
+        () => large.addCircle(Vector3.zero(), radius: 0.1),
+        throwsStateError,
+      );
+      expect(() => large.isUsed(16), throwsRangeError);
+      expect(() => WaterFoamSources(capacity: 0), throwsRangeError);
+      expect(() => WaterFoamSources(capacity: 17), throwsRangeError);
       // A slot can be set directly, used or not.
       sources
         ..clear()
@@ -196,10 +209,7 @@ void main() {
       expect(() => sources.move(slot, Vector3.zero()), throwsStateError);
       expect(() => sources.setStrength(slot, 1), throwsStateError);
       expect(() => sources.isUsed(-1), throwsRangeError);
-      expect(
-        () => sources.remove(WaterFoamSources.capacity),
-        throwsRangeError,
-      );
+      expect(() => sources.remove(sources.capacity), throwsRangeError);
     });
 
     test('rejects shapes it cannot draw', () {
@@ -431,6 +441,42 @@ void main() {
         );
       }
       expect(WaterMaterial.edgeFoamPhase(3, 8, double.nan), 0);
+    });
+
+    test('draws large sets and carried patterns with its full stage', () {
+      final water = WaterMaterial();
+      final lean = water.fragmentShader;
+      final small = WaterFoamSources();
+      water.foamSources = small;
+      expect(water.fragmentShader, same(lean));
+      // More than 8 sources: the full stage.
+      water.foamSources = WaterFoamSources(capacity: 12);
+      final full = water.fragmentShader;
+      expect(full, isNot(same(lean)));
+      water.foamSources = WaterFoamSources(capacity: 16);
+      expect(water.fragmentShader, same(full));
+      water.foamSources = null;
+      expect(water.fragmentShader, same(lean));
+      // A source that carries its pattern: the full stage, as long as it
+      // does.
+      water.foamSources = small;
+      final slot = small.addCircle(Vector3.zero(), radius: 0.2);
+      expect(water.fragmentShader, same(lean));
+      small.setCarryPattern(slot, carry: true);
+      expect(water.fragmentShader, same(full));
+      small.remove(slot);
+      expect(water.fragmentShader, same(lean));
+      expect(
+        WaterMaterial(foamSources: WaterFoamSources(capacity: 9))
+            .fragmentShader,
+        isNot(same(WaterMaterial().fragmentShader)),
+      );
+      // A fragment shader set by hand stays.
+      final custom = WaterMaterial().fragmentShader;
+      water
+        ..fragmentShader = custom
+        ..foamSources = WaterFoamSources(capacity: 16);
+      expect(water.fragmentShader, same(custom));
     });
 
     test('builds surfaces in its vertex layout', () {

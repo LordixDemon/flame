@@ -1190,13 +1190,14 @@ crown.burst(52, at: point); // where the pebble lands, with a ring of its own
 
 The foam mask is fixed when a surface is built: a wall gets its band, but a stone rising out of
 the water, a slab sinking back or a crate drifting by gets none. A `WaterFoamSources` holds up to
-`WaterFoamSources.capacity` (16) foam sources, collars of the same foam (lapping and broken up at
-the pace of `edgeFoamMotion`, lit as `foamLightTint` says) around a circle or a rectangle with
-rounded corners lying in the plane of the water, set and moved at run time without rebuilding any
-surface. Give one set to every `WaterMaterial` of a body of water, as the ripples:
+its `capacity` of foam sources (8 by default, up to `WaterFoamSources.maxCapacity`, 16), collars
+of the same foam (lapping and broken up at the pace of `edgeFoamMotion`, lit as `foamLightTint`
+says) around a circle or a rectangle with rounded corners lying in the plane of the water, set and
+moved at run time without rebuilding any surface. Give one set to every `WaterMaterial` of a body
+of water, as the ripples:
 
 ```dart
-final collars = WaterFoamSources();
+final collars = WaterFoamSources(); // 8 sources, or WaterFoamSources(capacity: 16)
 final water = WaterMaterial(foamSources: collars, ripples: ripples);
 
 // A slab, 0.95 units square, under the water for now:
@@ -1245,7 +1246,8 @@ pattern at a place of its own, so two collars of one shape do not show the same 
 keeps its slot in the shader). Where such a collar meets other foam, the band of a wall or another
 collar, the larger of the two foams shows, without the two bands merging into one. A collar that
 carries its pattern computes it per pixel where it reaches (13 sines), on top of the mask's own
-pattern where both foam.
+pattern where both foam, and while one does the material draws with its full fragment stage (see
+[What the options cost](#what-the-options-cost)).
 
 `addCircle` and `addRectangle` take the first free slot and throw a `StateError` when all are
 taken (a collar must not take the place of another one while its object is still there);
@@ -1293,11 +1295,15 @@ explicit level of detail, no texture, and their loops have constant bounds (the 
 to 8 and stops at the number of living ripples). They need high precision in the fragment stage,
 as every built-in material does (the compiled shaders declare their values `highp`); their
 arguments stay small (the time is wrapped, the cells' values come from coordinates wrapped to 64),
-so they also hold in 16-bit floats near the origin. The options add 52 uniform vectors to the
-fragment stage (197 in all: 16 for the ripples, 32 for the foam sources), within the 224 that
-OpenGL ES 3.0 guarantees; the foam sources' loop runs to 16 and stops at their number. The foam
-sources' circles add 16 vectors to the vertex stage (19 in its block, of the 256 guaranteed) and one
-`vec3` output. Like the rest of `WaterMaterial`, they do not run on the web.
+so they also hold in 16-bit floats near the origin. The options add 36 uniform vectors to the
+lean fragment stage (181 in all: 16 for the ripples, 16 for 8 slots of foam sources), within the
+224 that OpenGL ES 3.0 guarantees. While the material's `foamSources` hold more than 8 sources
+(`capacity` above 8) or one of them carries its pattern, it draws with its full stage: 16 slots
+that can carry their pattern, 16 vectors more (197 in all) and a few percent more per pixel over
+the whole surface, collars or not. It switches by itself when the set changes (the bundle of the
+masked vertex stage carries the full stage, so no bundle is added). The sources' loops run to the
+number of slots and stop after the last source above `0`. Their circles add 16 vectors to the
+vertex stage (19 in its block, of the 256 guaranteed) and one `vec3` output. Like the rest of `WaterMaterial`, they do not run on the web.
 
 
 ## UnlitMaterial
@@ -2428,12 +2434,14 @@ The texture sampler options, including anisotropy up to 16, work on the web.
   normals but do not move the vertices, and its depth ramp and foam mask come from the vertices, so
   they do not follow objects that move under or through the water (a slab rising under the
   surface): foam sources (`WaterFoamSources`) follow them, but only as circles or rectangles with
-  rounded corners lying in the plane of the water, 16 at most per set, and each one costs every
-  pixel it may reach (as far as the vertices of the surface can tell: a surface of a few large
-  triangles pays them over most of its pixels). A collar that carries its pattern keeps its band
-  apart from the foam it meets (the larger of the two shows) instead of merging with it. `edgeFoamMotion` and `foamLightTint` belong to the material, not to the
-  vertices: a still band on part of a surface takes a surface and a material of its own. The
-  volume's `waterlineMotion` holds for every waterline of the world alike.
+  rounded corners lying in the plane of the water, 16 at most per set (8 by default; more than 8,
+  or carried patterns, take the full fragment stage), and each one costs every pixel it may reach
+  (as far as the vertices of the surface can tell: a surface of a few large triangles pays them
+  over most of its pixels). A collar that carries its pattern keeps its band apart from the foam
+  it meets (the larger of the two shows) instead of merging with it. `edgeFoamMotion` and
+  `foamLightTint` belong to the material, not to the vertices: a still band on part of a surface
+  takes a surface and a material of its own. The volume's `waterlineMotion` holds for every
+  waterline of the world alike.
 - A water volume has a flat level: it ignores the waves of the surface, so its waterline band does
   not follow them (keep the waves small, as in a basin). It submerges `StylizedMaterial` surfaces
   only, takes its caustics from one directional light, and has no fog of its own: the distance

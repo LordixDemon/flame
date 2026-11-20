@@ -16,6 +16,16 @@
 // They are procedural (flame_3d/water_pattern.glsl) and need neither the
 // depth prepass nor the scene color grab.
 
+// The number of slots of foam sources the stage holds: 8 by default, 16
+// when the including stage defines it so; 8 slots take 16 uniform vectors
+// fewer. The foam sources can carry their pattern when the including stage
+// defines WATER_FOAM_CARRIED_PATTERNS, which costs a little everywhere:
+// water_material.frag is the lean stage (8 slots, no carried pattern),
+// water_material_masked.frag the full one (16 slots, carried patterns).
+#ifndef WATER_FOAM_SOURCE_SLOTS
+#define WATER_FOAM_SOURCE_SLOTS 8
+#endif
+
 in vec3 fragPosition;
 in vec3 fragNormal;
 in vec2 fragUv;
@@ -69,8 +79,8 @@ uniform WaterMaterial {
   vec4 detail;
   // x: 1 / depthRange (0: the ramp is off), y: shallowOpacity, z: the number
   // of slots in `foamSourcePositions` and `foamSourceShapes` (up to the last
-  // source above 0), w: the number of ripples in `ripplePositions` and
-  // `rippleShapes`.
+  // source above 0), negative when one of them carries its pattern, w: the
+  // number of ripples in `ripplePositions` and `rippleShapes`.
   vec4 ramp;
   // Per ripple, xy: its center in the plane coordinates of the water, z: its
   // age in seconds, w: its strength now (faded with its age).
@@ -81,12 +91,12 @@ uniform WaterMaterial {
   // Per slot of the foam sources, xy: its center in the plane coordinates of
   // the water, zw: the unit direction of its length in those coordinates,
   // divided by the width of its foam.
-  vec4 foamSourcePositions[16];
+  vec4 foamSourcePositions[WATER_FOAM_SOURCE_SLOTS];
   // Per foam source, in widths of its foam, xy: the half length and half
   // width of the straight part of its outline, z: the radius of its corners;
   // w: its strength, negative when it carries its pattern, 0 for a free slot
   // or a hidden source.
-  vec4 foamSourceShapes[16];
+  vec4 foamSourceShapes[WATER_FOAM_SOURCE_SLOTS];
 } waterMat;
 
 uniform StylizedPass {
@@ -185,6 +195,46 @@ float waterRippleRings(vec2 uv, inout vec2 slope) {
   return crest;
 }
 
+// The foam mask of the foam sources at the plane coordinates `uv`: per
+// source, its strength inside and against its outline (a rectangle with
+// rounded corners, a circle when it has no straight part), falling to 0 at
+// the width of its foam from it, `1 - smoothstep(0, width, distance)`; the
+// largest of them. Free slots and hidden sources (strength 0) are skipped,
+// and so are the sources that carry their pattern (a negative strength),
+// see waterCarriedFoam.
+float waterFoamSources(vec2 uv) {
+  float mask = 0.0;
+  int count = int(abs(waterMat.ramp.z) + 0.5);
+  for (int i = 0; i < WATER_FOAM_SOURCE_SLOTS; i++) {
+    if (i >= count) {
+      break;
+    }
+    vec4 shape = waterMat.foamSourceShapes[i];
+    if (shape.w <= 0.0) {
+      continue;
+    }
+    vec4 position = waterMat.foamSourcePositions[i];
+    vec2 d = uv - position.xy;
+    // Along and across the source, in widths of its foam.
+    vec2 local = abs(vec2(
+      dot(d, position.zw),
+      dot(d, vec2(-position.w, position.z))
+    ));
+    vec2 q = local - shape.xy;
+    // Beyond the box around its reach: no foam (the distance below is more
+    // than 1).
+    if (max(q.x, q.y) > shape.z + 1.0) {
+      continue;
+    }
+    // The signed distance to the outline, negative inside.
+    float outside = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - shape.z;
+    if (outside < 1.0) {
+      mask = max(mask, shape.w * (1.0 - smoothstep(0.0, 1.0, outside)));
+    }
+  }
+  return mask;
+}
+
 // The foam where the vertices' foam mask is above 0: a band whose inner edge
 // laps in and out and is broken up into drifting patches.
 float waterEdgeFoam(float mask, vec2 uv, float phase) {
@@ -202,63 +252,50 @@ float waterEdgeFoam(float mask, vec2 uv, float phase) {
   return max(band * lace, flecks * 0.7);
 }
 
-// The foam mask of the foam sources at the plane coordinates `uv`: per
-// source, its strength inside and against its outline (a rectangle with
-// rounded corners, a circle when it has no straight part), falling to 0 at
-// the width of its foam from it, `1 - smoothstep(0, width, distance)`; the
-// largest of those of the sources whose pattern stays in the world. The
-// sources that carry their pattern (sent with a negative strength) draw
-// their foam (waterEdgeFoam at `phase`) in their own frame instead, turned
-// with them and offset by their slot, faded out with their mask; `carried`
-// takes the largest of it.
-float waterFoamSources(vec2 uv, float phase, inout float carried) {
-  float mask = 0.0;
-  int count = int(waterMat.ramp.z + 0.5);
-  for (int i = 0; i < 16; i++) {
+#ifdef WATER_FOAM_CARRIED_PATTERNS
+// The foam of the sources that carry their pattern (sent with a negative
+// strength) at the plane coordinates `uv`: per source, the foam of its mask
+// (as waterFoamSources computes it) drawn by waterEdgeFoam at `phase` in its
+// own frame, along and across it in world units, from an origin of its
+// slot's, so that it moves and turns with it; faded out with its mask. The
+// largest of them.
+float waterCarriedFoam(vec2 uv, float phase) {
+  float foam = 0.0;
+  int count = int(abs(waterMat.ramp.z) + 0.5);
+  for (int i = 0; i < WATER_FOAM_SOURCE_SLOTS; i++) {
     if (i >= count) {
       break;
     }
     vec4 shape = waterMat.foamSourceShapes[i];
-    // A free slot, or a hidden source.
-    if (shape.w == 0.0) {
+    if (shape.w >= 0.0) {
       continue;
     }
     vec4 position = waterMat.foamSourcePositions[i];
     vec2 d = uv - position.xy;
-    // Along and across the source, in widths of its foam.
     vec2 along = vec2(
       dot(d, position.zw),
       dot(d, vec2(-position.w, position.z))
     );
-    vec2 local = abs(along);
-    vec2 q = local - shape.xy;
-    // Beyond the box around its reach: no foam (the distance below is more
-    // than 1).
+    vec2 q = abs(along) - shape.xy;
     if (max(q.x, q.y) > shape.z + 1.0) {
       continue;
     }
-    // The signed distance to the outline, negative inside.
     float outside = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - shape.z;
     if (outside < 1.0) {
-      float sourceMask = abs(shape.w) * (1.0 - smoothstep(0.0, 1.0, outside));
-      if (shape.w > 0.0) {
-        mask = max(mask, sourceMask);
-      } else {
-        // In world units along and across it (|zw| is 1 / the width), from
-        // an origin of its slot's.
-        float slot = float(i);
-        vec2 p = along * inversesqrt(dot(position.zw, position.zw)) +
-          vec2(slot * 2.31 + 0.7, slot * 1.47 + 1.9);
-        carried = max(
-          carried,
-          waterEdgeFoam(sourceMask, p, phase) *
-            smoothstep(0.0, 0.1, sourceMask)
-        );
-      }
+      float mask = -shape.w * (1.0 - smoothstep(0.0, 1.0, outside));
+      // |zw| is 1 / the width of its foam.
+      float slot = float(i);
+      vec2 p = along * inversesqrt(dot(position.zw, position.zw)) +
+        vec2(slot * 2.31 + 0.7, slot * 1.47 + 1.9);
+      foam = max(
+        foam,
+        waterEdgeFoam(mask, p, phase) * smoothstep(0.0, 0.1, mask)
+      );
     }
   }
-  return mask;
+  return foam;
 }
+#endif
 
 void main() {
   float t = waterMat.params.x;
@@ -432,12 +469,13 @@ void main() {
   float litFoam = 0.0;
   float edgeMask = fragWater.y;
   float sourceFade = 1.0;
-  float carried = 0.0;
   // The sources' loop runs only where the vertices say that one may reach
-  // (elsewhere their mask is 0).
-  if (waterMat.ramp.z > 0.5 &&
-      dot(fragFoamGate.xy, fragFoamGate.xy) + fragFoamGate.z < 0.0) {
-    float sources = waterFoamSources(fragUv, waterMat.shoreParams.z, carried);
+  // (elsewhere their mask is 0). A negative number of slots says that some
+  // carry their pattern.
+  bool sourcesNear = abs(waterMat.ramp.z) > 0.5 &&
+    dot(fragFoamGate.xy, fragFoamGate.xy) + fragFoamGate.z < 0.0;
+  if (sourcesNear) {
+    float sources = waterFoamSources(fragUv);
     if (edgeMask <= 0.001) {
       // Where only the sources foam, their loose flecks fade out with their
       // mask, so that the foam ends where the mask does.
@@ -451,9 +489,11 @@ void main() {
       litFoam *= sourceFade;
     }
   }
-  if (carried > 0.0) {
-    litFoam = max(litFoam, carried);
+#ifdef WATER_FOAM_CARRIED_PATTERNS
+  if (sourcesNear && waterMat.ramp.z < 0.0) {
+    litFoam = max(litFoam, waterCarriedFoam(fragUv, waterMat.shoreParams.z));
   }
+#endif
   if (ringCrest > 0.0) {
     litFoam = max(litFoam, smoothstep(0.7, 1.1, ringCrest) * 0.85);
     // The water the rings raise is a little lighter.

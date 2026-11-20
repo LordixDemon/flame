@@ -144,10 +144,14 @@ void _useFragmentOfBefore(WaterMaterial material) {
 
 /// Collars of every kind over the square of [_grid], in a world mapped by
 /// [v]: circles, a point, rectangles turned or not, strong and faint, one
-/// partly off the water, one in the middle of each triangle of [_quad].
-WaterFoamSources _collars(Vector3 Function(double x, double y, double z) v) {
+/// partly off the water, one in the middle of each triangle of [_quad]; 8
+/// slots, or, [large], 16 slots and 14 sources.
+WaterFoamSources _collars(
+  Vector3 Function(double x, double y, double z) v, {
+  bool large = false,
+}) {
   final axis = v(math.cos(math.pi / 6), 0, -math.sin(math.pi / 6));
-  return WaterFoamSources()
+  final sources = WaterFoamSources(capacity: large ? 16 : 8)
     ..addCircle(v(-1.1, 0, -0.9), radius: 0.3)
     ..addCircle(v(0.3, 0, -1.2), radius: 0, width: 0.12, strength: 1.3)
     ..addRectangle(
@@ -170,6 +174,17 @@ WaterFoamSources _collars(Vector3 Function(double x, double y, double z) v) {
     ..addCircle(v(1.9, 0, -1.8), radius: 0.2, width: 0.25)
     ..addCircle(v(-0.7, 0, -0.1), radius: 0.15, width: 0.2)
     ..addCircle(v(0.7, 0, 0.1), radius: 0.1, width: 0.15, strength: 0.9);
+  if (large) {
+    for (var i = 0; i < 6; i++) {
+      sources.addCircle(
+        v(-1.5 + i * 0.6, 0, 1.6 - (i % 2) * 0.35),
+        radius: 0.08 + 0.03 * i,
+        width: 0.18,
+        strength: 0.7 + 0.1 * i,
+      );
+    }
+  }
+  return sources;
 }
 
 void main() {
@@ -185,7 +200,12 @@ void main() {
     testGpu(
       'skip the pixels they do not reach: the pixels of before, exactly',
       (tester) async {
-        for (final zUp in [false, true]) {
+        for (final (zUp, large) in [
+          (false, false),
+          (true, false),
+          (false, true),
+          (true, true),
+        ]) {
           Vector3 v(double x, double y, double z) =>
               zUp ? Vector3(x, -z, y) : Vector3(x, y, z);
           WaterMaterial water({required bool before}) {
@@ -200,7 +220,7 @@ void main() {
               depthRange: 0.7,
               ripples: WaterRipples()
                 ..add(v(-0.4, 0, 0.3), time: 0.9, strength: 1.4),
-              foamSources: _collars(v),
+              foamSources: _collars(v, large: large),
             );
             if (before) {
               _useFragmentOfBefore(material);
@@ -245,7 +265,8 @@ void main() {
             ];
             for (final (view, projection) in views) {
               for (final msaa in [Msaa.off, Msaa.sample4]) {
-                final where = 'zUp $zUp, quad $quad, $msaa, $view';
+                final where =
+                    'zUp $zUp, large $large, quad $quad, $msaa, $view';
                 final now = await _render(
                   tester,
                   scene(water(before: false)),

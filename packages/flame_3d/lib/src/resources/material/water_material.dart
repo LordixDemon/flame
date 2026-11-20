@@ -167,6 +167,14 @@ class WaterMaterial({
   /// The foam sources this water draws, collars of foam around the things
   /// that move, shared with the other materials of the same body of water;
   /// `null` (the default) draws none.
+  ///
+  /// The material draws with a lean fragment stage, whose 8 slots of foam
+  /// sources draw collars whose pattern stays in the world, and switches to
+  /// its full stage, 16 slots that can carry their pattern, 16 uniform
+  /// vectors larger and a little slower everywhere, while its set holds more
+  /// than 8 sources ([WaterFoamSources.capacity]) or one of them carries its
+  /// pattern ([WaterFoamSources.setCarryPattern]); unless its
+  /// [fragmentShader] was replaced by another one.
   var WaterFoamSources? foamSources,
 }) extends Material {
   /// {@macro water_material}
@@ -178,19 +186,72 @@ class WaterMaterial({
         ),
         fragmentShader: FragmentShader.fromAsset(
           _bundle,
-          slots: [
-            _fragmentBlock,
-            RenderContext3D.stylizedPassBlock,
-            RenderContext3D.shadowMapSampler,
-            RenderContext3D.depthNormalSampler,
-            RenderContext3D.depthNormalBlock,
-            RenderContext3D.sceneColorSampler,
-            RenderContext3D.sceneColorBlock,
-          ],
+          slots: _fragmentSlots,
         ),
       ) {
+    _leanFragment = super.fragmentShader;
     castsShadows = false;
     renderState = _derivedState = _stateFor(opacity);
+  }
+
+  /// The fragment stage this material draws with: the lean or the full one
+  /// that its [foamSources] need (see [foamSources]), or the one it was
+  /// given.
+  @override
+  Shader get fragmentShader {
+    _chooseFragment();
+    return super.fragmentShader;
+  }
+
+  static const List<String> _fragmentSlots = [
+    _fragmentBlock,
+    RenderContext3D.stylizedPassBlock,
+    RenderContext3D.shadowMapSampler,
+    RenderContext3D.depthNormalSampler,
+    RenderContext3D.depthNormalBlock,
+    RenderContext3D.sceneColorSampler,
+    RenderContext3D.sceneColorBlock,
+  ];
+
+  /// The number of slots of foam sources of the lean fragment stage.
+  static const int _leanSlots = 8;
+
+  // The lean fragment stage, and the full one, made when a set needs it.
+  late final Shader _leanFragment;
+  Shader? _fullFragment;
+
+  // The set and the version of it the stage was chosen for.
+  WaterFoamSources? _chosenFor;
+  int _chosenVersion = -1;
+
+  /// Draws with the fragment stage [foamSources] need (see [foamSources]),
+  /// unless the fragment shader was replaced by another one. Checks the set
+  /// again only when it, or its version, changed.
+  void _chooseFragment() {
+    final sources = foamSources;
+    final version = sources?.version ?? -1;
+    if (identical(sources, _chosenFor) && version == _chosenVersion) {
+      return;
+    }
+    _chosenFor = sources;
+    _chosenVersion = version;
+    final current = super.fragmentShader;
+    if (!identical(current, _leanFragment) &&
+        !identical(current, _fullFragment)) {
+      return;
+    }
+    final full =
+        sources != null &&
+        (sources.capacity > _leanSlots || sources.carriesAnyPattern);
+    final next = full
+        ? (_fullFragment ??= FragmentShader.fromAsset(
+            _maskedBundle,
+            slots: _fragmentSlots,
+          ))
+        : _leanFragment;
+    if (!identical(next, current)) {
+      fragmentShader = next;
+    }
   }
 
   /// The opacity of the water body, `0..1` (foam and grazing angles add to
@@ -247,9 +308,14 @@ class WaterMaterial({
     VertexAttribute(waterAttribute, 3),
   ]);
 
+  // The bundle of the vertex stage for surfaces in [vertexLayout], and of
+  // the fragment stage with 16 slots of foam sources.
+  static const String _maskedBundle =
+      'packages/flame_3d/assets/shaders/water_material_masked.shaderbundle';
+
   // The variant for surfaces in [vertexLayout].
   final Shader _maskedVertexShader = VertexShader.fromAsset(
-    'packages/flame_3d/assets/shaders/water_material_masked.shaderbundle',
+    _maskedBundle,
     slots: [RenderContext3D.cameraMatricesBlock, _vertexBlock],
   );
 
@@ -297,15 +363,15 @@ class WaterMaterial({
     (_) => Vector4.zero(),
   );
   static final List<Vector4> _foamSourcePositions = List.generate(
-    WaterFoamSources.capacity,
+    WaterFoamSources.maxCapacity,
     (_) => Vector4.zero(),
   );
   static final List<Vector4> _foamSourceShapes = List.generate(
-    WaterFoamSources.capacity,
+    WaterFoamSources.maxCapacity,
     (_) => Vector4.zero(),
   );
   static final List<Vector4> _foamSourceBounds = List.generate(
-    WaterFoamSources.capacity,
+    WaterFoamSources.maxCapacity,
     (_) => Vector4.zero(),
   );
   static final Vector2 _foamSourceOrigin = Vector2.zero();
@@ -447,7 +513,10 @@ class WaterMaterial({
         _ramp..setValues(
           depthRange > 0 ? 1 / depthRange : 0,
           shallowOpacity,
-          foamSourceCount.toDouble(),
+          // Negative when a source carries its pattern.
+          _carriesPattern(foamSourceCount)
+              ? -foamSourceCount.toDouble()
+              : foamSourceCount.toDouble(),
           rippleCount.toDouble(),
         ),
       );
@@ -509,6 +578,17 @@ class WaterMaterial({
   }
 
   static double _inverse(double scale) => scale > 0 ? 1 / scale : 0;
+
+  /// Whether one of the first [count] slots of foam sources written carries
+  /// its pattern (a negative strength).
+  static bool _carriesPattern(int count) {
+    for (var i = 0; i < count; i++) {
+      if (_foamSourceShapes[i].w < 0) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   /// Sets [_uAxis] and [_vAxis] to the plane axes the shaders build around
   /// [up] (see `flame_3d/water_vertex.glsl`).

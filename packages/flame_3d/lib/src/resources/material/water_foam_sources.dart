@@ -51,18 +51,35 @@ import 'package:meta/meta.dart';
 /// (`carryPattern`, [setCarryPattern]): then it moves and turns with the
 /// source.
 ///
-/// It holds at most [capacity] sources, in slots that keep their source until
-/// it is removed: adding one when every slot is taken throws. Adding, moving,
-/// changing and drawing allocate nothing, and moving a source does not
-/// rebuild any surface. The pixels pay for the slots up to the last source
-/// whose strength is above `0`, and only where a source may reach them: the
-/// vertices of the surface tell the pixels where none does, so the cost
-/// follows the area the collars cover (on a surface subdivided finely enough
-/// for its waves).
+/// It holds at most [capacity] sources (8 by default, up to [maxCapacity]),
+/// in slots that keep their source until it is removed: adding one when
+/// every slot is taken throws. A set of more than 8 (or one whose sources
+/// carry their pattern) makes its materials draw with their full fragment
+/// stage, 16 uniform vectors larger and a little slower (see
+/// `WaterMaterial.foamSources`): give a set the capacity its scene needs.
+/// Adding, moving, changing and drawing allocate nothing, and moving a source
+/// does not rebuild any surface. The pixels pay for the slots up to the last
+/// source whose strength is above `0`, and only where a source may reach
+/// them: the vertices of the surface tell the pixels where none does, so the
+/// cost follows the area the collars cover (on a surface subdivided finely
+/// enough for its waves).
 /// {@endtemplate}
-class WaterFoamSources() {
-  /// The number of sources a set holds.
-  static const int capacity = 16;
+class WaterFoamSources({
+  /// The number of sources the set holds, from `1` to [maxCapacity]:
+  /// [defaultCapacity] by default.
+  final int capacity = defaultCapacity,
+}) {
+  /// {@macro water_foam_sources}
+  this {
+    RangeError.checkValueInInterval(capacity, 1, maxCapacity, 'capacity');
+  }
+
+  /// The number of sources a set holds by default, as many as the fragment
+  /// stage of `WaterMaterial` holds without its 16 more uniform vectors.
+  static const int defaultCapacity = 8;
+
+  /// The most sources a set can hold.
+  static const int maxCapacity = 16;
 
   // Per source: x, y, z (its center), ax, ay, az (the direction of its
   // length), half length, half width, corner radius, width, strength and 1
@@ -250,7 +267,9 @@ class WaterFoamSources() {
   /// boat), still lapping at the pace of `WaterMaterial.edgeFoamMotion`;
   /// each slot starts its pattern at a place of its own, so that collars of
   /// one shape do not show the same foam. Where such a collar meets other
-  /// foam, the larger of the two foams shows.
+  /// foam, the larger of the two foams shows. While a source of the set
+  /// carries its pattern, its materials draw with their full fragment stage
+  /// (see `WaterMaterial.foamSources`).
   void setCarryPattern(int slot, {required bool carry}) {
     final o = _usedOffset(slot);
     final value = carry ? 1.0 : 0.0;
@@ -263,6 +282,17 @@ class WaterFoamSources() {
   /// Whether the source in [slot] carries the pattern of its foam (see
   /// [setCarryPattern]).
   bool carriesPattern(int slot) => _sources[_usedOffset(slot) + 11] > 0;
+
+  /// Whether a source of the set carries the pattern of its foam.
+  @internal
+  bool get carriesAnyPattern {
+    for (var i = 0; i < capacity; i++) {
+      if (_used[i] && _sources[i * _stride + 11] > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   /// Removes the source in [slot], if any.
   void remove(int slot) {

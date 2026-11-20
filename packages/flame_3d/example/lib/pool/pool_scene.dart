@@ -64,8 +64,10 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
   final WaterRipples ripples = WaterRipples();
 
   /// The collars of foam around the slabs and the crate, shared by the
-  /// water's materials: one slot per slab, then the crate's.
-  final WaterFoamSources collars = WaterFoamSources();
+  /// water's materials: one slot per slab, then the crate's (13 of 16).
+  final WaterFoamSources collars = WaterFoamSources(
+    capacity: WaterFoamSources.maxCapacity,
+  );
 
   /// The water's surface.
   late final WaterMaterial water = _water();
