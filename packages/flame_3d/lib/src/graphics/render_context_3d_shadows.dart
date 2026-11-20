@@ -1104,6 +1104,7 @@ class _ShadowPass(final RenderContext3D _context) {
     final view = layers.views[index];
     if (kind == _stepStill) {
       device.beginTexturePass(view.target!, frontFace: context.frontFace);
+      RenderProfile.lap(RenderPhase.passBegin);
       _passOpen = true;
       final stats = device.stats;
       stats.shadowPasses++;
@@ -1115,12 +1116,14 @@ class _ShadowPass(final RenderContext3D _context) {
     } else {
       if (step == 0 || _stepKinds[step - 1] == _stepStill) {
         device.beginTexturePass(layers.live!, frontFace: context.frontFace);
+        RenderProfile.lap(RenderPhase.passBegin);
         _passOpen = true;
         device.stats.shadowPasses++;
       }
       _configureView(index, inMap: true);
       if (kind == _stepOver) {
         device.drawTextureCopy(view.texture!);
+        RenderProfile.lap(RenderPhase.draw);
         layer = ShadowCasterLayer.moving;
         _recordingMovers = true;
         _stillTexture = view.texture;

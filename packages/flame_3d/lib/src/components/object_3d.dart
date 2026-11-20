@@ -99,6 +99,16 @@ abstract class Object3D({
     if ((cameraMask & context.cameraMask) == 0) {
       return;
     }
+    // A recording of one layer of casters (ShadowSettings.cacheStillCasters)
+    // skips the objects of the other layer before testing their bounds,
+    // when they have no children that could be of its layer.
+    if (context.isShadowPass && !hasChildren) {
+      final layer = context.shadowCasterLayer;
+      if (layer != ShadowCasterLayer.all &&
+          (!castsShadows || !_inShadowLayer(layer))) {
+        return;
+      }
+    }
     // The frustum of the pass, computed once by the context.
     final frustum = context.frustum;
     RenderProfile.lap(RenderPhase.traversal);

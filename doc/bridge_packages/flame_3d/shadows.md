@@ -410,7 +410,7 @@ must set `cacheStillCasters`; otherwise the atlas renders as without it. A frame
 | ----------------------------------------------------------- | ------------------------------------------ |
 | Nothing                                                     | nothing: the map is reused whole           |
 | Casters moved, none of them still                           | the map: per view, a copy of its layer and the moving casters over it |
-| A still caster changed, appeared or left, a light changed, or casters stopped moving | the layers again (one pass per view), then the map as above |
+| A still caster changed, was hidden or left, a light changed, or casters stopped moving | the layers again (one pass per view), then the map as above |
 | The projection of a view changed (a camera that `ShadowFit.view` follows, a light that turns) | that view whole, every caster, as without the option; its layer once the view holds still for a frame |
 
 ### Which casters are still
@@ -510,9 +510,10 @@ returns `false`, as the loop under
   receivers do not change: same shaders, same samples.
 - A frame that renders layers: one pass per layer rendered and the map pass; it draws every caster
   once, plus the copies, a little more than a frame without the option.
-- The CPU: every recording still traverses the scene and culls with the view, but records draws only
-  for the casters of its layer, so recording, sorting and submitting follow what moves; a frame that
-  renders layers traverses once more per view.
+- The CPU: every recording still walks the scene, but an object without children that is not of
+  the layer being recorded is skipped before its frustum test, and only the casters of the layer
+  record draws, so culling, recording, sorting and submitting follow what moves; a frame that
+  renders layers walks the scene once more per view.
 
 `RenderStats.shadowLayersReused` and `shadowLayersRendered` count the views whose layer was reused or
 rendered again, and `shadowReusedDrawCalls` and `shadowReusedTriangles` what the reused layers (or
@@ -773,8 +774,8 @@ These are the parts of shadows that are not finished at this point:
 - The key of `cacheWhenStatic` and the change tracking of `cacheStillCasters` do not see changes
   made in place until they are reported (see [Static shadows](#static-shadows) and
   [Which casters are still](#which-casters-are-still)).
-- With `cacheStillCasters`, every recording still traverses the whole scene to find the casters of
-  its layer; the saving is in the draws recorded, sorted and submitted, not in the traversal.
+- With `cacheStillCasters`, every recording still walks the whole scene to find the casters of its
+  layer (and tests the bounds of objects that have children): the walk itself is not saved.
 - With `cacheStillCasters`, an instanced group or a crowd is still or moving as a whole, and a
   component whose shadow draws depend on the camera (`LodMeshComponent` without a `shadowMesh` or
   `lowestLodInShadowPass`, `ChunkedTerrain3D`, `FoliageSystem3D`) keeps in the layer the detail it
