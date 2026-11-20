@@ -23,11 +23,16 @@ enum PoolLighting() {
 /// in.
 ///
 /// The water is one translucent [WaterMaterial] draw (caustics, sparkles, a
-/// swell of the normals, a depth ramp, edge foam and [ripples]); the floor,
-/// the walls and everything under the water are [StylizedMaterial]s that the
-/// world's [volume] tints with their depth, lights with the same caustics and
-/// rings with foam where they cross the surface. Nothing needs the depth
-/// prepass or the scene color grab. Splashes come from [ParticlePresets3D]:
+/// swell of the normals, a depth ramp, edge foam, [ripples] and [collars],
+/// foam that follows the slabs and the crate), plus a narrow strip along the
+/// far wall drawn with [rimWater], whose band of foam stands still (a rim of
+/// dried salt) while the foam elsewhere laps; the floor, the walls and
+/// everything under the water are [StylizedMaterial]s that the world's
+/// [volume] tints with their depth, lights with the same caustics and rings
+/// with foam where they cross the surface. At dusk, the foam keeps its white
+/// under the warm sun ([WaterMaterial.foamLightTint],
+/// [WaterVolumeSettings.waterlineLightTint]). Nothing needs the depth prepass
+/// or the scene color grab. Splashes come from [ParticlePresets3D]:
 /// a crown, foam and mist where the pebble lands, water running off the
 /// slabs that rise out of the water and foam flooding over those that sink,
 /// and every drop that falls back raises a small ring in [ripples].
@@ -55,11 +60,25 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
     return 0.42 + 0.68 * _smoothstep(0, 2.4, edge);
   }
 
-  /// The ripples of the water, shared by its material.
+  /// The ripples of the water, shared by its materials.
   final WaterRipples ripples = WaterRipples();
 
+  /// The collars of foam around the slabs and the crate, shared by the
+  /// water's materials: one slot per slab, then the crate's.
+  final WaterFoamSources collars = WaterFoamSources();
+
   /// The water's surface.
-  late final WaterMaterial water = WaterMaterial(
+  late final WaterMaterial water = _water();
+
+  /// The water of the strip along the far wall (y = -[halfWidth]): the same
+  /// water, whose band of foam stands still.
+  late final WaterMaterial rimWater = _water(edgeFoamMotion: 0);
+
+  /// The width of the strip of [rimWater], in rows of the water's grid
+  /// (twelfths of a unit).
+  static const int _rimRows = 5;
+
+  WaterMaterial _water({double edgeFoamMotion = 1}) => WaterMaterial(
     upAxis: up,
     shallowColor: const Color(0xFF86E3F0),
     deepColor: const Color(0xFF1B78B0),
@@ -85,6 +104,8 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
     detailScale: 1.1,
     animationPeriod: _period,
     ripples: ripples,
+    foamSources: collars,
+    edgeFoamMotion: edgeFoamMotion,
   )..translucentOrder = -1; // under the splashes, whatever their distance
 
   /// The body of water the submerged surfaces honour.
@@ -125,6 +146,10 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
 
   /// The water's surface: one mesh, one draw.
   late final MeshComponent surface;
+
+  /// The strip of water along the far wall, drawn with [rimWater]: one more
+  /// draw.
+  late final MeshComponent rimSurface;
 
   /// The droplets thrown up where the pebble lands; each one that falls
   /// back raises a small ring.
@@ -176,6 +201,7 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
   int _crateBob = -1;
   double _lastDropRing = -1;
   final Vector3 _point = Vector3.zero();
+  final Vector3 _axis = Vector3.zero();
   static final Vector3 _crateAxis = Vector3(1, 0.4, 0)..normalize();
 
   /// The components of the scene, lights included, to add to a world whose
@@ -212,7 +238,8 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
       MeshComponent(mesh: _quay().mesh(_stone)),
       MeshComponent(mesh: _floor().mesh(_stone)),
       MeshComponent(mesh: _stones().mesh(_stone)),
-      surface = MeshComponent(mesh: _waterMesh()),
+      surface = MeshComponent(mesh: _waterMesh(_rimRows, _rows, water)),
+      rimSurface = MeshComponent(mesh: _waterMesh(0, _rimRows, rimWater)),
     ];
 
     final slabMesh = _slab().mesh(_stone);
@@ -224,6 +251,12 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
         );
         slabs.add(slab);
         _slabTops.add(slabSunk);
+        collars.addRectangle(
+          slab.position,
+          halfLength: 0.475,
+          halfWidth: 0.475,
+          strength: 0,
+        );
         drips.add(
           ParticlePresets3D.runoffDrips(
             width: 0.95,
@@ -246,6 +279,14 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
     crate = MeshComponent(
       mesh: _crate().mesh(_stone),
       position: Vector3(2.75, 1.8, 0),
+    );
+    _crateCollar = collars.addRectangle(
+      crate.position,
+      halfLength: 0.21,
+      halfWidth: 0.21,
+      cornerRadius: 0.04,
+      width: 0.2,
+      strength: 0.8,
     );
     pebble = MeshComponent(
       mesh: _pebble().mesh(_stone),
@@ -287,6 +328,8 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
   /// The time it takes a dropped pebble to reach the water.
   static const double pebbleFall = 0.55;
 
+  late final int _crateCollar;
+
   /// Moves everything to [time], in seconds: the water, the slabs (to
   /// [slabLift]), the crate and the pebble; raises the ripples of what
   /// crossed the water since the last call.
@@ -294,6 +337,7 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
     final previous = _time;
     _time = time;
     water.time = time;
+    rimWater.time = time;
     volume.time = time;
 
     for (var k = 0; k < slabs.length; k++) {
@@ -325,6 +369,7 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
       slab.position.z = top;
       // The drops fall from the edges of the top, wherever it is.
       drips[k].position.setValues(slab.position.x, slab.position.y, top);
+      _slabCollar(k, top);
     }
 
     // The crate bobs and rolls a little on the water, and nudges a faint
@@ -334,6 +379,11 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
     crate.rotation.setAxisAngle(
       _crateAxis,
       0.05 * math.sin(time * math.pi * 0.5 + 0.7),
+    );
+    collars.move(
+      _crateCollar,
+      crate.position,
+      axis: crate.rotation.rotate(_axis..setValues(1, 0, 0)),
     );
     final cycle = (time / 2).floor();
     if (cycle != _crateBob && time >= previous) {
@@ -382,6 +432,23 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
     }
   }
 
+  /// The collar of foam of the slab [k] whose top is at [top]: none while
+  /// it is under the water, around its top while the top crosses the
+  /// surface, closing in on its column once the top is out.
+  void _slabCollar(int k, double top) {
+    const plate = 0.16; // the thickness of the top
+    final out = _smoothstep(plate, plate + 0.1, top);
+    collars.setRectangle(
+      k,
+      slabs[k].position,
+      halfLength: 0.475 + (0.17 - 0.475) * out,
+      halfWidth: 0.475 + (0.17 - 0.475) * out,
+      cornerRadius: 0.035 + (0.015 - 0.035) * out,
+      width: 0.3 + (0.2 - 0.3) * out,
+      strength: _smoothstep(-0.03, 0.04, top) * (1 - 0.15 * out),
+    );
+  }
+
   /// A faint, short ring where a drop falls back into the water, at most
   /// one every 45 ms: the rings take each other's places in [ripples]
   /// rather than those of the slabs and the pebble (see [WaterRipples.add]).
@@ -418,6 +485,12 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
       (lamp.source as PointLight).intensity = dusk ? 1.0 : 0;
     }
     _lantern.emissiveStrength = dusk ? 1 : 0.25;
+    // The foam scatters the warm light of dusk and stays white, with a trace
+    // of warmth.
+    final tint = dusk ? 0.25 : 1.0;
+    water.foamLightTint = tint;
+    rimWater.foamLightTint = tint;
+    volume.waterlineLightTint = tint;
   }
 
   PoolMeshBuilder _quay() {
@@ -630,22 +703,25 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
     return b;
   }
 
-  /// The water's surface over the pool, in [WaterMaterial.vertexLayout]:
-  /// each vertex knows the depth of the floor under it, foams along the
-  /// walls and around the stones that break the surface, and calms down
-  /// near the walls.
-  Mesh _waterMesh() {
-    const columns = 96;
-    const rows = 72;
+  static const int _columns = 96;
+  static const int _rows = 72;
+
+  /// The rows [from] to [to] of the water's surface over the pool, in
+  /// [WaterMaterial.vertexLayout], drawn with [material]: each vertex knows
+  /// the depth of the floor under it, foams along the walls and around the
+  /// stones that break the surface, and calms down near the walls.
+  Mesh _waterMesh(int from, int to, WaterMaterial material) {
+    const columns = _columns;
+    final rows = to - from;
     final positions = Float32List((columns + 1) * (rows + 1) * 3);
     final depths = Float32List((columns + 1) * (rows + 1));
     final foam = Float32List((columns + 1) * (rows + 1));
     final calm = Float32List((columns + 1) * (rows + 1));
     var k = 0;
-    for (var j = 0; j <= rows; j++) {
+    for (var j = from; j <= to; j++) {
       for (var i = 0; i <= columns; i++) {
         final x = -halfLength + 2 * halfLength * i / columns;
-        final y = -halfWidth + 2 * halfWidth * j / rows;
+        final y = -halfWidth + 2 * halfWidth * j / _rows;
         positions
           ..[k * 3] = x
           ..[k * 3 + 1] = y
@@ -679,7 +755,7 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
         foam: foam,
         calm: calm,
         indices: indices,
-        material: water,
+        material: material,
       ),
     );
   }

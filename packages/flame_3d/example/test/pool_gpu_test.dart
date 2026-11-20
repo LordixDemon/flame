@@ -96,11 +96,19 @@ void main() {
       game.setTime(2.2);
       expect(differing(noon, await frame()), greaterThan(2000));
 
-      // The slabs rise out of the water: the pool shows less water.
+      // The slabs rise out of the water: the pool shows less water, and
+      // the slabs stand in collars of foam.
+      final collars = game.scene.collars;
+      for (var k = 0; k < game.scene.slabs.length; k++) {
+        expect(collars.strengthOf(k), 0, reason: 'slab $k');
+      }
       game.scene.slabLift = 1;
       game.setTime(2.3);
       final raised = await frame();
       expect(water(raised), lessThan(water(noon) * 0.85));
+      for (var k = 0; k < game.scene.slabs.length; k++) {
+        expect(collars.strengthOf(k), greaterThan(0.5), reason: 'slab $k');
+      }
 
       // A pebble lands: a splash, and the drops that fall back raise rings
       // of their own besides the pebble's.
@@ -123,6 +131,9 @@ void main() {
       game.setTime(1.2);
       final dusk = await frame();
       expect(differing(noon, dusk), greaterThan(844 * 390 ~/ 2));
+      // The foam keeps its white under the warm sun.
+      expect(game.scene.water.foamLightTint, lessThan(1));
+      expect(game.scene.volume.waterlineLightTint, lessThan(1));
     },
     skip: !gpuAvailable,
   );
