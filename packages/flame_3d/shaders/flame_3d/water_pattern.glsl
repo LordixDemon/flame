@@ -16,6 +16,9 @@
 
 const float WATER_TAU = 6.283185307;
 
+// The weights of the luminance of a linear sRGB color (Rec. 709).
+const vec3 WATER_LUMINANCE = vec3(0.2126, 0.7152, 0.0722);
+
 // The caustic network at the world point whose coordinates in the plane of
 // the water are `uv`, in units of the pattern's cells: bright, thin, wavy
 // lines of light between darker cells, as a rippled surface focuses them,

@@ -252,6 +252,17 @@ void main() {
         // No depth ramp, no ripple.
         expect(member(water, uniforms, 'ramp')[0], 0);
         expect(member(water, uniforms, 'ramp')[3], 0);
+        // The foam takes the color of the light.
+        expect(member(water, uniforms, 'shoreParams')[3], 1);
+      });
+
+      test('writes the foam light tint', () {
+        final water = WaterMaterial(foamLightTint: 0.25);
+        expect(member(water, draw(water), 'shoreParams')[3], 0.25);
+        water.foamLightTint = 3;
+        expect(member(water, draw(water), 'shoreParams')[3], 1);
+        water.foamLightTint = -1;
+        expect(member(water, draw(water), 'shoreParams')[3], 0);
       });
 
       test('writes the options it is given', () {

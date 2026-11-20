@@ -1864,7 +1864,12 @@ class RenderContext3D(super.device) extends RenderContext {
       )
       ..setVector4(
         'causticColor',
-        v..setValues(caustic.r, caustic.g, caustic.b, 1),
+        v..setValues(
+          caustic.r,
+          caustic.g,
+          caustic.b,
+          water.waterlineLightTint.clamp(0.0, 1.0),
+        ),
       )
       ..setVector4('waterline', v..setValues(line.r, line.g, line.b, line.a));
     final bounds = water.bounds;

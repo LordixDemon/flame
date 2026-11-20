@@ -1020,6 +1020,7 @@ final water = WaterMaterial(
 | `shallowOpacity`               | `0.2`        | the opacity where there is no depth      |
 | `defaultDepth`                 | `1`          | the depth under standard-layout vertices |
 | `edgeFoamScale`                | `0.6`        | the patches of the foam mask's foam      |
+| `foamLightTint`                | `1`          | how much of the light's color foam takes |
 | `animationPeriod`              | `8`          | seconds over which the options loop      |
 | `ripples`                      | none         | a shared `WaterRipples`, see below       |
 
@@ -1052,6 +1053,15 @@ final water = WaterMaterial(
   around a rock that breaks the surface, falling to `0` over a few tenths of a unit. It is lit by
   the light reaching the water, as the foam of the ripples is (the crest and shore foam keep the
   plain `foamColor`).
+- **Foam light**: the lit foam (of the foam mask and of the ripples) is
+  `foamColor` times `clamp(0.6 * sky + 0.75 * incoming, 0.5, 1.15)`, `incoming` being the light
+  reaching the water. Under a low, colored sun that light takes the sun's color, and white foam
+  turns orange or pink against blue water. Foam scatters every color alike, so `foamLightTint`
+  says how much of the light's color it takes: before the clamp, the light is moved towards its
+  luminance (Rec. 709 weights), `mix(vec3(luminance), light, foamLightTint)`: `1` (the default)
+  keeps the light's color, `0` keeps only its brightness. About `0.25` suits a low, warm sun: the
+  foam stays white with a trace of warmth, about as bright. The water volume's waterline has the
+  same control, `WaterVolumeSettings.waterlineLightTint` (see [Water volumes](#water-volumes)).
 - **Light added over the water**: the caustics, the sparkles and the highlights of the ripples are
   added over the translucent surface with an opacity of their own (their luminosity), so they keep
   their brightness however clear the water is.
@@ -1163,10 +1173,11 @@ with every option and 8 ripples (in `flutter test`, JIT).
 Per pixel of the surface, roughly: the caustics 22 sines, cosines or square roots and 170
 arithmetic instructions (the 9 cells of the Voronoi diagram), the sparkles 3 sines, the swell 6
 cosines, each living ripple 3 transcendentals and 25 instructions, the foam mask (only where it is
-above `0`) 13 sines. On the software rasterizer of `flutter test`, a full-screen 2532 x 1170
-surface with the caustics, sparkles, swell and depth ramp costs about as much as the legacy
-material (within the noise, a few percent), and 8 living ripples add about 30 %; compare on your
-target device, where transcendentals cost relatively more.
+above `0`) 13 sines, and `foamLightTint` below `1` a dot product and a mix where the foam is. On
+the software rasterizer of `flutter test`, a full-screen 2532 x 1170 surface with the caustics,
+sparkles, swell and depth ramp costs about as much as the legacy material (within the noise, a few
+percent), 8 living ripples add about 30 %, and foam mask over the whole surface about 4 %; compare
+on your target device, where transcendentals cost relatively more.
 
 The shaders compile to GLSL ES 1.00 for OpenGL ES: they use no `flat` input, no derivative, no
 explicit level of detail, no texture, and their loops have constant bounds (the ripples' loop runs
@@ -1720,20 +1731,21 @@ water.time += dt;
 world.waterVolume!.time = water.time;
 ```
 
-| Parameter         | Default      | Meaning                                                   |
-| ----------------- | ------------ | --------------------------------------------------------- |
-| `level`, `up`     | `0`, +Y      | the surface's height along `up` (normalized, copied)      |
-| `shallowColor`    | `0xFFC8F2EA` | filters the color of shallow surfaces                     |
-| `deepColor`       | `0xFF155E75` | the color deep surfaces fade into                         |
-| `absorption`      | `0.8`        | how fast they fade, per world unit                        |
-| `causticStrength` | `0` (off)    | the caustics on submerged surfaces                        |
-| `causticScale`    | `0.6`        | their cells' size, in world units                         |
-| `causticColor`    | white        | their color, times the direct sunlight                    |
-| `animationPeriod` | `8`          | seconds over which the caustics and the waterline loop    |
-| `time`            | `0`          | advance it every frame, with the water's                  |
-| `waterlineWidth`  | `0` (off)    | the width of the foam band around the level               |
-| `waterlineColor`  | `0xE6FFFFFF` | its color (lit like the surface); its alpha, how much     |
-| `bounds`          | none         | the box the water fills; outside it, nothing is submerged |
+| Parameter            | Default      | Meaning                                                   |
+| -------------------- | ------------ | --------------------------------------------------------- |
+| `level`, `up`        | `0`, +Y      | the surface's height along `up` (normalized, copied)      |
+| `shallowColor`       | `0xFFC8F2EA` | filters the color of shallow surfaces                     |
+| `deepColor`          | `0xFF155E75` | the color deep surfaces fade into                         |
+| `absorption`         | `0.8`        | how fast they fade, per world unit                        |
+| `causticStrength`    | `0` (off)    | the caustics on submerged surfaces                        |
+| `causticScale`       | `0.6`        | their cells' size, in world units                         |
+| `causticColor`       | white        | their color, times the direct sunlight                    |
+| `animationPeriod`    | `8`          | seconds over which the caustics and the waterline loop    |
+| `time`               | `0`          | advance it every frame, with the water's                  |
+| `waterlineWidth`     | `0` (off)    | the width of the foam band around the level               |
+| `waterlineColor`     | `0xE6FFFFFF` | its color (lit like the surface); its alpha, how much     |
+| `waterlineLightTint` | `1`          | how much of the light's color the waterline foam takes    |
+| `bounds`             | none         | the box the water fills; outside it, nothing is submerged |
 
 Where a fragment is `depth = level - dot(position, up)` below the level (and inside `bounds`, when
 given), its color, after its shading and color grade and before the fog, becomes
@@ -1759,9 +1771,14 @@ color     = clamp(mix(color * filter, deepColor, absorbed), 0, 1)
   the directional light that casts shadows, or the first one; a world without one has none.
 - Above the level, surfaces are unchanged, except in the waterline band: where `|depth|` is
   within about `waterlineWidth` (the band laps up and down and is broken up along the outline of
-  the surface), the color moves towards `waterlineColor` times the surface's light, by up to the
-  color's alpha. Surfaces lying flat in the band, the top of a slab as it passes through the level,
-  foam more sparsely than walls and columns.
+  the surface), the color moves towards `waterlineColor` times the surface's light (at most
+  `1.25`), by up to the color's alpha. Surfaces lying flat in the band, the top of a slab as it
+  passes through the level, foam more sparsely than walls and columns.
+- `waterlineLightTint` says how much of the color of that light the foam takes, as
+  `WaterMaterial.foamLightTint` does on the water: the light is moved towards its luminance,
+  `mix(vec3(luminance), light, waterlineLightTint)`, so `1` (the default) keeps its color and `0`
+  only its brightness. Under a low, warm sun, about `0.25` keeps the band white, matching the foam
+  of the water beside it.
 
 The volume works with every vertex stage of `StylizedMaterial` (its own layout, skinned or not,
 and the standard layout), instancing, palettes, translucency, dither fades, shadows and HDR. The
@@ -1776,9 +1793,10 @@ one does not (see [Lighting](lighting.md#changing-lights-at-run-time)): in a ret
 Cost: the volume adds 8 vectors to the pass block `StylizedMaterial` reads (written once per pass,
 about 0.2 µs) and no binding. Per pixel, surfaces above the level and its band test one plane and
 stop; submerged pixels pay two exponentials and, with caustics, the 22 transcendentals of the
-network; pixels in the band pay two noise lookups (13 sines). On the software rasterizer of
-`flutter test`, a full-screen submerged stylized surface costs about 25 % more without caustics
-and 40 % more with them than a dry one. Like `StylizedMaterial`, it does not run on the web.
+network; pixels in the band pay two noise lookups (13 sines), and with `waterlineLightTint` below
+`1` a dot product and a mix. On the software rasterizer of `flutter test`, a full-screen submerged
+stylized surface costs about 25 % more without caustics and 40 % more with them than a dry one.
+Like `StylizedMaterial`, it does not run on the web.
 
 
 ## Textures

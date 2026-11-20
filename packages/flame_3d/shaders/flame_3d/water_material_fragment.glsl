@@ -9,7 +9,8 @@
 // Its options, all off by default (the pixels are then those of before they
 // existed): a caustic network, sparkles, a gentle swell of the normals, a
 // color and opacity ramp by the depth of the water under each vertex, foam
-// where the vertices' foam mask says, and rings of ripples (WaterRipples).
+// where the vertices' foam mask says, rings of ripples (WaterRipples), and
+// how much of the light's color the lit foam takes.
 // They are procedural (flame_3d/water_pattern.glsl) and need neither the
 // depth prepass nor the scene color grab.
 
@@ -45,7 +46,9 @@ uniform WaterMaterial {
   vec4 params;
   // x: fresnelPower, y: specularStrength, z: opacity, w: rippleScale
   vec4 params2;
-  // x: shoreFoamDepth (clip-depth span), y: refractionStrength, zw: unused
+  // x: shoreFoamDepth (clip-depth span), y: refractionStrength, z: unused,
+  // w: how much of the light's color the lit foam takes (foamLightTint, 0 to
+  // 1).
   vec4 shoreParams;
   // xyz: the world up axis of the rest surface (unit), w: unused
   vec4 upAxis;
@@ -380,7 +383,17 @@ void main() {
   ) + specLight;
   color = mix(color, waterMat.foamColor.rgb, foamMask * waterMat.foamColor.a);
   if (litFoam > 0.0) {
-    vec3 foamLight = clamp(skyColor * 0.6 + incoming * 0.75, vec3(0.5), vec3(1.15));
+    vec3 foamLight = skyColor * 0.6 + incoming * 0.75;
+    if (waterMat.shoreParams.w < 1.0) {
+      // Foam scatters every color alike: it takes the brightness of the
+      // light (its luminance) and only foamLightTint of its color.
+      foamLight = mix(
+        vec3(dot(foamLight, WATER_LUMINANCE)),
+        foamLight,
+        max(waterMat.shoreParams.w, 0.0)
+      );
+    }
+    foamLight = clamp(foamLight, vec3(0.5), vec3(1.15));
     color = mix(color, waterMat.foamColor.rgb * foamLight,
       litFoam * waterMat.foamColor.a);
     foamMask = max(foamMask, litFoam);

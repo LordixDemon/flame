@@ -71,8 +71,17 @@ void main() {
       expect(caustics[2], closeTo(math.pi / 2, 1e-6));
       expect(caustics[3], closeTo(0.04, 1e-6));
       expect(read('waterline')[3], closeTo(128 / 255, 1e-6));
+      // The waterline takes the color of the light by default.
+      expect(read('causticColor')[3], 1);
       expect(read('boundsMin'), [-1, -2, -3, 1]);
       expect(read('boundsMax'), [1, 2, 3, 0]);
+
+      context.waterVolume!.waterlineLightTint = 0.3;
+      RenderContext3D.writeWaterVolumeUniforms(context, block);
+      expect(read('causticColor')[3], closeTo(0.3, 1e-6));
+      context.waterVolume!.waterlineLightTint = 2;
+      RenderContext3D.writeWaterVolumeUniforms(context, block);
+      expect(read('causticColor')[3], 1);
 
       // An inactive volume is off.
       context.waterVolume = WaterVolumeSettings(absorption: 0);

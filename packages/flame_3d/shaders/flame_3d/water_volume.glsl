@@ -23,7 +23,8 @@ uniform WaterVolume {
   // x: the caustics' strength, y: 1 / their size, z: the phase of their
   // period (0 to 2π), w: the width of the waterline foam band.
   vec4 caustics;
-  // rgb: the caustics' color, a: unused.
+  // rgb: the caustics' color, a: how much of the light's color the waterline
+  // foam takes (WaterVolumeSettings.waterlineLightTint, 0 to 1).
   vec4 causticColor;
   // rgb: the waterline foam's color, a: how much it covers.
   vec4 waterline;
@@ -124,7 +125,18 @@ vec3 applyWaterVolume(
     float lying = abs(dot(normal, up));
     foam *= smoothstep(-0.55 + 0.75 * lying, 0.05 + 0.6 * lying, breakup);
     vec4 waterline = FLAME_WATER_VOLUME(waterline);
-    vec3 foamColor = waterline.rgb * min(irradiance, vec3(1.25));
+    vec3 foamLight = irradiance;
+    float tint = FLAME_WATER_VOLUME(causticColor).a;
+    if (tint < 1.0) {
+      // Foam scatters every color alike: it takes the brightness of the
+      // light (its luminance) and only `tint` of its color.
+      foamLight = mix(
+        vec3(dot(foamLight, WATER_LUMINANCE)),
+        foamLight,
+        max(tint, 0.0)
+      );
+    }
+    vec3 foamColor = waterline.rgb * min(foamLight, vec3(1.25));
     result = mix(result, foamColor, foam * waterline.a);
   }
   return clamp(result, 0.0, 1.0);

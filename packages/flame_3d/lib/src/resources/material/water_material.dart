@@ -40,7 +40,10 @@ import 'package:flame_3d/resources.dart';
 ///   wall, around a rock), with lapping edges broken up into patches of
 ///   [edgeFoamScale] world units;
 /// - [ripples]: rings that spread from where things land on, rise out of or
-///   move through the water, see [WaterRipples].
+///   move through the water, see [WaterRipples];
+/// - [foamLightTint]: how much of the color of the light the foam of the
+///   foam mask and of the ripples takes (`1`, the default, all of it; less
+///   keeps the foam white under a colored sun).
 ///
 /// The caustics, the sparkles, the swell and the edge foam loop over
 /// [animationPeriod] seconds of [time]. Surfaces in [vertexLayout] (built
@@ -129,6 +132,14 @@ class WaterMaterial({
   /// The ripples this water draws, shared with the other materials of the
   /// same body of water; `null` (the default) draws none.
   var WaterRipples? ripples,
+
+  /// How much of the color of the light the lit foam takes (the foam of the
+  /// foam mask and of the [ripples]), from `0` to `1`: `1` (the default)
+  /// takes the color of the light as it is, `0` only its brightness (its
+  /// luminance), so the foam keeps [foamColor] under a colored light. About
+  /// `0.25` suits a low, warm sun. The crest and shore foam are not lit and
+  /// keep [foamColor] anyway.
+  var double foamLightTint = 1,
 }) extends Material {
   /// {@macro water_material}
   this
@@ -292,7 +303,12 @@ class WaterMaterial({
       )
       ..setVector4(
         'shoreParams',
-        _shoreVec..setValues(shoreFoamDepth, refractionStrength, 0, 0),
+        _shoreVec..setValues(
+          shoreFoamDepth,
+          refractionStrength,
+          0,
+          foamLightTint.clamp(0.0, 1.0),
+        ),
       )
       ..setVector4(
         'upAxis',
