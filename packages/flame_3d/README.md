@@ -41,7 +41,7 @@ the platform support and a "Limitations" section of its feature. This README is 
 
 This package is **experimental**. It depends on Flutter GPU and Impeller, which are experimental
 themselves, its API may change at any time without following semver, and many of its modules are
-recent. Behavior is covered by the package's tests (1,365 of them; the GPU tests render headless
+recent. Behavior is covered by the package's tests (1,484 of them; the GPU tests render headless
 on Flutter GPU, see [Testing](#testing)), not by runs on Android or iOS devices. Read the
 "Limitations" section of a page before you rely on a feature, and expect to work around gaps.
 
@@ -59,7 +59,7 @@ on Flutter GPU, see [Testing](#testing)), not by runs on Android or iOS devices.
 - **OpenGL ES**: no floating-point render targets, so HDR renders in 8 bits, order-independent
   transparency falls back to sorting and shadow depths are packed into 8-bit channels; no
   wireframe; some devices have no offscreen MSAA.
-- **Web**: 8 of the package's 35 shaders have a WGSL build (`SpatialMaterial` in a simpler
+- **Web**: 8 of the package's 36 shaders have a WGSL build (`SpatialMaterial` in a simpler
   variant, `UnlitMaterial`, the skybox and billboards, plus decal, outline and ribbon shaders whose
   materials still refuse the web). `StylizedMaterial`, `ShadowCatcherMaterial`, `ParticleMaterial`,
   `DecalMaterial`, `OutlineMaterial`, `RibbonMaterial3D`, `Text3DComponent` and `WidgetSurface3D`
