@@ -1508,12 +1508,11 @@ sorts. Without `sortByDepth` (the default), nothing is sorted and the decals kee
 play inside it and lights up where it is hit: brightest at its foot and thin above by default, so
 that it never hides what stands inside, with a slow pattern of motifs travelling along it, a glint
 where it is seen edge-on, and impacts, each rings spreading over the wall from a point and a flash
-around that point. Its height, its density and its reaction are each settings.
-`BarrierMesh` builds the walls it draws:
+around that point. Its height, its density and its reaction are each settings, and a
+`BarrierLook` holds all of them as one value. `BarrierMesh` builds the walls it draws:
 
 ```dart
-final barrier = BarrierMaterial(appear: 0, reactionInFront: 1)
-  ..wobbleAmplitude = 0.05;
+final barrier = BarrierMaterial.fromLook(BarrierLook.solidWall, appear: 0);
 final wall = BarrierMesh.roundedRectangle(
   width: 5.4,
   depth: 5.4,
@@ -1797,6 +1796,42 @@ It costs one more draw call (outside the shadow and depth-normal passes) and the
 second material, while a reaction shows: an impact during its duration, or a near point set.
 
 
+### Looks as data
+
+A `BarrierLook` is an immutable value holding every setting of a barrier's look and reaction (65:
+the colors, the height profile, the density, the pattern, the impacts, the wobble, the pulse and
+near-point defaults, `reactionInFront`, `preserveHue` and the blend). It holds no state: the
+appear factor, the time, the impacts, the near points, the pulse and `patternLoopLength` stay on
+the material.
+
+```dart
+final barrier = BarrierMaterial.fromLook(BarrierLook.softVeil);
+barrier.look = BarrierLook.lowFence; // applyLook
+final dusk = noon.copyWith(footColor: const Color(0xFFFF8040), intensity: 1.2);
+
+// Every frame, without allocating:
+barrier.applyLookLerp(noon, dusk, duskAmount);
+```
+
+- `applyLook` (and the `look` setter) takes every setting and the blend (the render state keeps its
+  other fields, and switches between the standard additive, premultiplied and alpha states without
+  making new ones); on a closed loop the look's `patternScale` is rounded to a whole number of
+  motifs, as `fitPatternTo` does. `look` reads the material's settings back as a value.
+- `BarrierLook.lerp(a, b, t)` and `applyLookLerp(a, b, t)` interpolate numbers and colors linearly
+  (whole numbers rounded) and switch the pattern, the blend and `preserveHue` at `t = 0.5`;
+  `applyLookLerp` writes into the material without allocating, to animate a look every frame.
+  Each end gives its look exactly.
+- `copyWith` replaces some settings (`clearPatternColor: true` sets `patternColor` back to
+  `null`); `toJson` and `BarrierLook.fromJson` read and write a look as plain data (colors as
+  `0xAARRGGBB` integers, enums by name; missing keys keep their defaults).
+- The presets (`BarrierLook.presets` by name): `standard` (the defaults), `softVeil` (a faint even
+  veil up the whole height with a soft edge and a quiet lattice, premultiplied), `solidWall` (a tall
+  dense amber shield with a honeycomb, a fill hiding much of the far side, a thin near side, a
+  bright top edge, three rings, a wobble and the reaction in front), `lowFence` (a warm band fading
+  out by half the height, chevrons, premultiplied) and `electricCage` (a cold lattice of bars and
+  rungs with crackling noise and a flicker, additive).
+
+
 ### Blending over bright and coloured backgrounds
 
 The background behind a wall decides which blend reads best. Added light (the default
@@ -1871,8 +1906,8 @@ The material has two pairs of shaders and picks one each time it is drawn (`uses
 All the values that grow with time (the pattern's offsets, the twinkle's phase, the noise offset,
 the flicker, the pulse, the age of each impact) are computed and wrapped on the CPU in `apply`, so
 the shaders never see a large time, and `apply` computes the inverse of the view-projection matrix
-once per batch. It allocates nothing per frame, and neither do `impact`, `pulse` and
-`setNearPoint`. In the `barrier` scene of the example, the wall (74 triangles
+once per batch. It allocates nothing per frame, and neither do `impact`, `pulse`, `setNearPoint`,
+`applyLook` and `applyLookLerp`. In the `barrier` scene of the example, the wall (74 triangles
 around a 5 by 5 platform) adds one draw call to the layer's 13, and about 10 µs of `Material.apply`
 per frame under `flutter test` (a debug build, measured with `FLAME_3D_PROFILE`, see
 [Rendering](rendering.md#profiling)).

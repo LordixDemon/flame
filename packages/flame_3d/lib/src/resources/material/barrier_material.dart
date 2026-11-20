@@ -54,8 +54,10 @@ enum BarrierPattern() {
 /// a wave of the surface itself; [pulse] lights the whole wall up and lets it
 /// fall back; [setNearPoint] makes it glow where something comes close.
 ///
-/// Every new setting is off (or neutral) by default: a material built with
-/// the defaults draws what it drew before they existed.
+/// Every setting of its look is also held, as one value, by a [BarrierLook]:
+/// apply one with [applyLook] and blend two with [applyLookLerp], without
+/// allocating. Every new setting is off (or neutral) by default: a material
+/// built with the defaults draws what it drew before they existed.
 ///
 /// Advance [time] every frame: the pattern, the twinkle of its motifs, the
 /// noise, the flicker, the impacts and the pulse follow it.
@@ -413,6 +415,11 @@ class BarrierMaterial({
     this.impactColor = impactColor;
     this.pulseColor = pulseColor;
     this.proximityColor = proximityColor;
+  }
+
+  /// A material with the settings of [look], raised to [appear].
+  factory BarrierMaterial.fromLook(BarrierLook look, {double appear = 1}) {
+    return BarrierMaterial(appear: appear)..applyLook(look);
   }
 
   static const String _bundle =
@@ -874,6 +881,222 @@ class BarrierMaterial({
   double get patternOffset {
     final offset = time * patternSpeed * patternScale % patternPeriod;
     return offset.isFinite ? offset : 0;
+  }
+
+  /// The settings of this material's look, as a value (it allocates one).
+  BarrierLook get look => BarrierLook(
+    footColor: footColor,
+    topColor: topColor,
+    intensity: intensity,
+    preserveHue: preserveHue,
+    blend: renderState.blend,
+    heightScale: heightScale,
+    heightFalloff: heightFalloff,
+    fadeStart: fadeStart,
+    fadeEnd: fadeEnd,
+    footGlow: footGlow,
+    topEdgeColor: topEdgeColor,
+    topEdgeStrength: topEdgeStrength,
+    topEdgeWidth: topEdgeWidth,
+    appearSoftness: appearSoftness,
+    fillColor: fillColor,
+    fillOpacity: fillOpacity,
+    fillFade: fillFade,
+    pattern: pattern,
+    patternScale: patternScale,
+    patternRows: patternRows,
+    patternLineWidth: patternLineWidth,
+    patternHeight: patternHeight,
+    patternStrength: patternStrength,
+    patternColor: patternColor,
+    patternSpeed: patternSpeed,
+    patternRiseSpeed: patternRiseSpeed,
+    patternTwinkle: patternTwinkle,
+    patternTwinkleSpeed: patternTwinkleSpeed,
+    noiseStrength: noiseStrength,
+    noiseScale: noiseScale,
+    noiseSpeed: noiseSpeed,
+    flickerStrength: flickerStrength,
+    flickerSpeed: flickerSpeed,
+    nearSideFade: nearSideFade,
+    farSideFade: farSideFade,
+    sideFadeSoftness: sideFadeSoftness,
+    glintStrength: glintStrength,
+    glintPower: glintPower,
+    impactColor: impactColor,
+    impactSlots: impactSlots,
+    impactDuration: impactDuration,
+    impactRingCount: impactRingCount,
+    impactRingInterval: impactRingInterval,
+    impactRingSpeed: impactRingSpeed,
+    impactRingWidth: impactRingWidth,
+    impactRingStrength: impactRingStrength,
+    impactRingReach: impactRingReach,
+    impactFlashRadius: impactFlashRadius,
+    impactFlashStrength: impactFlashStrength,
+    impactFlashDuration: impactFlashDuration,
+    wobbleAmplitude: wobbleAmplitude,
+    wobbleFrequency: wobbleFrequency,
+    wobbleWavelength: wobbleWavelength,
+    wobbleDecay: wobbleDecay,
+    wobbleRadius: wobbleRadius,
+    wobbleShading: wobbleShading,
+    pulseColor: pulseColor,
+    pulseStrength: pulseStrength,
+    pulseDuration: pulseDuration,
+    pulseAttack: pulseAttack,
+    proximityColor: proximityColor,
+    proximityRadius: proximityRadius,
+    proximityStrength: proximityStrength,
+    proximityPatternBoost: proximityPatternBoost,
+    reactionInFront: reactionInFront,
+  );
+
+  /// Applies [value], see [applyLook].
+  set look(BarrierLook value) => applyLook(value);
+
+  /// Takes every setting of [look]: its colors and numbers, and its blend
+  /// (the [renderState] keeps its other fields). The impacts, the near
+  /// points, the pulse, [appear], [time] and [patternLoopLength] are kept;
+  /// on a closed loop the look's [patternScale] is rounded to a whole number
+  /// of motifs, as [fitPatternTo] does.
+  ///
+  /// It allocates nothing (unless the blend changes from a custom render
+  /// state).
+  void applyLook(BarrierLook look) => applyLookLerp(look, look, 0);
+
+  /// Takes the settings between [a] (at `t = 0`) and [b] (at `t = 1`), as
+  /// [BarrierLook.lerp] computes them, without making a look: numbers and
+  /// colors interpolated linearly (whole numbers rounded), the pattern, the
+  /// blend and [preserveHue] switching at `t = 0.5`. Call it every frame to
+  /// animate a look (noon to dusk, calm to alarm); it allocates nothing
+  /// (unless the blend changes from a custom render state).
+  void applyLookLerp(BarrierLook a, BarrierLook b, double t) {
+    double d(double x, double y) => BarrierLook.lerpLookDouble(x, y, t);
+    int i(int x, int y) => BarrierLook.lerpLookInt(x, y, t);
+    final second = t >= 0.5;
+    _lerpColor(_foot, a.footColor, b.footColor, t);
+    _lerpColor(_top, a.topColor, b.topColor, t);
+    intensity = d(a.intensity, b.intensity);
+    preserveHue = second ? b.preserveHue : a.preserveHue;
+    heightScale = d(a.heightScale, b.heightScale);
+    heightFalloff = d(a.heightFalloff, b.heightFalloff);
+    fadeStart = d(a.fadeStart, b.fadeStart);
+    fadeEnd = d(a.fadeEnd, b.fadeEnd);
+    footGlow = d(a.footGlow, b.footGlow);
+    _lerpColor(_topEdge, a.topEdgeColor, b.topEdgeColor, t);
+    topEdgeStrength = d(a.topEdgeStrength, b.topEdgeStrength);
+    topEdgeWidth = d(a.topEdgeWidth, b.topEdgeWidth);
+    appearSoftness = d(a.appearSoftness, b.appearSoftness);
+    _lerpColor(_fill, a.fillColor, b.fillColor, t);
+    fillOpacity = d(a.fillOpacity, b.fillOpacity);
+    fillFade = d(a.fillFade, b.fillFade);
+    pattern = second ? b.pattern : a.pattern;
+    patternScale = _fitToLoop(d(a.patternScale, b.patternScale));
+    patternRows = i(a.patternRows, b.patternRows);
+    patternLineWidth = d(a.patternLineWidth, b.patternLineWidth);
+    patternHeight = d(a.patternHeight, b.patternHeight);
+    patternStrength = d(a.patternStrength, b.patternStrength);
+    final patternEnd = t <= 0 ? a : (t >= 1 ? b : null);
+    if (patternEnd != null) {
+      patternColor = patternEnd.patternColor;
+    } else if (a.patternColor == null && b.patternColor == null) {
+      _hasPatternColor = false;
+    } else {
+      _hasPatternColor = true;
+      _lerpColor(
+        _patternColor,
+        a.effectivePatternColor,
+        b.effectivePatternColor,
+        t,
+      );
+    }
+    patternSpeed = d(a.patternSpeed, b.patternSpeed);
+    patternRiseSpeed = d(a.patternRiseSpeed, b.patternRiseSpeed);
+    patternTwinkle = d(a.patternTwinkle, b.patternTwinkle);
+    patternTwinkleSpeed = d(a.patternTwinkleSpeed, b.patternTwinkleSpeed);
+    noiseStrength = d(a.noiseStrength, b.noiseStrength);
+    noiseScale = d(a.noiseScale, b.noiseScale);
+    noiseSpeed = d(a.noiseSpeed, b.noiseSpeed);
+    flickerStrength = d(a.flickerStrength, b.flickerStrength);
+    flickerSpeed = d(a.flickerSpeed, b.flickerSpeed);
+    nearSideFade = d(a.nearSideFade, b.nearSideFade);
+    farSideFade = d(a.farSideFade, b.farSideFade);
+    sideFadeSoftness = d(a.sideFadeSoftness, b.sideFadeSoftness);
+    glintStrength = d(a.glintStrength, b.glintStrength);
+    glintPower = d(a.glintPower, b.glintPower);
+    _lerpColor(_impactColor, a.impactColor, b.impactColor, t);
+    impactSlots = i(a.impactSlots, b.impactSlots);
+    impactDuration = d(a.impactDuration, b.impactDuration);
+    impactRingCount = i(a.impactRingCount, b.impactRingCount);
+    impactRingInterval = d(a.impactRingInterval, b.impactRingInterval);
+    impactRingSpeed = d(a.impactRingSpeed, b.impactRingSpeed);
+    impactRingWidth = d(a.impactRingWidth, b.impactRingWidth);
+    impactRingStrength = d(a.impactRingStrength, b.impactRingStrength);
+    impactRingReach = d(a.impactRingReach, b.impactRingReach);
+    impactFlashRadius = d(a.impactFlashRadius, b.impactFlashRadius);
+    impactFlashStrength = d(a.impactFlashStrength, b.impactFlashStrength);
+    impactFlashDuration = d(a.impactFlashDuration, b.impactFlashDuration);
+    wobbleAmplitude = d(a.wobbleAmplitude, b.wobbleAmplitude);
+    wobbleFrequency = d(a.wobbleFrequency, b.wobbleFrequency);
+    wobbleWavelength = d(a.wobbleWavelength, b.wobbleWavelength);
+    wobbleDecay = d(a.wobbleDecay, b.wobbleDecay);
+    wobbleRadius = d(a.wobbleRadius, b.wobbleRadius);
+    wobbleShading = d(a.wobbleShading, b.wobbleShading);
+    _lerpColor(_pulseColor, a.pulseColor, b.pulseColor, t);
+    pulseStrength = d(a.pulseStrength, b.pulseStrength);
+    pulseDuration = d(a.pulseDuration, b.pulseDuration);
+    pulseAttack = d(a.pulseAttack, b.pulseAttack);
+    _lerpColor(_proximityColor, a.proximityColor, b.proximityColor, t);
+    proximityRadius = d(a.proximityRadius, b.proximityRadius);
+    proximityStrength = d(a.proximityStrength, b.proximityStrength);
+    proximityPatternBoost = d(
+      a.proximityPatternBoost,
+      b.proximityPatternBoost,
+    );
+    reactionInFront = d(a.reactionInFront, b.reactionInFront);
+    _setBlend(second ? b.blend : a.blend);
+  }
+
+  void _lerpColor(int index, Color a, Color b, double t) {
+    final o = index * 4;
+    _colors
+      ..[o] = BarrierLook.lerpLookChannel(a.r, b.r, t)
+      ..[o + 1] = BarrierLook.lerpLookChannel(a.g, b.g, t)
+      ..[o + 2] = BarrierLook.lerpLookChannel(a.b, b.b, t)
+      ..[o + 3] = BarrierLook.lerpLookChannel(a.a, b.a, t);
+  }
+
+  /// [scale] rounded to a whole number of motifs on the closed loop of
+  /// [patternLoopLength], or [scale] on a wall that is not closed.
+  double _fitToLoop(double scale) {
+    final loop = patternLoopLength;
+    if (!(loop > 0) || !(scale > 0)) {
+      return scale;
+    }
+    final count = math.max(1, (loop * scale).round());
+    return count / loop;
+  }
+
+  void _setBlend(BlendState blend) {
+    final state = renderState;
+    if (state.blend == blend) {
+      return;
+    }
+    const standard = [
+      RenderState.additive,
+      RenderState.premultipliedAlphaBlend,
+      RenderState.alphaBlend,
+    ];
+    if (standard.contains(state)) {
+      for (final candidate in standard) {
+        if (candidate.blend == blend) {
+          renderState = candidate;
+          return;
+        }
+      }
+    }
+    renderState = state.copyWith(blend: blend);
   }
 
   @override
