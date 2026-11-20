@@ -12,11 +12,16 @@ The app starts on `boxes`. The backquote key opens a console where `setup <name>
 scenario; `H` opens `houses` and `T` the showcase directly, `R` resets the camera, `M` switches its
 mode and `O` toggles 4x MSAA.
 
-- `boxes`, `colors`, `culling`, `models`, `particles`: small scenes for one feature each.
+- `boxes`, `colors`, `culling`, `models`, `particles`: small scenes for one feature each
+  (`particles` includes the splash presets).
 - `houses`: an ordinary 2D game whose houses are one `Scene3DComponent` layer between a 2D grid
   and 2D labels, under a 2D camera that pans and zooms; a tap picks a house with a 3D ray.
 - `shadows`: 3D buildings casting tinted shadows onto a 2D board through a `ShadowCatcherMaterial`,
   under a sun that circles around it.
+- `barrier` (`BarrierGame`): a stone platform in a pool, in a layer over 2D water. It rises with
+  water running off its edges (`ParticlePresets3D.runoffDrips`), a `BarrierMaterial` wall rises
+  from its rim, is hit three times in different colors and sinks back, and a block drops into the
+  water (`splashCrown`, `foamBurst`, `mistPuff`). A tap switches the barrier's pattern.
 - `showcase` (`ShowcaseGame`, `ShowcaseView`): one scene with 20 feature labs (`ShowcasePreset`),
   from materials, lights and shadows to physics, navigation, animation, 3D UI and the inspector,
   and switches for most rendering options.
@@ -33,7 +38,8 @@ and the limits of each feature are on its documentation page.
 The showcase's Self-Test button runs `ShowcaseDiagnostics.runAllChecks`: 64 checks that switch
 through all 20 labs. They are smoke checks: most assert counters and state (draw calls above a
 threshold, objects mounted, a body that moved), two read pixels. The pixel-exact checks of the
-rendering are the package's own GPU tests. The same checks run headless, from this directory:
+rendering are the package's own GPU tests. The same checks, and a run through the `barrier` scene,
+run headless, from this directory:
 
 ```sh
 flutter test --enable-impeller --enable-flutter-gpu
