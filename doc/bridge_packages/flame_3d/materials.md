@@ -1281,29 +1281,35 @@ cosines, each living ripple 3 transcendentals and 25 instructions, the foam mask
 a foam source is above `0`) 13 sines, the foam sources a dot product and a comparison where none
 reaches and, where one may, about 10 instructions per source above `0` (its box) plus a square root
 and about 15 more for those whose box the pixel is in (and 13 sines for each such source that
-carries its pattern), `foamLightTint` below `1` a dot product and a mix where the foam is, and `edgeFoamMotion` nothing (its phase is computed on the CPU). Per
-vertex, the foam sources add 3 instructions each. On the software rasterizer of `flutter test`, a
-full-screen 2532 x 1170 surface with the caustics, sparkles, swell and depth ramp costs about as
-much as the legacy material (within the noise, a few percent), 8 living ripples add about 30 %,
-foam mask over the whole surface about 4 %, and the foam sources what the pixels they reach pay:
-16 small collars over a fifth of the screen add about 5 % (30 % before the vertices told the
-pixels), 16 large ones over four fifths of it about 20 %, 1 to 4 within the noise; compare on your
-target device, where transcendentals cost relatively more.
+carries its pattern), `foamLightTint` below `1` a dot product and a mix where the foam is,
+`foamLightFloor` nothing more than the clamp of before, and `edgeFoamMotion` nothing (its phase is
+computed on the CPU). Per vertex, the foam sources add 3 instructions each. On the software
+rasterizer of `flutter test`, a full-screen 2532 x 1170 surface with the caustics, sparkles,
+swell and depth ramp costs about as much as the legacy material (within the noise, a few percent),
+8 living ripples add about 30 %, foam mask over the whole surface about 4 %, and the foam sources
+what the pixels they reach pay: 1 to 4 small collars stay within the noise, 4 large ones over a
+fifth of the screen add about 4 %, 16 small ones over a fifth of it about 7 % (about 30 % before
+the vertices told the pixels where none reaches) and 16 large ones over four fifths of it about
+27 %. The full fragment stage costs about 3 % more over the whole surface, and 16 small collars
+that carry their pattern about 15 %. Compare on your target device, where transcendentals cost
+relatively more.
 
 The shaders compile to GLSL ES 1.00 for OpenGL ES: they use no `flat` input, no derivative, no
 explicit level of detail, no texture, and their loops have constant bounds (the ripples' loop runs
 to 8 and stops at the number of living ripples). They need high precision in the fragment stage,
 as every built-in material does (the compiled shaders declare their values `highp`); their
 arguments stay small (the time is wrapped, the cells' values come from coordinates wrapped to 64),
-so they also hold in 16-bit floats near the origin. The options add 36 uniform vectors to the
-lean fragment stage (181 in all: 16 for the ripples, 16 for 8 slots of foam sources), within the
-224 that OpenGL ES 3.0 guarantees. While the material's `foamSources` hold more than 8 sources
-(`capacity` above 8) or one of them carries its pattern, it draws with its full stage: 16 slots
-that can carry their pattern, 16 vectors more (197 in all) and a few percent more per pixel over
-the whole surface, collars or not. It switches by itself when the set changes (the bundle of the
-masked vertex stage carries the full stage, so no bundle is added). The sources' loops run to the
-number of slots and stop after the last source above `0`. Their circles add 16 vectors to the
-vertex stage (19 in its block, of the 256 guaranteed) and one `vec3` output. Like the rest of `WaterMaterial`, they do not run on the web.
+so they also hold in 16-bit floats near the origin, except the patterns that collars carry, offset
+by up to 35 units for their slot. The options add 36 uniform vectors to the lean fragment stage
+(181 in all: 16 for the ripples, 16 for 8 slots of foam sources), within the 224 that OpenGL ES 3.0
+guarantees. While the material's `foamSources` hold more than 8 sources (`capacity` above 8) or
+one of them carries its pattern, it draws with its full stage: 16 slots that can carry their
+pattern, 16 vectors more (197 in all) and a little more per pixel over the whole surface, collars
+or not. It switches by itself when the set changes (the bundle of the masked vertex stage carries
+the full stage, so no bundle is added). The sources' loops run to the number of slots and stop
+after the last source above `0`. Their circles add 16 vectors to the vertex stage (19 in its
+block, of the 256 guaranteed) and one `vec3` output. Like the rest of `WaterMaterial`, they do not
+run on the web.
 
 
 ## UnlitMaterial
@@ -2169,9 +2175,10 @@ Cost: the volume adds 9 vectors to the pass block `StylizedMaterial` reads (writ
 about 0.2 µs) and no binding. Per pixel, surfaces above the level and its band test one plane and
 stop; submerged pixels pay two exponentials and, with caustics, the 22 transcendentals of the
 network; pixels in the band pay two noise lookups (13 sines), with `waterlineLightTint` below
-`1` a dot product and a mix, and with `waterlineLightFloor` above `0` a `max`. On the software rasterizer of `flutter test`, a full-screen submerged
-stylized surface costs about 25 % more without caustics and 40 % more with them than a dry one.
-Like `StylizedMaterial`, it does not run on the web.
+`1` a dot product and a mix, and with `waterlineLightFloor` above `0` a `max`; `waterlineMotion`
+costs nothing (its phase is computed on the CPU). On the software rasterizer of `flutter test`, a
+full-screen submerged stylized surface costs about 25 % more without caustics and 40 % more with
+them than a dry one. Like `StylizedMaterial`, it does not run on the web.
 
 
 ## Textures
