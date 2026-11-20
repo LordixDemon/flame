@@ -215,6 +215,13 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 /// cast shadows and translucent ones do not (see [Material.castsShadows]);
 /// the wind (sway, flutter and gusts) does not move the shadows.
 ///
+/// ## Water
+///
+/// Below the level of the world's water volume (`World3D.waterVolume`, see
+/// [WaterVolumeSettings]), the color of a surface is tinted and darkened
+/// with its depth and lit by caustics, and surfaces foam where they cross
+/// the level, before the fog; without a volume nothing changes.
+///
 /// Not available on the web yet: creating one there throws an
 /// [UnsupportedError].
 /// {@endtemplate}

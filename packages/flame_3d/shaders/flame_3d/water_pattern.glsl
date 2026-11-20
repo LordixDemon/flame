@@ -1,8 +1,9 @@
 #ifndef FLAME_WATER_PATTERN_GLSL_
 #define FLAME_WATER_PATTERN_GLSL_
 
-// Procedural patterns of water: the caustics, noise, swell and sparkles of
-// WaterMaterial's options.
+// Procedural patterns of water, shared by WaterMaterial (its surface) and by
+// the submerged surfaces of a World3D.waterVolume (flame_3d/water_volume.glsl),
+// so that both show the same caustics.
 //
 // Everything is built from sines of small arguments: no hash with large
 // constants, no texture, no derivative, no explicit level of detail and only

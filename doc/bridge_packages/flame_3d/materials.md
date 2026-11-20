@@ -77,8 +77,8 @@ pipeline changes; joint matrices are written for every skinned draw.
   `brdfLutTexture`, `probeGridTexture`, `sceneColorTexture` and `shadowMap`. Maps that are not set
   are bound to a 1x1 white texture.
 - `StylizedMaterial`: vertex `CameraMatrices`, `Wind` (and `JointMatrices` for skinned surfaces);
-  fragment `Material`, `StylizedPass` (the camera, lights, shadows and fog of the pass in one
-  block), `matCapTexture`, `gemMatCapTexture`, `shadowMap`: 7 bindings.
+  fragment `Material`, `StylizedPass` (the camera, lights, shadows, fog and water volume of the
+  pass in one block), `matCapTexture`, `gemMatCapTexture`, `shadowMap`: 7 bindings.
 - `WaterMaterial`: vertex `CameraMatrices`, `WaterVertex`; fragment `WaterMaterial`,
   `StylizedPass`, `DepthNormal`, `SceneColor`, `shadowMap`, `depthNormalTexture`,
   `sceneColorTexture`. Surfaces in `WaterMaterial.vertexLayout` draw with a vertex stage of their
@@ -506,6 +506,10 @@ out  = fog(mix(mix(luminosity(lit), lit, saturation), overlayColor.rgb,
                overlayColor.a))
 alpha = albedoColor.a * vertex alpha * instance color alpha * (1 - fade)
 ```
+
+Below the level of the world's water volume (`World3D.waterVolume`), the graded color is
+submerged before it is fogged: tinted and darkened with its depth, lit by caustics, and foamed
+where the surface crosses the level, see [Water volumes](#water-volumes).
 
 `glowColor` is `emissiveColor`, or the color of the instance that `emissiveColorSource` picks (see
 [Glow colors](#glow-colors)). `falloff` and `cone` are those of the point and spot lights (see
@@ -1027,7 +1031,8 @@ final water = WaterMaterial(
   from the world position of the rest surface, so it does not swim when the camera or a
   `Scene3DComponent`'s projection moves (mirrored projections included), nor with the waves. With
   `depthRange`, it shows at a quarter of its strength where the water has no depth, fully where it
-  is deep.
+  is deep, since the floor of shallow water shows its own caustics (see
+  [Water volumes](#water-volumes)).
 - **Sparkles**: one point per cell of `sparkleScale`, at its own place in the cell, flashes twice
   per period at its own moment, in the light reaching the water, brighter where the highlights of
   the lights are. Without light, no sparkle.
@@ -1081,7 +1086,7 @@ final surface = WaterMaterial.buildSurface(
 );
 ```
 
-Advance `time` every frame.
+Advance `time` every frame (and the water volume's, see [Water volumes](#water-volumes)).
 
 
 ### Ripples
@@ -1685,6 +1690,93 @@ current `FogSettings` does not, which matters for a `Scene3DComponent` with
 combines with lighting and HDR is described in [Lighting](lighting.md#fog-and-lighting).
 
 
+## Water volumes
+
+Assigning `World3D.waterVolume` fills the world with water up to a level: the parts of
+`StylizedMaterial` surfaces below it look submerged, tinted and darkened with their depth and lit
+by the caustics of the surface above them, and the surfaces foam in a narrow band where they cross
+the level. No depth buffer is involved: each fragment knows its own depth below the level, so it
+costs no pass, and a slab rising through the surface gets its foam ring and its wet look for free.
+
+```dart
+world.waterVolume = WaterVolumeSettings(
+  level: 0, // along up
+  up: Vector3(0, 0, 1), // a z-up world
+  deepColor: const Color(0xFF17669A),
+  absorption: 1.05,
+  causticStrength: 0.85,
+  causticScale: 0.62, // as the water's WaterMaterial
+  animationPeriod: 4, // as the water's WaterMaterial
+  waterlineWidth: 0.045,
+  bounds: poolBox, // only inside the pool
+);
+
+// Every frame, on the water's clock:
+water.time += dt;
+world.waterVolume!.time = water.time;
+```
+
+| Parameter         | Default      | Meaning                                                   |
+| ----------------- | ------------ | --------------------------------------------------------- |
+| `level`, `up`     | `0`, +Y      | the surface's height along `up` (normalized, copied)      |
+| `shallowColor`    | `0xFFC8F2EA` | filters the color of shallow surfaces                     |
+| `deepColor`       | `0xFF155E75` | the color deep surfaces fade into                         |
+| `absorption`      | `0.8`        | how fast they fade, per world unit                        |
+| `causticStrength` | `0` (off)    | the caustics on submerged surfaces                        |
+| `causticScale`    | `0.6`        | their cells' size, in world units                         |
+| `causticColor`    | white        | their color, times the direct sunlight                    |
+| `animationPeriod` | `8`          | seconds over which the caustics and the waterline loop    |
+| `time`            | `0`          | advance it every frame, with the water's                  |
+| `waterlineWidth`  | `0` (off)    | the width of the foam band around the level               |
+| `waterlineColor`  | `0xE6FFFFFF` | its color (lit like the surface); its alpha, how much     |
+| `bounds`          | none         | the box the water fills; outside it, nothing is submerged |
+
+Where a fragment is `depth = level - dot(position, up)` below the level (and inside `bounds`, when
+given), its color, after its shading and color grade and before the fog, becomes
+
+```text
+color    += albedo * sun * causticColor * causticStrength * fadeIn
+            * caustics(where its sunlight entered the water)
+absorbed  = 1 - exp(-absorption * depth)
+filter    = mix(1, shallowColor, 1 - exp(-4 * absorption * depth))
+color     = clamp(mix(color * filter, deepColor, absorbed), 0, 1)
+```
+
+- `albedo` is the surface's base color (vertex color, instance tint and accent), `sun` the direct
+  light its directional lights give it, after their shadows and its `n·l`: a submerged surface
+  keeps the sun's shadow, which fades with the rest of its color as it deepens, and has no
+  caustics where it is shadowed. `fadeIn` grows from `0` at the level to `1` an eighth of a unit
+  below it, so the waterline stays clean.
+- The caustics are the network `WaterMaterial.causticStrength` draws, sampled where the
+  surface's sunlight entered the water: from the fragment, back along the sunlight refracted by
+  the surface (its slope towards the horizon divided by about 1.33), up to the level. With the same
+  `causticScale`, `animationPeriod` and `time` as the water's material (and the same up axis), the
+  floor shows the network of the surface above it, shifted by the slant of the sun. They come from
+  the directional light that casts shadows, or the first one; a world without one has none.
+- Above the level, surfaces are unchanged, except in the waterline band: where `|depth|` is
+  within about `waterlineWidth` (the band laps up and down and is broken up along the outline of
+  the surface), the color moves towards `waterlineColor` times the surface's light, by up to the
+  color's alpha. Surfaces lying flat in the band, the top of a slab as it passes through the level,
+  foam more sparsely than walls and columns.
+
+The volume works with every vertex stage of `StylizedMaterial` (its own layout, skinned or not,
+and the standard layout), instancing, palettes, translucency, dither fades, shadows and HDR. The
+shadow pass and the depth-normal prepass draw with their own shaders and ignore it: submerged
+objects cast the shadows they cast in the air. `SpatialMaterial`, `WaterMaterial` and the other
+materials do not read it, nor do custom shaders unless they declare the `WaterVolume` block and
+call `applyWaterVolume` from `#include <flame_3d/water_volume.glsl>`. Setting
+`World3D.waterVolume` to a new object marks the scene changed; changing the fields of the current
+one does not (see [Lighting](lighting.md#changing-lights-at-run-time)): in a retained
+`Scene3DComponent`, mark the scene dirty after advancing its `time`.
+
+Cost: the volume adds 8 vectors to the pass block `StylizedMaterial` reads (written once per pass,
+about 0.2 µs) and no binding. Per pixel, surfaces above the level and its band test one plane and
+stop; submerged pixels pay two exponentials and, with caustics, the 22 transcendentals of the
+network; pixels in the band pay two noise lookups (13 sines). On the software rasterizer of
+`flutter test`, a full-screen submerged stylized surface costs about 25 % more without caustics
+and 40 % more with them than a dry one. Like `StylizedMaterial`, it does not run on the web.
+
+
 ## Textures
 
 
@@ -1919,7 +2011,8 @@ On the web, the materials run on WebGPU through hand-written WGSL versions of th
 - `StylizedMaterial`, `OutlineMaterial`, `DecalMaterial`, `ShadowCatcherMaterial` and
   `BarrierMaterial` throw an `UnsupportedError` when created there (WGSL files exist for the outline
   and decal shaders but are not used). `WaterMaterial` (its options and ripples included) has no
-  WGSL shaders and fails when first drawn.
+  WGSL shaders and fails when first drawn. `World3D.waterVolume` only changes `StylizedMaterial`,
+  so it has no effect there.
 - Compressed KTX2 textures are always decoded on the CPU, so BC7, ETC2 and ASTC files throw.
 
 The texture sampler options, including anisotropy up to 16, work on the web.
@@ -1940,6 +2033,10 @@ The texture sampler options, including anisotropy up to 16, work on the web.
   normals but do not move the vertices, and its depth ramp and foam mask come from the vertices, so
   they do not follow objects that move under or through the water (a slab rising under the
   surface).
+- A water volume has a flat level: it ignores the waves of the surface, so its waterline band does
+  not follow them (keep the waves small, as in a basin). It submerges `StylizedMaterial` surfaces
+  only, takes its caustics from one directional light, and has no fog of its own: the distance
+  through the water, from the surface to the eye, is not counted, only the depth.
 - A `DecalBatch3D` is one draw: it is sorted among the translucent draws at the center of its
   decals' bounds, so decals spread far apart can still be drawn in the wrong order against
   translucent objects between them. Textured decals are multiplied by their alpha a second time,

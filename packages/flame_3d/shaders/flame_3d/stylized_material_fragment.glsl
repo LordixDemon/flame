@@ -118,6 +118,16 @@ uniform StylizedPass {
   float Lights_numLights;
   float DirectionalLights_numLights;
   float SpotLights_numLights;
+  // The body of water of the pass, see flame_3d/water_volume.glsl. Last, so
+  // that the members of before keep their offsets.
+  vec4 WaterVolume_plane;
+  vec4 WaterVolume_shallow;
+  vec4 WaterVolume_deep;
+  vec4 WaterVolume_caustics;
+  vec4 WaterVolume_causticColor;
+  vec4 WaterVolume_waterline;
+  vec4 WaterVolume_boundsMin;
+  vec4 WaterVolume_boundsMax;
 } scene;
 
 #define FLAME_SHADOWS(member) scene.Shadows_##member
@@ -126,6 +136,9 @@ uniform StylizedPass {
 #define FLAME_FOG(member) scene.Fog_##member
 #include <flame_3d/fog.glsl>
 #include <flame_3d/dither.glsl>
+
+#define FLAME_WATER_VOLUME(member) scene.WaterVolume_##member
+#include <flame_3d/water_volume.glsl>
 
 // The instance color as the instance holds it. `fragInstanceColor` arrives
 // interpolated across the triangle (or extrapolated to the MSAA samples
@@ -214,12 +227,28 @@ void main() {
        dot(n, scene.DirectionalLights_directions[shadowed].xyz) > 0.0)) {
     sunShadow = shadowFactor(shadowVisibility(fragPosition, n));
   }
+  // The direct light of the directional lights alone, for the caustics of a
+  // water volume.
+  // The direct light of the directional lights alone, and the direction of
+  // the one that casts shadows (or of the first), for the caustics of a water
+  // volume.
+  vec3 sunDirect = vec3(0.0);
+  vec3 sunDirection = scene.WaterVolume_plane.xyz;
+  int sunIndex =
+    shadowed >= 0 && shadowed < int(scene.DirectionalLights_numLights)
+      ? shadowed
+      : 0;
   for (int i = 0; i < int(scene.DirectionalLights_numLights); i++) {
     vec4 direction = scene.DirectionalLights_directions[i];
     vec4 lightColor = scene.DirectionalLights_colors[i];
     vec3 shadow = castsShadows(i) ? sunShadow : vec3(1.0);
-    lit += max(dot(n, direction.xyz), 0.0) * lightColor.a * lightColor.rgb *
-      shadow;
+    vec3 direct = max(dot(n, direction.xyz), 0.0) * lightColor.a *
+      lightColor.rgb * shadow;
+    lit += direct;
+    sunDirect += direct;
+    if (i == sunIndex) {
+      sunDirection = direction.xyz;
+    }
     if (glossy) {
       float ndoth = max(dot(n, normalize(direction.xyz + v)), 0.0);
       specular += pow(ndoth, material.specularPower) * direction.w *
@@ -350,6 +379,20 @@ void main() {
   }
   if (material.overlayColor.a > 0.0) {
     color = mix(color, material.overlayColor.rgb, material.overlayColor.a);
+  }
+
+  // Below the level of the pass's water volume: tinted and darkened with the
+  // depth, with caustics, and foam where the surface crosses the level.
+  if (waterVolumeActive()) {
+    color = applyWaterVolume(
+      color,
+      base,
+      lit,
+      sunDirect,
+      sunDirection,
+      fragPosition,
+      n
+    );
   }
 
   color = applyFog(

@@ -222,7 +222,10 @@ is described in [Shadows](shadows.md#receiving-shadows): `SpatialMaterial`, `Sty
 `WaterMaterial` receive those of every light that casts them.
 
 The caustics of `WaterMaterial` and its sparkles take the light reaching the water from every
-light, after their shadows (see [Materials](materials.md#clear-water-without-extra-passes)).
+light (after their shadows); those that a water volume (`World3D.waterVolume`) draws on submerged
+`StylizedMaterial` surfaces take the direct light of the directional lights, sampled along the
+direction of the one that casts shadows (or the first), so they vanish in its shadow and warm and
+dim with a setting sun (see [Materials](materials.md#water-volumes)).
 
 
 ## Light masks
@@ -558,9 +561,9 @@ the end of its fragment shader, after lighting:
   as given. With `World3D.hdrEnabled` it fogs its extended-range sRGB color (not tone-mapped), which
   the composite then decodes and tone-maps: the fog color is changed by the tone map, as every
   material's colors are.
-- `StylizedMaterial` fogs its graded color before multiplying it by its alpha; `WaterMaterial` and
-  `BillboardMaterial3D` fog their final color, the light the options of `WaterMaterial` add over
-  the water included.
+- `StylizedMaterial` fogs its graded color (submerged first, below a water volume) before
+  multiplying it by its alpha; `WaterMaterial` and `BillboardMaterial3D` fog their final color,
+  the light the options of `WaterMaterial` add over the water included.
 - Fog does not change the light: lights are not dimmed by it, and it adds no light scattering or
   glow around lights. Unlit materials, decals, particles, ribbons and the skybox are not fogged.
 
@@ -571,7 +574,8 @@ Every pass writes the current values of the lights, the fog and the probes, so c
 effect on the next frame. Adding or removing a light, changing its component's transform or its
 `lightMask`, assigning a field of a light source (`color`, `intensity`, `range`, `direction`, the
 cone, `shadows`, a hemisphere light's colors and `up`), setting `World3D.fog`,
-`World3D.lightProbeGrid` or adding a reflection probe volume also marks the scene changed
+`World3D.waterVolume`, `World3D.lightProbeGrid` or adding a reflection probe volume also marks the
+scene changed
 (`World3D.sceneVersion`), which wakes an idle-throttled game loop and invalidates a
 `Scene3DComponent` that caches its image (`Scene3DCacheMode.retained`). Changes that cannot move a
 shadow (a color, an intensity) keep a static shadow map cached with
@@ -582,7 +586,8 @@ A light source cannot see a change made in place, inside one of its objects: a d
 changed with `setValues`, or a field of its `ShadowSettings`. Call `source.markChanged()` after such
 a change (`markChanged(shadows: false)` when it cannot move a shadow).
 
-The engine cannot see changes to the fields of the current `FogSettings`, of a probe
+The engine cannot see changes to the fields of the current `FogSettings` or
+`WaterVolumeSettings` (its `time`, advanced every frame), of a probe
 (`LightProbeGrid3D.setProbeSh9`, an `EnvironmentProbe3D`'s `intensity`) or of a material: a
 retained `Scene3DComponent` keeps showing the old image until something else changes. Call
 `world.markSceneDirty(shadows: false)` (or `Scene3DComponent.markDirty()`) after such changes, see

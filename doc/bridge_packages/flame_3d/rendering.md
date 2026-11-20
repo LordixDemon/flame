@@ -378,7 +378,10 @@ Shaders are GLSL, compiled ahead of time into shader bundles (see
   `castsShadows()`, see [Shadows](shadows.md#receiving-shadows).
 - `flame_3d/fog.glsl` declares the `Fog` block (driven by `World3D.fog`) and
   `applyFog(color, worldPosition, view, projection, cameraPosition)` for distance and height fog.
-- `flame_3d/water_pattern.glsl` holds the procedural patterns of `WaterMaterial`'s options:
+- `flame_3d/water_volume.glsl` declares the `WaterVolume` block (driven by `World3D.waterVolume`)
+  and `applyWaterVolume(color, albedo, irradiance, sunLight, sunDirection, position, normal)`,
+  which submerges what lies below the level, see [Materials](materials.md#water-volumes).
+  `flame_3d/water_pattern.glsl` holds the procedural patterns it shares with `WaterMaterial`:
   `waterCaustics`, `waterNoise`, `waterDetailSlope` and `waterSparkle`, built from sines of small
   arguments, without textures, derivatives or loops of variable length.
 - `flame_3d/dither.glsl` declares `bayerDither4x4(gl_FragCoord.xy)`, a threshold for dithered
@@ -391,7 +394,7 @@ Shaders are GLSL, compiled ahead of time into shader bundles (see
 
 Blocks named `CameraMatrices`, `Camera` (`position`, and any of the `CameraMatrices` members),
 `AmbientLight`, `Lights`, `DirectionalLights`, `SpotLights`, `HemisphereLight`, `Shadows`,
-`ShadowAtlas`, `Fog`, `DepthNormal`, `SceneColor` and `PassOptions`, and the
+`ShadowAtlas`, `Fog`, `WaterVolume`, `DepthNormal`, `SceneColor` and `PassOptions`, and the
 samplers `shadowMap`, `depthNormalTexture`, `sceneColorTexture`, `brdfLutTexture` and
 `probeGridTexture`, are filled once per render pass by the `RenderContext3D`, for every shader that
 declares them. No built-in shader declares `ShadowAtlas` any more (they read the atlas tiles from
@@ -405,8 +408,9 @@ shaders is described in [Materials](materials.md#custom-shaders).
 
 Flutter GPU binds every uniform block and texture of a pipeline again for each draw call, so each
 resource a shader declares costs CPU time on every draw. `StylizedMaterial`'s fragment shader
-therefore reads the camera, the lights, the shadows and the fog of the pass from one internal
-block, which the writers registered for those eight blocks fill, rather than from the eight blocks:
+therefore reads the camera, the lights, the shadows, the fog and the water volume of the pass from
+one internal block, which the writers registered for those nine blocks fill, rather than from the
+nine blocks:
 a draw of it binds seven resources (the camera matrices, its wind, its material values, that block,
 its two MatCap textures and the shadow map).
 

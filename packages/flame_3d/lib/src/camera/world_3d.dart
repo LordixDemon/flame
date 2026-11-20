@@ -25,6 +25,7 @@ class World3D({
   super.priority,
   double renderScale = 1.0,
   FogSettings? fog,
+  WaterVolumeSettings? waterVolume,
   BloomSettings? bloom,
   PostProcessSettings? postProcess,
   LightProbeGrid3D? lightProbeGrid,
@@ -89,12 +90,13 @@ class World3D({
   /// or particles are spawned or cleared (`ParticleSystem3D.burst`, `spawn`,
   /// `clear`);
   /// when a `Material.castsShadows` changes; when a setting of this world is
-  /// assigned ([fog], [bloom], [postProcess], [hdrEnabled],
+  /// assigned ([fog], [waterVolume], [bloom], [postProcess], [hdrEnabled],
   /// [depthPrepassEnabled], ...); and when the lights it borrows change (see
   /// [lightsFrom] and [lightsVersion]).
   ///
   /// The engine cannot see changes made in place: a field of a material, a
-  /// field of [fog] or of a light's `ShadowSettings`, a vector of a light
+  /// field of [fog], of [waterVolume] or of a light's `ShadowSettings`, a
+  /// vector of a light
   /// source, joint matrices written into an existing list, the buffers of a
   /// custom `Object3D.draw`, [customPasses]. Report them with
   /// `Component3D.markDrawDirty`, `LightSource.markChanged` or
@@ -298,6 +300,24 @@ class World3D({
       return;
     }
     _fog = value;
+    markSceneDirty(shadows: false);
+  }
+
+  /// The body of water of this world: the surfaces of `StylizedMaterial`s
+  /// below its level look submerged (tinted and darkened with their depth,
+  /// with caustics), and foam where they cross it (`null`, the default, for
+  /// none). See [WaterVolumeSettings].
+  ///
+  /// Assigning another object marks the scene changed; changing the fields
+  /// of the current one (its `time`, for instance) does not, see
+  /// [sceneVersion].
+  WaterVolumeSettings? get waterVolume => _waterVolume;
+  WaterVolumeSettings? _waterVolume = waterVolume;
+  set waterVolume(WaterVolumeSettings? value) {
+    if (identical(value, _waterVolume)) {
+      return;
+    }
+    _waterVolume = value;
     markSceneDirty(shadows: false);
   }
 
@@ -695,6 +715,7 @@ class World3D({
     ctx
       ..lights = _passLights
       ..fog = _fog
+      ..waterVolume = _waterVolume
       // Only the passes into the HDR scene target encode for it, see
       // `executeWorldRenderPipeline`.
       ..hdrEnabled = false

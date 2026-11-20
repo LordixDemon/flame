@@ -44,6 +44,7 @@ class RenderContext3D(super.device) extends RenderContext {
     registerPassUniform(shadowsBlock, writeShadowsUniforms);
     registerPassUniform(shadowAtlasBlock, _ShadowPass.writeAtlasUniforms);
     registerPassUniform(fogBlock, writeFogUniforms);
+    registerPassUniform(waterVolumeBlock, writeWaterVolumeUniforms);
     registerPassUniform(depthNormalBlock, _DepthNormalPass.writeUniforms);
     registerPassUniform(
       sceneColorBlock,
@@ -111,6 +112,10 @@ class RenderContext3D(super.device) extends RenderContext {
   /// The name of the block describing atmospheric fog (`FogSettings`).
   static const String fogBlock = 'Fog';
 
+  /// The name of the block describing the body of water of the pass
+  /// (`WaterVolumeSettings`), see `flame_3d/water_volume.glsl`.
+  static const String waterVolumeBlock = 'WaterVolume';
+
   /// The name of the block describing the half-res scene depth-normal prepass.
   static const String depthNormalBlock = 'DepthNormal';
 
@@ -134,7 +139,8 @@ class RenderContext3D(super.device) extends RenderContext {
   static const String passOptionsBlock = 'PassOptions';
 
   /// The name of the block in which `StylizedMaterial`'s fragment shader
-  /// reads the camera, the lights, the shadows and the fog of the pass.
+  /// reads the camera, the lights, the shadows, the fog and the water volume
+  /// of the pass.
   @internal
   static const String stylizedPassBlock = 'StylizedPass';
 
@@ -147,6 +153,7 @@ class RenderContext3D(super.device) extends RenderContext {
     hemisphereLightBlock,
     shadowsBlock,
     fogBlock,
+    waterVolumeBlock,
   ];
 
   /// The maximum number of point lights written to the [lightsBlock].
@@ -225,6 +232,10 @@ class RenderContext3D(super.device) extends RenderContext {
 
   /// Atmospheric fog of the current pass (`null` disables fog).
   FogSettings? fog;
+
+  /// The body of water of the current pass, whose submerged surfaces
+  /// `StylizedMaterial` tints (`null`, the default, for none).
+  WaterVolumeSettings? waterVolume;
 
   /// Whether the current pass renders into the HDR scene target of a
   /// `World3D` with `hdrEnabled`, which the composite decodes.
@@ -1801,6 +1812,71 @@ class RenderContext3D(super.device) extends RenderContext {
         'height',
         v..setValues(up.x, up.y, up.z, fog.baseHeight),
       );
+  }
+
+  /// Fills the [waterVolumeBlock] from [waterVolume], see
+  /// `flame_3d/water_volume.glsl`.
+  static void writeWaterVolumeUniforms(
+    RenderContext3D context,
+    UniformBlock block,
+  ) {
+    final water = context.waterVolume;
+    final v = _scratchVector4;
+    if (water == null || !water.isActive) {
+      block
+        ..setVector4('plane', v..setValues(0, 1, 0, 0))
+        ..setVector4('deep', v..setZero())
+        ..setVector4('caustics', v)
+        ..setVector4('boundsMin', v);
+      return;
+    }
+    final up = _scratchDirection..setFrom(water.up);
+    if (up.length2 > 0) {
+      up.normalize();
+    } else {
+      up.setValues(0, 1, 0);
+    }
+    final shallow = water.shallowColor;
+    final deep = water.deepColor;
+    final caustic = water.causticColor;
+    final line = water.waterlineColor;
+    final scale = water.causticScale;
+    block
+      ..setVector4('plane', v..setValues(up.x, up.y, up.z, water.level))
+      ..setVector4(
+        'shallow',
+        v..setValues(
+          shallow.r,
+          shallow.g,
+          shallow.b,
+          math.max(0.0, water.absorption),
+        ),
+      )
+      ..setVector4('deep', v..setValues(deep.r, deep.g, deep.b, 1))
+      ..setVector4(
+        'caustics',
+        v..setValues(
+          math.max(0.0, water.causticStrength),
+          scale > 0 ? 1 / scale : 0,
+          water.phase,
+          math.max(0.0, water.waterlineWidth),
+        ),
+      )
+      ..setVector4(
+        'causticColor',
+        v..setValues(caustic.r, caustic.g, caustic.b, 1),
+      )
+      ..setVector4('waterline', v..setValues(line.r, line.g, line.b, line.a));
+    final bounds = water.bounds;
+    if (bounds == null) {
+      block.setVector4('boundsMin', v..setZero());
+    } else {
+      final lo = bounds.min;
+      final hi = bounds.max;
+      block
+        ..setVector4('boundsMin', v..setValues(lo.x, lo.y, lo.z, 1))
+        ..setVector4('boundsMax', v..setValues(hi.x, hi.y, hi.z, 0));
+    }
   }
 
   static final _scratchDirection = Vector3.zero();
