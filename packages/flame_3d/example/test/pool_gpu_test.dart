@@ -131,9 +131,27 @@ void main() {
       game.setTime(1.2);
       final dusk = await frame();
       expect(differing(noon, dusk), greaterThan(844 * 390 ~/ 2));
-      // The foam keeps its white under the warm sun.
+      // The foam keeps its white under the warm sun, and its brightness.
       expect(game.scene.water.foamLightTint, lessThan(1));
       expect(game.scene.volume.waterlineLightTint, lessThan(1));
+      expect(game.scene.water.foamLightFloor, greaterThan(0.5));
+      expect(game.scene.volume.waterlineLightFloor, greaterThan(0));
+
+      // Winter: every foam stands still, the water's and the waterline's.
+      game.scene
+        ..slabLift = 1
+        ..lighting = PoolLighting.winter;
+      game.setTime(2.4);
+      final winter = await frame();
+      expect(differing(raised, winter), greaterThan(844 * 390 ~/ 8));
+      expect(game.scene.water.edgeFoamMotion, 0);
+      expect(game.scene.volume.waterlineMotion, 0);
+
+      // The crate drifts in a collar that carries its pattern along.
+      final crate = game.scene.crate.position.clone();
+      game.setTime(9.4);
+      expect(game.scene.crate.position.distanceTo(crate), greaterThan(0.5));
+      expect(collars.carriesPattern(collars.length - 1), isTrue);
     },
     skip: !gpuAvailable,
   );

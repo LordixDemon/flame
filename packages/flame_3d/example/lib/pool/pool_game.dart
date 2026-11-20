@@ -12,8 +12,8 @@ import 'package:flame_3d_example/pool/pool_scene.dart';
 /// `Scene3DProjection`, as the 2D art of a board would be drawn).
 ///
 /// With [autoPlay] the slabs rise out of the water and sink back every 12
-/// seconds and a pebble drops in every few seconds. A tap switches between
-/// noon and dusk.
+/// seconds and a pebble drops in every few seconds. A tap goes from noon to
+/// dusk, to a still winter day and back.
 class PoolGame({
   var bool autoPlay = true,
   PoolLighting lighting = PoolLighting.noon,
@@ -89,8 +89,7 @@ class PoolGame({
 
   @override
   void onTapUp(TapUpEvent event) {
-    scene.lighting = scene.lighting == PoolLighting.noon
-        ? PoolLighting.dusk
-        : PoolLighting.noon;
+    const looks = PoolLighting.values;
+    scene.lighting = looks[(scene.lighting.index + 1) % looks.length];
   }
 }

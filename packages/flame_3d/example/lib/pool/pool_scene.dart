@@ -9,11 +9,17 @@ import 'package:flame_3d/particles.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d_example/pool/pool_meshes.dart';
 
-/// The light of a [PoolScene]: the sun high at noon, or low and warm at dusk
-/// with the lamps lit.
+/// The light of a [PoolScene]: the sun high at noon, low and warm at dusk
+/// with the lamps lit, or pale on a still winter day.
 enum PoolLighting() {
   noon,
   dusk,
+
+  /// A cold, pale light, and every foam still: a rim of rime along the
+  /// walls, around the stones and on the water's line on the slabs and the
+  /// stones ([WaterMaterial.edgeFoamMotion] and
+  /// [WaterVolumeSettings.waterlineMotion] at `0`).
+  winter,
 }
 
 /// A shallow, clear pool inside a walled quay, in a world whose up axis is z,
@@ -31,11 +37,16 @@ enum PoolLighting() {
 /// [volume] tints with their depth, lights with the same caustics and rings
 /// with foam where they cross the surface. At dusk, the foam keeps its white
 /// under the warm sun ([WaterMaterial.foamLightTint],
-/// [WaterVolumeSettings.waterlineLightTint]). Nothing needs the depth prepass
-/// or the scene color grab. Splashes come from [ParticlePresets3D]:
-/// a crown, foam and mist where the pebble lands, water running off the
-/// slabs that rise out of the water and foam flooding over those that sink,
-/// and every drop that falls back raises a small ring in [ripples].
+/// [WaterVolumeSettings.waterlineLightTint]) and its brightness in the low
+/// light ([WaterMaterial.foamLightFloor],
+/// [WaterVolumeSettings.waterlineLightFloor]); on a winter day it stands
+/// still. The crate drifts along the far wall in a collar that carries its
+/// pattern along ([WaterFoamSources.setCarryPattern]). Nothing
+/// needs the depth prepass or the scene color grab. Splashes come from
+/// [ParticlePresets3D]: a crown, foam and mist where the pebble lands, water
+/// running off the slabs that rise out of the water and foam flooding over
+/// those that sink, and every drop that falls back raises a small ring in
+/// [ripples].
 ///
 /// Everything that moves is a function of the time given to [setTime], so a
 /// frame can be rendered again exactly.
@@ -80,10 +91,13 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
   /// (twelfths of a unit).
   static const int _rimRows = 5;
 
+  static const Color _shallow = Color(0xFF86E3F0);
+  static const Color _deep = Color(0xFF1B78B0);
+
   WaterMaterial _water({double edgeFoamMotion = 1}) => WaterMaterial(
     upAxis: up,
-    shallowColor: const Color(0xFF86E3F0),
-    deepColor: const Color(0xFF1B78B0),
+    shallowColor: _shallow,
+    deepColor: _deep,
     foamColor: const Color(0xF2FFFFFF),
     waveAmplitude: 0.012,
     waveFrequency: 2.2,
@@ -205,6 +219,13 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
   final Vector3 _point = Vector3.zero();
   final Vector3 _axis = Vector3.zero();
   static final Vector3 _crateAxis = Vector3(1, 0.4, 0)..normalize();
+  static final Vector3 _up = Vector3(0, 0, 1);
+  final Quaternion _yaw = Quaternion.identity();
+  final Quaternion _roll = Quaternion.identity();
+
+  /// The middle of the crate's drift, along the far wall, between it and
+  /// the slabs.
+  static final Vector2 crateDrift = Vector2(0.4, -2.2);
 
   /// The components of the scene, lights included, to add to a world whose
   /// [World3D.waterVolume] is [volume] (see [install]).
@@ -280,7 +301,7 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
 
     crate = MeshComponent(
       mesh: _crate().mesh(_stone),
-      position: Vector3(2.75, 1.8, 0),
+      position: Vector3(crateDrift.x, crateDrift.y, 0),
     );
     _crateCollar = collars.addRectangle(
       crate.position,
@@ -289,6 +310,7 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
       cornerRadius: 0.04,
       width: 0.2,
       strength: 0.8,
+      carryPattern: true,
     );
     pebble = MeshComponent(
       mesh: _pebble().mesh(_stone),
@@ -374,13 +396,26 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
       _slabCollar(k, top);
     }
 
-    // The crate bobs and rolls a little on the water, and nudges a faint
-    // ring out every bob.
+    // The crate drifts slowly around the corner of the pool, turning as it
+    // goes, bobs and rolls a little on the water, and nudges a faint ring
+    // out every bob.
     final bob = math.sin(time * math.pi);
-    crate.position.z = -0.1 + 0.025 * bob;
-    crate.rotation.setAxisAngle(
+    crate.position.setValues(
+      crateDrift.x + 1.5 * math.sin(time * 0.2),
+      crateDrift.y + 0.18 * math.sin(time * 0.43 + 1),
+      -0.1 + 0.025 * bob,
+    );
+    _yaw.setAxisAngle(_up, 0.5 * math.sin(time * 0.23));
+    _roll.setAxisAngle(
       _crateAxis,
       0.05 * math.sin(time * math.pi * 0.5 + 0.7),
+    );
+    // The roll, then the yaw.
+    crate.rotation.setValues(
+      _yaw.w * _roll.x + _yaw.x * _roll.w + _yaw.y * _roll.z - _yaw.z * _roll.y,
+      _yaw.w * _roll.y - _yaw.x * _roll.z + _yaw.y * _roll.w + _yaw.z * _roll.x,
+      _yaw.w * _roll.z + _yaw.x * _roll.y - _yaw.y * _roll.x + _yaw.z * _roll.w,
+      _yaw.w * _roll.w - _yaw.x * _roll.x - _yaw.y * _roll.y - _yaw.z * _roll.z,
     );
     collars.move(
       _crateCollar,
@@ -472,27 +507,60 @@ class PoolScene({PoolLighting lighting = PoolLighting.noon}) {
 
   void _applyLighting() {
     final dusk = _lighting == PoolLighting.dusk;
+    final winter = _lighting == PoolLighting.winter;
     final sun = _sun.source as DirectionalLight;
     // At dusk the sun is low behind the pool, so its glints cross the water
-    // towards the viewer.
+    // towards the viewer; in winter it is low and pale.
     sun
-      ..direction = dusk ? Vector3(0.5, 0.78, -0.42) : Vector3(-0.3, -0.6, -1)
-      ..color = dusk ? const Color(0xFFFF9C5C) : const Color(0xFFFFF4E2)
-      ..intensity = dusk ? 0.55 : 0.62;
+      ..direction = dusk
+          ? Vector3(0.5, 0.78, -0.42)
+          : winter
+          ? Vector3(-0.55, -0.35, -0.55)
+          : Vector3(-0.3, -0.6, -1)
+      ..color = dusk
+          ? const Color(0xFFFF9C5C)
+          : winter
+          ? const Color(0xFFE4ECF6)
+          : const Color(0xFFFFF4E2)
+      ..intensity = dusk ? 0.55 : (winter ? 0.5 : 0.62);
     (_sky.source as HemisphereLight)
-      ..skyColor = dusk ? const Color(0xFF7180B8) : const Color(0xFFBFE4FF)
-      ..groundColor = dusk ? const Color(0xFF3E3040) : const Color(0xFF8C7B62)
-      ..intensity = dusk ? 0.42 : 0.5;
+      ..skyColor = dusk
+          ? const Color(0xFF7180B8)
+          : winter
+          ? const Color(0xFFD5E2EE)
+          : const Color(0xFFBFE4FF)
+      ..groundColor = dusk
+          ? const Color(0xFF3E3040)
+          : winter
+          ? const Color(0xFF8A8F96)
+          : const Color(0xFF8C7B62)
+      ..intensity = dusk ? 0.42 : (winter ? 0.55 : 0.5);
     for (final lamp in _lamps) {
       (lamp.source as PointLight).intensity = dusk ? 1.0 : 0;
     }
     _lantern.emissiveStrength = dusk ? 1 : 0.25;
+    // The grass and the stones lose their color in winter.
+    _stone.saturation = winter ? 0.35 : 1;
     // The foam scatters the warm light of dusk and stays white, with a trace
-    // of warmth.
+    // of warmth, and bright in the low light; winter's rime is bright too.
     final tint = dusk ? 0.25 : 1.0;
-    water.foamLightTint = tint;
-    rimWater.foamLightTint = tint;
-    volume.waterlineLightTint = tint;
+    final floor = dusk ? 0.85 : (winter ? 0.8 : 0.5);
+    for (final material in [water, rimWater]) {
+      material
+        ..foamLightTint = tint
+        ..foamLightFloor = floor
+        // Colder, greyer water in winter.
+        ..shallowColor = winter ? const Color(0xFF9FD3DC) : _shallow
+        ..deepColor = winter ? const Color(0xFF2B6A8C) : _deep;
+    }
+    volume
+      ..waterlineLightTint = tint
+      ..waterlineLightFloor = dusk ? 0.7 : (winter ? 0.75 : 0)
+      // In winter every foam stands still: rime on the water and a wider
+      // rim on the stones and the slabs standing in it.
+      ..waterlineMotion = winter ? 0 : 1
+      ..waterlineWidth = winter ? 0.07 : 0.045;
+    water.edgeFoamMotion = winter ? 0 : 1;
   }
 
   PoolMeshBuilder _quay() {

@@ -33,11 +33,13 @@ mode and `O` toggles 4x MSAA.
 - `pool` (`PoolGame`, `PoolScene`): a clear, shallow pool in a walled quay, seen through a mirrored
   isometric-like `Scene3DComponent` projection: the water is one `WaterMaterial` draw (caustics,
   sparkles, a swell of the normals, a depth ramp, foam along the walls, ripples and
-  `WaterFoamSources` collars around the slabs and the crate), plus a strip along the far wall
-  whose band of foam stands still (`edgeFoamMotion: 0`), and a `World3D.waterVolume` submerges
-  the floor, the stepping stones and a grid of slabs on columns that rise out of the water and
-  sink back. Pebbles drop in; a tap switches between noon and dusk, where the foam keeps its white
-  under the warm sun (`foamLightTint`, `waterlineLightTint`).
+  `WaterFoamSources` collars around the slabs and the crate, which drifts along the far wall in a
+  collar that carries its pattern), plus a strip along the far wall whose band of foam stands
+  still (`edgeFoamMotion: 0`), and a `World3D.waterVolume` submerges the floor, the stepping
+  stones and a grid of slabs on columns that rise out of the water and sink back. Pebbles drop in;
+  a tap goes from noon to dusk, where the foam keeps its white and its brightness under the low,
+  warm sun (`foamLightTint`, `foamLightFloor` and their waterline matches), to a still winter day
+  (`edgeFoamMotion` and `waterlineMotion` at `0`) and back.
 - `showcase` (`ShowcaseGame`, `ShowcaseView`): one scene with 20 feature labs (`ShowcasePreset`),
   from materials, lights and shadows to physics, navigation, animation, 3D UI and the inspector,
   and switches for most rendering options.
