@@ -223,3 +223,35 @@ class const GpuShaderSupport({
     return problems;
   }
 }
+
+/// The state of the GPU device of a [GpuBackend], see
+/// [GpuBackend.deviceState].
+enum GpuDeviceState() {
+  /// The device renders.
+  ready,
+
+  /// The device was lost: nothing is drawn until it is recovered.
+  lost,
+
+  /// The backend is rebuilding what it owns and checking the device.
+  recovering,
+
+  /// Recovery failed: nothing is drawn. The backend tries again the next
+  /// time the app is resumed, or when [GpuBackend.recoverDevice] is called.
+  failed,
+}
+
+/// Callbacks for the losses and recoveries of the GPU device, registered
+/// with [GpuBackend.addDeviceListener].
+class const GpuDeviceListener({
+  /// Called when the device is found lost, with the reason.
+  final void Function(Object reason)? onLost,
+
+  /// Called once the device renders again, with the new
+  /// [GpuBackend.deviceGeneration]: restore here what only the app can
+  /// rebuild (textures that wrap `dart:ui` images, for instance).
+  final void Function(int generation)? onRecovered,
+
+  /// Called when recovery failed, with the error.
+  final void Function(Object error)? onRecoveryFailed,
+});

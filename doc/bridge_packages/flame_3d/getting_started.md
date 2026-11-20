@@ -96,6 +96,25 @@ a frame, and reports the command buffer complete before: reading a rendered imag
 (`Image.toByteData`) gives transparent pixels there, a frame or two later the right ones.
 
 
+### A lost GPU device
+
+The backend notices a lost device by itself: when a command buffer fails on the GPU, when
+submitting one throws, and when the app returns to the foreground (`GpuBackend.checkDeviceOnResume`,
+on by default, renders a 4 by 4 pixel pass and reads it back). It then stops drawing, creates every
+GPU object again (render targets, buffers, pipelines, the textures of `Texture` resources and the
+shader libraries), checks the device again and tells the app through
+`GpuBackend.addDeviceListener(GpuDeviceListener(onLost:, onRecovered:, onRecoveryFailed:))`. See
+[Device loss](scenes_and_assets.md#device-loss) for what the app restores itself. On Android,
+going to the background, the app switcher, `am send-trim-memory` and returning lost nothing on the
+emulator: Flutter keeps its GPU context alive, so a real loss is a driver reset, which could not be
+provoked here.
+
+`GpuBackend.isAvailable` tells whether the GPU backend can run in this process: it is `false` when
+Flutter GPU is not enabled, when Impeller is off, on Windows and Linux, and in browsers without
+WebGPU. Without it, constructing a `FlameGame3D` (or anything else with the `Game3D` mixin) throws,
+and so does the first render of a `Scene3DComponent`.
+
+
 ### The web
 
 On the web, `flame_3d` renders through the browser's WebGPU API with WGSL versions of a few shaders.

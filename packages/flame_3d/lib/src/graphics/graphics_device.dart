@@ -21,6 +21,11 @@ import 'package:meta/meta.dart';
 /// Uniform and instance data is staged in CPU memory and uploaded to GPU
 /// buffers once per render pass. Those buffers are recycled once the GPU has
 /// finished the frames that read them.
+///
+/// While the GPU device is lost or recovering (see
+/// [GpuBackend.isDeviceReady]), passes record nothing: binds and draws are
+/// ignored, no resource is uploaded and [endPass] returns a transparent
+/// image, so nothing draws with a handle of the lost device.
 /// {@endtemplate}
 class GraphicsDevice({
   /// The clear value, used to clear out the screen.
@@ -90,6 +95,20 @@ class GraphicsDevice({
   /// Whether a render pass is being recorded.
   bool get isInPass => _renderPass != null;
 
+  /// Whether the current pass records nothing because the GPU device is not
+  /// ready (see [GpuBackend.isDeviceReady]).
+  bool get isSuspended => _suspended;
+  bool _suspended = false;
+
+  /// Starts recording a pass into [target], or into nothing while the
+  /// device is not ready.
+  GpuRenderPass _beginGpuPass(GpuFrame frame, GpuRenderTarget target) {
+    _suspended = !backend.isDeviceReady;
+    return _suspended
+        ? _SuspendedRenderPass.instance
+        : frame.beginRenderPass(target);
+  }
+
   /// Begin a new frame.
   ///
   /// Starts the frame whose transient storage is shared across all render
@@ -148,7 +167,7 @@ class GraphicsDevice({
     }
     RenderProfile.lap(RenderPhase.setup);
     _renderTarget = _acquireRenderTarget(size, msaaSampleCount);
-    _startPass(frame.beginRenderPass(_renderTarget), frontFace);
+    _startPass(_beginGpuPass(frame, _renderTarget), frontFace);
     RenderProfile.lap(RenderPhase.passBegin);
   }
 
@@ -164,7 +183,7 @@ class GraphicsDevice({
     }
     RenderProfile.lap(RenderPhase.setup);
     _renderTarget = target;
-    _startPass(frame.beginRenderPass(target), frontFace);
+    _startPass(_beginGpuPass(frame, target), frontFace);
     RenderProfile.lap(RenderPhase.passBegin);
   }
 
@@ -257,8 +276,15 @@ class GraphicsDevice({
   }
 
   /// Submit the render pass to the GPU and return the rendered [Image].
+  ///
+  /// While the device is not ready, the image is transparent.
   Image endPass() {
     final renderPass = _pass;
+    if (_suspended) {
+      _renderPass = null;
+      _suspended = false;
+      return _SuspendedRenderPass.blankImage();
+    }
     RenderProfile.lap(RenderPhase.release);
     _arena.flush();
     RenderProfile.lap(RenderPhase.upload);
@@ -340,7 +366,7 @@ class GraphicsDevice({
     if (frame == null) {
       throw StateError('beginTexturePass must be called between begin and end');
     }
-    if (keepContents) {
+    if (keepContents && backend.isDeviceReady) {
       final scratch = textureTarget(
         target.width,
         target.height,
@@ -348,17 +374,17 @@ class GraphicsDevice({
         role: _scratchRole,
       );
       _renderTarget = scratch;
-      _startPass(frame.beginRenderPass(scratch), WindingOrder.counterClockwise);
+      _startPass(_beginGpuPass(frame, scratch), WindingOrder.counterClockwise);
       _copyTexture(0, target);
       endTexturePass();
       _renderTarget = target;
-      _startPass(frame.beginRenderPass(target), WindingOrder.counterClockwise);
+      _startPass(_beginGpuPass(frame, target), WindingOrder.counterClockwise);
       _copyTexture(1, scratch);
       setFrontFace(frontFace);
       return;
     }
     _renderTarget = target;
-    _startPass(frame.beginRenderPass(target), frontFace);
+    _startPass(_beginGpuPass(frame, target), frontFace);
   }
 
   static const Object _scratchRole = #flame3dKeepContents;
@@ -418,6 +444,11 @@ class GraphicsDevice({
   /// Submit the pass begun by [beginTexturePass] to the GPU.
   void endTexturePass() {
     final renderPass = _pass;
+    if (_suspended) {
+      _renderPass = null;
+      _suspended = false;
+      return;
+    }
     RenderProfile.lap(RenderPhase.release);
     _arena.flush();
     RenderProfile.lap(RenderPhase.upload);
@@ -568,7 +599,7 @@ class GraphicsDevice({
 
   /// Bind the vertex and index buffers of [surface].
   void bindSurface(Surface surface) {
-    if (identical(surface, _surface)) {
+    if (identical(surface, _surface) || _suspended) {
       return;
     }
     final buffer = surface.resource;
@@ -591,6 +622,9 @@ class GraphicsDevice({
   /// Upload the first [count] instances of [instances] and bind them as the
   /// instance buffer.
   void bindInstances(Float32List instances, int count) {
+    if (_suspended) {
+      return;
+    }
     final floats = count * VertexLayout.instanceStrideInFloats;
     final block = _arena.allocate(floats * 4, _instanceAlignment);
     final offset = block.lastOffset;
@@ -615,6 +649,9 @@ class GraphicsDevice({
     int start,
     int count,
   ) {
+    if (_suspended) {
+      return;
+    }
     const stride = VertexLayout.instanceStrideInFloats;
     final floats = count * stride;
     final block = _arena.allocate(floats * 4, _instanceAlignment);
@@ -663,6 +700,9 @@ class GraphicsDevice({
 
   /// Upload [data] and bind it to the uniform block [slot].
   void bindUniform(GpuUniformSlot slot, ByteData data) {
+    if (_suspended) {
+      return;
+    }
     final block = _uploadUniform(
       data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
     );
@@ -677,6 +717,9 @@ class GraphicsDevice({
   /// Bind [block] to its slot, uploading it first unless its current contents
   /// were already uploaded during this frame.
   void bindUniformBlock(UniformBlock block) {
+    if (_suspended) {
+      return;
+    }
     RenderProfile.lap(RenderPhase.binding);
     if (block.isDirty || block.uploadFrame != _frame) {
       final upload = _uploadUniform(block.byteList);
@@ -695,6 +738,9 @@ class GraphicsDevice({
   /// Bind a uniform [slot] to the [texture], sampled with its
   /// [Texture.sampler].
   void bindTexture(GpuUniformSlot slot, Texture texture) {
+    if (_suspended) {
+      return;
+    }
     _pass.bindTexture(slot, texture.resource, sampler: texture.sampler);
     RenderProfile.lap(RenderPhase.binding);
   }
@@ -989,5 +1035,117 @@ class _TransientArena(final GpuBackend _backend) {
   static int _align(int value, int alignment) {
     final remainder = value % alignment;
     return remainder == 0 ? value : value + alignment - remainder;
+  }
+}
+
+/// The pass recorded while the GPU device is not ready: it records nothing.
+class _SuspendedRenderPass() implements GpuRenderPass {
+  static final _SuspendedRenderPass instance = _SuspendedRenderPass();
+
+  static Image? _blank;
+
+  /// A new handle to a transparent 1 by 1 image (a clone, so that callers
+  /// may dispose it).
+  static Image blankImage() {
+    final blank = _blank ??= () {
+      final recorder = PictureRecorder();
+      Canvas(recorder);
+      final picture = recorder.endRecording();
+      final image = picture.toImageSync(1, 1);
+      picture.dispose();
+      return image;
+    }();
+    return blank.clone();
+  }
+
+  @override
+  void bindPipeline(GpuPipeline pipeline) {}
+
+  @override
+  void setBlendState(BlendState blend) {}
+
+  @override
+  void setDepthState({
+    required CompareFunction compare,
+    required bool writeEnabled,
+  }) {}
+
+  @override
+  void setCullMode(CullMode cullMode) {}
+
+  @override
+  void setWindingOrder(WindingOrder windingOrder) {}
+
+  @override
+  void setViewport(
+    int x,
+    int y,
+    int width,
+    int height, {
+    double zNear = 0.0,
+    double zFar = 1.0,
+  }) {}
+
+  @override
+  void setScissor(int x, int y, int width, int height) {}
+
+  @override
+  void setStencil(StencilState? stencil) {}
+
+  @override
+  void setPolygonMode(PolygonFillMode mode) {}
+
+  @override
+  void setPrimitiveTopology(PrimitiveTopology topology) {}
+
+  @override
+  void bindVertexBuffer(
+    GpuBuffer buffer, {
+    required int offsetInBytes,
+    required int lengthInBytes,
+    int slot = 0,
+  }) {}
+
+  @override
+  void bindIndexBuffer(
+    GpuBuffer buffer, {
+    required int offsetInBytes,
+    required int lengthInBytes,
+    required GpuIndexType indexType,
+  }) {}
+
+  @override
+  void bindUniform(
+    GpuUniformSlot slot,
+    GpuBuffer buffer, {
+    required int offsetInBytes,
+    required int lengthInBytes,
+  }) {}
+
+  @override
+  void bindTexture(
+    GpuUniformSlot slot,
+    GpuTexture texture, {
+    TextureSampler sampler = TextureSampler.nearest,
+  }) {}
+
+  @override
+  void clearBindings() {}
+
+  @override
+  void draw(int vertexCount, {int instanceCount = 1}) {}
+
+  @override
+  void drawIndexed(int indexCount, {int instanceCount = 1}) {}
+
+  @override
+  Image submit({void Function()? onCompleted}) {
+    onCompleted?.call();
+    return blankImage();
+  }
+
+  @override
+  void commit({void Function()? onCompleted}) {
+    onCompleted?.call();
   }
 }

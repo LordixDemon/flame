@@ -1,6 +1,7 @@
 import 'dart:collection' show LinkedHashMap;
 import 'dart:ui' show PixelFormat;
 
+import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 
 /// Ref-counted handle to a GPU [Resource] managed by [GpuResourceManager3D].
@@ -66,10 +67,13 @@ class ResourceLeakReport3D(final List<ResourceLeakEntry3D> entries) {
 /// Registry of GPU context-loss recovery hooks for recreating GPU buffers,
 /// textures, and procedural targets after a device loss.
 ///
-/// Nothing detects a device loss: the application calls [markResourcesLost]
-/// and [recoverAll] (or [GpuResourceManager3D.recoverAfterDeviceLoss]) when
-/// it knows the GPU context was lost. A texture that wraps an existing GPU
-/// texture cannot be rebuilt from its data; give it an `onRebuild` hook.
+/// The backend detects device losses and recreates every `Resource`'s GPU
+/// handle by itself (see `GpuBackend.deviceGeneration`); a
+/// [GpuResourceManager3D] runs these hooks when the device was recovered
+/// (see its `recoverOnDeviceLoss`). Register here what only the app can
+/// rebuild: a texture that wraps an existing GPU texture (an image) cannot be
+/// rebuilt from its data, so give it an `onRebuild` hook. [markResourcesLost]
+/// and [recoverAll] can also be called by hand.
 class GpuDeviceLossRecovery3D() {
   final LinkedHashMap<String, _RecoveryTask> _tasks = LinkedHashMap();
   int _recoveryCount = 0;
@@ -170,9 +174,17 @@ final class _ResourceRecoveryTask<T extends Resource<dynamic>>(
 ///
 /// Evicting a resource disposes it, which drops its GPU handle: the memory
 /// returns when the GPU object is garbage collected.
+///
+/// With [recoverOnDeviceLoss] (the default) the manager calls
+/// [recoverAfterDeviceLoss] each time the backend recovered a lost device,
+/// which runs the hooks of [deviceLossRecovery].
 class GpuResourceManager3D({
   int maxVramBytes = 256 * 1024 * 1024,
   GpuDeviceLossRecovery3D? deviceLossRecovery,
+
+  /// Whether [recoverAfterDeviceLoss] runs by itself after the backend
+  /// recovered a lost device (see `GpuBackend.addDeviceListener`).
+  final bool recoverOnDeviceLoss = true,
 }) {
   this {
     if (maxVramBytes < 0) {
@@ -183,7 +195,21 @@ class GpuResourceManager3D({
       );
     }
     _maxVramBytes = maxVramBytes;
+    if (recoverOnDeviceLoss) {
+      // The listener does not keep the manager alive, and is removed once
+      // the manager is garbage collected.
+      final manager = WeakReference(this);
+      final listener = GpuDeviceListener(
+        onRecovered: (_) => manager.target?.recoverAfterDeviceLoss(),
+      );
+      GpuBackend.addDeviceListener(listener);
+      _listeners.attach(this, listener);
+    }
   }
+
+  static final Finalizer<GpuDeviceListener> _listeners = Finalizer(
+    GpuBackend.removeDeviceListener,
+  );
 
   int _maxVramBytes = 256 * 1024 * 1024;
 
@@ -411,6 +437,9 @@ class GpuResourceManager3D({
   /// Invalidates all cached GPU handles after a mobile/WebGPU context loss,
   /// runs [deviceLossRecovery] hooks, and (when [eagerRecreate] is `true`)
   /// recreates GPU handles for active or pinned resources.
+  ///
+  /// Called by itself after a recovered device loss when the manager
+  /// [recoverOnDeviceLoss].
   int recoverAfterDeviceLoss({bool eagerRecreate = true}) {
     for (final entry in _entries.values) {
       _disposeResourceTree(entry.resource);

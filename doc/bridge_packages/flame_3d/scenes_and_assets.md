@@ -314,16 +314,52 @@ under the key, a reference that may belong to someone else.
 
 ### Device loss
 
+The GPU backend notices a lost device by itself (see
+[A lost GPU device](getting_started.md#a-lost-gpu-device)): a command buffer that fails on the GPU,
+a submission that throws, or a check after the app returns to the foreground that reads back the
+wrong pixels. `GpuBackend.instance.deviceState` then leaves `ready`, and while it is `lost`,
+`recovering` or `failed`:
+
+- `GraphicsDevice` records nothing: binds and draws are ignored, nothing is uploaded and `endPass`
+  returns a transparent 1 by 1 image, so a frame shows no 3D rather than drawing with dead handles;
+- `GpuBackend.renderEpoch` changes at the loss and again at the recovery, and every `World3D` adds
+  it to its versions: retained layers and cached shadow maps render again afterwards.
+
+Recovery runs right after the task that found the loss: `GpuBackend.deviceGeneration` is
+incremented, the backend reloads its shader libraries in place, and checks the device by rendering
+a small pass and reading it back. Every GPU object made before is created again before its next use:
+the render targets and texture targets (and the textures they render into), buffers and pipelines
+of the backend, and the GPU object of every `Resource` (textures, surfaces, shaders), which uploads
+its data again. A failed recovery is `failed` and tried again after 0.5, 1 and 2 seconds and at the
+next return to the foreground; `GpuBackend.instance.recoverDevice()` and `checkDevice()` run it on
+demand, and `reportDeviceLost(reason)` lets an app report a loss it knows of.
+
+What the backend cannot rebuild is a texture that wraps a `dart:ui` image (`ImageTexture.create`,
+or a `Texture` given a `gpuTexture` from `createTextureFromImage`): after a loss it is bound as a
+transparent texture until the app makes a new one. `Text3DComponent` and `WidgetSurface3D` do that
+themselves. Restore the rest from a listener:
+
+```dart
+GpuBackend.addDeviceListener(
+  GpuDeviceListener(
+    onLost: (reason) => print('GPU lost: $reason'),
+    onRecovered: (generation) => rebuildImageTextures(),
+    onRecoveryFailed: (error) => showRetryMessage(),
+  ),
+);
+```
+
 `GpuDeviceLossRecovery3D` (the manager's `deviceLossRecovery`) keeps rebuild hooks:
 `registerCallback(id, callback)` and `registerResource(id, resource, onRebuild:)`.
 `markResourcesLost()` disposes the registered resources; `recoverAll()` disposes them again, runs
 the hooks in registration order and creates the GPU objects again; the manager's
 `recoverAfterDeviceLoss()` also disposes every cached resource and recreates those in use or
-pinned.
+pinned. A `GpuResourceManager3D` calls `recoverAfterDeviceLoss()` by itself after each recovery
+(`recoverOnDeviceLoss`, `true` by default), so its hooks are a place for what only the app can
+restore.
 
-flame_3d does not detect a lost device: nothing calls these methods for you. Resources that wrap
-an existing GPU object (such as a `Texture` built from a `gpuTexture`) cannot be rebuilt this way;
-register a callback that recreates them.
+`test/gpu/device_loss_gpu_test.dart` simulates a loss (`debugSimulateDeviceLoss()`): every GPU
+object is created again and the next frame has the same pixels as before.
 
 
 ### Which one to use
@@ -380,6 +416,12 @@ Loading glTF models and their materials and animations is described in
   `GpuResourceManager3D` are estimates.
 - `AssetScope3D` does not track lightmap textures or the textures of `StylizedMaterial` and other
   materials, and miscounts assets changed between `retain` and `release`.
-- Device-loss recovery is manual and cannot rebuild resources that wrap existing GPU objects.
+- Device-loss recovery cannot rebuild textures that wrap `dart:ui` images: they are transparent
+  until the app replaces them. Flutter GPU keeps one GPU context for the life of the app: when the
+  driver itself loses it, recovery fails (`failed`) and nothing is drawn. A real loss was never
+  provoked: background, memory pressure and the app switcher lost nothing on the Android emulator;
+  the recovery is tested with simulated losses.
+- The device check reads pixels back; on OpenGL ES it waits up to two seconds for Impeller to run
+  the commands, which it does when it renders a frame.
 - `SceneLoader3D` reads files through the model loader and shares its limits (see
   [Models and Animation](models_and_animation.md#limitations)).

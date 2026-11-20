@@ -109,7 +109,8 @@ These exist, partly, and are described with their limits in the documentation:
 - [x] Detect OpenGL ES limits and shader extensions, and refuse materials the device cannot run.
 - [ ] Split the joint matrices out of the standard vertex stages (269 to 275 uniform vectors, above
   the 256 an OpenGL ES 3.0 driver may offer).
-- [ ] Detect a lost GPU device and recover without the app's help.
+- [x] Detect a lost GPU device and recover without the app's help (tested with simulated losses;
+  a real driver reset was never provoked).
 - [ ] Run the GPU tests in CI, and on Android, iOS and browser devices.
 
 

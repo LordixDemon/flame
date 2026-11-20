@@ -112,6 +112,16 @@ final class FakeGpuBackend({
   /// Callbacks of submitted passes waiting for completion.
   final List<void Function()> pendingCompletions = [];
 
+  /// Whether submitted passes fail on the GPU, as on a lost device: the
+  /// backend then reports the device lost.
+  bool failSubmissions = false;
+
+  /// What the device check ([verifyDevice]) answers.
+  bool deviceRenders = true;
+
+  /// The number of times [rebuildDeviceObjects] ran.
+  int rebuildCount = 0;
+
   /// The capabilities reported by [capabilities].
   GpuDeviceCapabilities fakeCapabilities = GpuDeviceCapabilities.unknown;
 
@@ -127,6 +137,14 @@ final class FakeGpuBackend({
     String assetName,
     String entryPoint,
   ) => fakeRequirements[assetName]?[entryPoint];
+
+  @override
+  Future<void> rebuildDeviceObjects() async {
+    rebuildCount++;
+  }
+
+  @override
+  Future<bool> verifyDevice() async => deviceRenders;
 
   /// Whether submitted passes complete immediately.
   bool completeImmediately = false;
@@ -541,6 +559,9 @@ class FakeRenderPass(final FakeGpuBackend backend) implements GpuRenderPass {
   }
 
   void _complete(void Function()? onCompleted) {
+    if (backend.failSubmissions) {
+      backend.reportDeviceLost('a fake command buffer failed');
+    }
     if (onCompleted != null) {
       if (backend.completeImmediately) {
         onCompleted();

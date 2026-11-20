@@ -339,9 +339,12 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
     int mipLevelCount = 1,
   }) {
     final pf = _pixelFormat(format);
+    final mode = _storageMode(storageMode);
+    // After a device loss the texture is created again, empty: its owner
+    // (a `Texture` resource) uploads its pixels again in a texture of its own.
     return _FlutterGpuTexture(
-      _context.createTexture(
-        _storageMode(storageMode),
+      () => _context.createTexture(
+        mode,
         width,
         height,
         format: pf,
@@ -366,7 +369,10 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
   @override
   GpuTexture? createTextureFromImage(Image image) {
     try {
-      return _FlutterGpuTexture(gpu.Texture.fromImage(_context, image));
+      return _FlutterGpuTexture.wrapping(
+        this,
+        gpu.Texture.fromImage(_context, image),
+      );
       // Flutter GPU reports images without a compatible texture with a plain
       // Exception.
     } on Exception {
@@ -377,13 +383,36 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
   @override
   bool get supportsTexturesFromImages => true;
 
+  /// A transparent texture bound instead of a texture that wraps an image of
+  /// a lost device, which cannot be created again.
+  gpu.Texture get _lostImageTexture {
+    final generation = base.GpuBackend.deviceGeneration;
+    final cached = _lostImage;
+    if (cached != null && _lostImageGeneration == generation) {
+      return cached;
+    }
+    _lostImageGeneration = generation;
+    return _lostImage = _context.createTexture(
+      gpu.StorageMode.hostVisible,
+      1,
+      1,
+      format: _colorFormat,
+    )..overwrite(ByteData(4));
+  }
+
+  gpu.Texture? _lostImage;
+  int _lostImageGeneration = -1;
+
   @override
   GpuBuffer createBuffer({
     required GpuStorageMode storageMode,
     required int sizeInBytes,
   }) {
+    final mode = _storageMode(storageMode);
     return _FlutterGpuBuffer(
-      _context.createDeviceBuffer(_storageMode(storageMode), sizeInBytes),
+      sizeInBytes,
+      () => _context.createDeviceBuffer(mode, sizeInBytes),
+      deferred: !isDeviceReady,
     );
   }
 
@@ -392,6 +421,10 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
   // What the shaders of each bundle need from an OpenGL ES device, read only
   // when rendering with OpenGL ES.
   final Map<String, Map<String, GpuShaderRequirements>> _requirements = {};
+
+  // The bytes of the libraries registered at run time, to load them again
+  // after a device loss.
+  final Map<String, ByteData> _registeredBytes = {};
 
   /// Loads every `.shaderbundle` shader asset declared by the app.
   ///
@@ -449,7 +482,34 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
       assetName,
       reflectShaderBundleInputs(bytes),
     );
+    _registeredBytes[assetName] = bytes;
     _readRequirements(assetName, bytes);
+  }
+
+  /// Loads every shader library again in place, keeping the identity of the
+  /// libraries and shaders handed out: their pipelines are created again
+  /// (see [base.GpuBackend.deviceGeneration]).
+  @override
+  Future<void> rebuildDeviceObjects() async {
+    for (final MapEntry(key: assetName, value: library)
+        in _shaderLibraries.entries) {
+      final bytes = _registeredBytes[assetName];
+      if (bytes != null) {
+        final error = library.raw.reinitializeFromBytes(bytes);
+        if (error != null) {
+          throw StateError('Could not reload "$assetName": $error');
+        }
+      } else {
+        gpu.ShaderLibrary.reinitialize(assetName);
+      }
+    }
+  }
+
+  /// Renders a small pass with a draw and reads it back.
+  @override
+  Future<bool> verifyDevice() async {
+    final probe = _DeviceProbe.create(this);
+    return probe != null && await probe.renders();
   }
 
   @override
@@ -473,12 +533,16 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
     required GpuShader fragmentShader,
     GpuVertexLayout? vertexLayout,
   }) {
+    final vertex = (vertexShader as _FlutterGpuShader).raw;
+    final fragment = (fragmentShader as _FlutterGpuShader).raw;
+    final layout = vertexLayout == null ? null : _vertexLayout(vertexLayout);
     return _FlutterGpuPipeline(
-      _context.createRenderPipeline(
-        (vertexShader as _FlutterGpuShader).raw,
-        (fragmentShader as _FlutterGpuShader).raw,
-        vertexLayout: vertexLayout == null ? null : _vertexLayout(vertexLayout),
+      () => _context.createRenderPipeline(
+        vertex,
+        fragment,
+        vertexLayout: layout,
       ),
+      deferred: !isDeviceReady,
     );
   }
 
@@ -493,35 +557,17 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
     final sampleCount = msaaSampleCount > 1 && _context.doesSupportOffscreenMSAA
         ? msaaSampleCount
         : 1;
-
-    final multisampleColorTexture = sampleCount > 1
-        ? _context.createTexture(
-            gpu.StorageMode.deviceTransient,
-            width,
-            height,
-            format: _colorFormat,
-            sampleCount: sampleCount,
-            enableShaderReadUsage: false,
-          )
-        : null;
-
-    final depthTexture = _context.createTexture(
-      gpu.StorageMode.deviceTransient,
+    final target = _FlutterGpuRenderTarget(
+      this,
       width,
       height,
-      format: _depthStencilFormat,
-      sampleCount: sampleCount,
-      enableShaderReadUsage: sampleCount == 1,
-    );
-
-    return _FlutterGpuRenderTarget(
-      _context,
-      width,
-      height,
-      multisampleColorTexture,
-      depthTexture,
+      sampleCount,
       Vector4Utils.fromColor(clearValue),
     );
+    if (isDeviceReady) {
+      target.ensureCurrent();
+    }
+    return target;
   }
 
   @override
@@ -550,56 +596,18 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
     final sampleCount = msaaSampleCount > 1 && _context.doesSupportOffscreenMSAA
         ? msaaSampleCount
         : 1;
-    final pixelFormat = _pixelFormat(format);
-    final texture = _context.createTexture(
-      gpu.StorageMode.devicePrivate,
-      width,
-      height,
-      format: pixelFormat,
-    );
-    // Multisampled passes render into a transient texture resolved into the
-    // sampled one.
-    final multisampleTexture = sampleCount > 1
-        ? _context.createTexture(
-            gpu.StorageMode.deviceTransient,
-            width,
-            height,
-            format: pixelFormat,
-            sampleCount: sampleCount,
-            enableShaderReadUsage: false,
-          )
-        : null;
-    final depthTexture = _context.createTexture(
-      gpu.StorageMode.deviceTransient,
-      width,
-      height,
-      format: _depthStencilFormat,
-      sampleCount: sampleCount,
-      enableShaderReadUsage: false,
-    );
-    return _FlutterGpuTextureTarget(
+    final target = _FlutterGpuTextureTarget(
+      this,
       width,
       height,
       format,
-      _FlutterGpuTexture(texture),
-      gpu.RenderTarget.singleColor(
-        multisampleTexture == null
-            ? gpu.ColorAttachment(
-                texture: texture,
-                clearValue: Vector4Utils.fromColor(clearValue),
-              )
-            : gpu.ColorAttachment(
-                texture: multisampleTexture,
-                resolveTexture: texture,
-                storeAction: gpu.StoreAction.multisampleResolve,
-                clearValue: Vector4Utils.fromColor(clearValue),
-              ),
-        depthStencilAttachment: gpu.DepthStencilAttachment(
-          texture: depthTexture,
-          depthClearValue: 1.0,
-        ),
-      ),
+      sampleCount,
+      Vector4Utils.fromColor(clearValue),
     );
+    if (isDeviceReady) {
+      target.ensureCurrent();
+    }
+    return target;
   }
 
   /// The number of frames Flutter has drawn since the backend started
@@ -708,7 +716,59 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
   }
 }
 
-class const _FlutterGpuTexture(final gpu.Texture raw) implements GpuTexture {
+/// A texture handle that is created again after a device loss (see
+/// [base.GpuBackend.deviceGeneration]): by [_create] (empty: its owner
+/// uploads its pixels again), or, for a texture that wraps a `dart:ui`
+/// image, not at all: it is then [isLost] and bound as a transparent texture.
+class _FlutterGpuTexture implements GpuTexture {
+  _FlutterGpuTexture(gpu.Texture Function() this._create)
+    : _backend = null,
+      _raw = null;
+
+  _FlutterGpuTexture.wrapping(GpuBackend this._backend, gpu.Texture raw)
+    : _create = null,
+      _raw = raw,
+      _generation = base.GpuBackend.deviceGeneration;
+
+  final gpu.Texture Function()? _create;
+  final GpuBackend? _backend;
+  gpu.Texture? _raw;
+  int _generation = -1;
+  bool _lost = false;
+
+  /// The texture of the current device.
+  gpu.Texture get raw {
+    final raw = _raw;
+    if (raw != null && _generation == base.GpuBackend.deviceGeneration) {
+      return raw;
+    }
+    _generation = base.GpuBackend.deviceGeneration;
+    final create = _create;
+    if (create != null) {
+      return _raw = create();
+    }
+    _lost = true;
+    return raw!;
+  }
+
+  /// Whether this texture wrapped an image of a device that was lost since.
+  bool get isLost {
+    raw;
+    return _lost;
+  }
+
+  /// The texture to bind: [raw], or a transparent texture once [isLost].
+  gpu.Texture get bindable {
+    final texture = raw;
+    return _lost ? _backend!._lostImageTexture : texture;
+  }
+
+  /// Replaces the texture, for its texture target.
+  void replace(gpu.Texture raw) {
+    _raw = raw;
+    _generation = base.GpuBackend.deviceGeneration;
+  }
+
   @override
   int get mipLevelCount => raw.mipLevelCount;
 
@@ -718,12 +778,36 @@ class const _FlutterGpuTexture(final gpu.Texture raw) implements GpuTexture {
   }
 
   @override
-  Image asImage() => raw.asImage();
+  Image asImage() => bindable.asImage();
 }
 
-class _FlutterGpuBuffer(final gpu.DeviceBuffer raw) implements GpuBuffer {
-  @override
-  int get sizeInBytes => raw.sizeInBytes;
+/// A buffer handle that is created again (empty) after a device loss; its
+/// owners write their data again (surfaces upload their vertices in a buffer
+/// of their own, the transient blocks of a device are rewritten every frame).
+class _FlutterGpuBuffer(
+  @override final int sizeInBytes,
+  final gpu.DeviceBuffer Function() _create, {
+  bool deferred = false,
+}) implements GpuBuffer {
+  this {
+    if (!deferred) {
+      raw;
+    }
+  }
+
+  gpu.DeviceBuffer? _raw;
+  int _generation = -1;
+
+  /// The buffer of the current device.
+  gpu.DeviceBuffer get raw {
+    final raw = _raw;
+    if (raw != null && _generation == base.GpuBackend.deviceGeneration) {
+      return raw;
+    }
+    _generation = base.GpuBackend.deviceGeneration;
+    _views.clear();
+    return _raw = _create();
+  }
 
   @override
   void write(ByteData data, {int destinationOffsetInBytes = 0}) {
@@ -736,6 +820,7 @@ class _FlutterGpuBuffer(final gpu.DeviceBuffer raw) implements GpuBuffer {
   final Map<int, gpu.BufferView> _views = {};
 
   gpu.BufferView view(int offsetInBytes, int lengthInBytes) {
+    final buffer = raw;
     final view = _views[offsetInBytes];
     if (view != null && view.lengthInBytes == lengthInBytes) {
       return view;
@@ -744,7 +829,7 @@ class _FlutterGpuBuffer(final gpu.DeviceBuffer raw) implements GpuBuffer {
       _views.clear();
     }
     return _views[offsetInBytes] = gpu.BufferView(
-      raw,
+      buffer,
       offsetInBytes: offsetInBytes,
       lengthInBytes: lengthInBytes,
     );
@@ -808,8 +893,31 @@ class _FlutterGpuUniformSlot(final gpu.UniformSlot raw)
   }
 }
 
-class const _FlutterGpuPipeline(final gpu.RenderPipeline raw)
-    implements GpuPipeline;
+/// A pipeline handle that is created again after a device loss, from the
+/// same shaders (whose libraries were loaded again in place) and layout.
+class _FlutterGpuPipeline(
+  final gpu.RenderPipeline Function() _create, {
+  bool deferred = false,
+}) implements GpuPipeline {
+  this {
+    if (!deferred) {
+      raw;
+    }
+  }
+
+  gpu.RenderPipeline? _raw;
+  int _generation = -1;
+
+  /// The pipeline of the current device.
+  gpu.RenderPipeline get raw {
+    final raw = _raw;
+    if (raw != null && _generation == base.GpuBackend.deviceGeneration) {
+      return raw;
+    }
+    _generation = base.GpuBackend.deviceGeneration;
+    return _raw = _create();
+  }
+}
 
 /// The number of color textures [target] (a render target of the Flutter
 /// GPU backend) has created, for tests.
@@ -820,21 +928,53 @@ int debugColorTextureCount(GpuRenderTarget target) {
 
 /// A render target: a depth texture, a multisample color texture with MSAA,
 /// and the color textures its passes render into and whose images Flutter
-/// draws.
+/// draws. Its textures are created again after a device loss.
 class _FlutterGpuRenderTarget(
-  final gpu.GpuContext _context,
+  final GpuBackend _backend,
   @override final int width,
   @override final int height,
-  final gpu.Texture? _multisampleColorTexture,
-  final gpu.Texture _depthTexture,
+  final int _sampleCount,
   final Vector4 _clearValue,
 ) implements GpuRenderTarget {
   static const _maxColorTextures = 3;
 
   final List<_ColorBuffer> _buffers = [];
+  gpu.Texture? _multisampleColorTexture;
+  late gpu.Texture _depthTexture;
+  int _generation = -1;
+
+  /// Creates the textures of the current device unless they exist.
+  void ensureCurrent() {
+    if (_generation == base.GpuBackend.deviceGeneration) {
+      return;
+    }
+    _generation = base.GpuBackend.deviceGeneration;
+    final context = _backend._context;
+    _buffers.clear();
+    _lastPresented = null;
+    _multisampleColorTexture = _sampleCount > 1
+        ? context.createTexture(
+            gpu.StorageMode.deviceTransient,
+            width,
+            height,
+            format: GpuBackend._colorFormat,
+            sampleCount: _sampleCount,
+            enableShaderReadUsage: false,
+          )
+        : null;
+    _depthTexture = context.createTexture(
+      gpu.StorageMode.deviceTransient,
+      width,
+      height,
+      format: _backend._depthStencilFormat,
+      sampleCount: _sampleCount,
+      enableShaderReadUsage: _sampleCount == 1,
+    );
+  }
 
   /// The color buffer for a new pass.
   _ColorBuffer acquire() {
+    ensureCurrent();
     final drawnFrames = GpuBackend._drawnFrames;
     _ColorBuffer? oldest;
     for (final buffer in _buffers) {
@@ -849,7 +989,7 @@ class _FlutterGpuRenderTarget(
     if (oldest != null && _buffers.length >= _maxColorTextures) {
       return oldest;
     }
-    final texture = _context.createTexture(
+    final texture = _backend._context.createTexture(
       gpu.StorageMode.devicePrivate,
       width,
       height,
@@ -910,14 +1050,83 @@ class _ColorBuffer(
 }
 
 /// A [GpuTextureTarget] of the Flutter GPU backend: one color texture, which
-/// later passes sample, and a transient depth texture, created once.
+/// later passes sample, and a transient depth texture, created once, and
+/// again after a device loss.
 class _FlutterGpuTextureTarget(
+  final GpuBackend _backend,
   @override final int width,
   @override final int height,
   @override final GpuPixelFormat format,
-  @override final _FlutterGpuTexture texture,
-  final gpu.RenderTarget renderTarget,
-) implements GpuTextureTarget;
+  final int _sampleCount,
+  final Vector4 _clearValue,
+) implements GpuTextureTarget {
+  @override
+  late final _FlutterGpuTexture texture = _FlutterGpuTexture(() {
+    ensureCurrent();
+    return _color;
+  });
+
+  late gpu.Texture _color;
+  late gpu.RenderTarget _renderTarget;
+  int _generation = -1;
+
+  /// The render target of the current device.
+  gpu.RenderTarget get renderTarget {
+    ensureCurrent();
+    return _renderTarget;
+  }
+
+  /// Creates the textures of the current device unless they exist.
+  void ensureCurrent() {
+    if (_generation == base.GpuBackend.deviceGeneration) {
+      return;
+    }
+    _generation = base.GpuBackend.deviceGeneration;
+    final context = _backend._context;
+    final pixelFormat = _backend._pixelFormat(format);
+    final color = _color = context.createTexture(
+      gpu.StorageMode.devicePrivate,
+      width,
+      height,
+      format: pixelFormat,
+    );
+    // Multisampled passes render into a transient texture resolved into the
+    // sampled one.
+    final multisampleTexture = _sampleCount > 1
+        ? context.createTexture(
+            gpu.StorageMode.deviceTransient,
+            width,
+            height,
+            format: pixelFormat,
+            sampleCount: _sampleCount,
+            enableShaderReadUsage: false,
+          )
+        : null;
+    final depthTexture = context.createTexture(
+      gpu.StorageMode.deviceTransient,
+      width,
+      height,
+      format: _backend._depthStencilFormat,
+      sampleCount: _sampleCount,
+      enableShaderReadUsage: false,
+    );
+    _renderTarget = gpu.RenderTarget.singleColor(
+      multisampleTexture == null
+          ? gpu.ColorAttachment(texture: color, clearValue: _clearValue)
+          : gpu.ColorAttachment(
+              texture: multisampleTexture,
+              resolveTexture: color,
+              storeAction: gpu.StoreAction.multisampleResolve,
+              clearValue: _clearValue,
+            ),
+      depthStencilAttachment: gpu.DepthStencilAttachment(
+        texture: depthTexture,
+        depthClearValue: 1.0,
+      ),
+    );
+    texture.replace(color);
+  }
+}
 
 class const _FlutterGpuFrame(final GpuBackend _backend)
     implements base.GpuFrame {
@@ -1170,7 +1379,7 @@ class _FlutterGpuRenderPass(
   }) {
     _renderPass.bindTexture(
       (slot as _FlutterGpuUniformSlot).raw,
-      (texture as _FlutterGpuTexture).raw,
+      (texture as _FlutterGpuTexture).bindable,
       // Passed explicitly: `flutter_gpu` allocates default options otherwise.
       sampler: _backend._samplerFor(sampler),
     );
@@ -1203,9 +1412,23 @@ class _FlutterGpuRenderPass(
 
   @override
   void commit({void Function()? onCompleted}) {
-    _commandBuffer.submit(
-      completionCallback: onCompleted == null ? null : (_) => onCompleted(),
-    );
+    final backend = _backend;
+    try {
+      _commandBuffer.submit(
+        completionCallback: (success) {
+          if (!success) {
+            backend.reportDeviceLost(
+              'a command buffer failed on the GPU',
+            );
+          }
+          onCompleted?.call();
+        },
+      );
+      // Flutter GPU reports a failed submission with a plain Exception.
+    } on Exception catch (error) {
+      backend.reportDeviceLost('submitting a command buffer failed: $error');
+      onCompleted?.call();
+    }
   }
 
   static final _disabledStencil = gpu.StencilConfig(

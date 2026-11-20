@@ -66,14 +66,17 @@ class World3D({
 
   // Material.castsShadows is shared by every world that draws the material,
   // so its changes are counted globally and added here, as are the changes of
-  // the lights this world borrows.
+  // the lights this world borrows and the losses and recoveries of the GPU
+  // device (what was cached before is gone).
   int get _sceneVersion =>
       _ownSceneVersion +
       Material.castsShadowsRevision +
+      GpuBackend.renderEpoch +
       (_lightsFrom?._lightsVersion ?? 0);
   int get _castersVersion =>
       _ownCastersVersion +
       Material.castsShadowsRevision +
+      GpuBackend.renderEpoch +
       (_lightsFrom?._lightsCastersVersion ?? 0);
 
   /// Monotonically increasing counter that increases whenever the rendered
