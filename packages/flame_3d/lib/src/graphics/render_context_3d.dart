@@ -1060,7 +1060,7 @@ class RenderContext3D(super.device) extends RenderContext {
       final material = _materials[i]!;
       if (material.renderState.translucent) {
         _translucent[translucentCount++] = i;
-        groupKeys[i] = 0;
+        groupKeys[i] = material.translucentOrder.toDouble();
         surfaceKeys[i] = 0;
         sortDepths[i] = -_depths[i];
       } else {

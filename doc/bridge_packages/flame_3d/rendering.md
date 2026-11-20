@@ -48,7 +48,11 @@ GPU until the end of the render pass, when the recorded draws are submitted:
 - Translucent draws come after all the opaque ones, ordered back to front by the center of each
   surface's bounding box. Consecutive translucent draws of the same `Surface` with the same
   `Material` instance also become a single instanced draw, whose instances are drawn in that back
-  to front order.
+  to front order. `Material.translucentOrder` (`0` by default) comes first: translucent draws are
+  drawn in increasing order of it, back to front within one order. A surface under the other
+  translucent things of the scene, whatever their distance, takes `-1`: a large water surface is
+  sorted by the middle of its bounds, so without it the splashes and particles behind that middle
+  would be drawn first, under the water.
 - Skinned draws are never batched, and neither are draws recorded with `drawInstances`.
 - Objects whose transform mirrors them (an odd number of negative scales) batch only with other
   mirrored objects, since they are drawn with the opposite winding.
@@ -57,7 +61,8 @@ Because materials are applied when the draws are submitted, a material must not 
 between the draws of one frame to make objects look different: use distinct materials, or the
 per-instance color and data.
 
-The only ordering guarantee between materials is that opaque draws come before translucent ones.
+The only ordering guarantees between materials are that opaque draws come before translucent ones
+and that translucent draws follow their `translucentOrder`.
 Among opaque draws, groups follow the order in which the device created their pipelines, then the
 order in which their materials were created. Rely on it only when you must (a stencil mask, for
 example, see [Stencil](#stencil)).

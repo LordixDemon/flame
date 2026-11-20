@@ -1086,7 +1086,11 @@ final surface = WaterMaterial.buildSurface(
 );
 ```
 
-Advance `time` every frame (and the water volume's, see [Water volumes](#water-volumes)).
+Advance `time` every frame (and the water volume's, see [Water volumes](#water-volumes)). Splashes,
+mist and other translucent effects above the water should be drawn over it, whatever their
+distance: give the water `translucentOrder = -1` (see
+[Rendering](rendering.md#draws-are-recorded-then-sorted)), or a large surface, sorted by the middle
+of its bounds, is drawn over the effects behind that middle.
 
 
 ### Ripples

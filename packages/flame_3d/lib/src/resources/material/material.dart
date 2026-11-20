@@ -108,6 +108,17 @@ abstract class Material({
   @internal
   static int get castsShadowsRevision => _castsShadowsRevision;
 
+  /// The layer of this material's translucent draws: translucent draws are
+  /// drawn in increasing order of it, and back to front within one order.
+  ///
+  /// `0` by default. A surface that lies under the other translucent things
+  /// of a scene, whatever their distance (a water surface under splashes and
+  /// mist, a translucent ground under particles), takes a lower order, `-1`,
+  /// so that it is drawn first and they blend over it, rather than being
+  /// sorted by the centers of their bounds. Opaque draws ignore it; under
+  /// `OitMode3D.weightedBlended` translucent draws are not sorted at all.
+  int translucentOrder = 0;
+
   /// Whether the per-instance inputs of this material's draws hold model
   /// matrices (`instanceModel0` to `instanceModel3`), as `drawSurface` and
   /// `InstancedGroup3D` write them.
