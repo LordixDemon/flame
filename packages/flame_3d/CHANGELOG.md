@@ -55,6 +55,7 @@
  - **FIX**(flame_3d): `StylizedMaterial` decodes its accent and rim palette slots in the vertex stage: interpolation could push a packed slot under its boundary, leaving transparent, wrongly coloured pixels at fade 0. ([1b873010](https://github.com/LordixDemon/flame/commit/1b873010))
  - **FEAT**(flame_3d): `DecalMaterial.premultipliedTexture` and `DecalBatch3D(sortByDepth:)`. ([fe415a63](https://github.com/LordixDemon/flame/commit/fe415a63), [8b3f6253](https://github.com/LordixDemon/flame/commit/8b3f6253))
  - **FEAT**(flame_3d): `StylizedMaterial.emissiveColorSource` (`EmissiveColorSource`): the emissive mask glows in each instance's color, accent or rim palette entry instead of `emissiveColor`, so instances of one mesh glow in colors of their own in one draw, exactly as with one material per color. ([349e55c4](https://github.com/LordixDemon/flame/commit/349e55c4))
+ - **FEAT**(flame_3d): `BarrierMaterial`, a translucent energy wall around a play area that rises from its foot (`appear`), thins out up the wall and on its near side, carries a slow procedural pattern (`BarrierPattern`: plain, chevrons, diamonds, rune-like dashes), glints edge-on and shows four impacts (`impact`), rings of light from world points; additive by default, out of the shadow passes and the prepass, GLSL ES 1.00 friendly, not on the web. `BarrierMesh.roundedRectangle`, `ring` and `dome` build the walls (`pointOnWall`). ([be778d5c](https://github.com/LordixDemon/flame/commit/be778d5c))
 
 
 ### Shadows
@@ -74,6 +75,7 @@
  - **BREAKING** **FIX**(flame_3d): Billboard particles, stroke batches and ribbon trails stay out of shadow maps and the depth-normal prepass; `ParticleMaterial.castsShadows` is always `false`; `RenderStats.particles` counts a system once per frame. ([460c3f0c](https://github.com/LordixDemon/flame/commit/460c3f0cb0eb3da4887d97e651e6cafd39b51a48))
  - **FIX**(flame_3d): `RibbonTrail3D` follows its own position under a 3D parent. ([182099bb](https://github.com/LordixDemon/flame/commit/182099bb53f7555fb68f3a2dee00c83f171381e2))
  - **FIX**(flame_3d): `ParticleSystem3D.burst`, `emit`, `spawn`, `clear`, `reset` and `prewarm` raise the scene version, so a retained layer shows a burst made after the system's update; `Text3DComponent.worldHeight` and `orientation` are notifying setters. ([cf72efff](https://github.com/LordixDemon/flame/commit/cf72efff))
+ - **FEAT**(flame_3d): Water splash presets: `ParticlePresets3D.splashCrown`, `runoffDrips`, `foamBurst` and `mistPuff`, dying at a `waterLevel` with `onGroundHit` for ripples; `DiscEmitterShape3D.tilt` and `RectangleEdgeEmitterShape3D`. The example's `barrier` scenario shows them with a barrier around a platform in a pool. ([794d48f3](https://github.com/LordixDemon/flame/commit/794d48f3), [5d986882](https://github.com/LordixDemon/flame/commit/5d986882))
 
 
 ### Models, geometry and animation
