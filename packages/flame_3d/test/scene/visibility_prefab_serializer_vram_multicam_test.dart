@@ -330,6 +330,11 @@ void main() {
         renderScale: 0.75,
         spatialIndex3DEnabled: true,
         prioritizeNearestLights: true,
+        lightGrid: const LightGridSettings(
+          cellSize: 0.5,
+          maxPointLightsPerCell: 12,
+          beyondLimitsOnly: false,
+        ),
         depthPrepassEnabled: true,
         fog: FogSettings(
           color: const Color(0xFFAABBCC),
@@ -913,6 +918,14 @@ void _verifyRestoredWorld(
   expect(target.renderScale, closeTo(0.75, 1e-6));
   expect(target.spatialIndex3DEnabled, isTrue);
   expect(target.prioritizeNearestLights, isTrue);
+  expect(
+    target.lightGrid,
+    const LightGridSettings(
+      cellSize: 0.5,
+      maxPointLightsPerCell: 12,
+      beyondLimitsOnly: false,
+    ),
+  );
   expect(target.depthPrepassEnabled, isTrue);
   expect(target.fog?.start, closeTo(8, 1e-6));
   expect(target.bloom?.passes, 3);

@@ -212,6 +212,8 @@ class SceneSerializer3D({
           'grabSceneColorEnabled': world.grabSceneColorEnabled,
           'renderDebugMode3D': world.renderDebugMode3D.name,
           'scaledFilterQuality': world.scaledFilterQuality.name,
+          if (world.lightGrid case final grid?)
+            'lightGrid': _encodeLightGrid(grid),
           if (world.fog case final fog?) 'fog': _encodeFog(fog),
           if (world.bloom case final bloom?) 'bloom': _encodeBloom(bloom),
           if (world.postProcess case final post?)
@@ -332,6 +334,10 @@ class SceneSerializer3D({
       FilterQuality.values,
       worldData['scaledFilterQuality'],
     );
+    final lightGrid = switch (_asMap(worldData['lightGrid'])) {
+      final g? => _decodeLightGrid(g),
+      null => null,
+    };
     final fog = switch (_asMap(worldData['fog'])) {
       final f? => _decodeFog(f),
       null => null,
@@ -373,10 +379,45 @@ class SceneSerializer3D({
         target.scaledFilterQuality = filter;
       }
       target
+        ..lightGrid = lightGrid
         ..fog = fog
         ..bloom = bloom
         ..postProcess = post;
     };
+  }
+
+  static Map<String, Object?> _encodeLightGrid(LightGridSettings grid) => {
+    'cellSize': ?grid.cellSize,
+    'maxCells': grid.maxCells,
+    'maxLights': grid.maxLights,
+    'maxPointLightsPerCell': grid.maxPointLightsPerCell,
+    'maxSpotLightsPerCell': grid.maxSpotLightsPerCell,
+    'beyondLimitsOnly': grid.beyondLimitsOnly,
+  };
+
+  static LightGridSettings _decodeLightGrid(Map<String, Object?> data) {
+    const defaults = LightGridSettings();
+    final size = _asDouble(data['cellSize']);
+    return LightGridSettings(
+      cellSize: size != null && size > 0 ? size : null,
+      maxCells: (_asInt(data['maxCells']) ?? defaults.maxCells).clamp(
+        1,
+        65536,
+      ),
+      maxLights: (_asInt(data['maxLights']) ?? defaults.maxLights).clamp(
+        1,
+        16384,
+      ),
+      maxPointLightsPerCell:
+          (_asInt(data['maxPointLightsPerCell']) ??
+                  defaults.maxPointLightsPerCell)
+              .clamp(1, LightGridSettings.maxPointLightsPerCellLimit),
+      maxSpotLightsPerCell:
+          (_asInt(data['maxSpotLightsPerCell']) ??
+                  defaults.maxSpotLightsPerCell)
+              .clamp(1, LightGridSettings.maxSpotLightsPerCellLimit),
+      beyondLimitsOnly: data['beyondLimitsOnly'] != false,
+    );
   }
 
   /// Parses [json] and decodes the scene into [target].

@@ -106,9 +106,9 @@ were children of the world (those are added to the world as well).
 ### What is saved
 
 - World settings: `renderScale`, `spatialIndex3DEnabled`, `prioritizeNearestLights`,
-  `depthPrepassEnabled`, `hdrEnabled`, `oitMode`, `grabSceneColorEnabled`, `renderDebugMode3D`,
-  `scaledFilterQuality`, `fog` and `bloom` (all fields), and `postProcess` (all fields but
-  `colorLut`).
+  `lightGrid`, `depthPrepassEnabled`, `hdrEnabled`, `oitMode`, `grabSceneColorEnabled`,
+  `renderDebugMode3D`, `scaledFilterQuality`, `fog` and `bloom` (all fields), and `postProcess` (all
+  fields but `colorLut`).
 - For every `Component3D`: position, rotation, scale, `visible`, `cameraMask`, `priority`,
   `prefabId`, tags, and its children.
 - Components with a registered prefab id, whatever their type: a reference to the prefab plus the
