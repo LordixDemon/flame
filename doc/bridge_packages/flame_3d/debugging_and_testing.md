@@ -248,6 +248,71 @@ with each other only; `benchmark/README.md` describes an AOT profile build on a 
 benchmark lives outside `test/`, so a plain `flutter test` does not run it.
 
 
+## Running on a device
+
+Nothing in `flutter test` runs on a phone GPU. To run the example (or an app built on it, such as a
+testbench that shows the scenarios and the self-test) on an Android device or emulator:
+
+1. Create the platform folder (`flutter create --platforms=android .` in `example`), enable Flutter
+   GPU in `android/app/src/main/AndroidManifest.xml` (see [Getting Started](getting_started.md)),
+   and to force a backend add, in `<application>`:
+
+   ```xml
+   <meta-data
+       android:name="io.flutter.embedding.android.ImpellerBackend"
+       android:value="opengles" />
+   ```
+
+   (`vulkan` forces Vulkan; without the entry Flutter chooses, which is what users get.)
+2. Build and install a profile build: `flutter build apk --profile --target-platform
+   android-arm64`, then `adb install -r build/app/outputs/flutter-apk/app-profile.apk`.
+3. Read which backend Flutter used: `adb logcat -d --pid=$(adb shell pidof <package>) | grep
+   "Impeller rendering backend"`, and what flame_3d detected: print
+   `GpuBackend.instance.capabilities.toJson()` after `await
+   GpuBackend.instance.capabilitiesSettled`, and `GpuBackend.instance.shaderSupport(asset,
+   'TextureFragment')` (and `'TextureVertex'`) for the shader bundles you use. Flutter cuts log lines
+   at about 1,000 characters: print long reports in parts.
+4. Run `ShowcaseDiagnostics.runAllChecks` and look at the water (`pool`), barrier and particle
+   scenes; take screenshots with `adb exec-out screencap -p > shot.png`.
+5. Background and memory pressure: `adb shell input keyevent HOME`, then `adb shell am
+   send-trim-memory <package> RUNNING_CRITICAL` (and `COMPLETE`) while it is in the background,
+   bring it back with `adb shell am start -n <package>/.MainActivity`, go through the app switcher
+   (`adb shell input keyevent KEYCODE_APP_SWITCH`), and look at the screen and the log:
+   `GpuBackend.addDeviceListener` sees every loss and recovery the backend notices.
+6. On OpenGL ES, set `GpuBackend.probeFloatTargets = true` before `initialize()` to let the backend
+   check float render targets (never on the emulator, see
+   [What the device offers](getting_started.md#what-the-device-offers)).
+
+What has been run so far:
+
+| Backend | Where | What ran | Result |
+| ------- | ----- | -------- | ------ |
+| Software Vulkan (`flutter test`) | Mac | the package and example tests, the 64 checks | all pass |
+| OpenGL ES 3.0, the emulator's default | Android 16 emulator, `-gpu host`, translator over an Apple M4 Max | before the device work: the showcase and the 64 checks; after: the detection and the device check | see below |
+| Vulkan, forced | the same emulator (Mesa, gfxstream) | before the device work: the showcase, the scenarios, background and resume | no 3D shown, Flutter's raster thread crashed |
+| Vulkan, OpenGL ES | a phone | nothing | not verified |
+| Metal | an iPhone, a Mac app | nothing (the Mac runs only `flutter test`) | not verified |
+
+On the emulator's OpenGL ES, before the device work, every `SpatialMaterial` failed to compile
+(`GL_EXT_shader_texture_lod` is missing): the showcase lost its 3D layers and the first draw with one
+threw, which stopped the 64 checks. With Vulkan forced, `Text3DComponent` and `WidgetSurface3D`
+threw, because an image from `Picture.toImageSync` has no GPU texture yet on a device. Both are
+fixed: `SpatialMaterial` falls back to its simpler shader where the full one cannot run, and the two
+rasterize their pictures asynchronously on devices.
+
+After the device work, the detection found OpenGL ES 3.0 with 1,024 uniform vectors and 16 textures
+per stage, `GL_OES_standard_derivatives` accepted (though not listed), `GL_EXT_shader_texture_lod`
+refused and both `GL_EXT_color_buffer_float` and `GL_EXT_color_buffer_half_float` listed. The device
+check passed once frames were rendered (Impeller runs the commands only then). Rendering into a
+16-bit float target through Impeller then stopped the emulator's GPU, and the emulated system with
+it (its system server restarts in a loop until the emulator is restarted): float targets are not
+checked there, and the 64 checks, the scenes and the background run were not repeated with these
+changes. Going to the background, memory pressure, the app switcher and returning, run before the
+changes with Vulkan forced, raised no error. A real device loss (a driver reset) could not be
+provoked: the recovery is covered by a simulated loss in `test/gpu/device_loss_gpu_test.dart`,
+which rebuilds every GPU object for real and renders the same pixels after it.
+
+
 ## Testing 3D code
 
 

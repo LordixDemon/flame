@@ -111,7 +111,8 @@ These exist, partly, and are described with their limits in the documentation:
   the 256 an OpenGL ES 3.0 driver may offer).
 - [x] Detect a lost GPU device and recover without the app's help (tested with simulated losses;
   a real driver reset was never provoked).
-- [ ] Run the GPU tests in CI, and on Android, iOS and browser devices.
+- [ ] Run the GPU tests in CI, and on Android, iOS and browser devices (the example has run on the
+  Android emulator only; see "Running on a device" in the testing docs).
 
 
 ### Rendering

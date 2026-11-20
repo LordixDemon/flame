@@ -104,10 +104,10 @@ on by default, renders a 4 by 4 pixel pass and reads it back). It then stops dra
 GPU object again (render targets, buffers, pipelines, the textures of `Texture` resources and the
 shader libraries), checks the device again and tells the app through
 `GpuBackend.addDeviceListener(GpuDeviceListener(onLost:, onRecovered:, onRecoveryFailed:))`. See
-[Device loss](scenes_and_assets.md#device-loss) for what the app restores itself. On Android,
-going to the background, the app switcher, `am send-trim-memory` and returning lost nothing on the
-emulator: Flutter keeps its GPU context alive, so a real loss is a driver reset, which could not be
-provoked here.
+[Device loss](scenes_and_assets.md#device-loss) for what the app restores itself. On the Android
+emulator, going to the background, the app switcher, `am send-trim-memory` and returning raised no
+error: Flutter keeps its GPU context alive, so a real loss is a driver reset, which could not be
+provoked there.
 
 `GpuBackend.isAvailable` tells whether the GPU backend can run in this process: it is `false` when
 Flutter GPU is not enabled, when Impeller is off, on Windows and Linux, and in browsers without
