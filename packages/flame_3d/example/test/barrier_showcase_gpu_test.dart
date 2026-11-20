@@ -3,6 +3,8 @@ import 'dart:ui' as ui;
 
 import 'package:flame/game.dart';
 import 'package:flame_3d/graphics.dart';
+import 'package:flame_3d/resources.dart';
+import 'package:flame_3d_example/barrier/barrier_gallery.dart';
 import 'package:flame_3d_example/barrier/barrier_game.dart';
 import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter/widgets.dart';
@@ -107,6 +109,105 @@ void main() {
       expect(scene.foam.particleCount, greaterThan(0));
       expect(scene.mist.particleCount, greaterThan(0));
       expect(scene.layer.renderStats.particles, greaterThan(0));
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+    },
+    skip: !gpuAvailable,
+  );
+
+  testWidgets(
+    'BarrierGalleryGame walls each stand in a look of its own, hits them and '
+    'goes through its strips',
+    (tester) async {
+      tester.view
+        ..physicalSize = const ui.Size(1200, 420)
+        ..devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+
+      final game = BarrierGalleryGame(showLabels: false);
+      final key = GlobalKey();
+      await tester.pumpWidget(
+        RepaintBoundary(
+          key: key,
+          child: GameWidget(game: game),
+        ),
+      );
+      await tester.pump();
+      expect(game.isLoaded, isTrue);
+
+      Future<void> play(double seconds) async {
+        for (var t = 0.0; t < seconds; t += 1 / 30) {
+          await tester.pump(const Duration(microseconds: 33333));
+        }
+      }
+
+      Future<Uint8List> pixels() async {
+        final boundary =
+            key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+        return (await tester.runAsync(() async {
+          final image = await boundary.toImage();
+          final data = await image.toByteData();
+          image.dispose();
+          return data!.buffer.asUint8List();
+        }))!;
+      }
+
+      // The presets: one stand each.
+      expect(game.stripName, 'presets');
+      var gallery = game.gallery;
+      expect(gallery.stands, hasLength(BarrierLook.presets.length));
+      for (final (i, look) in BarrierLook.presets.values.indexed) {
+        expect(gallery.barriers[i].look.blend, look.blend);
+      }
+      // The standard look draws with the lean shaders, the solid wall with
+      // the full ones.
+      expect(gallery.barriers[0].usesFullShader, isFalse);
+      expect(gallery.barriers[2].usesFullShader, isTrue);
+
+      // The cubes hit every wall at once.
+      await play(BarrierGallery.hitTime + 0.15);
+      for (final barrier in gallery.barriers) {
+        expect(barrier.activeImpactCount, 1);
+        expect(barrier.isNearPointActive(0), isTrue);
+      }
+      // The walls whose reaction shows in front draw it a second time.
+      final inFront = gallery.barriers
+          .where((barrier) => barrier.drawsReactionInFront)
+          .length;
+      expect(inFront, 4);
+      expect(gallery.layer.renderStats.drawCalls, greaterThan(5 + inFront));
+
+      // The walls light the ground around the stands: the picture is not
+      // the plain ground.
+      final ground = game.gallery.backdrop.color;
+      final rgba = await pixels();
+      var lit = 0;
+      for (var i = 0; i < rgba.length; i += 4) {
+        if ((rgba[i] - (ground.r * 255).round()).abs() > 40 ||
+            (rgba[i + 2] - (ground.b * 255).round()).abs() > 40) {
+          lit++;
+        }
+      }
+      expect(lit, greaterThan(1200 * 420 ~/ 8));
+
+      // The next strips: the height sweep stands taller and taller.
+      game.nextStrip();
+      await tester.pump();
+      expect(game.stripName, 'height');
+      gallery = game.gallery;
+      expect(
+        [for (final barrier in gallery.barriers) barrier.heightScale],
+        orderedEquals([0.3, 0.6, 1.0, 1.3, 1.6]),
+      );
+      for (var i = 0; i < 3; i++) {
+        game.nextStrip();
+      }
+      await tester.pump();
+      expect(game.stripName, 'reaction');
+      await play(BarrierGallery.hitTime + 0.1);
+      expect(game.gallery.barriers[0].drawsReactionInFront, isFalse);
+      expect(game.gallery.barriers[1].drawsReactionInFront, isTrue);
 
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();

@@ -1858,6 +1858,9 @@ where it thins out).
   wall around a platform is seen over the platform's pale slabs, the rest over the water around it.
   Choose for the brightest of them.
 
+The example's `barrier_gallery` scene shows the presets and sweeps of each setting over light
+water, dark water and pale stone.
+
 
 ### Blending, depth and passes
 

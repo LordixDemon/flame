@@ -1,4 +1,5 @@
 import 'package:flame_3d_example/example_game_3d.dart';
+import 'package:flame_3d_example/scenarios/barrier_gallery_scenario.dart';
 import 'package:flame_3d_example/scenarios/barrier_scenario.dart';
 import 'package:flame_3d_example/scenarios/boxes_scenario.dart';
 import 'package:flame_3d_example/scenarios/colors_scenario.dart';
@@ -19,6 +20,7 @@ abstract class GameScenario() {
 
   static final Map<String, GameScenario> scenarios = {
     'barrier': BarrierScenario(),
+    'barrier_gallery': BarrierGalleryScenario(),
     'boxes': BoxesScenario(),
     'colors': ColorsScenario(),
     'culling': CullingScenario(),

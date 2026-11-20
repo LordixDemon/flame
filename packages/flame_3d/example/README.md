@@ -22,6 +22,14 @@ mode and `O` toggles 4x MSAA.
   water running off its edges (`ParticlePresets3D.runoffDrips`), a `BarrierMaterial` wall rises
   from its rim, is hit three times in different colors and sinks back, and a block drops into the
   water (`splashCrown`, `foamBurst`, `mistPuff`). A tap switches the barrier's pattern.
+- `barrier_gallery` (`BarrierGalleryGame`, `BarrierGallery`): podiums in a row, each walled by a
+  `BarrierMaterial` of its own and seen 30 degrees above the horizon, with a cube that slides into
+  the far wall and bounces back (a near point as it comes close, an impact where it hits, a pulse
+  on some). The first strip has one wall per `BarrierLook` preset; a tap goes to strips that sweep
+  one setting at a time: the height (`heightScale`), the profile (the fade and the top edge), the
+  density (the fill, the rows of motifs, the noise) and the reaction (rings, reach, wobble, pulse,
+  `reactionInFront`). Each round of strips stands on another ground: light water, dark water, pale
+  stone.
 - `pool` (`PoolGame`, `PoolScene`): a clear, shallow pool in a walled quay, seen through a mirrored
   isometric-like `Scene3DComponent` projection: the water is one `WaterMaterial` draw (caustics,
   sparkles, a swell of the normals, a depth ramp, foam along the walls, ripples and
@@ -46,8 +54,8 @@ and the limits of each feature are on its documentation page.
 The showcase's Self-Test button runs `ShowcaseDiagnostics.runAllChecks`: 64 checks that switch
 through all 20 labs. They are smoke checks: most assert counters and state (draw calls above a
 threshold, objects mounted, a body that moved), two read pixels. The pixel-exact checks of the
-rendering are the package's own GPU tests. The same checks, and a run through the `barrier` scene,
-run headless, from this directory:
+rendering are the package's own GPU tests. The same checks, and runs through the `barrier` and
+`barrier_gallery` scenes, run headless, from this directory:
 
 ```sh
 flutter test --enable-impeller --enable-flutter-gpu
