@@ -20,6 +20,7 @@ to, image-based lighting and probes are described in [Lighting](lighting.md), sh
 | `SkyboxMaterial3D`      | the sky behind everything              | no  | no      | no  | yes |
 | `BillboardMaterial3D`   | sprites and standees                   | yes | no      | yes | yes |
 | `ShadowCatcherMaterial` | shadows on 2D art                      | no  | yes     | no  | no  |
+| `BarrierMaterial`       | energy walls around a play area        | no  | no      | no  | no  |
 
 `BillboardMaterial3D` is described in [3D UI and Text](ui_3d.md#the-material),
 `ShadowCatcherMaterial` in
@@ -46,7 +47,8 @@ Every material works with `World3D.hdrEnabled`: the HDR scene target holds sRGB-
 with the range extended above `1`. The native `SpatialMaterial` shader writes its lighting there
 without its tone curve, so light brighter than white survives for bloom and the tone map; every
 other material (`StylizedMaterial`, `UnlitMaterial`, `WaterMaterial`, `SkyboxMaterial3D`,
-`DecalMaterial`, `OutlineMaterial`, `BillboardMaterial3D`, and the particle and ribbon materials)
+`DecalMaterial`, `OutlineMaterial`, `BillboardMaterial3D`, `BarrierMaterial`, and the particle and
+ribbon materials)
 writes the display colors it writes without HDR, which look the same until the composite's tone
 map changes them (with `ToneMapMode.none` and an exposure of `1`, exactly the same). See
 [Post-Processing](post_processing.md#hdr).
@@ -84,6 +86,8 @@ pipeline changes; joint matrices are written for every skinned draw.
 - `OutlineMaterial`: vertex `CameraMatrices`, `Outline` (and `JointMatrices` when skinned).
 - `DecalMaterial`: vertex `CameraMatrices`, `Decal`; fragment `Decal`, `albedoTexture`.
 - `SkyboxMaterial3D`: fragment `Skybox`, `panoramaTexture`.
+- `BarrierMaterial`: vertex `CameraMatrices`, `BarrierShape`; fragment `BarrierLook`: 3 blocks, no
+  texture.
 
 `RenderStats` (see [Rendering](rendering.md#frame-output-and-statistics)) counts the material
 changes of a frame.
@@ -1206,6 +1210,181 @@ transform changed, in `O(n log n)` without allocating after the first sort; `sor
 sorts. Without `sortByDepth` (the default), nothing is sorted and the decals keep their order.
 
 
+## Barriers
+
+`BarrierMaterial` draws a translucent energy wall that stands around an area while something is in
+play inside it and lights up where it is hit: brightest at its foot and thin above, so that it
+never hides what stands inside, with a slow pattern of motifs travelling along it, a glint where it
+is seen edge-on, and up to four impacts, each a ring spreading over the wall from a point and a
+flash around that point. `BarrierMesh` builds the walls it draws:
+
+```dart
+final barrier = BarrierMaterial(appear: 0);
+final wall = BarrierMesh.roundedRectangle(
+  width: 5.4,
+  depth: 5.4,
+  height: 0.75,
+  cornerRadius: 0.16,
+  material: barrier,
+);
+barrier.fitPatternTo(wall.length, motifLength: 0.45);
+final wallComponent = MeshComponent(mesh: wall, visible: false);
+layer.world.add(wallComponent);
+
+// Every frame (and mark a retained layer dirty, see What a draw binds):
+barrier.time += dt;
+
+// When play starts: animate appear from 0 to 1 over about 0.35 s.
+wallComponent.visible = true;
+barrier.appear = raised; // 0..1
+
+// Where something hits it (a world position, from the physics contact):
+barrier.impact(contactPoint, color: const Color(0xFF7FD4FF));
+
+// When play ends: animate appear back to 0, then hide the component.
+```
+
+
+### Wall meshes
+
+The material draws any mesh whose vertices carry the distance along the wall in
+`vertexTexCoord.x` (in scene units), the height up the wall in `vertexTexCoord.y` (`0` at its foot,
+`1` at its top) and the wall's normal in `vertexNormal`, pointing out of the enclosed area. A
+surface in the standard layout with such texture coordinates works too.
+
+`BarrierMesh` builds one surface in its own 8-float layout (`BarrierMesh.layout`: position, those
+texture coordinates and the normal), standing on the xz plane with its foot at `y = 0`, around the
+origin:
+
+- `BarrierMesh.roundedRectangle(width, depth, height, cornerRadius: 0, cornerSegments: 8)`: a band
+  around a rectangle (along x and z) with rounded corners (sharp ones at a radius of `0`);
+- `BarrierMesh.ring(radius, height, segments: 64)`: a band around a circle;
+- `BarrierMesh.dome(radius, segments: 64, rings: 16)`: the upper half of a sphere, the height
+  running by elevation from its rim to its pole.
+
+The distance along the foot runs counter-clockwise seen from above (from `+x` towards `-z`), from
+`0` to `length`, starting at the middle of the `+x` side (the rectangle) or at `(radius, 0, 0)`;
+the first and last columns of vertices are at the same place. Faces face outwards. A rectangle
+with rounded corners is `2 * (5 + 4 * cornerSegments)` triangles, a ring `2 * segments`, a dome
+`segments * (2 * rings - 1)`. The material shades every pixel from its interpolated coordinates,
+so the walls need no more rows than these.
+
+Rotate the component to stand a wall in a scene whose up is not `+y` (a quarter turn about x for
+`+z`). `pointOnWall(along, heightFraction, [out])` gives a point of the wall in the mesh's space,
+by distance along its foot and height; transform it by the component's `worldTransformMatrix` for
+`impact`.
+
+
+### Look
+
+| Parameter           | Default      | Meaning                                                   |
+| ------------------- | ------------ | --------------------------------------------------------- |
+| `footColor`         | `0xFFFFB45A` | color at the foot; its alpha scales the light there       |
+| `topColor`          | `0x4DFFF2D6` | color at the top; its alpha scales the light there        |
+| `intensity`         | `0.8`        | multiplies all the light; above `1` goes above white      |
+| `heightFalloff`     | `1.8`        | the light is multiplied by `(1 - height) ^ heightFalloff` |
+| `footGlow`          | `0.7`        | a thin bright line along the foot                         |
+| `nearSideFade`      | `0.7`        | how much the side facing the viewer is thinned            |
+| `glintStrength`     | `0.35`       | glint where the wall is seen edge-on                      |
+| `glintPower`        | `4`          | how close to the edges the glint stays                    |
+| `appear`            | `1`          | how far the wall has risen from its foot, `0` to `1`      |
+| `appearSoftness`    | `0.15`       | softness of the rising front, a fraction of the height    |
+| `pattern`           | `chevrons`   | the motif, a `BarrierPattern`                             |
+| `patternScale`      | `2.5`        | motifs per scene unit along the wall                      |
+| `patternSpeed`      | `0.3`        | scene units per second, negative the other way            |
+| `patternStrength`   | `0.55`       | brightness of the motifs                                  |
+| `patternHeight`     | `0.45`       | the band the motifs fill, a fraction of the height        |
+| `patternLoopLength` | `0` (open)   | length of a closed loop, see [Pattern](#pattern)          |
+| `impactRingSpeed`   | `2.5`        | scene units per second                                    |
+| `impactRingWidth`   | `0.07`       | scene units                                               |
+| `impactDuration`    | `0.9`        | seconds                                                   |
+| `impactFlashRadius` | `0.3`        | scene units                                               |
+
+- The foot color blends into the top color up the wall, both multiplied by the instance color
+  (`MeshComponent.color`), whose alpha scales the light.
+- `nearSideFade` thins the side of a closed wall whose outside faces the viewer, by up to
+  `nearSideFade` where it faces the viewer squarely, so that it does not veil what stands inside,
+  while the far side shows fully behind it. It reads the normals, which must point out of the
+  enclosed area (as those of `BarrierMesh` do); impacts are not thinned.
+- `appear` raises the wall from its foot: everything below a soft front at that fraction of the
+  height is drawn, and the front glows while the wall rises or sinks (`0 < appear < 1`). At `0`
+  every vertex is moved out of view, so the wall costs its draw call but no pixels; set the
+  component's `visible` to `false` as well to skip the draw.
+- Advance `time` every frame: the pattern, the twinkle of its motifs and the impacts follow it.
+  Like every material value, changes are read when the material is bound; a retained
+  `Scene3DComponent` must be marked dirty while the wall moves (see
+  [What a draw binds](#what-a-draw-binds)).
+
+
+### Pattern
+
+`BarrierPattern.plain` has no motif; `chevrons` point the way the pattern travels; `diamonds` are
+outlines with a dot at their center; `dashes` are rune-like stems of varying length with a dot, a
+caret or a bar, different from one motif to the next. The motifs fill a band of the wall above the
+foot (`patternHeight`), twinkle slowly, and travel along the wall at `patternSpeed`. They are drawn
+in the cells of the wall's coordinates, `1 / patternScale` long and `patternHeight` of the wall's
+height tall, so their proportions follow those two lengths.
+
+On a closed loop the pattern has a seam where the loop closes unless a whole number of motifs fits
+the loop: `fitPatternTo(loopLength, motifLength: 0.4)` sets `patternScale` to the nearest such
+count and `patternLoopLength` to the loop's length (`BarrierMesh.length`), which also keeps the
+motifs of `dashes` the same as they travel across the seam. On a wall that is not closed the motifs
+repeat every 256 (`BarrierMaterial.openWallPeriod`).
+
+
+### Impacts
+
+`impact(position, color: white, strength: 1)` starts an impact at the current `time`, at a world
+position: a ring of `color` spreading from it over the wall at `impactRingSpeed`, `impactRingWidth`
+wide, and a flash around it, both scaled by `strength` (and by the color's alpha) and fading out
+over `impactDuration`. The distance is measured in world space from the point, so the ring wraps
+around corners and over a dome. A material shows `BarrierMaterial.maxImpacts` (4) impacts at once:
+a new one takes a free slot, or replaces the oldest. It allocates nothing; `activeImpactCount`,
+`isImpactActive` and `clearImpacts` read and reset them. Impacts are not moved with the wall: a
+wall that moves while a ring spreads leaves it where it started.
+
+
+### Blending, depth and passes
+
+- The default `RenderState.additive` adds the wall's light to what is behind it and keeps the
+  target's alpha (see [Rendering](rendering.md#render-state)): in a `Scene3DComponent` the wall adds
+  onto the 2D art drawn below the layer without darkening it. Over a saturated color, such as blue
+  water, added warm light turns towards white.
+- `RenderState.premultipliedAlphaBlend` and `RenderState.alphaBlend` lay it over the scene as a
+  veil whose alpha is its brightest channel, which keeps a warm wall warm over cool colors and
+  darkens what is behind its bright parts.
+- The wall is depth tested against the scene without writing depth, both faces are drawn, and it
+  is translucent: ordered among the translucent draws by the center of its bounds. It is left out
+  of the shadow passes (`castsShadows` is `false`) and of the depth-normal prepass, which draws
+  only opaque materials that write depth. With `OitMode3D.weightedBlended` the additive wall is
+  drawn sorted after the composite, as every additive draw is.
+- It writes display colors, unclamped: in an HDR scene target (`World3D.hdrEnabled`) an
+  `intensity` above `1` and stacked impacts go above white and bloom; in an 8-bit target they clip.
+- The view direction comes from the inverse of the view-projection matrix, so the glint and the
+  near side are right under perspective, orthographic, oblique and mirroring projections, such as
+  the affine projections of 2D art.
+
+
+### Costs
+
+One draw call per barrier mesh (one surface) and three uniform blocks, no texture. The fragment
+shader runs on the wall's pixels only: a gradient, one motif (a few segment distances), a glint and
+four impacts, unrolled. All the values that grow with time (the pattern's offset, the twinkle's
+phase, the age of each impact) are computed and wrapped on the CPU in `apply`, so the shader never
+sees a large time, and `apply` computes the inverse of the view-projection matrix once per batch.
+It allocates nothing per frame. In the `barrier` scene of the example, the wall (74 triangles
+around a 5 by 5 platform) adds one draw call to the layer's 13, about 600 bytes of uniforms, and
+about 10 µs of `Material.apply` per frame under `flutter test` (a debug build, measured with
+`FLAME_3D_PROFILE`, see [Rendering](rendering.md#profiling)).
+
+The shaders are written for GLSL ES 1.00 too: no flat inputs, no explicit texture level of detail,
+no derivatives, no `switch`, no integer operations, and no loops besides the one-pass loops the
+compiler adds; their OpenGL ES output passes `glslangValidator` as GLSL ES 1.00.
+
+Not available on the web: there is no WebGPU build of its shaders, and creating one there throws an
+`UnsupportedError`.
+
+
 ## Skybox
 
 `SkyboxComponent3D` fills the background of a `World3D` with a sky: a gradient from `zenithColor`
@@ -1537,9 +1716,10 @@ On the web, the materials run on WebGPU through hand-written WGSL versions of th
   rendered on the web (the shadow caster shaders have no WebGPU build, so the shadow pass is
   skipped).
 - `UnlitMaterial`, `SkyboxMaterial3D` and `BillboardMaterial3D` have WGSL shaders.
-- `StylizedMaterial`, `OutlineMaterial`, `DecalMaterial` and `ShadowCatcherMaterial` throw an
-  `UnsupportedError` when created there (WGSL files exist for the outline and decal shaders but
-  are not used). `WaterMaterial` has no WGSL shaders and fails when first drawn.
+- `StylizedMaterial`, `OutlineMaterial`, `DecalMaterial`, `ShadowCatcherMaterial` and
+  `BarrierMaterial` throw an `UnsupportedError` when created there (WGSL files exist for the outline
+  and decal shaders but are not used). `WaterMaterial` has no WGSL shaders and fails when first
+  drawn.
 - Compressed KTX2 textures are always decoded on the CPU, so BC7, ETC2 and ASTC files throw.
 
 The texture sampler options, including anisotropy up to 16, work on the web.
@@ -1566,5 +1746,9 @@ The texture sampler options, including anisotropy up to 16, work on the web.
   soft edges. (`BillboardMaterial3D`, and so `Text3DComponent`, blends premultiplied colors and
   takes a `premultipliedTexture` flag, see [3D UI and Text](ui_3d.md#the-material).) The package
   has no single alpha convention for textures yet.
+- `BarrierMaterial`: its appear factor, pattern and impacts belong to the material, so barriers
+  that rise and are hit separately need a material each; four impacts at once; its motifs are
+  drawn without derivatives, so a pattern much finer than a few pixels per motif aliases; additive
+  light over saturated colors turns towards white; no fog.
 - KTX2: no supercompression, and no CPU decoder for BC7, ETC2, ASTC and RGBA32F.
 - `ImageTexture` has no color space option: images cannot be sampled as sRGB.

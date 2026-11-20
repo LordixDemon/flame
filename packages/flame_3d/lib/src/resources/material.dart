@@ -1,3 +1,4 @@
+export 'material/barrier_material.dart';
 export 'material/billboard_material.dart';
 export 'material/decal_material.dart';
 export 'material/material.dart';

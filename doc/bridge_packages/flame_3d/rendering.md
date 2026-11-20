@@ -434,16 +434,15 @@ Without `--src` and `--out`, the tool builds the current package's `shaders/` in
 `flame_3d` builds its own bundles).
 
 `--with-web-gpu` also builds `.wgslbundle` files for the WebGPU backend, through the `naga` CLI
-(`cargo install naga-cli`). Only 8 of the package's 29 shaders have a web bundle (`spatial_material`
-in its non-PBR variant, `unlit_material`, `skybox_material`, `billboard_material`,
-`decal_material`, `outline_material`, `outline_material_skinned` and `ribbon_material`): on the web,
-anything that needs another shader (water, the depth-normal prepass, order-independent
-transparency, bloom, HDR, post-processing, `keepContents` texture passes) throws an
-`UnsupportedError` naming the shader when it first draws, and `StylizedMaterial`,
-`ShadowCatcherMaterial`, `ParticleMaterial`, `DecalMaterial`, `OutlineMaterial` and
-`RibbonMaterial3D` throw one when created. Shadows are the exception: when the shadow caster
-shaders do not load, the shadow pass is skipped and the scene renders without shadows (see
-[Shadows](shadows.md#platform-support)).
+(`cargo install naga-cli`). Only 8 of the package's 30 shaders have a web bundle (`spatial_material`
+in its non-PBR variant, `unlit_material`, `skybox_material`, `billboard_material`, `decal_material`,
+`outline_material`, `outline_material_skinned` and `ribbon_material`): on the web, anything that
+needs another shader (water, the depth-normal prepass, order-independent transparency, bloom, HDR,
+post-processing, `keepContents` texture passes) throws an `UnsupportedError` naming the shader when
+it first draws, and `StylizedMaterial`, `ShadowCatcherMaterial`, `ParticleMaterial`,
+`DecalMaterial`, `OutlineMaterial`, `RibbonMaterial3D` and `BarrierMaterial` throw one when created.
+Shadows are the exception: when the shadow caster shaders do not load, the shadow pass is skipped
+and the scene renders without shadows (see [Shadows](shadows.md#platform-support)).
 
 
 ## Custom render passes and `RenderGraph3D`
