@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
 
@@ -12,13 +13,14 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'gpu_test_helpers.dart';
 
-// The foam controls of WaterMaterial (foamLightTint) and of the water volume
-// (waterlineLightTint) are neutral by default: the materials then draw
-// exactly the pixels of the shaders of before them
+// The foam controls of WaterMaterial (foamLightTint, edgeFoamMotion) and of
+// the water volume (waterlineLightTint) are neutral by default: the materials
+// then draw exactly the pixels of the shaders of before them
 // (test/gpu/shaders/reference/water_foam_fragment.glsl and
 // stylized_volume_foam_fragment.glsl), with every other option on. Each
 // control is then checked for what it does: the lit foam keeps its own color
-// under a colored light.
+// under a colored light, and the mask's foam stands still while the caustics
+// move.
 
 const _size = 128;
 
@@ -153,6 +155,7 @@ List<Component3D> _duskLights() => [
 WaterMaterial _plain({
   double time = 0,
   double foamLightTint = 1,
+  double edgeFoamMotion = 1,
   double causticStrength = 0,
 }) {
   return WaterMaterial(
@@ -163,6 +166,7 @@ WaterMaterial _plain({
     time: time,
     foamColor: const Color(0xFFFFFFFF),
     foamLightTint: foamLightTint,
+    edgeFoamMotion: edgeFoamMotion,
     causticStrength: causticStrength,
   );
 }
@@ -386,6 +390,71 @@ void main() {
           expect(_same(neutral, noFoam, x, y), isTrue, reason: '$x, $y');
         }
       }
+    });
+
+    testGpu('edgeFoamMotion slows the mask foam down or holds it still', (
+      tester,
+    ) async {
+      Future<Pixels> render(
+        double time,
+        double motion, {
+        double caustics = 0,
+      }) async {
+        return (await _render(
+          tester,
+          World3D(
+            children: [
+              ..._duskLights(),
+              MeshComponent(
+                mesh: _grid(
+                  _plain(
+                    time: time,
+                    edgeFoamMotion: motion,
+                    causticStrength: caustics,
+                  ),
+                  foam: (x, z) => math.max(0, 1 - (x + 2) / 1.5),
+                ),
+              ),
+            ],
+          ),
+        )).pixels;
+      }
+
+      // Today's pace: the band laps and drifts.
+      final moving = differingPixels(
+        await render(0.5, 1),
+        await render(2.1, 1),
+        tolerance: 0,
+      );
+      expect(moving, greaterThan(_size * 4));
+      // Held still: the same pixels at any moment.
+      final still = await render(0.5, 0);
+      expect(differingPixels(still, await render(2.1, 0), tolerance: 0), 0);
+      expect(differingPixels(still, await render(7.3, 0), tolerance: 0), 0);
+      // At half the pace, the foam at a moment is the foam at half that
+      // moment at its own pace.
+      expect(
+        differingPixels(
+          await render(3, 0.5),
+          await render(1.5, 1),
+          tolerance: 0,
+        ),
+        0,
+      );
+      // The caustics keep moving while the foam stands still: away from the
+      // band, the water changes.
+      final a = await render(0.5, 0, caustics: 1);
+      final b = await render(2.1, 0, caustics: 1);
+      var changed = 0;
+      final (x0, _) = _pixel(0, 0);
+      for (var y = 0; y < _size; y++) {
+        for (var x = x0; x < _size; x++) {
+          if (!_same(a, b, x, y)) {
+            changed++;
+          }
+        }
+      }
+      expect(changed, greaterThan(_size * 4));
     });
 
     testGpu(

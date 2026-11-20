@@ -155,6 +155,23 @@ void main() {
       expect(WaterMaterial.patternPhase(double.infinity, 8), 0);
     });
 
+    test('moves the foam with a phase of its own', () {
+      for (final time in [0.0, 1.3, 7.9, 123.4]) {
+        // At its own pace, the phase of the other patterns, exactly.
+        expect(
+          WaterMaterial.edgeFoamPhase(time, 8, 1),
+          WaterMaterial.patternPhase(time, 8),
+        );
+        expect(WaterMaterial.edgeFoamPhase(time, 8, 0), 0);
+        expect(WaterMaterial.edgeFoamPhase(time, 8, -1), 0);
+        expect(
+          WaterMaterial.edgeFoamPhase(time, 8, 0.5),
+          WaterMaterial.patternPhase(time * 0.5, 8),
+        );
+      }
+      expect(WaterMaterial.edgeFoamPhase(3, 8, double.nan), 0);
+    });
+
     test('builds surfaces in its vertex layout', () {
       expect(WaterMaterial.vertexLayout.strideInFloats, 10);
       expect(
@@ -252,15 +269,34 @@ void main() {
         // No depth ramp, no ripple.
         expect(member(water, uniforms, 'ramp')[0], 0);
         expect(member(water, uniforms, 'ramp')[3], 0);
-        // The foam takes the color of the light.
-        expect(member(water, uniforms, 'shoreParams')[3], 1);
+        // The foam takes the color of the light and moves at its pace.
+        final shore = member(water, uniforms, 'shoreParams');
+        expect(shore[2], member(water, uniforms, 'pattern')[0]);
+        expect(shore[3], 1);
       });
 
-      test('writes the foam light tint', () {
-        final water = WaterMaterial(foamLightTint: 0.25);
-        expect(member(water, draw(water), 'shoreParams')[3], 0.25);
-        water.foamLightTint = 3;
-        expect(member(water, draw(water), 'shoreParams')[3], 1);
+      test('writes the foam controls', () {
+        final water = WaterMaterial(
+          time: 3,
+          foamLightTint: 0.25,
+          edgeFoamMotion: 0.5,
+        );
+        var shore = member(water, draw(water), 'shoreParams');
+        // Half the pace: 1.5 s of an 8 s period.
+        expect(shore[2], closeTo(math.pi * 3 / 8, 1e-6));
+        expect(shore[3], 0.25);
+        // The pattern keeps its own phase: 3 s of 8.
+        expect(
+          member(water, draw(water), 'pattern')[0],
+          closeTo(math.pi * 3 / 4, 1e-6),
+        );
+
+        water
+          ..foamLightTint = 3
+          ..edgeFoamMotion = 0;
+        shore = member(water, draw(water), 'shoreParams');
+        expect(shore[2], 0);
+        expect(shore[3], 1);
         water.foamLightTint = -1;
         expect(member(water, draw(water), 'shoreParams')[3], 0);
       });

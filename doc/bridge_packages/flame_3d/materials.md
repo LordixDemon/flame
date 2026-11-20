@@ -1020,6 +1020,7 @@ final water = WaterMaterial(
 | `shallowOpacity`               | `0.2`        | the opacity where there is no depth      |
 | `defaultDepth`                 | `1`          | the depth under standard-layout vertices |
 | `edgeFoamScale`                | `0.6`        | the patches of the foam mask's foam      |
+| `edgeFoamMotion`               | `1`          | the pace of that foam, `0` still         |
 | `foamLightTint`                | `1`          | how much of the light's color foam takes |
 | `animationPeriod`              | `8`          | seconds over which the options loop      |
 | `ripples`                      | none         | a shared `WaterRipples`, see below       |
@@ -1053,6 +1054,14 @@ final water = WaterMaterial(
   around a rock that breaks the surface, falling to `0` over a few tenths of a unit. It is lit by
   the light reaching the water, as the foam of the ripples is (the crest and shore foam keep the
   plain `foamColor`).
+- **Foam pace**: `edgeFoamMotion` multiplies the pace of the foam of the foam mask: `1` laps
+  twice per period, `0.5` half as fast, `0` holds the band still, broken up as before but not
+  moving, for a rim of ice along a wall, dried salt or a painted edge. Its phase is
+  `2π * fract(time * edgeFoamMotion / animationPeriod)`, so a slower band still loops without a
+  jump (over `animationPeriod / edgeFoamMotion` seconds). The caustics, the sparkles, the swell
+  and the ripples keep their pace. It belongs to the material: every foam of its surfaces moves
+  alike, so a still band on one wall and lapping foam elsewhere take two surfaces with a material
+  each (two draws).
 - **Foam light**: the lit foam (of the foam mask and of the ripples) is
   `foamColor` times `clamp(0.6 * sky + 0.75 * incoming, 0.5, 1.15)`, `incoming` being the light
   reaching the water. Under a low, colored sun that light takes the sun's color, and white foam
@@ -1066,10 +1075,10 @@ final water = WaterMaterial(
   added over the translucent surface with an opacity of their own (their luminosity), so they keep
   their brightness however clear the water is.
 
-The caustics, the sparkles, the swell and the foam move with whole multiples of
-`2π * fract(time / animationPeriod)`: they loop exactly over the period, and the time is wrapped
-on the CPU, so the shader's arguments stay small however long the game runs. The Gerstner waves
-keep their own, endless time.
+The caustics, the sparkles, the swell and the foam (at its own pace, `edgeFoamMotion`) move with
+whole multiples of `2π * fract(time / animationPeriod)`: they loop exactly over the period, and
+the time is wrapped on the CPU, so the shader's arguments stay small however long the game runs.
+The Gerstner waves keep their own, endless time.
 
 The depth and the foam mask come from the vertices. Surfaces in `WaterMaterial.vertexLayout`, 10
 floats per vertex, give them:
@@ -1173,11 +1182,12 @@ with every option and 8 ripples (in `flutter test`, JIT).
 Per pixel of the surface, roughly: the caustics 22 sines, cosines or square roots and 170
 arithmetic instructions (the 9 cells of the Voronoi diagram), the sparkles 3 sines, the swell 6
 cosines, each living ripple 3 transcendentals and 25 instructions, the foam mask (only where it is
-above `0`) 13 sines, and `foamLightTint` below `1` a dot product and a mix where the foam is. On
-the software rasterizer of `flutter test`, a full-screen 2532 x 1170 surface with the caustics,
-sparkles, swell and depth ramp costs about as much as the legacy material (within the noise, a few
-percent), 8 living ripples add about 30 %, and foam mask over the whole surface about 4 %; compare
-on your target device, where transcendentals cost relatively more.
+above `0`) 13 sines, `foamLightTint` below `1` a dot product and a mix where the foam is, and
+`edgeFoamMotion` nothing (its phase is computed on the CPU). On the software rasterizer of
+`flutter test`, a full-screen 2532 x 1170 surface with the caustics, sparkles, swell and depth
+ramp costs about as much as the legacy material (within the noise, a few percent), 8 living
+ripples add about 30 %, and foam mask over the whole surface about 4 %; compare on your target
+device, where transcendentals cost relatively more.
 
 The shaders compile to GLSL ES 1.00 for OpenGL ES: they use no `flat` input, no derivative, no
 explicit level of detail, no texture, and their loops have constant bounds (the ripples' loop runs
@@ -2054,7 +2064,8 @@ The texture sampler options, including anisotropy up to 16, work on the web.
 - `WaterMaterial` reflects a flat sky color and needs a subdivided mesh. Its ripples tilt the
   normals but do not move the vertices, and its depth ramp and foam mask come from the vertices, so
   they do not follow objects that move under or through the water (a slab rising under the
-  surface).
+  surface). `edgeFoamMotion` and `foamLightTint` belong to the material, not to the vertices: a
+  still band on part of a surface takes a surface and a material of its own.
 - A water volume has a flat level: it ignores the waves of the surface, so its waterline band does
   not follow them (keep the waves small, as in a basin). It submerges `StylizedMaterial` surfaces
   only, takes its caustics from one directional light, and has no fog of its own: the distance

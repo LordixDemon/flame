@@ -9,8 +9,9 @@
 // Its options, all off by default (the pixels are then those of before they
 // existed): a caustic network, sparkles, a gentle swell of the normals, a
 // color and opacity ramp by the depth of the water under each vertex, foam
-// where the vertices' foam mask says, rings of ripples (WaterRipples), and
-// how much of the light's color the lit foam takes.
+// where the vertices' foam mask says, rings of ripples (WaterRipples), how
+// much of the light's color the lit foam takes, and how fast the mask's foam
+// moves.
 // They are procedural (flame_3d/water_pattern.glsl) and need neither the
 // depth prepass nor the scene color grab.
 
@@ -46,7 +47,8 @@ uniform WaterMaterial {
   vec4 params;
   // x: fresnelPower, y: specularStrength, z: opacity, w: rippleScale
   vec4 params2;
-  // x: shoreFoamDepth (clip-depth span), y: refractionStrength, z: unused,
+  // x: shoreFoamDepth (clip-depth span), y: refractionStrength, z: the phase
+  // of the foam of the foam mask (0 to 2π, slowed down by edgeFoamMotion),
   // w: how much of the light's color the lit foam takes (foamLightTint, 0 to
   // 1).
   vec4 shoreParams;
@@ -350,10 +352,11 @@ void main() {
   }
   // The foam of the vertices' foam mask (against a wall, around a rock) and
   // at the crests of the rings of ripples, lit by the light reaching the
-  // water (the crest and shore foam keep their own color).
+  // water (the crest and shore foam keep their own color). The mask's foam
+  // moves with a phase of its own (edgeFoamMotion: 0 holds it still).
   float litFoam = 0.0;
   if (fragWater.y > 0.001) {
-    litFoam = waterEdgeFoam(fragWater.y, fragUv, phase);
+    litFoam = waterEdgeFoam(fragWater.y, fragUv, waterMat.shoreParams.z);
   }
   if (ringCrest > 0.0) {
     litFoam = max(litFoam, smoothstep(0.7, 1.1, ringCrest) * 0.85);

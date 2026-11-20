@@ -38,7 +38,8 @@ import 'package:flame_3d/resources.dart';
 ///   water is more opaque at grazing angles;
 /// - foam where the vertices of a surface in [vertexLayout] say (against a
 ///   wall, around a rock), with lapping edges broken up into patches of
-///   [edgeFoamScale] world units;
+///   [edgeFoamScale] world units, that [edgeFoamMotion] slows down or holds
+///   still;
 /// - [ripples]: rings that spread from where things land on, rise out of or
 ///   move through the water, see [WaterRipples];
 /// - [foamLightTint]: how much of the color of the light the foam of the
@@ -140,6 +141,13 @@ class WaterMaterial({
   /// `0.25` suits a low, warm sun. The crest and shore foam are not lit and
   /// keep [foamColor] anyway.
   var double foamLightTint = 1,
+
+  /// How fast the foam of the foam mask laps and drifts, as a multiple of
+  /// its own pace: `1` (the default) laps twice per [animationPeriod], `0`
+  /// holds it still (a rim of ice along a wall, dried salt, a painted edge),
+  /// still broken up into patches but not moving. The caustics, the
+  /// sparkles, the swell and the ripples keep their pace.
+  var double edgeFoamMotion = 1,
 }) extends Material {
   /// {@macro water_material}
   this
@@ -306,7 +314,7 @@ class WaterMaterial({
         _shoreVec..setValues(
           shoreFoamDepth,
           refractionStrength,
-          0,
+          edgeFoamPhase(time, animationPeriod, edgeFoamMotion),
           foamLightTint.clamp(0.0, 1.0),
         ),
       )
@@ -401,6 +409,18 @@ class WaterMaterial({
     }
     final turns = time / period;
     return (turns - turns.floorToDouble()) * 2 * math.pi;
+  }
+
+  /// The phase of the foam of the foam mask at [time]: [patternPhase] of
+  /// `time * motion` (with [motion] at least `0`), so the foam moves
+  /// [motion] times as fast as the other patterns and still loops without a
+  /// jump (over `period / motion` seconds), `0` (still) when [motion] is
+  /// `0`. With [motion] `1` it is [patternPhase] itself.
+  static double edgeFoamPhase(double time, double period, double motion) {
+    if (!(motion > 0)) {
+      return 0;
+    }
+    return patternPhase(time * motion, period);
   }
 
   static double _inverse(double scale) => scale > 0 ? 1 / scale : 0;
