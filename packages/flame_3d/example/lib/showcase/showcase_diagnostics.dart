@@ -811,25 +811,41 @@ class ShowcaseDiagnostics() {
       );
 
       // 27. `MorphTargetData` + `MorphWeightsChannel` + `setMorphWeights`.
+      //     A component morphs its own copy of the node's surfaces: the
+      //     model's surface stays at rest, so the check reads the copy the
+      //     component draws (`ModelComponent.nodeMesh`).
       final morphRig = rig.morphCrystalRig;
       final morphSurf = morphRig?.model.nodes[0]?.mesh?.surfaces.first;
       var morphOk = false;
       var maxMorphDelta = 0.0;
+      var modelAtRest = false;
       if (morphRig != null && morphSurf != null) {
+        final modelSnapshot = List<double>.of(morphSurf.vertexData);
         morphRig.setMorphWeights(const [0.0, 0.0]);
-        final restSnapshot = List<double>.of(morphSurf.vertexData);
+        final drawnSurf = morphRig.nodeMesh(0)!.surfaces.first;
+        final restSnapshot = List<double>.of(drawnSurf.vertexData);
         morphRig.setMorphWeights(const [1.0, 1.0]);
-        final morphed = morphSurf.vertexData;
+        final morphed = drawnSurf.vertexData;
         for (var i = 0; i < morphed.length; i++) {
           final d = (morphed[i] - restSnapshot[i]).abs();
           if (d > maxMorphDelta) {
             maxMorphDelta = d;
           }
         }
+        modelAtRest = true;
+        final shared = morphSurf.vertexData;
+        for (var i = 0; i < shared.length; i++) {
+          if (shared[i] != modelSnapshot[i]) {
+            modelAtRest = false;
+            break;
+          }
+        }
         morphOk =
             morphSurf.morphTargets.length == 2 &&
+            !identical(drawnSurf, morphSurf) &&
             maxMorphDelta > 0.1 &&
-            morphSurf.hasResource;
+            modelAtRest &&
+            drawnSurf.hasResource;
       }
       record(
         'morph_targets_and_dynamic_vertices',
@@ -837,7 +853,8 @@ class ShowcaseDiagnostics() {
         ok: morphOk,
         detail:
             'targets=${morphSurf?.morphTargets.length ?? 0}, '
-            'maxDelta=${maxMorphDelta.toStringAsFixed(3)}',
+            'maxDelta=${maxMorphDelta.toStringAsFixed(3)}, '
+            'modelAtRest=$modelAtRest',
       );
 
       // 28. `AnimationLayer3D` upper-body mask + `TwoBoneIkConstraint3D` +
