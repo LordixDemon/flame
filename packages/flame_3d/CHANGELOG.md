@@ -60,6 +60,7 @@
  - **FEAT**(flame_3d): `Material.translucentOrder`: translucent draws are drawn in increasing order of it, back to front within one order, so a water surface can lie under the splashes above it. ([4d746aa5](https://github.com/LordixDemon/flame/commit/4d746aa5))
  - **FEAT**(flame_3d): `WaterMaterial.foamLightTint` and `WaterVolumeSettings.waterlineLightTint` say how much of the light's color the lit foam takes (`1`, the default, as before; `0` only its brightness), so foam stays white under a low, colored sun.
  - **FEAT**(flame_3d): `WaterMaterial.edgeFoamMotion` sets the pace of the foam mask's foam (`1`, the default, as before; `0` a still band) without touching the caustics, the sparkles, the swell or the ripples.
+ - **FEAT**(flame_3d): `WaterFoamSources`, up to 16 collars of foam (circles or rectangles with rounded corners) shared by the `WaterMaterial`s of a body of water (`foamSources`), set and moved at run time without rebuilding a surface; off by default.
  - **FEAT**(flame_3d): `World3D.waterVolume` (`WaterVolumeSettings`): the parts of `StylizedMaterial` surfaces below a water level are tinted and darkened with their depth and lit by the water's caustics, and foam where they cross the level, without a depth buffer or a pass. ([8ddf54a5](https://github.com/LordixDemon/flame/commit/8ddf54a5))
 
 

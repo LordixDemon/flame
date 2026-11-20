@@ -13,14 +13,14 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'gpu_test_helpers.dart';
 
-// The foam controls of WaterMaterial (foamLightTint, edgeFoamMotion) and of
-// the water volume (waterlineLightTint) are neutral by default: the materials
-// then draw exactly the pixels of the shaders of before them
-// (test/gpu/shaders/reference/water_foam_fragment.glsl and
+// The foam controls of WaterMaterial (foamLightTint, edgeFoamMotion,
+// foamSources) and of the water volume (waterlineLightTint) are neutral by
+// default: the materials then draw exactly the pixels of the shaders of
+// before them (test/gpu/shaders/reference/water_foam_fragment.glsl and
 // stylized_volume_foam_fragment.glsl), with every other option on. Each
 // control is then checked for what it does: the lit foam keeps its own color
-// under a colored light, and the mask's foam stands still while the caustics
-// move.
+// under a colored light, the mask's foam stands still while the caustics
+// move, and foam sources draw collars where they are, and only there.
 
 const _size = 128;
 
@@ -135,6 +135,11 @@ void _useFragmentOfBefore(WaterMaterial material) {
   );
 }
 
+int _brightness(Pixels p, int x, int y) {
+  final (r, g, b, _) = p.at(x, y);
+  return r + g + b;
+}
+
 /// Whether the pixel at ([x], [y]) of [a] and [b] is the same, exactly.
 bool _same(Pixels a, Pixels b, int x, int y) => a.at(x, y) == b.at(x, y);
 
@@ -157,6 +162,7 @@ WaterMaterial _plain({
   double foamLightTint = 1,
   double edgeFoamMotion = 1,
   double causticStrength = 0,
+  WaterFoamSources? foamSources,
 }) {
   return WaterMaterial(
     waveAmplitude: 0,
@@ -168,6 +174,7 @@ WaterMaterial _plain({
     foamLightTint: foamLightTint,
     edgeFoamMotion: edgeFoamMotion,
     causticStrength: causticStrength,
+    foamSources: foamSources,
   );
 }
 
@@ -190,7 +197,9 @@ void main() {
         // Every option of before on (caustics, sparkles, swell, depth ramp,
         // foam mask, ripples with foaming crests, waves, micro-ripples),
         // every light, shadows, fog; both vertex layouts, translucent and
-        // opaque, +Y and +Z up, perspective, with and without MSAA.
+        // opaque, +Y and +Z up, perspective, with and without MSAA. The new
+        // material also holds an empty set of foam sources and one source
+        // of strength 0, which draw nothing.
         for (final zUp in [false, true]) {
           Vector3 v(double x, double y, double z) =>
               zUp ? Vector3(z, x, y) : Vector3(x, y, z);
@@ -199,6 +208,10 @@ void main() {
               final ripples = WaterRipples()
                 ..add(v(-0.4, 0, 0.3), time: 0.9, strength: 1.4)
                 ..add(v(0.8, 0, -0.6), time: 0.5, radius: 0.3);
+              final sources = WaterFoamSources();
+              if (!before) {
+                sources.addCircle(v(0.2, 0, 0.2), radius: 0.4, strength: 0);
+              }
               final material = WaterMaterial(
                 opacity: opacity,
                 time: 1.3,
@@ -209,6 +222,7 @@ void main() {
                 detailStrength: 0.5,
                 depthRange: 0.7,
                 ripples: ripples,
+                foamSources: before ? null : sources,
               );
               if (before) {
                 _useFragmentOfBefore(material);
@@ -456,6 +470,141 @@ void main() {
       }
       expect(changed, greaterThan(_size * 4));
     });
+
+    testGpu(
+      'foam sources draw collars where they are, and only there',
+      (tester) async {
+        final sources = WaterFoamSources();
+        Future<Frame> render() => _render(
+          tester,
+          World3D(
+            children: [
+              ..._duskLights(),
+              MeshComponent(
+                mesh: _grid(_plain(time: 0.7, foamSources: sources)),
+              ),
+            ],
+          ),
+        );
+        final plain = (await render()).pixels;
+        // Foam: much brighter than the plain water.
+        bool foam(Pixels p, double x, double z) {
+          final (px, py) = _pixel(x, z);
+          return _brightness(p, px, py) > _brightness(plain, px, py) + 100;
+        }
+
+        // A circle of radius 0.3 at (-1, 0, -1), its foam 0.3 wide.
+        final circle = sources.addCircle(
+          Vector3(-1, 0, -1),
+          radius: 0.3,
+        );
+        // A rectangle 1.2 by 0.5 at (0.8, 0, 0.6), turned by 30° about up
+        // (from +x towards -z), with rounded corners.
+        final axis = Vector3(math.cos(math.pi / 6), 0, -math.sin(math.pi / 6));
+        final rectangle = sources.addRectangle(
+          Vector3(0.8, 0, 0.6),
+          halfLength: 0.6,
+          halfWidth: 0.25,
+          cornerRadius: 0.1,
+          axis: axis,
+          width: 0.2,
+        );
+        final frame = await render();
+        final collars = frame.pixels;
+        expect(frame.stats.drawCalls, 1);
+
+        // Against the circle's outline the foam is solid; it stops before
+        // the width of its foam, and the water beyond is the plain water.
+        var solid = 0;
+        for (var k = 0; k < 16; k++) {
+          final angle = k * math.pi / 8;
+          final x = -1 + 0.31 * math.cos(angle);
+          final z = -1 + 0.31 * math.sin(angle);
+          if (foam(collars, x, z)) {
+            solid++;
+          }
+        }
+        // A few holes in the band.
+        expect(solid, greaterThanOrEqualTo(10));
+        // The rectangle: foam at the ends of its length, along its turned
+        // axis; plain water at the same distance across it.
+        var ends = 0;
+        var across = 0;
+        for (final s in [-1.0, 1.0]) {
+          for (final t in [-0.15, 0.0, 0.15]) {
+            final ex = 0.8 + s * 0.58 * axis.x - t * axis.z;
+            final ez = 0.6 + s * 0.58 * axis.z + t * axis.x;
+            if (foam(collars, ex, ez)) {
+              ends++;
+            }
+            // 0.58 across the axis is 0.33 beyond the half width, outside
+            // its foam (0.2 wide).
+            final cx = 0.8 - s * 0.58 * axis.z + t * axis.x;
+            final cz = 0.6 + s * 0.58 * axis.x + t * axis.z;
+            final (px, py) = _pixel(cx, cz);
+            if (!_same(collars, plain, px, py)) {
+              across++;
+            }
+          }
+        }
+        expect(ends, greaterThanOrEqualTo(4));
+        expect(across, 0);
+        // Far from both, nothing changed: the whole right column strip and
+        // the bottom-left quarter.
+        for (var y = 0; y < _size; y++) {
+          for (var x = 0; x < _size; x++) {
+            final wx = (x + 0.5 - _size / 2) / _pixelsPerUnit;
+            final wz = (y + 0.5 - _size / 2) / _pixelsPerUnit;
+            final toCircle =
+                math.sqrt((wx + 1) * (wx + 1) + (wz + 1) * (wz + 1)) - 0.3;
+            final toRectangle =
+                math.sqrt((wx - 0.8) * (wx - 0.8) + (wz - 0.6) * (wz - 0.6)) -
+                0.6;
+            // Beyond the widths of their foam (and the rectangle's rounded
+            // corners), with a pixel to spare.
+            if (toCircle > 0.32 && toRectangle > 0.26) {
+              expect(_same(collars, plain, x, y), isTrue, reason: '$x, $y');
+            }
+          }
+        }
+
+        // Moved at run time: the foam follows, the old place is plain again.
+        sources.move(circle, Vector3(-1, 0, 1));
+        final moved = (await render()).pixels;
+        var followed = 0;
+        for (var k = 0; k < 16; k++) {
+          final angle = k * math.pi / 8;
+          if (foam(
+            moved,
+            -1 + 0.31 * math.cos(angle),
+            1 + 0.31 * math.sin(angle),
+          )) {
+            followed++;
+          }
+        }
+        expect(followed, greaterThanOrEqualTo(10));
+        for (var y = 0; y < _size ~/ 4; y++) {
+          for (var x = 0; x < _size ~/ 3; x++) {
+            expect(_same(moved, plain, x, y), isTrue, reason: '$x, $y');
+          }
+        }
+
+        // Strength 0, or removed: the plain water, exactly.
+        sources
+          ..setStrength(circle, 0)
+          ..setStrength(rectangle, 0);
+        expect(
+          differingPixels((await render()).pixels, plain, tolerance: 0),
+          0,
+        );
+        sources.clear();
+        expect(
+          differingPixels((await render()).pixels, plain, tolerance: 0),
+          0,
+        );
+      },
+      timeout: const Timeout(Duration(minutes: 2)),
+    );
 
     testGpu(
       'the waterline keeps its pixels by default and its color with a tint '

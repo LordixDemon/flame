@@ -42,9 +42,12 @@ import 'package:flame_3d/resources.dart';
 ///   still;
 /// - [ripples]: rings that spread from where things land on, rise out of or
 ///   move through the water, see [WaterRipples];
+/// - [foamSources]: collars of the same foam around the things that stand in
+///   the water or move through it, set and moved at run time, see
+///   [WaterFoamSources];
 /// - [foamLightTint]: how much of the color of the light the foam of the
-///   foam mask and of the ripples takes (`1`, the default, all of it; less
-///   keeps the foam white under a colored sun).
+///   foam mask, of the foam sources and of the ripples takes (`1`, the
+///   default, all of it; less keeps the foam white under a colored sun).
 ///
 /// The caustics, the sparkles, the swell and the edge foam loop over
 /// [animationPeriod] seconds of [time]. Surfaces in [vertexLayout] (built
@@ -135,19 +138,24 @@ class WaterMaterial({
   var WaterRipples? ripples,
 
   /// How much of the color of the light the lit foam takes (the foam of the
-  /// foam mask and of the [ripples]), from `0` to `1`: `1` (the default)
-  /// takes the color of the light as it is, `0` only its brightness (its
-  /// luminance), so the foam keeps [foamColor] under a colored light. About
-  /// `0.25` suits a low, warm sun. The crest and shore foam are not lit and
-  /// keep [foamColor] anyway.
+  /// foam mask, of the [foamSources] and of the [ripples]), from `0` to `1`:
+  /// `1` (the default) takes the color of the light as it is, `0` only its
+  /// brightness (its luminance), so the foam keeps [foamColor] under a
+  /// colored light. About `0.25` suits a low, warm sun. The crest and shore
+  /// foam are not lit and keep [foamColor] anyway.
   var double foamLightTint = 1,
 
-  /// How fast the foam of the foam mask laps and drifts, as a multiple of
-  /// its own pace: `1` (the default) laps twice per [animationPeriod], `0`
-  /// holds it still (a rim of ice along a wall, dried salt, a painted edge),
-  /// still broken up into patches but not moving. The caustics, the
-  /// sparkles, the swell and the ripples keep their pace.
+  /// How fast the foam of the foam mask and of the [foamSources] laps and
+  /// drifts, as a multiple of its own pace: `1` (the default) laps twice per
+  /// [animationPeriod], `0` holds it still (a rim of ice along a wall, dried
+  /// salt, a painted edge), still broken up into patches but not moving. The
+  /// caustics, the sparkles, the swell and the ripples keep their pace.
   var double edgeFoamMotion = 1,
+
+  /// The foam sources this water draws, collars of foam around the things
+  /// that move, shared with the other materials of the same body of water;
+  /// `null` (the default) draws none.
+  var WaterFoamSources? foamSources,
 }) extends Material {
   /// {@macro water_material}
   this
@@ -276,6 +284,14 @@ class WaterMaterial({
     WaterRipples.capacity,
     (_) => Vector4.zero(),
   );
+  static final List<Vector4> _foamSourcePositions = List.generate(
+    WaterFoamSources.capacity,
+    (_) => Vector4.zero(),
+  );
+  static final List<Vector4> _foamSourceShapes = List.generate(
+    WaterFoamSources.capacity,
+    (_) => Vector4.zero(),
+  );
 
   @override
   void apply(RenderContext context) {
@@ -328,8 +344,11 @@ class WaterMaterial({
 
     var rippleCount = 0;
     final ripples = this.ripples;
-    if (ripples != null) {
+    final foamSources = this.foamSources;
+    if (ripples != null || foamSources != null) {
       _planeAxes(upAxis);
+    }
+    if (ripples != null) {
       rippleCount = ripples.writeUniforms(
         time,
         _uAxis,
@@ -341,6 +360,24 @@ class WaterMaterial({
         block
           ..setVector4('ripplePositions', _ripplePositions[i], index: i)
           ..setVector4('rippleShapes', _rippleShapes[i], index: i);
+      }
+    }
+    var foamSourceCount = 0;
+    if (foamSources != null) {
+      foamSourceCount = foamSources.writeUniforms(
+        _uAxis,
+        _vAxis,
+        _foamSourcePositions,
+        _foamSourceShapes,
+      );
+      for (var i = 0; i < foamSourceCount; i++) {
+        block
+          ..setVector4(
+            'foamSourcePositions',
+            _foamSourcePositions[i],
+            index: i,
+          )
+          ..setVector4('foamSourceShapes', _foamSourceShapes[i], index: i);
       }
     }
     final caustics = math.max(0.0, causticStrength);
@@ -379,7 +416,7 @@ class WaterMaterial({
         _ramp..setValues(
           depthRange > 0 ? 1 / depthRange : 0,
           shallowOpacity,
-          0,
+          foamSourceCount.toDouble(),
           rippleCount.toDouble(),
         ),
       );
@@ -411,11 +448,11 @@ class WaterMaterial({
     return (turns - turns.floorToDouble()) * 2 * math.pi;
   }
 
-  /// The phase of the foam of the foam mask at [time]: [patternPhase] of
-  /// `time * motion` (with [motion] at least `0`), so the foam moves
-  /// [motion] times as fast as the other patterns and still loops without a
-  /// jump (over `period / motion` seconds), `0` (still) when [motion] is
-  /// `0`. With [motion] `1` it is [patternPhase] itself.
+  /// The phase of the foam of the foam mask and of the foam sources at
+  /// [time]: [patternPhase] of `time * motion` (with [motion] at least `0`),
+  /// so the foam moves [motion] times as fast as the other patterns and
+  /// still loops without a jump (over `period / motion` seconds), `0` (still)
+  /// when [motion] is `0`. With [motion] `1` it is [patternPhase] itself.
   static double edgeFoamPhase(double time, double period, double motion) {
     if (!(motion > 0)) {
       return 0;

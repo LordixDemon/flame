@@ -141,6 +141,154 @@ void main() {
     });
   });
 
+  group('WaterFoamSources', () {
+    test('adds sources into free slots, and throws when full', () {
+      final sources = WaterFoamSources();
+      for (var i = 0; i < WaterFoamSources.capacity; i++) {
+        final slot = i.isEven
+            ? sources.addCircle(Vector3.zero(), radius: 0.2)
+            : sources.addRectangle(
+                Vector3.zero(),
+                halfLength: 0.5,
+                halfWidth: 0.3,
+              );
+        expect(slot, i);
+        expect(sources.isUsed(i), isTrue);
+      }
+      expect(sources.length, WaterFoamSources.capacity);
+      expect(
+        () => sources.addCircle(Vector3.zero(), radius: 0.2),
+        throwsStateError,
+      );
+      sources.remove(3);
+      expect(sources.isUsed(3), isFalse);
+      expect(sources.addCircle(Vector3.zero(), radius: 0.1), 3);
+      // A slot can be set directly, used or not.
+      sources
+        ..clear()
+        ..setCircle(5, Vector3(1, 0, 0), radius: 0.4);
+      expect(sources.length, 1);
+      expect(sources.isUsed(5), isTrue);
+      expect(sources.addCircle(Vector3.zero(), radius: 0.1), 0);
+    });
+
+    test('moves and changes its sources, changing its version only when '
+        'something changes', () {
+      final sources = WaterFoamSources();
+      final versions = <int>{sources.version};
+      final slot = sources.addCircle(Vector3(1, 0, 2), radius: 0.3);
+      versions.add(sources.version);
+      sources.move(slot, Vector3(1, 0, 2));
+      sources.setStrength(slot, 1);
+      sources.setCircle(slot, Vector3(1, 0, 2), radius: 0.3);
+      expect(versions, hasLength(2));
+      sources.move(slot, Vector3(1.5, 0, 2));
+      versions.add(sources.version);
+      sources.move(slot, Vector3(1.5, 0, 2), axis: Vector3(0, 0, 1));
+      versions.add(sources.version);
+      sources.setStrength(slot, 0.25);
+      versions.add(sources.version);
+      expect(sources.strengthOf(slot), 0.25);
+      sources.remove(slot);
+      versions.add(sources.version);
+      sources.remove(slot);
+      expect(versions, hasLength(6));
+      expect(() => sources.move(slot, Vector3.zero()), throwsStateError);
+      expect(() => sources.setStrength(slot, 1), throwsStateError);
+      expect(() => sources.isUsed(-1), throwsRangeError);
+      expect(
+        () => sources.remove(WaterFoamSources.capacity),
+        throwsRangeError,
+      );
+    });
+
+    test('rejects shapes it cannot draw', () {
+      final sources = WaterFoamSources();
+      final zero = Vector3.zero();
+      expect(() => sources.addCircle(zero, radius: -1), throwsArgumentError);
+      expect(
+        () => sources.addCircle(zero, radius: 1, width: 0),
+        throwsArgumentError,
+      );
+      expect(
+        () => sources.addCircle(zero, radius: 1, strength: -0.5),
+        throwsArgumentError,
+      );
+      expect(
+        () => sources.addCircle(zero, radius: double.nan),
+        throwsArgumentError,
+      );
+      expect(
+        () => sources.addRectangle(zero, halfLength: -1, halfWidth: 1),
+        throwsArgumentError,
+      );
+      expect(
+        () => sources.addRectangle(
+          zero,
+          halfLength: 1,
+          halfWidth: 1,
+          cornerRadius: -0.1,
+        ),
+        throwsArgumentError,
+      );
+      expect(sources.length, 0);
+    });
+
+    test(
+      'writes the sources above 0 first, in plane coordinates and widths',
+      () {
+        final sources = WaterFoamSources()
+          ..addCircle(Vector3(9, 9, 9), radius: 1, strength: 0)
+          ..addCircle(Vector3(1, 2, 3), radius: 0.3, width: 0.25)
+          ..addRectangle(
+            Vector3(4, 5, 6),
+            halfLength: 1,
+            halfWidth: 0.5,
+            // More than the smaller half: clamped to it.
+            cornerRadius: 0.75,
+            axis: Vector3(0, 2, 0),
+            width: 0.5,
+            strength: 0.8,
+          )
+          ..addRectangle(
+            Vector3(0, 0, 1),
+            halfLength: 0.4,
+            halfWidth: 0.2,
+            // Along the up axis: the first axis of the plane.
+            axis: Vector3(0, 0, 3),
+          );
+        final positions = List.generate(16, (_) => Vector4.zero());
+        final shapes = List.generate(16, (_) => Vector4.zero());
+        // A +Z-up plane: the plane axes are +X and +Y.
+        final count = sources.writeUniforms(
+          Vector3(1, 0, 0),
+          Vector3(0, 1, 0),
+          positions,
+          shapes,
+        );
+        expect(count, 3);
+        // A circle is a rectangle with no straight part and round corners;
+        // its axis is world x, divided by the width.
+        expect(positions[0].storage, [1, 2, 4, 0]);
+        expect(shapes[0].storage, [0, 0, 1.2000000476837158, 1]);
+        // Along +Y, divided by the width.
+        expect(positions[1].storage, [4, 5, 0, 2]);
+        expect(shapes[1].storage, [1, 0, 1, 0.800000011920929]);
+        expect(
+          positions[2].storage,
+          [0, 0, 1 / 0.3, 0].map((v) {
+            return closeTo(v, 1e-6);
+          }).toList(),
+        );
+        expect(shapes[2].storage.sublist(0, 3), [
+          closeTo(0.4 / 0.3, 1e-6),
+          closeTo(0.2 / 0.3, 1e-6),
+          0,
+        ]);
+      },
+    );
+  });
+
   group('WaterMaterial', () {
     test('wraps the time into the phase of its period', () {
       expect(WaterMaterial.patternPhase(0, 8), 0);
@@ -266,8 +414,9 @@ void main() {
         expect(member(water, uniforms, 'detail')[0], 0);
         // Nothing adds light.
         expect(member(water, uniforms, 'detail')[3], 0);
-        // No depth ramp, no ripple.
+        // No depth ramp, no ripple, no foam source.
         expect(member(water, uniforms, 'ramp')[0], 0);
+        expect(member(water, uniforms, 'ramp')[2], 0);
         expect(member(water, uniforms, 'ramp')[3], 0);
         // The foam takes the color of the light and moves at its pace.
         final shore = member(water, uniforms, 'shoreParams');
@@ -276,25 +425,36 @@ void main() {
       });
 
       test('writes the foam controls', () {
+        final sources = WaterFoamSources()
+          ..addCircle(Vector3(1, 0, 2), radius: 0.5, width: 0.25)
+          ..addCircle(Vector3(3, 0, 0), radius: 0.1, strength: 0);
         final water = WaterMaterial(
           time: 3,
           foamLightTint: 0.25,
           edgeFoamMotion: 0.5,
+          foamSources: sources,
         );
-        var shore = member(water, draw(water), 'shoreParams');
+        var uniforms = draw(water);
+        var shore = member(water, uniforms, 'shoreParams');
         // Half the pace: 1.5 s of an 8 s period.
         expect(shore[2], closeTo(math.pi * 3 / 8, 1e-6));
         expect(shore[3], 0.25);
         // The pattern keeps its own phase: 3 s of 8.
         expect(
-          member(water, draw(water), 'pattern')[0],
+          member(water, uniforms, 'pattern')[0],
           closeTo(math.pi * 3 / 4, 1e-6),
         );
+        // Only the source above 0 is sent. Up is +Y: the plane axes are +Z
+        // and +X, and world x (the circle's axis) is the second.
+        expect(member(water, uniforms, 'ramp')[2], 1);
+        expect(member(water, uniforms, 'foamSourcePositions'), [2, 1, 0, 4]);
+        expect(member(water, uniforms, 'foamSourceShapes'), [0, 0, 2, 1]);
 
         water
           ..foamLightTint = 3
           ..edgeFoamMotion = 0;
-        shore = member(water, draw(water), 'shoreParams');
+        uniforms = draw(water);
+        shore = member(water, uniforms, 'shoreParams');
         expect(shore[2], 0);
         expect(shore[3], 1);
         water.foamLightTint = -1;

@@ -9,9 +9,9 @@
 // Its options, all off by default (the pixels are then those of before they
 // existed): a caustic network, sparkles, a gentle swell of the normals, a
 // color and opacity ramp by the depth of the water under each vertex, foam
-// where the vertices' foam mask says, rings of ripples (WaterRipples), how
-// much of the light's color the lit foam takes, and how fast the mask's foam
-// moves.
+// where the vertices' foam mask says, rings of ripples (WaterRipples), collars
+// of foam around moving things (WaterFoamSources), how much of the light's
+// color the lit foam takes, and how fast the mask's foam moves.
 // They are procedural (flame_3d/water_pattern.glsl) and need neither the
 // depth prepass nor the scene color grab.
 
@@ -48,9 +48,9 @@ uniform WaterMaterial {
   // x: fresnelPower, y: specularStrength, z: opacity, w: rippleScale
   vec4 params2;
   // x: shoreFoamDepth (clip-depth span), y: refractionStrength, z: the phase
-  // of the foam of the foam mask (0 to 2π, slowed down by edgeFoamMotion),
-  // w: how much of the light's color the lit foam takes (foamLightTint, 0 to
-  // 1).
+  // of the foam of the foam mask and of the foam sources (0 to 2π, slowed
+  // down by edgeFoamMotion), w: how much of the light's color the lit foam
+  // takes (foamLightTint, 0 to 1).
   vec4 shoreParams;
   // xyz: the world up axis of the rest surface (unit), w: unused
   vec4 upAxis;
@@ -62,8 +62,9 @@ uniform WaterMaterial {
   // x: detailStrength, y: 1 / detailScale, z: 1 / edgeFoamScale,
   // w: 1 when an option that adds light (caustics, sparkles, ripples) is on.
   vec4 detail;
-  // x: 1 / depthRange (0: the ramp is off), y: shallowOpacity, z: unused,
-  // w: the number of ripples in `ripplePositions` and `rippleShapes`.
+  // x: 1 / depthRange (0: the ramp is off), y: shallowOpacity, z: the number
+  // of foam sources in `foamSourcePositions` and `foamSourceShapes`, w: the
+  // number of ripples in `ripplePositions` and `rippleShapes`.
   vec4 ramp;
   // Per ripple, xy: its center in the plane coordinates of the water, z: its
   // age in seconds, w: its strength now (faded with its age).
@@ -71,6 +72,14 @@ uniform WaterMaterial {
   // Per ripple, x: the radius of its front, y: 1 / its wavelength, z: its
   // width behind the front in wavelengths, w: unused.
   vec4 rippleShapes[8];
+  // Per foam source, xy: its center in the plane coordinates of the water,
+  // zw: the unit direction of its length in those coordinates, divided by
+  // the width of its foam.
+  vec4 foamSourcePositions[16];
+  // Per foam source, in widths of its foam, xy: the half length and half
+  // width of the straight part of its outline, z: the radius of its corners;
+  // w: its strength.
+  vec4 foamSourceShapes[16];
 } waterMat;
 
 uniform StylizedPass {
@@ -167,6 +176,36 @@ float waterRippleRings(vec2 uv, inout vec2 slope) {
     slope += d / max(r, 1e-3) * (dhdr * 0.04);
   }
   return crest;
+}
+
+// The foam mask of the foam sources at the plane coordinates `uv`: per
+// source, its strength inside and against its outline (a rectangle with
+// rounded corners, a circle when it has no straight part), falling to 0 at
+// the width of its foam from it, `1 - smoothstep(0, width, distance)`; the
+// largest of them.
+float waterFoamSources(vec2 uv) {
+  float mask = 0.0;
+  int count = int(waterMat.ramp.z + 0.5);
+  for (int i = 0; i < 16; i++) {
+    if (i >= count) {
+      break;
+    }
+    vec4 position = waterMat.foamSourcePositions[i];
+    vec4 shape = waterMat.foamSourceShapes[i];
+    vec2 d = uv - position.xy;
+    // Along and across the source, in widths of its foam.
+    vec2 local = abs(vec2(
+      dot(d, position.zw),
+      dot(d, vec2(-position.w, position.z))
+    ));
+    vec2 q = local - shape.xy;
+    // The signed distance to the outline, negative inside.
+    float outside = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - shape.z;
+    if (outside < 1.0) {
+      mask = max(mask, shape.w * (1.0 - smoothstep(0.0, 1.0, outside)));
+    }
+  }
+  return mask;
 }
 
 // The foam where the vertices' foam mask is above 0: a band whose inner edge
@@ -350,13 +389,28 @@ void main() {
       1.0
     );
   }
-  // The foam of the vertices' foam mask (against a wall, around a rock) and
-  // at the crests of the rings of ripples, lit by the light reaching the
-  // water (the crest and shore foam keep their own color). The mask's foam
-  // moves with a phase of its own (edgeFoamMotion: 0 holds it still).
+  // The foam of the vertices' foam mask (against a wall, around a rock), of
+  // the foam sources (around the things that move) and at the crests of the
+  // rings of ripples, lit by the light reaching the water (the crest and
+  // shore foam keep their own color). The mask's foam moves with a phase of
+  // its own (edgeFoamMotion: 0 holds it still).
   float litFoam = 0.0;
-  if (fragWater.y > 0.001) {
-    litFoam = waterEdgeFoam(fragWater.y, fragUv, waterMat.shoreParams.z);
+  float edgeMask = fragWater.y;
+  float sourceFade = 1.0;
+  if (waterMat.ramp.z > 0.5) {
+    float sources = waterFoamSources(fragUv);
+    if (edgeMask <= 0.001) {
+      // Where only the sources foam, their loose flecks fade out with their
+      // mask, so that the foam ends where the mask does.
+      sourceFade = smoothstep(0.0, 0.1, sources);
+    }
+    edgeMask = max(edgeMask, sources);
+  }
+  if (edgeMask > 0.001) {
+    litFoam = waterEdgeFoam(edgeMask, fragUv, waterMat.shoreParams.z);
+    if (sourceFade < 1.0) {
+      litFoam *= sourceFade;
+    }
   }
   if (ringCrest > 0.0) {
     litFoam = max(litFoam, smoothstep(0.7, 1.1, ringCrest) * 0.85);

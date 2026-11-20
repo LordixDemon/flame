@@ -7,5 +7,6 @@ export 'material/shadow_catcher_material.dart';
 export 'material/spatial_material.dart';
 export 'material/stylized_material.dart';
 export 'material/unlit_material.dart';
+export 'material/water_foam_sources.dart';
 export 'material/water_material.dart';
 export 'material/water_ripples.dart';
