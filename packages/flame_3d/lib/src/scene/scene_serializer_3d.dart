@@ -1929,6 +1929,8 @@ class SceneSerializer3D({
       'encoding': s.encoding.name,
       'stabilize': s.stabilize,
       'cacheWhenStatic': s.cacheWhenStatic,
+      if (s.cacheStillCasters) 'cacheStillCasters': true,
+      if (s.stillCasterFrames != 30) 'stillCasterFrames': s.stillCasterFrames,
       'cascades': s.cascades,
       'cascadeSplitRatio': s.cascadeSplitRatio,
       if (s.cascadeSplits case final splits?)
@@ -1960,6 +1962,8 @@ class SceneSerializer3D({
           ShadowMapEncoding.auto,
       stabilize: data['stabilize'] is! bool || (data['stabilize']! as bool),
       cacheWhenStatic: data['cacheWhenStatic'] == true,
+      cacheStillCasters: data['cacheStillCasters'] == true,
+      stillCasterFrames: math.max(1, _asInt(data['stillCasterFrames']) ?? 30),
       cascades: _asInt(data['cascades']) ?? 1,
       cascadeSplitRatio: _asDouble(data['cascadeSplitRatio']) ?? 0.28,
       cascadeSplits: _asDoubleList(data['cascadeSplits']),

@@ -68,6 +68,9 @@ class DirectionalShadowProjection() {
   double _width = 2;
   double _height = 2;
   int _resolution = 1;
+  // Whether [_near] and the edges of the map come from fits that hold them.
+  bool _nearHeld = false;
+  bool _windowHeld = false;
 
   /// The ratio between two consecutive sizes of the ladder the width and the
   /// height of a stabilized map take.
@@ -95,6 +98,19 @@ class DirectionalShadowProjection() {
   /// [maxDistance] from its camera; [cameraViewProjection] and [cameraView]
   /// are then ignored.
   ///
+  /// With [holdNear], the near end of the depth range (towards the light,
+  /// where the casters are) is kept from fit to fit while it holds the
+  /// casters and leaves at most the depth they need in front of them; a new
+  /// one leaves half that depth, snapped to a power of two of it. With
+  /// [holdWindow] and [stabilize], the edges of the map are kept where they
+  /// are, on the same texels, while the region still fits in it at the same
+  /// size. Casters that move up and down within the depth kept, and a region
+  /// that changes within the map, then leave the projection unchanged, as
+  /// the kept layers of `ShadowSettings.cacheStillCasters` need. The far end
+  /// is fitted as without them, and a point of the world keeps landing on
+  /// the same spot of a texel: the receivers find the same depths, with a
+  /// little less depth precision.
+  ///
   /// When nothing receives shadows (the cameras see none of the receivers),
   /// it returns `false` and leaves the projection unchanged.
   bool update({
@@ -108,6 +124,8 @@ class DirectionalShadowProjection() {
     List<Matrix4>? cameraViews,
     double? maxDistance,
     bool stabilize = true,
+    bool holdNear = false,
+    bool holdWindow = false,
   }) {
     assert(
       cameraViews == null ||
@@ -178,9 +196,24 @@ class DirectionalShadowProjection() {
       math.max(_maxX - _minX, _maxY - _minY),
     );
     final depthPad = scale * 1e-3 + 1e-6;
-    _near = nearest - depthPad;
+    final neededNear = nearest - depthPad;
     _far = _maxDepth + depthPad;
+    if (!holdNear) {
+      _near = neededNear;
+      _nearHeld = false;
+    } else {
+      final needed = _far - neededNear;
+      if (!_nearHeld || _near > neededNear || neededNear - _near > needed) {
+        final headroom = needed * 0.5;
+        final step = math
+            .pow(2, (math.log(headroom / 4) / math.ln2).floor())
+            .toDouble();
+        _near = ((neededNear - headroom) / step).floorToDouble() * step;
+      }
+      _nearHeld = true;
+    }
 
+    final previousResolution = _resolution;
     _resolution = resolution;
     final minimum = scale * 1e-6 + 1e-9;
     // The map must still cover the region once its edges are snapped down to
@@ -189,17 +222,33 @@ class DirectionalShadowProjection() {
     final neededWidth = math.max(_maxX - _minX, minimum) * grow;
     final neededHeight = math.max(_maxY - _minY, minimum) * grow;
     if (stabilize) {
+      final previousWidth = _width;
+      final previousHeight = _height;
       _width = _ladderSize(neededWidth, _width);
       _height = _ladderSize(neededHeight, _height);
       final texelX = _width / resolution;
       final texelY = _height / resolution;
-      _left = (_minX / texelX).floorToDouble() * texelX;
-      _bottom = (_minY / texelY).floorToDouble() * texelY;
+      final held =
+          holdWindow &&
+          _windowHeld &&
+          previousResolution == resolution &&
+          previousWidth == _width &&
+          previousHeight == _height &&
+          _left <= _minX &&
+          _maxX <= _left + _width &&
+          _bottom <= _minY &&
+          _maxY <= _bottom + _height;
+      if (!held) {
+        _left = (_minX / texelX).floorToDouble() * texelX;
+        _bottom = (_minY / texelY).floorToDouble() * texelY;
+      }
+      _windowHeld = holdWindow;
     } else {
       _width = neededWidth;
       _height = neededHeight;
       _left = _minX - (neededWidth - (_maxX - _minX)) / 2;
       _bottom = _minY - (neededHeight - (_maxY - _minY)) / 2;
+      _windowHeld = false;
     }
 
     writeOrthographic(

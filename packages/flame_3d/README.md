@@ -59,7 +59,7 @@ on Flutter GPU, see [Testing](#testing)), not by runs on Android or iOS devices.
 - **OpenGL ES**: no floating-point render targets, so HDR renders in 8 bits, order-independent
   transparency falls back to sorting and shadow depths are packed into 8-bit channels; no
   wireframe; some devices have no offscreen MSAA.
-- **Web**: 8 of the package's 31 shaders have a WGSL build (`SpatialMaterial` in a simpler
+- **Web**: 8 of the package's 35 shaders have a WGSL build (`SpatialMaterial` in a simpler
   variant, `UnlitMaterial`, the skybox and billboards, plus decal, outline and ribbon shaders whose
   materials still refuse the web). `StylizedMaterial`, `ShadowCatcherMaterial`, `ParticleMaterial`,
   `DecalMaterial`, `OutlineMaterial`, `RibbonMaterial3D`, `Text3DComponent` and `WidgetSurface3D`

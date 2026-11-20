@@ -551,9 +551,8 @@ class ParticleSystem3D({
   /// the calls that change the particles outside it ([burst], [spawn],
   /// [clear], [prewarm]) once each.
   void _markDrawChanged() {
-    final world = worldOrNull;
-    if (world != null) {
-      world.markSceneDirty(shadows: castsShadows && mesh != null);
+    if (worldOrNull != null) {
+      markDrawDirty(shadows: castsShadows && mesh != null);
     } else {
       Game.notifyVisualMutation();
     }

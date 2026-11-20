@@ -79,7 +79,43 @@ abstract class Component3D({
     }
     _visible = value;
     markSubtreeDirty();
-    _cachedWorld?.markSceneDirty(shadows: this is! LightComponent);
+    final world = _cachedWorld;
+    if (world == null) {
+      return;
+    }
+    if (this is LightComponent) {
+      world.markSceneDirty(shadows: false);
+      return;
+    }
+    // The casters of the subtree leave the kept layer of still casters, or
+    // join the casters drawn in every frame (they were not in the layer).
+    final casters = world.shadowCasters;
+    if (value) {
+      _noteShadowSubtreeShown(casters);
+    } else {
+      _noteShadowSubtreeHidden(casters);
+    }
+    world.markComponentDirty(shadows: true);
+  }
+
+  void _noteShadowSubtreeShown(ShadowCasterTracker casters) {
+    final self = this;
+    if (self is Object3D) {
+      casters.shown(self);
+    }
+    for (final child in _childComponents) {
+      child._noteShadowSubtreeShown(casters);
+    }
+  }
+
+  void _noteShadowSubtreeHidden(ShadowCasterTracker casters) {
+    final self = this;
+    if (self is Object3D) {
+      casters.changed(self);
+    }
+    for (final child in _childComponents) {
+      child._noteShadowSubtreeHidden(casters);
+    }
   }
 
   /// A 32-bit mask of the render passes that draw this component and its
@@ -112,8 +148,27 @@ abstract class Component3D({
   /// change cannot reach a shadow map (a color, a value only the fragment
   /// shader reads). It costs two integer increments; it does nothing for a
   /// component outside a [World3D].
+  ///
+  /// With [ShadowSettings.cacheStillCasters], an [Object3D] that reports a
+  /// change that can reach the shadows is drawn in every frame until it
+  /// stays unchanged for [ShadowSettings.stillCasterFrames] renders of the
+  /// shadows; the kept layer of still casters is rendered again only when
+  /// the object was part of it. For any other component, the layer is
+  /// rendered again.
   void markDrawDirty({bool shadows = true}) {
-    _cachedWorld?.markSceneDirty(shadows: shadows);
+    final world = _cachedWorld;
+    if (world == null) {
+      return;
+    }
+    final self = this;
+    if (shadows && self is! Object3D) {
+      world.markSceneDirty();
+      return;
+    }
+    if (shadows && self is Object3D) {
+      world.shadowCasters.changed(self);
+    }
+    world.markComponentDirty(shadows: shadows);
   }
 
   bool _includeInSceneBounds = true;
@@ -276,6 +331,11 @@ abstract class Component3D({
 
   World3D? _cachedWorld;
 
+  // The render of its world's shadows ([ShadowCasterTracker.clock]) in which
+  // this component, an Object3D, last changed in a way that can move its
+  // shadow, or [ShadowCasterTracker._unmounted].
+  int _shadowChangeClock = ShadowCasterTracker._unmounted;
+
   /// Enclosing [World3D], or `null` when mounted outside of one (e.g. in
   /// standalone component tests).
   @internal
@@ -302,12 +362,22 @@ abstract class Component3D({
     if (parent case final Component3D parent) {
       parent.markAabbDirty();
     }
-    _cachedWorld?.markSceneDirty(shadows: this is! LightComponent);
+    final world = _cachedWorld;
+    final self = this;
+    if (world != null && self is Object3D) {
+      world.shadowCasters.added(self);
+    }
+    world?.markComponentDirty(shadows: this is! LightComponent);
   }
 
   @override
   void onRemove() {
-    _cachedWorld?.markSceneDirty(shadows: this is! LightComponent);
+    final world = _cachedWorld;
+    final self = this;
+    if (world != null && self is Object3D) {
+      world.shadowCasters.removed(self);
+    }
+    world?.markComponentDirty(shadows: this is! LightComponent);
     _cachedWorld = null;
     if (parent case final Component3D parent) {
       parent.markAabbDirty();
@@ -469,7 +539,8 @@ abstract class Component3D({
 
   /// Deep-clones (or shallow-clones when [includeChildren] is `false`) this
   /// [Component3D], preserving local TRS [transform], [visible], [cameraMask],
-  /// [priority], [prefabId], and [tags3D].
+  /// [priority], [prefabId], [tags3D], and the [Object3D.shadowMotion] of an
+  /// [Object3D].
   Component3D clone({bool includeChildren = true}) {
     final copy = cloneSelf()
       ..position.setFrom(position)
@@ -479,6 +550,10 @@ abstract class Component3D({
       ..cameraMask = cameraMask
       ..priority = priority
       ..prefabId = prefabId;
+    final self = this;
+    if (self is Object3D && copy is Object3D) {
+      copy.shadowMotion = self.shadowMotion;
+    }
     if (_tags3D case final tags? when tags.isNotEmpty) {
       for (final tag in tags) {
         copy.addTag3D(tag);
@@ -499,28 +574,38 @@ abstract class Component3D({
   ///
   /// This propagates down to child [Component3D]s so the entire subtree
   /// stays consistent.
-  void _markWorldTransformDirty() {
+  ///
+  /// The [Object3D]s of the subtree are reported to [casters], when given, as
+  /// casters that moved (see [ShadowSettings.cacheStillCasters]).
+  void _markWorldTransformDirty([ShadowCasterTracker? casters]) {
     _worldTransformVersion++;
     _worldTransformDirty = true;
     _aabbDirty = true;
-    if (this is LightComponent) {
+    final self = this;
+    if (self is LightComponent) {
       // The worlds that borrow the light follow it, see
       // [World3D.lightsVersion].
       _cachedWorld?.markLightsDirty(shadows: _moveCanMoveShadows());
+    } else if (casters != null && self is Object3D) {
+      casters.changed(self);
     }
     for (final child in _childComponents) {
-      child._markWorldTransformDirty();
+      child._markWorldTransformDirty(casters);
     }
   }
 
   void _onTransformChanged() {
-    _markWorldTransformDirty();
+    final world = _cachedWorld;
+    final movesShadows = world != null && _moveCanMoveShadows();
+    _markWorldTransformDirty(
+      world != null && movesShadows ? world.shadowCasters : null,
+    );
     if (parent case final Component3D parent) {
       parent.markAabbDirty();
     } else {
       _boundsOwner?._changed(this);
     }
-    _cachedWorld?.markSceneDirty(shadows: _moveCanMoveShadows());
+    world?.markComponentDirty(shadows: movesShadows);
   }
 
   /// Whether moving this component can change a shadow map: when it has
@@ -608,6 +693,8 @@ abstract class Component3D({
       encoding: shadows.encoding,
       stabilize: shadows.stabilize,
       cacheWhenStatic: shadows.cacheWhenStatic,
+      cacheStillCasters: shadows.cacheStillCasters,
+      stillCasterFrames: shadows.stillCasterFrames,
       cascades: shadows.cascades,
       cascadeSplitRatio: shadows.cascadeSplitRatio,
       cascadeSplits: shadows.cascadeSplits == null
@@ -630,6 +717,167 @@ class Group3D({
   super.prefabId,
   super.cameraMask,
 }) extends Component3D;
+
+/// {@template shadow_caster_tracker}
+/// The change tracking of the shadow casters of a [World3D] that
+/// [ShadowSettings.cacheStillCasters] relies on: which casters stand still,
+/// and when the kept layer of still casters must be rendered again.
+///
+/// The renders of the world's shadows are counted ([clock]). Each [Object3D]
+/// notes the render in which it last changed in a way that can move its
+/// shadow; the casters whose last change is at or before [cutoff] are the
+/// still ones, kept in the layer, the others are drawn in every frame (see
+/// [Object3D.shadowMotion] for the casters that decide themselves).
+/// [version] increases when the layer no longer holds what the still
+/// casters draw: one of them changed, was hidden or removed, or casters that
+/// stopped moving are to join it. The cutoff only moves when [version]
+/// does, so that every tile of a map rendered with one version holds the
+/// same casters.
+/// {@endtemplate}
+@internal
+class ShadowCasterTracker() {
+  static const int _unmounted = 0x7fffffffffff;
+
+  /// The number of renders of the world's shadows so far.
+  int get clock => _clock;
+  int _clock = 0;
+
+  /// The casters whose last change is at or before this render are still.
+  int get cutoff => _cutoff;
+  int _cutoff = -1;
+
+  /// Increases when the kept layer of still casters is to be rendered again.
+  int get version => _version;
+  int _version = 0;
+  int _cutoffVersion = -1;
+
+  int _stillFrames = 30;
+  bool _joinPending = false;
+  // The render in which a caster last changed.
+  int _lastChange = -1;
+
+  /// The number of mounted casters whose [Object3D.shadowMotion] is
+  /// [ShadowCasterMotion.moving].
+  int get alwaysMoving => _alwaysMoving;
+  int _alwaysMoving = 0;
+
+  /// Whether [caster] is kept with the still casters.
+  bool isStill(Object3D caster) {
+    return switch (caster.shadowMotion) {
+      ShadowCasterMotion.auto => caster._shadowChangeClock <= _cutoff,
+      ShadowCasterMotion.still => true,
+      ShadowCasterMotion.moving => false,
+    };
+  }
+
+  /// Notes that [caster] changed in a way that can move its shadow.
+  void changed(Object3D caster) {
+    if (isStill(caster)) {
+      _version++;
+    }
+    caster._shadowChangeClock = _clock;
+    _noteMover(caster);
+  }
+
+  /// Notes that [caster] was mounted.
+  void added(Object3D caster) {
+    caster._shadowChangeClock = _clock;
+    _noteMover(caster);
+    switch (caster.shadowMotion) {
+      case ShadowCasterMotion.still:
+        _version++;
+      case ShadowCasterMotion.moving:
+        _alwaysMoving++;
+      case ShadowCasterMotion.auto:
+        break;
+    }
+  }
+
+  /// Notes that [caster] was shown: it was not drawn into the kept layer.
+  void shown(Object3D caster) {
+    caster._shadowChangeClock = _clock;
+    _noteMover(caster);
+    if (caster.shadowMotion == ShadowCasterMotion.still) {
+      _version++;
+    }
+  }
+
+  /// Notes that [caster] is being removed.
+  void removed(Object3D caster) {
+    if (isStill(caster)) {
+      _version++;
+    }
+    if (caster.shadowMotion == ShadowCasterMotion.moving) {
+      _alwaysMoving--;
+    }
+    caster._shadowChangeClock = _unmounted;
+  }
+
+  /// Notes that the [Object3D.shadowMotion] of a mounted [caster] changes
+  /// from [from] to [to].
+  void motionChanged(
+    Object3D caster,
+    ShadowCasterMotion from,
+    ShadowCasterMotion to,
+  ) {
+    if (from == ShadowCasterMotion.moving) {
+      _alwaysMoving--;
+    }
+    if (to == ShadowCasterMotion.moving) {
+      _alwaysMoving++;
+    }
+    caster._shadowChangeClock = _clock;
+    _noteMover(caster);
+    _version++;
+  }
+
+  // Notes that [caster], which just changed, is now drawn as a moving
+  // caster when the engine decides for it.
+  void _noteMover(Object3D caster) {
+    if (caster.shadowMotion == ShadowCasterMotion.auto) {
+      _lastChange = _clock;
+    }
+  }
+
+  /// Notes that [caster] is drawn as a moving caster: once it stayed
+  /// unchanged long enough, the still casters are kept again with it.
+  void drawnMoving(Object3D caster) {
+    if (caster.shadowMotion == ShadowCasterMotion.auto &&
+        _clock - caster._shadowChangeClock >= _stillFrames) {
+      _joinPending = true;
+    }
+  }
+
+  /// Notes that every caster must be drawn again into the kept layer.
+  void invalidate() {
+    _version++;
+  }
+
+  /// Prepares a render of the shadows whose casters stay unchanged for
+  /// [stillFrames] renders before they are kept: the casters that stopped
+  /// moving join the still ones (all of them once none changed for that
+  /// long, or those drawn as moving casters that did not), and the cutoff
+  /// follows [version].
+  void prepare(int stillFrames) {
+    _stillFrames = stillFrames;
+    if (_cutoff < _lastChange && _clock - _lastChange >= stillFrames) {
+      _joinPending = true;
+    }
+    if (_joinPending) {
+      _joinPending = false;
+      _version++;
+    }
+    if (_version != _cutoffVersion) {
+      _cutoffVersion = _version;
+      _cutoff = _clock - stillFrames;
+    }
+  }
+
+  /// Counts a render of the shadows.
+  void advance() {
+    _clock++;
+  }
+}
 
 /// {@template component_bounds}
 /// The union of the world-space bounds ([Component3D.aabb]) of a set of

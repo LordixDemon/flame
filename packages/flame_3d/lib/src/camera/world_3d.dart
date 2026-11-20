@@ -113,12 +113,78 @@ class World3D({
   /// its shadow casters) as changed: [sceneVersion] (and [castersVersion])
   /// increase, invalidating retained `Scene3DComponent` caches and a cached
   /// static shadow map, and idle-throttled game loops wake up.
+  ///
+  /// With [shadows], the kept layer of still casters
+  /// ([ShadowSettings.cacheStillCasters]) is rendered again as well: report
+  /// the change of one object with `Component3D.markDrawDirty` instead, so
+  /// that only that object is drawn again.
   void markSceneDirty({bool shadows = true}) {
+    if (shadows) {
+      _shadowCasters.invalidate();
+    }
+    markComponentDirty(shadows: shadows);
+  }
+
+  /// Marks this world's rendered output (and, when [shadows], its shadow
+  /// casters) as changed for a change a component reports itself, after
+  /// telling [shadowCasters] which casters it reaches: like [markSceneDirty],
+  /// without rendering the kept layer of still casters again.
+  @internal
+  void markComponentDirty({required bool shadows}) {
     _ownSceneVersion++;
     if (shadows) {
       _ownCastersVersion++;
     }
     Game.notifyVisualMutation();
+  }
+
+  /// The change tracking of this world's shadow casters, see
+  /// [ShadowSettings.cacheStillCasters].
+  @internal
+  ShadowCasterTracker get shadowCasters => _shadowCasters;
+  final ShadowCasterTracker _shadowCasters = ShadowCasterTracker();
+
+  // The version of the still casters: that of [shadowCasters], and the
+  // changes it does not see, as [_castersVersion] counts them.
+  int get _stillCastersVersion =>
+      _shadowCasters.version +
+      Material.castsShadowsRevision +
+      (_lightsFrom?._lightsCastersVersion ?? 0);
+
+  // The version of the casters a cached shadow map is keyed with: while a
+  // caster whose changes the engine cannot see is in the world (see
+  // ShadowCasterMotion.moving), one that never repeats.
+  int get _shadowKeyVersion => _shadowCasters.alwaysMoving > 0
+      ? -1 - _shadowCasters.clock
+      : _castersVersion;
+
+  /// The settings of the first light of [lights] that casts shadows with
+  /// [ShadowSettings.cacheStillCasters], or `null`.
+  static ShadowSettings? _stillCasterSettings(List<Light> lights) {
+    for (var i = 0; i < lights.length; i++) {
+      final shadows = switch (lights[i].source) {
+        final DirectionalLight light => light.shadows,
+        final SpotLight light => light.shadows,
+        final PointLight light => light.shadows,
+        _ => null,
+      };
+      if (shadows != null && shadows.cacheStillCasters) {
+        return shadows;
+      }
+    }
+    return null;
+  }
+
+  /// Prepares the still casters of this world for a render of the shadows
+  /// whose lights are [lights], returning the key of the still casters, or
+  /// `null` when no light keeps them.
+  Object? _prepareStillCasters(Object owner, List<Light> lights) {
+    final settings = _stillCasterSettings(lights);
+    if (settings == null) {
+      return null;
+    }
+    _shadowCasters.prepare(settings.stillCasterFrames);
+    return _shadowCasterKey(owner, _stillCastersVersion, lights);
   }
 
   /// Marks this world's shadow casters as changed so a cached static shadow map
@@ -478,7 +544,9 @@ class World3D({
     super.onChildrenChanged(child, type);
     final isVolumeOrLight =
         child is LightComponent || child is ReflectionProbeVolume3D;
-    markSceneDirty(shadows: !isVolumeOrLight);
+    // The casters tell the change tracking themselves when they are mounted
+    // or removed (see Component3D.onMount).
+    markComponentDirty(shadows: !isVolumeOrLight);
     if (child is! Component3D || isVolumeOrLight) {
       return;
     }
@@ -609,6 +677,14 @@ class World3D({
   /// Renders (or reuses) the shadow map / unified `ShadowAtlas3D` of this
   /// world, returning whether the upcoming main pass receives shadows.
   bool renderShadows(Canvas canvas, {RenderContext3D? overrideContext}) {
+    try {
+      return _renderShadows(canvas, overrideContext);
+    } finally {
+      _shadowCasters.advance();
+    }
+  }
+
+  bool _renderShadows(Canvas canvas, RenderContext3D? overrideContext) {
     final lights = _passLights;
     final ctx = (overrideContext ?? context)
       ..lights = lights
@@ -620,7 +696,8 @@ class World3D({
     if (!ctx.beginShadowPass(
       projection: _shadowProjection,
       sceneBounds: sceneBounds,
-      castersKey: _shadowCasterKey(this, _castersVersion, lights),
+      castersKey: _shadowCasterKey(this, _shadowKeyVersion, lights),
+      stillCastersKey: _prepareStillCasters(this, lights),
     )) {
       return ctx.hasActiveShadows;
     }

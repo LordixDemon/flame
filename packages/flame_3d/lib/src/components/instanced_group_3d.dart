@@ -442,7 +442,7 @@ class InstancedGroup3D({
   }
 
   void _notifyWorldDirty({required bool shadows}) {
-    worldOrNull?.markSceneDirty(shadows: shadows && castsShadows);
+    markDrawDirty(shadows: shadows && castsShadows);
   }
 
   static final Matrix4 _scratchMatrix = Matrix4.identity();

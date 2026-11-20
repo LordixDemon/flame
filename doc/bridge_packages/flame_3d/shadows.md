@@ -383,6 +383,143 @@ show, so its cache holds while no layer moves on the screen and no caster of the
 whichever layers render.
 
 
+## Still casters
+
+In a living scene a few things always move (tokens, dice, an animated character) while hundreds of
+casters stand still (the ground, houses, props): `cacheWhenStatic` then never holds, and the whole
+shadow pass is paid in every frame. With `cacheStillCasters`, the cost of the shadow pass follows
+what moves instead: the depths of the casters that stand still are kept from frame to frame in a
+layer of their own, and a frame only draws the casters that move, over a copy of that layer.
+
+```dart
+LightComponent.directional(
+  direction: Vector3(-0.3, -0.5, -1),
+  shadows: ShadowSettings(
+    cacheStillCasters: true,
+    fit: ShadowFit.scene,
+    bounds: board, // the region that receives shadows, see below
+  ),
+);
+```
+
+Every view of the light keeps a layer: the single map, or each tile of the atlas (each cascade,
+each spot light, each hemisphere of a point light). On the atlas, every light that casts shadows
+must set `cacheStillCasters`; otherwise the atlas renders as without it. A frame renders:
+
+| What happened since the last frame                          | The frame renders                          |
+| ----------------------------------------------------------- | ------------------------------------------ |
+| Nothing                                                     | nothing: the map is reused whole           |
+| Casters moved, none of them still                           | the map: per view, a copy of its layer and the moving casters over it |
+| A still caster changed, appeared or left, a light changed, or casters stopped moving | the layers again (one pass per view), then the map as above |
+| The projection of a view changed (a camera that `ShadowFit.view` follows, a light that turns) | that view whole, every caster, as without the option; its layer once the view holds still for a frame |
+
+### Which casters are still
+
+The engine decides from its own change tracking, per `Object3D`. A caster that changed in the last
+`stillCasterFrames` renders of the shadows (30 by default) is drawn in every frame; the others are
+kept in the layer. It sees the changes made through the setters of the engine's components: a move
+of the object or of one of its ancestors, `visible`, `castsShadows`, `jointTransforms`, the
+instances of an `InstancedGroup3D` and the agents of a `SkinnedCrowdBatch3D`, the poses and
+animations of a `ModelComponent`, live mesh particles, the vertices `XpbdCloth3D` and `XpbdRope3D`
+write, and the changes reported with `markDrawDirty()`. So:
+
+- a caster that starts moving leaves the layer, which is rendered again once without it, and is
+  drawn over the layer while it moves;
+- a caster that stopped moving joins the layer again after `stillCasterFrames` renders (the layer is
+  rendered again with it): when nothing changed for that long, every caster that stopped joins it;
+  while others keep moving, those drawn over the layer join it;
+- an added caster (and every caster when the scene starts) moves until it stays unchanged for
+  `stillCasterFrames` renders; a removed or hidden still caster has the layer rendered again
+  without it, and a shown one moves first;
+- an instanced group or a crowd is one caster: one of its instances that moves draws all of them in
+  every frame;
+- a light that moves or changes in a way that can move shadows (a direction, a position, a range or
+  cone, its `ShadowSettings`), `World3D.markShadowsDirty()`, `markSceneDirty()` and
+  `Material.castsShadows` render every layer again.
+
+`Object3D.shadowMotion` overrides the tracking: `ShadowCasterMotion.moving` draws a caster in every
+frame, for one whose shadow changes in ways the engine cannot see and that are not reported (vertices
+your code writes in place in every frame); while such a caster is in the world, the map is never
+reused whole. `ShadowCasterMotion.still` keeps a caster in the layer whatever it does: each change
+the engine sees renders the layer again, which suits a caster that changes rarely and costs much to
+draw, such as a large terrain. Changes made in place and not reported are not seen, as with
+`cacheWhenStatic`: a still caster keeps its old shadow until the next change the engine sees.
+
+### The same picture
+
+The map holds the depths a pass of every caster would give. The layer is copied texel for texel
+into the map, and the moving casters are drawn with shaders that discard a fragment that is not
+nearer to the light than the kept depth at its texel (packed RGBA8 depths are compared as the
+24-bit integers they store); among themselves they are depth-tested as usual. The tests compare
+both paths frame by frame at a tolerance of 0, through moves, additions, removals, hidden and shown
+casters, a turning light and a resized map: the sun with one map and with packed depths, a spot
+light alone, two cascades and a spot light (with packed depths too), a sun and a point light,
+skinned casters, an instanced group, casters that set `shadowMotion`, a `ShadowGroup`, and a map
+that follows a panning camera. No pixel differed. Two things can differ, by construction:
+
+- The projection of a directional light is held while it covers what it must (see below): the depth
+  range then reaches further towards the light than a plain fit, which costs a little depth
+  precision (negligible with 32-bit maps, about `1/16777216` of the range with packed ones), and
+  with `bounds`, a receiver outside the bounds but inside the held map can receive a shadow the
+  plain map would leave out.
+- The moving casters' shaders compute the same depth with a different vertex output (the whole
+  clip-space position); a compiler can round it differently by an ulp, far below the biases.
+
+### The projection
+
+A layer only lasts while its view does not change. With `cacheStillCasters`, the map of a
+directional light (and each of its cascades) is held:
+
+- the near end of its depth range, towards the light, leaves room in front of the casters: half the
+  depth they need, snapped to a power of two; casters that rise within it keep the map;
+- the single map, and the last cascade, keep their edges on the same texels while the receiving
+  region still fits in them at the same size (the inner cascades refit, since their edges place the
+  blend between cascades).
+
+The receiving region is `bounds`, or the bounds of the scene: without `bounds`, a caster that rises
+above the others grows the scene bounds and refits the map, so give `bounds` the region that
+receives shadows (a board, a level) and casters can rise above it, a podium or a die in the air,
+within the room in front of them. A view whose projection changes is rendered whole for that frame,
+as without the option, so a camera that `ShadowFit.view` follows costs what it costs without it
+while it moves; its layer is rendered again in the first frame the camera holds still. Spot lights
+and point lights do not depend on the bounds.
+
+### Shadow groups, custom renderers and `cacheWhenStatic`
+
+A `ShadowGroup` keeps the still casters of every world of the group, each tracked by its own world,
+with the settings of the lights of the world that renders the map. `cacheWhenStatic` keeps its
+meaning on its own; with `cacheStillCasters`, the map is also reused whole while nothing changes,
+whatever `cacheWhenStatic` says.
+
+A renderer that calls `RenderContext3D.beginShadowPass` itself passes a `stillCastersKey` (an object
+that compares equal while its still casters do not change) and records, in each recording, only the
+casters of `RenderContext3D.shadowCasterLayer`: `ShadowCasterLayer.still` while a layer is rendered,
+`moving` while the map is drawn over a layer, `all` for a view rendered whole. `Object3D.bind` does
+so itself. A frame has more recordings than views: keep calling `advanceShadowAtlasTile` until it
+returns `false`, as the loop under
+[Rendering the shadow pass yourself](#rendering-the-shadow-pass-yourself) does.
+
+### Costs and statistics
+
+- Memory: the layers (one per view: the size of the map, or of the atlas, in all) and the map itself,
+  kept with them instead of borrowed from the device's pool: twice the memory of the map, 8 MiB at
+  the default 1024 for a single map. Released the next time the world renders without the option.
+- A frame with moving casters: one render pass; per view, one copy (one draw call of two triangles,
+  reading and writing every texel of the view) and the draws of the moving casters, whose fragments
+  read one more texel and cannot be rejected before their shader runs (they may discard). The
+  receivers do not change: same shaders, same samples.
+- A frame that renders layers: one pass per layer rendered and the map pass; it draws every caster
+  once, plus the copies, a little more than a frame without the option.
+- The CPU: every recording still traverses the scene and culls with the view, but records draws only
+  for the casters of its layer, so recording, sorting and submitting follow what moves; a frame that
+  renders layers traverses once more per view.
+
+`RenderStats.shadowLayersReused` and `shadowLayersRendered` count the views whose layer was reused or
+rendered again, and `shadowReusedDrawCalls` and `shadowReusedTriangles` what the reused layers (or
+the map reused whole) hold: what rendering every caster would have drawn on top of
+`shadowDrawCalls` and `shadowTriangles`.
+
+
 ## Cascades
 
 A single map spreads its texels over everything it covers. Seen by a perspective camera, the ground
@@ -572,6 +709,7 @@ then covers what any of them sees. `DirectionalShadowProjection.update` takes th
 | Single map         | 1             | 1                       | `resolution² × 4` B (4 MiB)       |
 | Cached map/atlas   | 0             | 0                       | the cached map, kept              |
 | Atlas              | 1             | 1 per tile, up to 8     | its grid of tiles × 4 B (8-36 MiB)|
+| Kept still casters | 1, plus 1 per layer rendered | 1 per view, plus 1 per layer rendered | the map and its layers, kept (twice the map) |
 
 The sizes in parentheses are for the default `resolution` of 1024. Each map also has a depth
 attachment, transient: it lives in tile memory where the GPU has it. The texture of a frame comes
@@ -591,8 +729,9 @@ with the same size.
   atlas (`ShadowAtlas3D.tiles`) are reused from frame to frame, so a tile read in one frame holds
   the values of the next one after it.
 
-`RenderStats.shadowPasses` and `RenderStats.shadowDrawCalls` count the shadow passes and their draw
-calls, which are also counted in `renderPasses` and `drawCalls`. The layers of a `ShadowGroup` that
+`RenderStats.shadowPasses`, `RenderStats.shadowDrawCalls` and `RenderStats.shadowTriangles` count
+the shadow passes, their draw calls and their triangles, which are also counted in `renderPasses`,
+`drawCalls` and `triangles`. The layers of a `ShadowGroup` that
 reuse its map count no shadow pass. In a headless test, a hundred cubes sharing a mesh on a ground
 in a `Scene3DComponent` render with 2 draw calls in 1 pass without shadows, and 4 draw calls in 2
 passes with them (2 of them in the shadow pass).
@@ -602,7 +741,9 @@ passes with them (2 of them in the shadow pass).
 
 - `RenderStats` (in `FlameGame3D.renderStats` and `Scene3DComponent.renderStats`) shows the passes
   above: `shadowPasses` is 1 for a single map and for the atlas, and 0 on a cached frame or in a
-  layer that reuses its group's map.
+  layer that reuses its group's map; with `cacheStillCasters`, `shadowLayersReused`,
+  `shadowLayersRendered`, `shadowReusedDrawCalls` and `shadowReusedTriangles` show what the kept
+  layers saved (see [Still casters](#costs-and-statistics)).
 - `RenderContext3D.hasActiveShadows` and `hasShadowAtlas` tell what the current pass receives, and
   `shadowMapVersion` changes every time a map is rendered.
 - `RenderDebugMode3D.cascadeSplits` colors `SpatialMaterial` surfaces by cascade.
@@ -629,12 +770,23 @@ passes with them (2 of them in the shadow pass).
 
 These are the parts of shadows that are not finished at this point:
 
-- The key of `cacheWhenStatic` does not see changes made in place until they are reported (see
-  [Static shadows](#static-shadows)).
+- The key of `cacheWhenStatic` and the change tracking of `cacheStillCasters` do not see changes
+  made in place until they are reported (see [Static shadows](#static-shadows) and
+  [Which casters are still](#which-casters-are-still)).
+- With `cacheStillCasters`, every recording still traverses the whole scene to find the casters of
+  its layer; the saving is in the draws recorded, sorted and submitted, not in the traversal.
+- With `cacheStillCasters`, an instanced group or a crowd is still or moving as a whole, and a
+  component whose shadow draws depend on the camera (`LodMeshComponent` without a `shadowMesh` or
+  `lowestLodInShadowPass`, `ChunkedTerrain3D`, `FoliageSystem3D`) keeps in the layer the detail it
+  had when the layer was rendered, as the map of `cacheWhenStatic` does.
+- With `cacheStillCasters`, a view whose projection changes is rendered whole: a camera that
+  `ShadowFit.view` follows saves nothing while it moves, and without `bounds` a caster that rises
+  above the others refits the map (see [The projection](#the-projection)). New casters, and every
+  caster when the scene starts, are drawn in every frame for `stillCasterFrames` renders.
 - With an orthographic camera, or `ShadowFit.scene`, the inner cascades are fixed in the middle of
   the region and do not follow the camera.
 - Every tile of the atlas traverses the scene again (eight traversals at most), unless the atlas
-  is cached.
+  is cached, and with `cacheStillCasters` each layer rendered again traverses it once more.
 - Only one point light casts shadows, split along the world z axis.
 - In a `ShadowGroup`, a layer that reuses the map applies its shadows to the lights by the indices
   the first layer's pass gave them: when the pass picks its lights by distance (more than four spot

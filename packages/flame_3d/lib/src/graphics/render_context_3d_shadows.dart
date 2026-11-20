@@ -91,6 +91,47 @@ class _ShadowPass(final RenderContext3D _context) {
   bool get hasPendingAtlasTiles =>
       recording && atlasActive && _currentTileIndex + 1 < atlas.tiles.length;
 
+  /// The casters being recorded, see [RenderContext3D.shadowCasterLayer].
+  ShadowCasterLayer layer = ShadowCasterLayer.all;
+
+  // ShadowSettings.cacheStillCasters: the kept layers of still casters of
+  // each projection given to [begin], and those of the frame being recorded
+  // (`null` when it does not keep them).
+  final Expando<_StillLayers> _stillLayers = Expando();
+  _StillLayers? _split;
+  // Whether the frame being recorded with [_split] is the atlas.
+  bool _splitAtlas = false;
+  // The view of a single map kept with [_split].
+  Matrix4? _singleView;
+  Matrix4? _singleProjection;
+  int _singleSize = 0;
+  // The steps of the frame: first the layers to render again, one pass each,
+  // then the map, one step per view (a copy of its layer with the moving
+  // casters over it, or every caster).
+  static const int _stepStill = 0;
+  static const int _stepOver = 1;
+  static const int _stepWhole = 2;
+  final Int32List _stepTiles = Int32List(2 * _maxViews);
+  final Int32List _stepKinds = Int32List(2 * _maxViews);
+  final Int32List _viewKinds = Int32List(_maxViews);
+  int _stepCount = 0;
+  int _step = 0;
+  bool _stepsDone = false;
+  bool _passOpen = false;
+  int _stepDrawCalls = 0;
+  int _stepTriangles = 0;
+  // Whether the moving casters are being recorded, over [_stillTexture].
+  bool _recordingMovers = false;
+  Texture? _stillTexture;
+  final Float64List _tileSignature = Float64List(_tileSignatureLength);
+
+  /// The most views of a frame: the tiles of the atlas.
+  static const int _maxViews = 8;
+
+  /// The values a view's signature holds: its kind, light and size, and its
+  /// view-projection (or light position and range).
+  static const int _tileSignatureLength = 19;
+
   // The shadow map, as the texture bound to the receivers.
   GpuTextureTarget? _target;
   Texture? _texture;
@@ -114,6 +155,7 @@ class _ShadowPass(final RenderContext3D _context) {
   final Matrix4 _pointCullView = Matrix4.identity();
   final Matrix4 _pointCullProjection = Matrix4.identity();
   int _drawCallsBefore = 0;
+  int _trianglesBefore = 0;
 
   static final Vector3 _direction = Vector3.zero();
   static final Vector3 _spotDirScratch = Vector3.zero();
@@ -174,16 +216,69 @@ class _ShadowPass(final RenderContext3D _context) {
     slots: [RenderContext3D.shadowCasterBlock],
   );
 
+  static const _movingBundle =
+      'packages/flame_3d/assets/shaders/shadow_caster_moving.shaderbundle';
+  static const _movingSkinnedBundle =
+      'packages/flame_3d/assets/shaders/'
+      'shadow_caster_moving_skinned.shaderbundle';
+  static const _paraboloidMovingBundle =
+      'packages/flame_3d/assets/shaders/'
+      'shadow_caster_paraboloid_moving.shaderbundle';
+  static const _paraboloidMovingSkinnedBundle =
+      'packages/flame_3d/assets/shaders/'
+      'shadow_caster_paraboloid_moving_skinned.shaderbundle';
+  late final Shader _movingVertexShader = VertexShader.fromAsset(
+    _movingBundle,
+    slots: [RenderContext3D.cameraMatricesBlock],
+  );
+  late final Shader _movingSkinnedVertexShader = VertexShader.fromAsset(
+    _movingSkinnedBundle,
+    slots: [
+      RenderContext3D.cameraMatricesBlock,
+      RenderContext3D.jointMatricesBlock,
+    ],
+  );
+  late final Shader _movingFragmentShader = FragmentShader.fromAsset(
+    _movingBundle,
+    slots: [
+      RenderContext3D.shadowCasterBlock,
+      RenderContext3D.shadowStillCastersSampler,
+    ],
+  );
+  late final Shader _paraboloidMovingVertexShader = VertexShader.fromAsset(
+    _paraboloidMovingBundle,
+    slots: const ['ParaboloidLight'],
+  );
+  late final Shader _paraboloidMovingSkinnedVertexShader =
+      VertexShader.fromAsset(
+        _paraboloidMovingSkinnedBundle,
+        slots: [
+          'ParaboloidLight',
+          RenderContext3D.jointMatricesBlock,
+        ],
+      );
+  late final Shader _paraboloidMovingFragmentShader = FragmentShader.fromAsset(
+    _paraboloidMovingBundle,
+    slots: [
+      RenderContext3D.shadowCasterBlock,
+      RenderContext3D.shadowStillCastersSampler,
+    ],
+  );
+
   static const _renderState = RenderState.opaque;
 
   final Map<VertexLayout, _CasterPipeline> _pipelines = Map.identity();
   final Map<VertexLayout, _CasterPipeline> _paraboloidPipelines =
+      Map.identity();
+  final Map<VertexLayout, _CasterPipeline> _movingPipelines = Map.identity();
+  final Map<VertexLayout, _CasterPipeline> _paraboloidMovingPipelines =
       Map.identity();
 
   bool begin(
     DirectionalShadowProjection projection,
     Aabb3? sceneBounds, {
     Object? castersKey,
+    Object? stillCastersKey,
   }) {
     if (recording) {
       throw StateError('A shadow pass is already being recorded');
@@ -193,6 +288,9 @@ class _ShadowPass(final RenderContext3D _context) {
     active = false;
     atlasActive = false;
     _recordingParaboloidTile = false;
+    _recordingMovers = false;
+    _split = null;
+    layer = ShadowCasterLayer.all;
     RenderProfile.switchPass(RenderPhase.setup, shadow: true);
     if (sceneBounds == null || !device.backend.supportsTextureTargets) {
       return _none();
@@ -269,6 +367,7 @@ class _ShadowPass(final RenderContext3D _context) {
       return _beginUnifiedAtlas(
         projection: projection,
         castersKey: castersKey,
+        stillCastersKey: stillCastersKey,
         sceneBounds: sceneBounds,
         dirLight: dirLight,
         dirIndex: foundDirIndex,
@@ -340,6 +439,8 @@ class _ShadowPass(final RenderContext3D _context) {
         maxDistance: settings.maxDistance,
         resolution: resolution,
         stabilize: settings.stabilize,
+        holdNear: stillCastersKey != null && settings.cacheStillCasters,
+        holdWindow: stillCastersKey != null && settings.cacheStillCasters,
       )) {
         return _none();
       }
@@ -357,8 +458,25 @@ class _ShadowPass(final RenderContext3D _context) {
     };
 
     final format = float ? GpuPixelFormat.r32Float : GpuPixelFormat.rgba8888;
-    final size = resolution.toDouble();
     final vpStorage = _lightViewProjection.storage;
+
+    if (stillCastersKey != null && settings.cacheStillCasters) {
+      _writeSingleMap(direction, index, settings, texelWorldSize, float);
+      _singleView = activeLightView;
+      _singleProjection = activeLightProj;
+      _singleSize = resolution;
+      return _beginSplit(
+        owner: projection,
+        atlasPath: false,
+        castersKey: castersKey,
+        stillKey: stillCastersKey,
+        width: resolution,
+        height: resolution,
+        float: float,
+        format: format,
+      );
+    }
+    _stillLayers[projection] = null;
 
     if (settings.cacheWhenStatic && castersKey != null) {
       final cached = _staticMaps[projection];
@@ -372,32 +490,7 @@ class _ShadowPass(final RenderContext3D _context) {
           _target = cached.target;
           _texture = cached.texture;
         }
-        _packDepth = !float;
-        if (float) {
-          _decode.setValues(1, 0, 0, 0);
-        } else {
-          _decode.setFrom(_packedDecode);
-        }
-        _toLight.setValues(
-          -direction.x,
-          -direction.y,
-          -direction.z,
-          index.toDouble(),
-        );
-        final color = settings.color;
-        _color.setValues(
-          color.r,
-          color.g,
-          color.b,
-          settings.strength.clamp(0, 1).toDouble(),
-        );
-        _map.setValues(size, size, 1 / size, 1 / size);
-        _bias.setValues(
-          texelWorldSize,
-          settings.depthBias,
-          settings.normalBias,
-          settings.softness.toDouble(),
-        );
+        _writeSingleMap(direction, index, settings, texelWorldSize, float);
         active = true;
         _mapIsAtlas = false;
         RenderProfile.switchPass(RenderPhase.shadowSetup, shadow: false);
@@ -453,6 +546,31 @@ class _ShadowPass(final RenderContext3D _context) {
         );
       }
     }
+    _writeSingleMap(direction, index, settings, texelWorldSize, float);
+
+    _mainView.setFrom(context._viewMatrix);
+    _mainProjection.setFrom(context._projectionMatrix);
+    context.setCamera(activeLightView, activeLightProj);
+    recording = true;
+    _drawCallsBefore = device.stats.drawCalls;
+    _trianglesBefore = device.stats.triangles;
+    device.beginTexturePass(target, frontFace: context.frontFace);
+    device.stats.shadowPasses++;
+    RenderProfile.lap(RenderPhase.passBegin);
+    return true;
+  }
+
+  /// Sets the values of the `Shadows` block that describe a single map of
+  /// the light that travels along [direction], of index [index] (100 plus
+  /// the index of a spot light), with [settings].
+  void _writeSingleMap(
+    Vector3 direction,
+    int index,
+    ShadowSettings settings,
+    double texelWorldSize,
+    bool float,
+  ) {
+    final size = settings.resolution.toDouble();
     _packDepth = !float;
     if (float) {
       _decode.setValues(1, 0, 0, 0);
@@ -479,21 +597,12 @@ class _ShadowPass(final RenderContext3D _context) {
       settings.normalBias,
       settings.softness.toDouble(),
     );
-
-    _mainView.setFrom(context._viewMatrix);
-    _mainProjection.setFrom(context._projectionMatrix);
-    context.setCamera(activeLightView, activeLightProj);
-    recording = true;
-    _drawCallsBefore = device.stats.drawCalls;
-    device.beginTexturePass(target, frontFace: context.frontFace);
-    device.stats.shadowPasses++;
-    RenderProfile.lap(RenderPhase.passBegin);
-    return true;
   }
 
   bool _beginUnifiedAtlas({
     required DirectionalShadowProjection projection,
     required Object? castersKey,
+    required Object? stillCastersKey,
     required Aabb3 sceneBounds,
     required Light? dirLight,
     required int dirIndex,
@@ -530,6 +639,14 @@ class _ShadowPass(final RenderContext3D _context) {
 
     final primarySettings = dirSettings ?? firstSpotSettings ?? pointSettings!;
 
+    // ShadowSettings.cacheStillCasters, when every light that casts shadows
+    // sets it.
+    final split =
+        stillCastersKey != null &&
+        (dirSettings?.cacheStillCasters ?? true) &&
+        _spotCastersKeepStill(spotCount) &&
+        (pointSettings?.cacheStillCasters ?? true);
+
     _cascadeMask = 0;
     final cascades = _cascadesOf(projection);
     if (dirLight != null && dirSettings != null && csmCount > 0) {
@@ -540,6 +657,7 @@ class _ShadowPass(final RenderContext3D _context) {
         dirSettings,
         csmCount,
         tileSize,
+        hold: split,
       );
     }
     // The atlas holds the cascades kept and the tiles of the other lights, in
@@ -694,6 +812,20 @@ class _ShadowPass(final RenderContext3D _context) {
     final atlasWidth = atlas.width;
     final atlasHeight = atlas.height;
     _staticMaps[projection] = null;
+    if (split) {
+      _writeAtlasMap(atlasWidth, atlasHeight, primarySettings);
+      return _beginSplit(
+        owner: projection,
+        atlasPath: true,
+        castersKey: castersKey,
+        stillKey: stillCastersKey,
+        width: atlasWidth,
+        height: atlasHeight,
+        float: float,
+        format: format,
+      );
+    }
+    _stillLayers[projection] = null;
     final cache =
         castersKey != null &&
         (dirSettings?.cacheWhenStatic ?? true) &&
@@ -775,6 +907,7 @@ class _ShadowPass(final RenderContext3D _context) {
     recording = true;
     _currentTileIndex = 0;
     _drawCallsBefore = device.stats.drawCalls;
+    _trianglesBefore = device.stats.triangles;
 
     device.beginTexturePass(_unifiedAtlasTarget!, frontFace: context.frontFace);
     device.stats.shadowPasses++;
@@ -788,6 +921,309 @@ class _ShadowPass(final RenderContext3D _context) {
   bool _spotCastersCache(int count) {
     for (var k = 0; k < count; k++) {
       if (!(_spotCasters[k]!.source as SpotLight).shadows!.cacheWhenStatic) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// Whether the first [count] spot lights that cast shadows all set
+  /// [ShadowSettings.cacheStillCasters].
+  bool _spotCastersKeepStill(int count) {
+    for (var k = 0; k < count; k++) {
+      if (!(_spotCasters[k]!.source as SpotLight).shadows!.cacheStillCasters) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// Starts a frame that keeps the depths of the still casters
+  /// ([ShadowSettings.cacheStillCasters]) of [owner] in a layer per view:
+  /// the single map of [width] by [height] texels whose view is
+  /// [_singleView], or the tiles of the [atlas] of that size.
+  ///
+  /// The map is reused whole when it holds the casters of [castersKey] in
+  /// the same views. Otherwise each view reuses its layer when it holds the
+  /// still casters of [stillKey] in the same view; a view whose projection
+  /// changed since the previous frame is rendered whole (its layer would not
+  /// last), and the layers of the other views are rendered again first.
+  bool _beginSplit({
+    required DirectionalShadowProjection owner,
+    required bool atlasPath,
+    required Object? castersKey,
+    required Object stillKey,
+    required int width,
+    required int height,
+    required bool float,
+    required GpuPixelFormat format,
+  }) {
+    final context = _context;
+    final device = context.device;
+    final stats = device.stats;
+    _staticMaps[owner] = null;
+    _staticAtlases[owner] = null;
+    final layers = _stillLayers[owner] ??= _StillLayers();
+    _splitAtlas = atlasPath;
+    final viewCount = atlasPath ? atlas.tiles.length : 1;
+
+    // The map the receivers sample, kept with the layers.
+    var live = layers.live;
+    if (live == null ||
+        layers.liveWidth != width ||
+        layers.liveHeight != height ||
+        layers.livePacked != !float) {
+      live = layers.live = device.backend.createTextureTarget(
+        width: width,
+        height: height,
+        format: format,
+        clearValue: const Color(0xFFFFFFFF),
+      );
+      layers
+        ..liveTexture = Texture(
+          null,
+          width: width,
+          height: height,
+          gpuTexture: live.texture,
+        )
+        ..liveWidth = width
+        ..liveHeight = height
+        ..livePacked = !float
+        ..liveKey = null;
+    }
+    if (atlasPath) {
+      _writeAtlasSignature(width, height, float);
+    } else {
+      _writeSingleSignature(width, float);
+    }
+    final reuseWhole =
+        castersKey != null &&
+        layers.liveKey == castersKey &&
+        layers.liveSignatureLength == _atlasSignatureLength &&
+        _sameValues(
+          layers.liveSignature,
+          _atlasSignature,
+          _atlasSignatureLength,
+        );
+
+    layers.ensureViews(viewCount);
+    for (var i = 0; i < viewCount; i++) {
+      final view = layers.views[i];
+      _writeViewSignature(_tileSignature, i);
+      if (reuseWhole) {
+        view.storeLast(_tileSignature);
+        continue;
+      }
+      final size = atlasPath ? atlas.tiles[i].width : width;
+      view.ensureTarget(device, size, format: format, float: float);
+      if (view.valid &&
+          view.key == stillKey &&
+          _sameValues(view.signature, _tileSignature, _tileSignatureLength)) {
+        _viewKinds[i] = _stepOver;
+      } else if (!view.hasLast ||
+          !_sameValues(view.last, _tileSignature, _tileSignatureLength)) {
+        _viewKinds[i] = _stepWhole;
+        view.valid = false;
+      } else {
+        _viewKinds[i] = _stepStill;
+        view
+          ..key = stillKey
+          ..valid = true
+          ..storeSignature(_tileSignature);
+      }
+      view.storeLast(_tileSignature);
+    }
+
+    if (reuseWhole) {
+      // The map of an earlier frame holds the same casters in the same
+      // views: receive it again, without rendering.
+      stats
+        ..shadowLayersReused += viewCount
+        ..shadowReusedDrawCalls += layers.liveDrawCalls
+        ..shadowReusedTriangles += layers.liveTriangles;
+      if (!identical(_texture, layers.liveTexture)) {
+        version++;
+        _target = live;
+        _texture = layers.liveTexture;
+      }
+      active = true;
+      atlasActive = atlasPath;
+      _mapIsAtlas = atlasPath;
+      RenderProfile.switchPass(RenderPhase.shadowSetup, shadow: false);
+      return false;
+    }
+
+    // The layers to render again, then the map.
+    _stepCount = 0;
+    for (var i = 0; i < viewCount; i++) {
+      if (_viewKinds[i] == _stepStill) {
+        _stepTiles[_stepCount] = i;
+        _stepKinds[_stepCount++] = _stepStill;
+      }
+    }
+    for (var i = 0; i < viewCount; i++) {
+      final kind = _viewKinds[i];
+      if (kind == _stepOver) {
+        final view = layers.views[i];
+        stats
+          ..shadowLayersReused += 1
+          ..shadowReusedDrawCalls += view.drawCalls
+          ..shadowReusedTriangles += view.triangles;
+      }
+      _stepTiles[_stepCount] = i;
+      _stepKinds[_stepCount++] = kind == _stepWhole ? _stepWhole : _stepOver;
+    }
+    layers
+      ..liveKey = castersKey
+      ..storeLiveSignature(_atlasSignature, _atlasSignatureLength);
+
+    version++;
+    _target = live;
+    _texture = layers.liveTexture;
+    _mapIsAtlas = atlasPath;
+    _mainView.setFrom(context._viewMatrix);
+    _mainProjection.setFrom(context._projectionMatrix);
+    _split = layers;
+    recording = true;
+    _drawCallsBefore = stats.drawCalls;
+    _trianglesBefore = stats.triangles;
+    _step = 0;
+    _stepsDone = false;
+    _startStep(0);
+    RenderProfile.lap(RenderPhase.passBegin);
+    return true;
+  }
+
+  /// Starts step [step] of the frame begun by [_beginSplit].
+  void _startStep(int step) {
+    final context = _context;
+    final device = context.device;
+    final layers = _split!;
+    final kind = _stepKinds[step];
+    final index = _stepTiles[step];
+    final view = layers.views[index];
+    if (kind == _stepStill) {
+      device.beginTexturePass(view.target!, frontFace: context.frontFace);
+      _passOpen = true;
+      final stats = device.stats;
+      stats.shadowPasses++;
+      stats.shadowLayersRendered++;
+      _configureView(index, inMap: false);
+      layer = ShadowCasterLayer.still;
+      _recordingMovers = false;
+      _stillTexture = null;
+    } else {
+      if (step == 0 || _stepKinds[step - 1] == _stepStill) {
+        device.beginTexturePass(layers.live!, frontFace: context.frontFace);
+        _passOpen = true;
+        device.stats.shadowPasses++;
+      }
+      _configureView(index, inMap: true);
+      if (kind == _stepOver) {
+        device.drawTextureCopy(view.texture!);
+        layer = ShadowCasterLayer.moving;
+        _recordingMovers = true;
+        _stillTexture = view.texture;
+      } else {
+        layer = ShadowCasterLayer.all;
+        _recordingMovers = false;
+        _stillTexture = null;
+      }
+    }
+    _stepDrawCalls = device.stats.drawCalls;
+    _stepTriangles = device.stats.triangles;
+  }
+
+  /// Draws the casters recorded for the current step of the frame begun by
+  /// [_beginSplit], and ends its pass when it is that of a layer.
+  void _finishStep() {
+    final device = _context.device;
+    flushCasters();
+    final drawCalls = device.stats.drawCalls - _stepDrawCalls;
+    final triangles = device.stats.triangles - _stepTriangles;
+    final view = _split!.views[_stepTiles[_step]];
+    switch (_stepKinds[_step]) {
+      case _stepStill:
+        view
+          ..drawCalls = drawCalls
+          ..triangles = triangles;
+        device.endTexturePass();
+        _passOpen = false;
+      case _stepOver:
+        view
+          ..mapDrawCalls = view.drawCalls + drawCalls
+          ..mapTriangles = view.triangles + triangles;
+      default:
+        view
+          ..mapDrawCalls = drawCalls
+          ..mapTriangles = triangles;
+    }
+  }
+
+  /// Sets the camera (and the viewport of an atlas tile) of view [index] of
+  /// the frame begun by [_beginSplit]: in the map when [inMap], else at the
+  /// origin of the view's own layer.
+  void _configureView(int index, {required bool inMap}) {
+    if (_splitAtlas) {
+      _configureAtlasTile(atlas.tiles[index], atOrigin: !inMap);
+    } else {
+      _recordingParaboloidTile = false;
+      _context.setCamera(_singleView!, _singleProjection!);
+    }
+  }
+
+  /// Writes what view [index] of the frame begun by [_beginSplit] renders
+  /// into [out]: its kind, light and size, and its view-projection (or the
+  /// position and range of a point light).
+  void _writeViewSignature(Float64List out, int index) {
+    if (!_splitAtlas) {
+      out[0] = -1;
+      out[1] = 0;
+      out[2] = _singleSize.toDouble();
+      final m = _lightViewProjection.storage;
+      for (var k = 0; k < 16; k++) {
+        out[3 + k] = m[k];
+      }
+      return;
+    }
+    final tile = atlas.tiles[index];
+    out[0] = tile.kind.index.toDouble();
+    out[1] = tile.lightIndex.toDouble();
+    out[2] = tile.width.toDouble();
+    final viewProjection = tile.viewProjection;
+    if (viewProjection != null) {
+      final m = viewProjection.storage;
+      for (var k = 0; k < 16; k++) {
+        out[3 + k] = m[k];
+      }
+    } else {
+      final position = tile.lightPosition;
+      out[3] = position?.x ?? 0;
+      out[4] = position?.y ?? 0;
+      out[5] = position?.z ?? 0;
+      out[6] = tile.lightRange;
+      for (var k = 7; k < _tileSignatureLength; k++) {
+        out[k] = 0;
+      }
+    }
+  }
+
+  /// Writes what a single map of [size] texels renders into
+  /// [_atlasSignature].
+  void _writeSingleSignature(int size, bool float) {
+    final out = _atlasSignature;
+    out[0] = size.toDouble();
+    out[1] = float ? 1 : 0;
+    final m = _lightViewProjection.storage;
+    for (var k = 0; k < 16; k++) {
+      out[2 + k] = m[k];
+    }
+    _atlasSignatureLength = 18;
+  }
+
+  static bool _sameValues(Float64List a, Float64List b, int length) {
+    for (var i = 0; i < length; i++) {
+      if ((a[i] - b[i]).abs() > 1e-9) {
         return false;
       }
     }
@@ -869,8 +1305,9 @@ class _ShadowPass(final RenderContext3D _context) {
     Aabb3 sceneBounds,
     ShadowSettings settings,
     int count,
-    int tileSize,
-  ) {
+    int tileSize, {
+    required bool hold,
+  }) {
     final context = _context;
     _cascadeSplits(settings, count);
     final perspective = context._projectionMatrix.storage[15].abs() < 0.5;
@@ -897,6 +1334,8 @@ class _ShadowPass(final RenderContext3D _context) {
           maxDistance: settings.maxDistance,
           resolution: tileSize,
           stabilize: settings.stabilize,
+          holdNear: hold,
+          holdWindow: hold,
         );
         if (!fitted) {
           return;
@@ -913,6 +1352,7 @@ class _ShadowPass(final RenderContext3D _context) {
           maxDistance: far * _splits[c],
           resolution: tileSize,
           stabilize: settings.stabilize,
+          holdNear: hold,
         );
       } else {
         final scale = 0.5 * _splits[c];
@@ -932,6 +1372,7 @@ class _ShadowPass(final RenderContext3D _context) {
           receivers: _subBox,
           resolution: tileSize,
           stabilize: settings.stabilize,
+          holdNear: hold,
         );
       }
       if (!fitted) {
@@ -1018,12 +1459,16 @@ class _ShadowPass(final RenderContext3D _context) {
     _splits[2] = (s1 + (1.0 - s1) * 0.5).clamp(s1 + 0.08, 0.85);
   }
 
-  void _configureAtlasTile(ShadowAtlasTile3D tile) {
+  /// Sets the viewport and the camera of [tile]: the viewport of its own
+  /// texture, where it starts at the origin, when [atOrigin].
+  void _configureAtlasTile(ShadowAtlasTile3D tile, {bool atOrigin = false}) {
     final context = _context;
     final device = context.device;
-    device
-      ..setViewport(tile.x, tile.y, tile.width, tile.height)
-      ..setScissor(tile.x, tile.y, tile.width, tile.height);
+    if (!atOrigin) {
+      device
+        ..setViewport(tile.x, tile.y, tile.width, tile.height)
+        ..setScissor(tile.x, tile.y, tile.width, tile.height);
+    }
 
     if (tile.kind == ShadowAtlasTileKind3D.pointParaboloidFront ||
         tile.kind == ShadowAtlasTileKind3D.pointParaboloidBack) {
@@ -1075,6 +1520,18 @@ class _ShadowPass(final RenderContext3D _context) {
   /// advances to the next tile in the same open render pass, returning `false`
   /// once all tiles have been recorded.
   bool advanceAtlasTile() {
+    if (recording && _split != null) {
+      if (_stepsDone) {
+        return false;
+      }
+      _finishStep();
+      if (++_step >= _stepCount) {
+        _stepsDone = true;
+        return false;
+      }
+      _startStep(_step);
+      return true;
+    }
     if (!recording || !atlasActive) {
       return false;
     }
@@ -1136,6 +1593,10 @@ class _ShadowPass(final RenderContext3D _context) {
     if (!recording) {
       throw StateError('No shadow pass is being recorded');
     }
+    if (_split != null) {
+      _endSplit();
+      return;
+    }
     final context = _context;
     final device = context.device;
     final wasAtlas = atlasActive;
@@ -1147,12 +1608,61 @@ class _ShadowPass(final RenderContext3D _context) {
     } finally {
       device.endTexturePass();
       device.stats.shadowDrawCalls += device.stats.drawCalls - _drawCallsBefore;
+      device.stats.shadowTriangles += device.stats.triangles - _trianglesBefore;
       recording = false;
       _recordingParaboloidTile = false;
       RenderProfile.switchPass(RenderPhase.passEnd, shadow: false);
       context.setCamera(_mainView, _mainProjection);
       active = true;
       atlasActive = wasAtlas;
+      RenderProfile.lap(RenderPhase.setup);
+    }
+  }
+
+  /// Ends the frame begun by [_beginSplit]: the steps not recorded yet are
+  /// rendered without casters (their layers are still copied).
+  void _endSplit() {
+    final context = _context;
+    final device = context.device;
+    final layers = _split!;
+    try {
+      RenderProfile.lap(RenderPhase.traversal);
+      if (!_stepsDone) {
+        _finishStep();
+        while (++_step < _stepCount) {
+          _startStep(_step);
+          _finishStep();
+        }
+        _stepsDone = true;
+      }
+    } finally {
+      if (_passOpen) {
+        device.endTexturePass();
+        _passOpen = false;
+      }
+      device.stats
+        ..shadowDrawCalls += device.stats.drawCalls - _drawCallsBefore
+        ..shadowTriangles += device.stats.triangles - _trianglesBefore;
+      var drawCalls = 0;
+      var triangles = 0;
+      final viewCount = _splitAtlas ? atlas.tiles.length : 1;
+      for (var i = 0; i < viewCount; i++) {
+        drawCalls += layers.views[i].mapDrawCalls;
+        triangles += layers.views[i].mapTriangles;
+      }
+      layers
+        ..liveDrawCalls = drawCalls
+        ..liveTriangles = triangles;
+      recording = false;
+      _split = null;
+      _recordingParaboloidTile = false;
+      _recordingMovers = false;
+      _stillTexture = null;
+      layer = ShadowCasterLayer.all;
+      RenderProfile.switchPass(RenderPhase.passEnd, shadow: false);
+      context.setCamera(_mainView, _mainProjection);
+      active = true;
+      atlasActive = _splitAtlas;
       RenderProfile.lap(RenderPhase.setup);
     }
   }
@@ -1179,9 +1689,7 @@ class _ShadowPass(final RenderContext3D _context) {
       final layout = surface.layout;
       if (!identical(layout, lastLayout)) {
         lastLayout = layout;
-        caster = _recordingParaboloidTile
-            ? _paraboloidCasterFor(layout)
-            : _casterFor(layout);
+        caster = _activeCasterFor(layout);
       }
       if (caster == null) {
         continue;
@@ -1232,22 +1740,13 @@ class _ShadowPass(final RenderContext3D _context) {
     final device = context.device;
     final first = order[start];
     final surface = context._surfaces[first]!;
-    final Shader vertexShader;
-    final Shader fragmentShader;
+    final caster = _activeCasters[surface.layout]!;
+    final vertexShader = caster.vertexShader!;
+    final fragmentShader = caster.fragmentShader!;
     if (_recordingParaboloidTile) {
-      final skinned = _paraboloidPipelines[surface.layout]!.skinned;
-      vertexShader = skinned
-          ? _paraboloidSkinnedVertexShader
-          : _paraboloidVertexShader;
-      fragmentShader = _paraboloidFragmentShader;
       vertexShader
         ..setVector4('ParaboloidLight.posInvRange', _paraboloidPosInvRange)
         ..setVector4('ParaboloidLight.params', _paraboloidParams);
-    } else {
-      vertexShader = _pipelines[surface.layout]!.skinned
-          ? _skinnedVertexShader
-          : _vertexShader;
-      fragmentShader = _fragmentShader;
     }
     RenderProfile.lap(RenderPhase.batch);
 
@@ -1282,48 +1781,69 @@ class _ShadowPass(final RenderContext3D _context) {
     RenderProfile.lap(RenderPhase.draw);
   }
 
-  _CasterPipeline? _casterFor(VertexLayout layout) {
-    var caster = _pipelines[layout];
-    if (caster == null) {
-      final position = layout.attribute(VertexLayout.positionAttribute);
-      final skinned =
-          layout.attribute('vertexJoints')?.components == 4 &&
-          layout.attribute('vertexWeights')?.components == 4;
-      caster = _pipelines[layout] = _CasterPipeline(
-        drawable: position != null && position.components == 3,
-        skinned: skinned,
-      );
+  /// The pipelines of the casters being recorded: of a paraboloid tile or
+  /// not, of moving casters (over the kept layer of the still ones) or not.
+  Map<VertexLayout, _CasterPipeline> get _activeCasters => _recordingMovers
+      ? (_recordingParaboloidTile
+            ? _paraboloidMovingPipelines
+            : _movingPipelines)
+      : (_recordingParaboloidTile ? _paraboloidPipelines : _pipelines);
+
+  /// The pipeline that draws the casters of [layout] being recorded, see
+  /// [_activeCasters], or `null` when they cannot be drawn.
+  _CasterPipeline? _activeCasterFor(VertexLayout layout) {
+    if (_recordingMovers) {
+      return _recordingParaboloidTile
+          ? _casterIn(
+              _paraboloidMovingPipelines,
+              layout,
+              _paraboloidMovingVertexShader,
+              _paraboloidMovingSkinnedVertexShader,
+              _paraboloidMovingFragmentShader,
+            )
+          : _casterIn(
+              _movingPipelines,
+              layout,
+              _movingVertexShader,
+              _movingSkinnedVertexShader,
+              _movingFragmentShader,
+            );
     }
-    if (!caster.drawable) {
-      return null;
-    }
-    final vertexShader = caster.skinned ? _skinnedVertexShader : _vertexShader;
-    final fragmentShader = _fragmentShader;
-    vertexShader.resource;
-    fragmentShader.resource;
-    if (caster._pipeline == null ||
-        caster._vertexGeneration != vertexShader.generation ||
-        caster._fragmentGeneration != fragmentShader.generation) {
-      caster
-        .._pipeline = _context.device.pipelineFor(
-          vertexShader,
-          fragmentShader,
-          layout,
-        )
-        .._vertexGeneration = vertexShader.generation
-        .._fragmentGeneration = fragmentShader.generation;
-    }
-    return caster;
+    return _recordingParaboloidTile
+        ? _casterIn(
+            _paraboloidPipelines,
+            layout,
+            _paraboloidVertexShader,
+            _paraboloidSkinnedVertexShader,
+            _paraboloidFragmentShader,
+          )
+        : _casterIn(
+            _pipelines,
+            layout,
+            _vertexShader,
+            _skinnedVertexShader,
+            _fragmentShader,
+          );
   }
 
-  _CasterPipeline? _paraboloidCasterFor(VertexLayout layout) {
-    var caster = _paraboloidPipelines[layout];
+  /// The pipeline of [pipelines] that draws surfaces of [layout] with
+  /// [vertex] (or [skinnedVertex] when its vertices have joints and joint
+  /// weights) and [fragment], created on first use, or `null` when the
+  /// layout has no position to draw.
+  _CasterPipeline? _casterIn(
+    Map<VertexLayout, _CasterPipeline> pipelines,
+    VertexLayout layout,
+    Shader vertex,
+    Shader skinnedVertex,
+    Shader fragment,
+  ) {
+    var caster = pipelines[layout];
     if (caster == null) {
       final position = layout.attribute(VertexLayout.positionAttribute);
       final skinned =
           layout.attribute('vertexJoints')?.components == 4 &&
           layout.attribute('vertexWeights')?.components == 4;
-      caster = _paraboloidPipelines[layout] = _CasterPipeline(
+      caster = pipelines[layout] = _CasterPipeline(
         drawable: position != null && position.components == 3,
         skinned: skinned,
       );
@@ -1331,10 +1851,8 @@ class _ShadowPass(final RenderContext3D _context) {
     if (!caster.drawable) {
       return null;
     }
-    final vertexShader = caster.skinned
-        ? _paraboloidSkinnedVertexShader
-        : _paraboloidVertexShader;
-    final fragmentShader = _paraboloidFragmentShader;
+    final vertexShader = caster.skinned ? skinnedVertex : vertex;
+    final fragmentShader = fragment;
     vertexShader.resource;
     fragmentShader.resource;
     if (caster._pipeline == null ||
@@ -1347,7 +1865,9 @@ class _ShadowPass(final RenderContext3D _context) {
           layout,
         )
         .._vertexGeneration = vertexShader.generation
-        .._fragmentGeneration = fragmentShader.generation;
+        .._fragmentGeneration = fragmentShader.generation
+        ..vertexShader = vertexShader
+        ..fragmentShader = fragmentShader;
     }
     return caster;
   }
@@ -1582,6 +2102,12 @@ class _ShadowPass(final RenderContext3D _context) {
     return shadows.active ? shadows._texture! : Texture.standard;
   }
 
+  /// The kept depths of the still casters the moving casters being recorded
+  /// are drawn over, or a white texture (the farthest depth).
+  static Texture stillCastersTexture(RenderContext3D context) {
+    return context._shadows._stillTexture ?? Texture.standard;
+  }
+
   static bool _sameMatrix(Float32List a, Float32List b) {
     for (var i = 0; i < 16; i++) {
       if ((a[i] - b[i]).abs() > 1e-9) {
@@ -1643,5 +2169,104 @@ class _CasterPipeline({
   int _vertexGeneration = -1;
   int _fragmentGeneration = -1;
 
+  // The shaders of [pipeline].
+  Shader? vertexShader;
+  Shader? fragmentShader;
+
   DevicePipeline get pipeline => _pipeline!;
+}
+
+/// The kept layers of still casters of one projection
+/// ([ShadowSettings.cacheStillCasters]): one per view (the single map, or
+/// each tile of the atlas), and the map the receivers sample, kept to be
+/// reused whole while nothing changes.
+class _StillLayers() {
+  final List<_StillView> views = [];
+
+  GpuTextureTarget? live;
+  Texture? liveTexture;
+  int liveWidth = 0;
+  int liveHeight = 0;
+  bool livePacked = false;
+  Object? liveKey;
+  final Float64List liveSignature = Float64List(
+    _StaticShadowAtlas.signatureCapacity,
+  );
+  int liveSignatureLength = 0;
+
+  // What rendering the map whole would draw, for RenderStats.
+  int liveDrawCalls = 0;
+  int liveTriangles = 0;
+
+  void ensureViews(int count) {
+    while (views.length < count) {
+      views.add(_StillView());
+    }
+  }
+
+  void storeLiveSignature(Float64List signature, int length) {
+    liveSignature.setRange(0, length, signature);
+    liveSignatureLength = length;
+  }
+}
+
+/// The kept layer of still casters of one view, see [_StillLayers].
+class _StillView() {
+  GpuTextureTarget? target;
+  Texture? texture;
+  int size = 0;
+  bool packed = false;
+
+  // The key of the still casters it holds, and the view it holds them in.
+  Object? key;
+  bool valid = false;
+  final Float64List signature = Float64List(_ShadowPass._tileSignatureLength);
+
+  // The view of the previous frame.
+  final Float64List last = Float64List(_ShadowPass._tileSignatureLength);
+  bool hasLast = false;
+
+  // What the layer holds, and what the view of the map held in the last
+  // frame that rendered it, for RenderStats.
+  int drawCalls = 0;
+  int triangles = 0;
+  int mapDrawCalls = 0;
+  int mapTriangles = 0;
+
+  /// Makes [target] a texture of [size] texels of [format]; a new one holds
+  /// nothing yet.
+  void ensureTarget(
+    GraphicsDevice device,
+    int size, {
+    required GpuPixelFormat format,
+    required bool float,
+  }) {
+    if (target != null && this.size == size && packed == !float) {
+      return;
+    }
+    final created = target = device.backend.createTextureTarget(
+      width: size,
+      height: size,
+      format: format,
+      clearValue: const Color(0xFFFFFFFF),
+    );
+    texture = Texture(
+      null,
+      width: size,
+      height: size,
+      gpuTexture: created.texture,
+    );
+    this.size = size;
+    packed = !float;
+    valid = false;
+  }
+
+  void storeSignature(Float64List values) {
+    signature.setRange(0, values.length, values);
+  }
+
+  void storeLast(Float64List values) {
+    last.setRange(0, values.length, values);
+    hasLast = true;
+  }
 }

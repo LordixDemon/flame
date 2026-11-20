@@ -225,6 +225,11 @@ class ShadowGroup() {
 
     var any = false;
     var groupCastersHash = 0;
+    // With ShadowSettings.cacheStillCasters, the still casters of every
+    // world, prepared with the lights of the world that renders the map.
+    final lights = world._passLights;
+    final keepsStill = World3D._stillCasterSettings(lights) != null;
+    var groupStillHash = 0;
     for (final member in _worlds) {
       if (!identical(member._contextOrNull, context)) {
         continue;
@@ -232,8 +237,16 @@ class ShadowGroup() {
       groupCastersHash = Object.hash(
         groupCastersHash,
         member,
-        member._castersVersion,
+        member._shadowKeyVersion,
       );
+      if (keepsStill) {
+        member._prepareStillCasters(member, lights);
+        groupStillHash = Object.hash(
+          groupStillHash,
+          member,
+          member._stillCastersVersion,
+        );
+      }
       final bounds = member.sceneBounds;
       if (bounds == null) {
         continue;
@@ -246,15 +259,14 @@ class ShadowGroup() {
       }
     }
 
-    final key = World3D._shadowCasterKey(
-      this,
-      groupCastersHash,
-      world._passLights,
-    );
+    final key = World3D._shadowCasterKey(this, groupCastersHash, lights);
     if (!context.beginShadowPass(
       projection: projection,
       sceneBounds: any ? _bounds : null,
       castersKey: key,
+      stillCastersKey: keepsStill
+          ? World3D._shadowCasterKey(this, groupStillHash, lights)
+          : null,
       fitViewProjections: _viewProjections,
       fitViews: _views,
     )) {

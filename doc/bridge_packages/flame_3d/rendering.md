@@ -446,7 +446,7 @@ Without `--src` and `--out`, the tool builds the current package's `shaders/` in
 `flame_3d` builds its own bundles).
 
 `--with-web-gpu` also builds `.wgslbundle` files for the WebGPU backend, through the `naga` CLI
-(`cargo install naga-cli`). Only 8 of the package's 31 shaders have a web bundle (`spatial_material`
+(`cargo install naga-cli`). Only 8 of the package's 35 shaders have a web bundle (`spatial_material`
 in its non-PBR variant, `unlit_material`, `skybox_material`, `billboard_material`, `decal_material`,
 `outline_material`, `outline_material_skinned` and `ribbon_material`): on the web, anything that
 needs another shader (water, the depth-normal prepass, order-independent transparency, bloom, HDR,
@@ -639,8 +639,11 @@ kept: use it for occasional snapshots, and `RenderTexture3D` for a view rendered
 `FlameGame3D.renderStats` holds the statistics of the last rendered frame, and
 `Scene3DComponent.renderStats` those of the layer's last render: render passes, draw calls,
 instances, triangles, pipeline changes, render state changes, material changes, uniform uploads,
-uploaded bytes, the particles drawn by particle systems, and how many of the passes and draw calls
-rendered shadow maps (`shadowPasses` and `shadowDrawCalls`). `GraphicsDevice.cachedPipelineCount`
+uploaded bytes, the particles drawn by particle systems, how many of the passes, draw calls and
+triangles rendered shadow maps (`shadowPasses`, `shadowDrawCalls` and `shadowTriangles`), and what
+the kept layers of still casters saved (`shadowLayersReused`, `shadowLayersRendered`,
+`shadowReusedDrawCalls`, `shadowReusedTriangles`, see [Shadows](shadows.md#still-casters)).
+`GraphicsDevice.cachedPipelineCount`
 counts the pipelines created so far, and `estimatedTargetVramBytes` estimates the memory of the
 pooled render and texture targets.
 

@@ -399,7 +399,14 @@ class GraphicsDevice({
         gpuTexture: source.texture,
       );
     }
-    final texture = _copyTextures[slot];
+    drawTextureCopy(_copyTextures[slot]);
+  }
+
+  /// Draws [texture] over the viewport of the open pass, without testing or
+  /// writing depth: texel for texel when it has the size of the viewport and
+  /// is sampled with the nearest texel. One draw call of two triangles.
+  @internal
+  void drawTextureCopy(Texture texture) {
     _copyFragment.setTexture('sourceTexture', texture);
     bindPipeline(pipelineFor(_copyVertex, _copyFragment, _copyQuad.layout));
     setRenderState(_copyState);

@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
@@ -274,6 +275,82 @@ void main() {
       // Sizes are on a ladder of steps of 2^(1/8).
       final steps = (large / small).log2() * 8;
       expect(steps, closeTo(steps.roundToDouble(), 1e-6));
+    });
+
+    group('holding the near end and the window', () {
+      // A board seen whole, and casters on it whose top rises.
+      final board = Aabb3.minMax(Vector3(-6, -6, 0), Vector3(6, 6, 0));
+      Aabb3 casters(double top) =>
+          Aabb3.minMax(Vector3(-6, -6, 0), Vector3(6, 6, top));
+      final light = Vector3(0.45, -0.3, -1);
+
+      Float32List fit(
+        DirectionalShadowProjection projection,
+        double top, {
+        bool hold = true,
+        Aabb3? receivers,
+      }) {
+        expect(
+          projection.update(
+            direction: light,
+            casters: casters(top),
+            receivers: receivers,
+            resolution: 256,
+            holdNear: hold,
+            holdWindow: hold,
+          ),
+          isTrue,
+        );
+        return Float32List.fromList(projection.viewProjection.storage);
+      }
+
+      test('casters that rise within the depth kept leave the projection '
+          'unchanged', () {
+        final held = DirectionalShadowProjection();
+        final first = fit(held, 1.4, receivers: board);
+        for (final top in [1.5, 2.0, 2.5, 1.0]) {
+          expect(fit(held, top, receivers: board), first, reason: '$top');
+        }
+        final plain = DirectionalShadowProjection();
+        expect(
+          fit(plain, 1.4, hold: false, receivers: board),
+          isNot(fit(plain, 2, hold: false, receivers: board)),
+        );
+      });
+
+      test('the far end and the texels are those of a plain fit', () {
+        final held = DirectionalShadowProjection();
+        final plain = DirectionalShadowProjection();
+        fit(held, 1.4);
+        fit(plain, 1.4, hold: false);
+        for (final top in [1.45, 1.6]) {
+          fit(held, top);
+          fit(plain, top, hold: false);
+          expect(held.far, closeTo(plain.far, 1e-12));
+          expect(held.near, lessThanOrEqualTo(plain.near));
+          expect(held.texelWidth, plain.texelWidth);
+          // The edges differ by whole texels: a world point lands on the
+          // same spot of a texel.
+          final shift = (held.left - plain.left) / held.texelWidth;
+          expect(shift, closeTo(shift.roundToDouble(), 1e-6));
+          final rise = (held.bottom - plain.bottom) / held.texelHeight;
+          expect(rise, closeTo(rise.roundToDouble(), 1e-6));
+          for (final corner in _corners(casters(top))) {
+            expect(_clip(held, corner), _inMap());
+          }
+        }
+      });
+
+      test('casters that rise beyond the depth kept fit it again', () {
+        final held = DirectionalShadowProjection();
+        fit(held, 1.4, receivers: board);
+        final near = held.near;
+        fit(held, 12, receivers: board);
+        expect(held.near, lessThan(near));
+        for (final corner in _corners(casters(12))) {
+          expect(_clip(held, corner).z, inInclusiveRange(0, 1));
+        }
+      });
     });
   });
 }

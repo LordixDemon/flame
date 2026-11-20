@@ -174,7 +174,9 @@ place too (`camera.position.x += 1`), renders the next frame; the unmounted came
 The versions drive three caches: a retained `Scene3DComponent` reuses its image while nothing
 changed (see [Embedding 3D in a 2D Game](embedding.md)), `ShadowSettings.cacheWhenStatic` reuses a
 shadow map while the casters did not change (see [Shadows](shadows.md)), and `SceneSpatialIndex3D`
-rebuilds itself when `sceneVersion` changed.
+rebuilds itself when `sceneVersion` changed. `ShadowSettings.cacheStillCasters` also tracks which
+objects changed, to draw only those in the shadow pass (see
+[Still casters](shadows.md#still-casters)).
 
 Changes made in place, to data the engine only reads when it draws, are not seen. Report them,
 with `shadows: false` when no shadow can move:

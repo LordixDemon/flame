@@ -17,6 +17,6 @@ abstract class Effect3D<T extends Component3D>(
   /// non-transform per-instance properties such as `color` or `instanceData`.
   @protected
   void markWorldDirty({bool shadows = false}) {
-    target.worldOrNull?.markSceneDirty(shadows: shadows);
+    target.markDrawDirty(shadows: shadows);
   }
 }

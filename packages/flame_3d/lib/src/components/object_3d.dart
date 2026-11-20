@@ -49,6 +49,38 @@ abstract class Object3D({
 
   bool _castsShadows = castsShadows;
 
+  /// How the shadow of this object is kept by
+  /// [ShadowSettings.cacheStillCasters]: decided by the engine from the
+  /// changes it sees ([ShadowCasterMotion.auto], the default), always kept
+  /// with the still casters ([ShadowCasterMotion.still]), or always drawn
+  /// again ([ShadowCasterMotion.moving]).
+  ///
+  /// The engine sees the changes made through the setters of the engine's
+  /// components (a move of the object or of an ancestor, [visible],
+  /// [castsShadows], `jointTransforms`, the instances of an
+  /// `InstancedGroup3D`, the poses of a `ModelComponent`, live mesh
+  /// particles, ...) and those reported with [markDrawDirty]. Set
+  /// [ShadowCasterMotion.moving] on an object whose shadow changes in ways
+  /// it cannot see and that you do not report, such as vertices your own
+  /// code writes in place in every frame.
+  ///
+  /// Changing it renders the kept layer of still casters again.
+  ShadowCasterMotion get shadowMotion => _shadowMotion;
+  set shadowMotion(ShadowCasterMotion value) {
+    if (value == _shadowMotion) {
+      return;
+    }
+    final previous = _shadowMotion;
+    _shadowMotion = value;
+    final world = worldOrNull;
+    if (world != null) {
+      world.shadowCasters.motionChanged(this, previous, value);
+      world.markComponentDirty(shadows: true);
+    }
+  }
+
+  ShadowCasterMotion _shadowMotion = ShadowCasterMotion.auto;
+
   /// Whether an ancestor's AABB was fully inside the frustum, meaning
   /// children can skip their own frustum tests.
   static bool _ancestorFullyInside = false;
@@ -99,14 +131,40 @@ abstract class Object3D({
   }
 
   /// Binds and records this object's draws into [context] unless hidden by
-  /// [isEffectivelyVisible] or excluded from a shadow pass by [castsShadows].
+  /// [isEffectivelyVisible], excluded from a shadow pass by [castsShadows],
+  /// or not of the layer of casters the shadow pass records
+  /// ([RenderContext3D.shadowCasterLayer], see [shadowMotion]).
   void bind(RenderContext context) {
     if (!isEffectivelyVisible) {
       return;
     }
-    if (castsShadows || context is! RenderContext3D || !context.isShadowPass) {
-      draw(context);
+    if (context is RenderContext3D && context.isShadowPass) {
+      if (!castsShadows) {
+        return;
+      }
+      final layer = context.shadowCasterLayer;
+      if (layer != ShadowCasterLayer.all && !_inShadowLayer(layer)) {
+        return;
+      }
     }
+    draw(context);
+  }
+
+  /// Whether this object is of the casters of [layer], [ShadowCasterLayer]
+  /// `still` or `moving`.
+  bool _inShadowLayer(ShadowCasterLayer layer) {
+    final casters = worldOrNull?.shadowCasters;
+    if (casters == null) {
+      return layer == ShadowCasterLayer.still;
+    }
+    final still = casters.isStill(this);
+    if (layer == ShadowCasterLayer.still) {
+      return still;
+    }
+    if (!still) {
+      casters.drawnMoving(this);
+    }
+    return !still;
   }
 
   /// Records the draws of this object into [context], see

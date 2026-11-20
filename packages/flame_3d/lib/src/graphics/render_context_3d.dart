@@ -53,6 +53,10 @@ class RenderContext3D(super.device) extends RenderContext {
     registerPassUniform(passOptionsBlock, writePassOptionsUniforms);
     registerPassUniform(shadowCasterBlock, _ShadowPass.writeCasterUniforms);
     registerPassTexture(shadowMapSampler, _ShadowPass.shadowMapTexture);
+    registerPassTexture(
+      shadowStillCastersSampler,
+      _ShadowPass.stillCastersTexture,
+    );
     registerPassTexture(depthNormalSampler, _DepthNormalPass.passTexture);
     registerPassTexture(
       sceneColorSampler,
@@ -108,6 +112,12 @@ class RenderContext3D(super.device) extends RenderContext {
 
   /// The name of the block of the shaders that render shadow maps.
   static const String shadowCasterBlock = 'ShadowCaster';
+
+  /// The name of the sampler holding the kept depths of the still casters
+  /// that the moving casters are drawn over, in a shadow pass that keeps
+  /// them (see [ShadowSettings.cacheStillCasters]): the texture of the view
+  /// being recorded, or a white texture.
+  static const String shadowStillCastersSampler = 'shadowStillCasters';
 
   /// The name of the block describing atmospheric fog (`FogSettings`).
   static const String fogBlock = 'Fog';
@@ -644,6 +654,18 @@ class RenderContext3D(super.device) extends RenderContext {
   /// Whether the draws being recorded are those of a shadow map.
   bool get isShadowPass => _shadows.recording;
 
+  /// The casters the shadow pass being recorded draws: all of them, or, in
+  /// a pass that keeps the depths of the still casters
+  /// ([ShadowSettings.cacheStillCasters]), the still ones (into their kept
+  /// layer) or the moving ones (over a copy of it). [ShadowCasterLayer.all]
+  /// outside a shadow pass.
+  ///
+  /// `Object3D.bind` records the draws of an object only in the recordings
+  /// of its layer (see `Object3D.shadowMotion`); a renderer that records
+  /// draws itself in such a pass records those of the layer.
+  ShadowCasterLayer get shadowCasterLayer =>
+      _shadows.recording ? _shadows.layer : ShadowCasterLayer.all;
+
   /// Whether the current main pass receives a shadow map.
   bool get hasActiveShadows => _shadows.active;
 
@@ -678,10 +700,23 @@ class RenderContext3D(super.device) extends RenderContext {
   /// cascades) is fitted to what the camera of the pass sees, or, given
   /// [fitViewProjections] and the [fitViews] that go with them, to what any
   /// of these cameras sees: the map of several passes that share it.
+  ///
+  /// With a [stillCastersKey], an object that compares equal while the still
+  /// casters do not change, and lights that set
+  /// [ShadowSettings.cacheStillCasters], the depths of the still casters are
+  /// kept per [projection] from frame to frame, one layer per map or atlas
+  /// tile: a frame renders the layers that changed (one pass each), then the
+  /// map, each view a copy of its layer with the moving casters drawn over
+  /// it. Each recording then holds the casters of [shadowCasterLayer] only,
+  /// which `Object3D` does itself, and there are more recordings than views:
+  /// keep calling [advanceShadowAtlasTile] until it returns `false`. A view
+  /// whose projection changed since the previous frame is rendered whole,
+  /// and its layer is rendered again once its projection holds still.
   bool beginShadowPass({
     required DirectionalShadowProjection projection,
     required Aabb3? sceneBounds,
     Object? castersKey,
+    Object? stillCastersKey,
     List<Matrix4>? fitViewProjections,
     List<Matrix4>? fitViews,
   }) {
@@ -691,7 +726,12 @@ class RenderContext3D(super.device) extends RenderContext {
       .._fitViewProjections = fitViewProjections
       .._fitViews = fitViews;
     try {
-      return _shadows.begin(projection, sceneBounds, castersKey: castersKey);
+      return _shadows.begin(
+        projection,
+        sceneBounds,
+        castersKey: castersKey,
+        stillCastersKey: stillCastersKey,
+      );
     } finally {
       _shadows
         .._fitViewProjections = null

@@ -75,6 +75,35 @@ class ShadowSettings({
   /// lights), it is skipped only if every light that casts shadows sets it.
   var bool cacheWhenStatic = false,
 
+  /// Whether the depths of the casters that stand still are kept from frame
+  /// to frame in a layer of their own, so that a frame only draws the
+  /// casters that changed, over a copy of that layer: the cost of the shadow
+  /// pass follows what moves, and the map holds the same depths as one
+  /// rendered whole.
+  ///
+  /// The engine tells still casters from moving ones by its own change
+  /// tracking (see `Object3D.shadowMotion`): a caster that changed in the
+  /// last [stillCasterFrames] renders of the shadows is drawn in every
+  /// frame, the others come from the kept layer, which is rendered again
+  /// when one of them changes, appears or disappears, when a light that
+  /// casts shadows changes, or when the casters that stopped moving join it.
+  /// The map is also reused whole while nothing changed, as with
+  /// [cacheWhenStatic]. When the lights share the atlas (cascades, a point
+  /// light, several lights), it applies only if every light that casts
+  /// shadows sets it. It costs a second texture of the size of the map (or
+  /// atlas), kept with the layer, and one copy of the layer per frame that
+  /// draws moving casters; the receivers do not change.
+  var bool cacheStillCasters = false,
+
+  /// With [cacheStillCasters], the number of renders of the shadows a caster
+  /// must stay unchanged before it joins the kept layer of still casters,
+  /// from `1`; `30` by default, half a second at 60 frames per second.
+  ///
+  /// A caster that moves again after it joined the layer has the layer
+  /// rendered again; a larger value keeps casters that pause briefly (a
+  /// token between two hops) out of it.
+  int stillCasterFrames = 30,
+
   /// Number of directional shadow cascades (`1`..`4`). The last cascade
   /// covers what a single map would; each other cascade covers a part of it
   /// (see [cascadeSplits]) with a map of the same resolution, so it is
@@ -103,6 +132,7 @@ class ShadowSettings({
     this.resolution = resolution;
     this.softness = softness;
     this.cascades = cascades;
+    this.stillCasterFrames = stillCasterFrames;
     final splits = cascadeSplits;
     if (splits != null) {
       if (splits.length != cascades && splits.length != cascades - 1) {
@@ -164,6 +194,23 @@ class ShadowSettings({
 
   int _cascades = 1;
 
+  /// With [cacheStillCasters], the number of renders of the shadows a caster
+  /// must stay unchanged before it joins the kept layer of still casters,
+  /// from `1`.
+  int get stillCasterFrames => _stillCasterFrames;
+  set stillCasterFrames(int value) {
+    if (value < 1) {
+      throw ArgumentError.value(
+        value,
+        'stillCasterFrames',
+        'Must be 1 or more',
+      );
+    }
+    _stillCasterFrames = value;
+  }
+
+  int _stillCasterFrames = 30;
+
   /// Maximum number of directional shadow cascades supported.
   static const int maxCascades = 4;
 
@@ -196,4 +243,40 @@ enum ShadowMapEncoding() {
   /// 24 bits of depth packed into the red, green and blue channels of an
   /// 8-bit RGBA texel, which every GPU can render into.
   rgba8,
+}
+
+/// How the shadow of an `Object3D` is kept by
+/// [ShadowSettings.cacheStillCasters], see `Object3D.shadowMotion`.
+enum ShadowCasterMotion() {
+  /// The engine decides from its own change tracking: a caster that changed
+  /// in a way it sees (moved, shown, a new pose, new instances, ...) in the
+  /// last [ShadowSettings.stillCasterFrames] renders of the shadows is drawn
+  /// in every frame, the others are kept with the still casters.
+  auto,
+
+  /// Kept with the still casters whatever it does: each change the engine
+  /// sees renders the layer of still casters again. For a caster that
+  /// changes rarely and costs much to draw, such as a large terrain.
+  still,
+
+  /// Drawn in every frame, never kept: for a caster that changes in ways
+  /// the engine cannot see, such as vertices written in place by your own
+  /// code. While such a caster is in a world, its shadow map is never
+  /// reused whole.
+  moving,
+}
+
+/// The casters a shadow pass records, see
+/// `RenderContext3D.shadowCasterLayer`.
+enum ShadowCasterLayer() {
+  /// Every caster: the pass renders the map whole.
+  all,
+
+  /// Only the still casters: the pass renders the layer that
+  /// [ShadowSettings.cacheStillCasters] keeps.
+  still,
+
+  /// Only the moving casters: the pass draws them over a copy of the kept
+  /// layer of still casters.
+  moving,
 }

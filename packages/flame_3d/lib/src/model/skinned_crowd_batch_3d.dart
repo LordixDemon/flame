@@ -363,7 +363,7 @@ class SkinnedCrowdBatch3D({
         ..[cb + 6] = instanceData.z
         ..[cb + 7] = instanceData.w;
     }
-    worldOrNull?.markSceneDirty(shadows: castsShadows);
+    markDrawDirty(shadows: castsShadows);
   }
 
   /// Removes the agent at [index] in `O(1)` by swapping the last agent into
@@ -504,7 +504,7 @@ class SkinnedCrowdBatch3D({
     }
 
     if (anyFrameChanged) {
-      worldOrNull?.markSceneDirty(shadows: castsShadows);
+      markDrawDirty(shadows: castsShadows);
     }
   }
 
@@ -730,7 +730,7 @@ class SkinnedCrowdBatch3D({
   void _invalidateBounds() {
     _boundsDirty = true;
     markAabbDirty();
-    worldOrNull?.markSceneDirty(shadows: castsShadows);
+    markDrawDirty(shadows: castsShadows);
   }
 
   static final Vector3 _zeroVec = Vector3.zero();

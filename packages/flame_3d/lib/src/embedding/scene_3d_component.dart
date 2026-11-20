@@ -1090,6 +1090,15 @@ class Scene3DComponent({
       ..uploadedBytes = after.uploadedBytes - before.uploadedBytes
       ..particles = after.particles - before.particles
       ..shadowPasses = after.shadowPasses - before.shadowPasses
-      ..shadowDrawCalls = after.shadowDrawCalls - before.shadowDrawCalls;
+      ..shadowDrawCalls = after.shadowDrawCalls - before.shadowDrawCalls
+      ..shadowTriangles = after.shadowTriangles - before.shadowTriangles
+      ..shadowLayersReused =
+          after.shadowLayersReused - before.shadowLayersReused
+      ..shadowLayersRendered =
+          after.shadowLayersRendered - before.shadowLayersRendered
+      ..shadowReusedDrawCalls =
+          after.shadowReusedDrawCalls - before.shadowReusedDrawCalls
+      ..shadowReusedTriangles =
+          after.shadowReusedTriangles - before.shadowReusedTriangles;
   }
 }

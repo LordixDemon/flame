@@ -49,6 +49,28 @@ class RenderStats() {
   /// shadow map.
   int shadowDrawCalls = 0;
 
+  /// The number of the [triangles] drawn by the passes that rendered a
+  /// shadow map.
+  int shadowTriangles = 0;
+
+  /// The number of shadow maps or atlas tiles whose kept layer of still
+  /// casters (`ShadowSettings.cacheStillCasters`) was reused: copied under
+  /// the moving casters, or reused with the whole map.
+  int shadowLayersReused = 0;
+
+  /// The number of shadow maps or atlas tiles whose kept layer of still
+  /// casters was rendered again.
+  int shadowLayersRendered = 0;
+
+  /// The number of draw calls the reused layers and maps hold: what
+  /// rendering them again would have issued (the casters were not drawn
+  /// again).
+  int shadowReusedDrawCalls = 0;
+
+  /// The number of triangles the reused layers and maps hold, see
+  /// [shadowReusedDrawCalls].
+  int shadowReusedTriangles = 0;
+
   /// Resets every counter to zero.
   void reset() {
     renderPasses = 0;
@@ -63,6 +85,11 @@ class RenderStats() {
     particles = 0;
     shadowPasses = 0;
     shadowDrawCalls = 0;
+    shadowTriangles = 0;
+    shadowLayersReused = 0;
+    shadowLayersRendered = 0;
+    shadowReusedDrawCalls = 0;
+    shadowReusedTriangles = 0;
   }
 
   /// Copies every counter from [other].
@@ -79,6 +106,11 @@ class RenderStats() {
     particles = other.particles;
     shadowPasses = other.shadowPasses;
     shadowDrawCalls = other.shadowDrawCalls;
+    shadowTriangles = other.shadowTriangles;
+    shadowLayersReused = other.shadowLayersReused;
+    shadowLayersRendered = other.shadowLayersRendered;
+    shadowReusedDrawCalls = other.shadowReusedDrawCalls;
+    shadowReusedTriangles = other.shadowReusedTriangles;
   }
 
   @override
@@ -88,6 +120,11 @@ class RenderStats() {
         'pipelineChanges: $pipelineChanges, stateChanges: $stateChanges, '
         'materialChanges: $materialChanges, uniformUploads: $uniformUploads, '
         'uploadedBytes: $uploadedBytes, particles: $particles, '
-        'shadowPasses: $shadowPasses, shadowDrawCalls: $shadowDrawCalls)';
+        'shadowPasses: $shadowPasses, shadowDrawCalls: $shadowDrawCalls, '
+        'shadowTriangles: $shadowTriangles, '
+        'shadowLayersReused: $shadowLayersReused, '
+        'shadowLayersRendered: $shadowLayersRendered, '
+        'shadowReusedDrawCalls: $shadowReusedDrawCalls, '
+        'shadowReusedTriangles: $shadowReusedTriangles)';
   }
 }

@@ -233,7 +233,7 @@ class ModelComponent({
       }
       _applyMorphWeights(node, weights, weights.length);
     }
-    worldOrNull?.markSceneDirty(shadows: castsShadows);
+    markDrawDirty(shadows: castsShadows);
   }
 
   void _applyMorphWeights(ModelNode node, List<double> weights, int count) {
@@ -502,7 +502,7 @@ class ModelComponent({
       if (offscreenPolicy == OffscreenAnimationPolicy.always) {
         evaluatePose();
       }
-      worldOrNull?.markSceneDirty(shadows: castsShadows);
+      markDrawDirty(shadows: castsShadows);
     }
   }
 
@@ -643,7 +643,7 @@ class ModelComponent({
     } else {
       _hiddenNodes.remove(node.key);
     }
-    worldOrNull?.markSceneDirty(shadows: castsShadows);
+    markDrawDirty(shadows: castsShadows);
   }
 
   /// Copies this component for [clone]: the copy shares the [model] and
@@ -690,7 +690,7 @@ class ModelComponent({
 
   void _markPoseChanged() {
     _poseDirty = true;
-    worldOrNull?.markSceneDirty(shadows: castsShadows);
+    markDrawDirty(shadows: castsShadows);
   }
 
   static final Vector3 _upY = Vector3(0, 1, 0);
