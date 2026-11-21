@@ -21,6 +21,11 @@ class _ShadowPass(final RenderContext3D _context) {
   /// [RenderContext3D.shadowMapVersion].
   int version = 0;
 
+  /// Whether the map of the last [begin] depends on the cameras it is fitted
+  /// to: a directional light with [ShadowFit.view] casts in it. See
+  /// [RenderContext3D.shadowMapFollowsViews].
+  bool followsViews = false;
+
   // The values of the `Shadows` block common to both kinds of map: with the
   // atlas, `_toLight`, `_color` and `_bias` are those of the directional
   // light (and `_lightViewProjection` is unused).
@@ -291,6 +296,7 @@ class _ShadowPass(final RenderContext3D _context) {
     _recordingMovers = false;
     _split = null;
     layer = ShadowCasterLayer.all;
+    followsViews = false;
     RenderProfile.switchPass(RenderPhase.setup, shadow: true);
     if (sceneBounds == null || !device.backend.supportsTextureTargets) {
       return _none();
@@ -348,6 +354,7 @@ class _ShadowPass(final RenderContext3D _context) {
     if (dirLight == null && _spotCasterCount == 0 && pointCaster == null) {
       return _none();
     }
+    followsViews = dirSettings != null && dirSettings.fit == ShadowFit.view;
     if (!_shadersAvailable()) {
       return _none();
     }

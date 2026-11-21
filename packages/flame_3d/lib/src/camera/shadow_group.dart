@@ -111,7 +111,7 @@ class ShadowGroup() {
       .._groupNotedByHost = byHost;
     if (startsRound) {
       _gatherViews();
-    } else if (lags) {
+    } else if (lags && _mapFollowsViews) {
       Game.notifyVisualMutation();
     }
   }
@@ -195,6 +195,11 @@ class ShadowGroup() {
   int _mapViewsVersion = -1;
   int? _version;
 
+  // Whether the last map depends on the cameras it was fitted to
+  // ([ShadowFit.view]): one that does not is reused by the other worlds of
+  // the frame however the cameras moved.
+  bool _mapFollowsViews = true;
+
   /// Makes [world]'s next main pass, whose camera is set in [context],
   /// receive the group's shadow map: reused when it was rendered earlier in
   /// this frame for the same cameras (or cached via
@@ -214,7 +219,7 @@ class ShadowGroup() {
     if (version != null &&
         identical(device, _device) &&
         device.frame == _frame &&
-        _mapViewsVersion == _viewsVersion &&
+        (_mapViewsVersion == _viewsVersion || !_mapFollowsViews) &&
         context.reuseShadowMap(version)) {
       return true;
     }
@@ -270,12 +275,14 @@ class ShadowGroup() {
       fitViewProjections: _viewProjections,
       fitViews: _views,
     )) {
+      _mapFollowsViews = context.shadowMapFollowsViews;
       if (context.hasActiveShadows) {
         _version = context.shadowMapVersion;
         return true;
       }
       return false;
     }
+    _mapFollowsViews = context.shadowMapFollowsViews;
     try {
       // Every view of the lights (each tile of the atlas) gets the casters
       // of every world.

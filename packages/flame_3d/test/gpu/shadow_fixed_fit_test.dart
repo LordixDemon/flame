@@ -189,6 +189,32 @@ void main() {
   // Half opaque black over the gray, the catcher's default color.
   final darkened = (0x80 * (1 - 128 / 255)).round();
 
+  group('A ShadowGroup whose map does not follow the cameras', () {
+    for (final fit in [ShadowFit.scene, ShadowFit.fixed]) {
+      testGpu('renders it once in a frame whose cameras moved '
+          '(ShadowFit.${fit.name})', (tester) async {
+        final layers = _Layers(fit: fit);
+        await layers.show(tester);
+        for (var k = 0; k < 6; k++) {
+          layers.game.camera.viewfinder.position.x += 7;
+          final pixels = await layers.frame(tester);
+          expect(layers.passes, 1, reason: 'frame $k');
+          // Both boxes still cast onto the ground.
+          expect(
+            layers.redAt(pixels, -1.25, -1.25),
+            closeTo(darkened, 2),
+            reason: 'frame $k',
+          );
+          expect(
+            layers.redAt(pixels, 2.75, 1.75),
+            closeTo(darkened, 2),
+            reason: 'frame $k',
+          );
+        }
+      });
+    }
+  });
+
   group('ShadowFit.fixed', () {
     testGpu('keeps one projection to the last bit while the cameras pan and '
         'zoom and things that cast nothing move', (tester) async {

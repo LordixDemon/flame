@@ -333,6 +333,11 @@ alone is covered from the next frame on, which is then painted also in a game th
 changed frames. A world rendered by another host (a `FlameGame3D` camera) counts with the camera of
 its pass.
 
+A map that does not follow the cameras (`ShadowFit.scene`, `ShadowFit.fixed`, spot and point
+lights alone) is rendered once per frame whichever layers moved on the screen: the layers after the
+first reuse it although their cameras changed, and none of them asks for another frame when it
+moves.
+
 The light and the `ShadowSettings` are those of the world that renders first, so let the worlds of
 a group render with the same lights, in the same order, since a shader tells the light that casts
 the shadows by its index among the directional lights: keep the lights in one world and let the

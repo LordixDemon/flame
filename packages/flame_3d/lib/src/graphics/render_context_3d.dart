@@ -1063,6 +1063,14 @@ class RenderContext3D(super.device) extends RenderContext {
 
   int get shadowMapVersion => _shadows.version;
 
+  /// Whether the shadow map of the last [beginShadowPass] depends on the
+  /// cameras it was fitted to: a directional light with [ShadowFit.view]
+  /// casts in it. A map that does not (spot and point lights,
+  /// [ShadowFit.scene], [ShadowFit.fixed]) is the same whichever cameras are
+  /// given, so a `ShadowGroup` reuses it in a frame whose cameras moved.
+  @internal
+  bool get shadowMapFollowsViews => _shadows.followsViews;
+
   bool reuseShadowMap(int version) => _shadows.reuse(version);
 
   static void writeShadowsUniforms(

@@ -342,7 +342,8 @@ What a game can rely on:
   their worlds alone (colors, materials, objects that cast no shadows moving inside those bounds)
   leave its image alone, and it stays identical to a fresh render. With `ShadowFit.fixed` the
   bounds of the worlds do not reach the map at all (see
-  [A map that does not move](shadows.md#a-map-that-does-not-move)).
+  [A map that does not move](shadows.md#a-map-that-does-not-move)), and a frame whose layers moved
+  on the screen renders the map once, not once more for each layer that moved.
 - While the retained layer reuses its image it renders no shadow map, and the next layer of the
   group that renders draws the group's map instead: the group still costs one shadow pass per frame
   while any of its layers renders, and none while all of them reuse their images (or with
