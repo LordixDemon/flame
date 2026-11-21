@@ -230,6 +230,16 @@ A receiver compares its depth with the map over a box of `2 * softness + 1` texe
 bilinearly: `(2 * softness + 2)²` samples, 16 with the default `softness` of `1`, 4 with `0`, 64
 with the largest, `3`.
 
+The loops of the filter (`flame_3d/shadows.glsl`) have constant bounds, those of the largest
+`softness`, and skip the samples beyond the light's `softness`: the same samples are added in the
+same order as with bounds from the `softness`, so the result is the same, and OpenGL ES drivers,
+which need not run a loop whose bounds come from a uniform as written (GLSL ES 1.00, appendix A),
+run it as written. The Android emulator's did not: with loops that started at `-softness`, every
+receiver came out partly in shadow, and `ShadowCatcherMaterial` grey over its whole area, at
+`softness` 1 to 3 (`0` starts at 0 and was right). Every loop of the shaders of `flame_3d` starts
+at a constant, in the sources and in the shipped bundles (`test/shaders/shader_loops_test.dart`);
+a shader of your own that is built for OpenGL ES should keep to that too.
+
 Two biases keep surfaces from shadowing themselves (shadow acne) without detaching shadows from
 their casters (peter-panning). Both are in texels of the map, so they follow its resolution and the
 size of the region it covers:
@@ -840,7 +850,10 @@ passes with them (2 of them in the shadow pass).
 - Android with OpenGL ES: shadows render into packed RGBA8 maps. Packing was checked on both paths
   (single map, atlas) by forcing `ShadowMapEncoding.rgba8` on the backend of the
   headless tests, not on an OpenGL ES device; the placement of the atlas tiles there is not covered
-  by a test.
+  by a test. The filter at every `softness` (0 to 3) was checked on the Android emulator (OpenGL ES
+  through its GL translator, a single map), where lit receivers are as bright as with `softness`
+  `0` and `ShadowCatcherMaterial` shows nothing on lit ground (see
+  [Soft edges and biases](#soft-edges-and-biases)).
 - The web: no shadows. The shadow caster shaders have no WebGPU build: the first shadow pass that
   needs them finds they do not load, prints it once (`debugPrint`), and from then on the context
   renders no shadow pass and its receivers no shadows, as if no light had settings.
@@ -898,3 +911,7 @@ These are the parts of shadows that are not finished at this point:
   whose bounds reach ±100000 units, sets it). Set it on such components.
 - Shadows are not available on the web.
 - `UnlitMaterial` receives no shadows.
+- On OpenGL ES, the filter was checked on the Android emulator only, with a single map; not on an
+  OpenGL ES phone, and not with cascades or the atlas there.
+- `softness` stops at `3` (`ShadowSettings.maxSoftness`): the filter's loops have the bounds of
+  that radius, and the shader reads a larger radius in the uniforms as `3`.

@@ -79,14 +79,28 @@ uniform Shadows {
 #define FLAME_SHADOWS(member) shadows.member
 #endif
 
+// The filter radius of `value` (a radius in texels from the uniforms), from
+// 0 to 3 (ShadowSettings.maxSoftness): a whole number in a float, as the
+// filters below take it.
+float flameShadowFilterRadius(float value) {
+  return clamp(floor(value), 0.0, 3.0);
+}
+
+// The filters below read a box of `2 * radius + 2` texels on a side, blended
+// bilinearly. Their loops have constant bounds, those of the largest radius
+// (8 taps, from -3 to 4), and skip the taps beyond `radius`: the radius comes
+// from a uniform, and OpenGL ES drivers (GLSL ES 1.00, appendix A) need not
+// run a loop whose bounds come from a uniform as written. The taps are added
+// in the same order as with bounds from the radius, so the result is the same.
+
 // The visibility of the single map (not the atlas) at `worldPosition`.
 float flameSingleMapVisibility(vec3 worldPosition, vec3 normal) {
-  int radius = int(FLAME_SHADOWS(bias).w);
+  float radius = flameShadowFilterRadius(FLAME_SHADOWS(bias).w);
   vec3 l = FLAME_SHADOWS(toLight).xyz;
   float cosine = clamp(dot(normal, l), 0.0, 1.0);
   float sine = sqrt(1.0 - cosine * cosine);
   float texel = FLAME_SHADOWS(bias).x;
-  float reach = FLAME_SHADOWS(bias).z + 1.4142 * float(radius + 1);
+  float reach = FLAME_SHADOWS(bias).z + 1.4142 * (radius + 1.0);
   vec3 position = worldPosition +
     normal * (texel * reach * sine) +
     l * (texel * FLAME_SHADOWS(bias).y);
@@ -111,18 +125,24 @@ float flameSingleMapVisibility(vec3 worldPosition, vec3 normal) {
   vec2 base = floor(texelPosition);
   vec2 f = texelPosition - base;
   float lit = 0.0;
-  for (int y = -radius; y <= radius + 1; y++) {
-    float wy = y == -radius ? 1.0 - f.y : (y == radius + 1 ? f.y : 1.0);
-    for (int x = -radius; x <= radius + 1; x++) {
-      float wx = x == -radius ? 1.0 - f.x : (x == radius + 1 ? f.x : 1.0);
-      vec2 sampleUv =
-        (base + vec2(float(x), float(y)) + 0.5) * FLAME_SHADOWS(map).zw;
-      float stored =
-        dot(texture(shadowMap, sampleUv), FLAME_SHADOWS(decode));
-      lit += wx * wy * step(depth, stored);
+  for (int row = 0; row < 8; row++) {
+    float y = float(row) - 3.0;
+    if (y >= -radius && y <= radius + 1.0) {
+      float wy = y == -radius ? 1.0 - f.y : (y == radius + 1.0 ? f.y : 1.0);
+      for (int column = 0; column < 8; column++) {
+        float x = float(column) - 3.0;
+        if (x >= -radius && x <= radius + 1.0) {
+          float wx =
+            x == -radius ? 1.0 - f.x : (x == radius + 1.0 ? f.x : 1.0);
+          vec2 sampleUv = (base + vec2(x, y) + 0.5) * FLAME_SHADOWS(map).zw;
+          float stored =
+            dot(texture(shadowMap, sampleUv), FLAME_SHADOWS(decode));
+          lit += wx * wy * step(depth, stored);
+        }
+      }
     }
   }
-  float side = float(2 * radius + 1);
+  float side = 2.0 * radius + 1.0;
   return lit / (side * side);
 }
 
@@ -133,9 +153,14 @@ bool shadowAtlasActive() {
 }
 
 // The filtered visibility of `depth` at `tileUv` (from 0 to 1 across the
-// tile) in the atlas tile `rect`, with a filter of `radius` texels that does
-// not read the neighbouring tiles.
-float flameSampleAtlasTile(vec2 tileUv, vec4 rect, float depth, int radius) {
+// tile) in the atlas tile `rect`, with a filter of `radius` texels (see
+// flameShadowFilterRadius) that does not read the neighbouring tiles.
+float flameSampleAtlasTile(
+  vec2 tileUv,
+  vec4 rect,
+  float depth,
+  float radius
+) {
   vec2 mapSize = FLAME_SHADOWS(map).xy;
   vec2 invMap = FLAME_SHADOWS(map).zw;
   vec2 atlasUv = rect.xy + tileUv * rect.zw;
@@ -146,20 +171,23 @@ float flameSampleAtlasTile(vec2 tileUv, vec4 rect, float depth, int radius) {
   vec2 base = floor(texelPos);
   vec2 f = texelPos - base;
   float lit = 0.0;
-  for (int y = -radius; y <= radius + 1; y++) {
-    float wy = y == -radius ? 1.0 - f.y : (y == radius + 1 ? f.y : 1.0);
-    for (int x = -radius; x <= radius + 1; x++) {
-      float wx = x == -radius ? 1.0 - f.x : (x == radius + 1 ? f.x : 1.0);
-      vec2 sUv = clamp(
-        (base + vec2(float(x), float(y)) + 0.5) * invMap,
-        minUv,
-        maxUv
-      );
-      float stored = dot(texture(shadowMap, sUv), FLAME_SHADOWS(decode));
-      lit += wx * wy * step(depth, stored);
+  for (int row = 0; row < 8; row++) {
+    float y = float(row) - 3.0;
+    if (y >= -radius && y <= radius + 1.0) {
+      float wy = y == -radius ? 1.0 - f.y : (y == radius + 1.0 ? f.y : 1.0);
+      for (int column = 0; column < 8; column++) {
+        float x = float(column) - 3.0;
+        if (x >= -radius && x <= radius + 1.0) {
+          float wx =
+            x == -radius ? 1.0 - f.x : (x == radius + 1.0 ? f.x : 1.0);
+          vec2 sUv = clamp((base + vec2(x, y) + 0.5) * invMap, minUv, maxUv);
+          float stored = dot(texture(shadowMap, sUv), FLAME_SHADOWS(decode));
+          lit += wx * wy * step(depth, stored);
+        }
+      }
     }
   }
-  float side = float(2 * radius + 1);
+  float side = 2.0 * radius + 1.0;
   return lit / (side * side);
 }
 
@@ -176,11 +204,11 @@ float flameAtlasCascadeVisibility(
   if (count <= 0) {
     return 1.0;
   }
-  int radius = int(FLAME_SHADOWS(bias).w);
+  float radius = flameShadowFilterRadius(FLAME_SHADOWS(bias).w);
   vec3 l = FLAME_SHADOWS(toLight).xyz;
   float cosine = clamp(dot(normal, l), 0.0, 1.0);
   float sine = sqrt(1.0 - cosine * cosine);
-  float reach = FLAME_SHADOWS(bias).z + 1.4142 * float(radius + 1);
+  float reach = FLAME_SHADOWS(bias).z + 1.4142 * (radius + 1.0);
 
   for (int c = 0; c < 4; c++) {
     if (c >= count) {
@@ -263,7 +291,7 @@ float flameAtlasSpotVisibility(int slot, vec3 worldPosition, vec3 normal) {
     uv,
     FLAME_SHADOWS(atlasSpotRects)[slot],
     ndc.z,
-    int(light.w)
+    flameShadowFilterRadius(light.w)
   );
 }
 
@@ -298,7 +326,7 @@ float flameAtlasPointVisibility(vec3 worldPosition, vec3 normal) {
   float hz = abs(dir.z);
   vec2 p = (dir.xy / (hz + 1.0)) * 0.96;
   vec2 tileUv = vec2(0.5 + 0.5 * p.x, 0.5 - 0.5 * p.y);
-  int radius = int(clamp(params.y, 0.0, 2.0));
+  float radius = flameShadowFilterRadius(min(params.y, 2.0));
   return flameSampleAtlasTile(
     tileUv,
     rect,
