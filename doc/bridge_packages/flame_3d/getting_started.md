@@ -12,8 +12,8 @@ browser), with a depth buffer. It can be used in two ways:
 ## Requirements
 
 - Flutter 3.47 or newer and Dart 3.13 or newer.
-- Impeller, which is the default renderer on iOS, macOS and Android, and Flutter GPU, which has to
-  be switched on (see below).
+- Impeller, which is the default renderer on iOS, macOS, Android and Windows, and Flutter GPU,
+  which has to be switched on (see below).
 - A call to `GpuBackend.initialize()` before anything renders.
 
 Flutter GPU and Impeller are experimental, and so is this package: its API may change at any time.
@@ -27,7 +27,8 @@ Flutter GPU and Impeller are experimental, and so is this package: its API may c
 | Android             | Flutter GPU on Vulkan       | Supported                                   |
 | Android, older GPUs | Flutter GPU on OpenGL ES    | Supported, with the limits below            |
 | Web                 | WebGPU                      | Partial, see below                          |
-| Windows, Linux      | none (no Flutter GPU)       | Only `Canvas3DFallbackComponent`            |
+| Windows             | Flutter GPU on OpenGL ES    | Supported, with the limits below            |
+| Linux               | Flutter GPU on OpenGL ES    | Not tried; `Canvas3DFallbackComponent`      |
 
 The package's GPU tests run headless with `flutter test --enable-impeller --enable-flutter-gpu`;
 what has been run on Android, and how to repeat it on a phone, is in
@@ -41,6 +42,25 @@ device. Flutter's log names the backend it uses ("Using the Impeller rendering b
 (OpenGLES)"), and `GpuBackend.instance.capabilities.api` tells the app. An emulator draws with the
 Mac's GPU through a translator: it is not a phone.
 
+On Windows Impeller is Flutter's default renderer (Flutter 3.47): OpenGL ES through ANGLE, which
+translates it to Direct3D 11 on the default adapter. Flutter GPU is off until the runner asks for
+it: `project.set_enable_flutter_gpu(true);` after `flutter::DartProject project(L"data");` in
+`windows/runner/main.cpp` (in debug and profile builds the environment can ask too:
+`FLUTTER_ENGINE_SWITCHES=1`, `FLUTTER_ENGINE_SWITCH_1=enable-flutter-gpu`). The device is then an
+OpenGL ES device with the limits below, and two more:
+
+- ANGLE is linked into `flutter_windows.dll` without exporting its EGL and OpenGL ES functions, so
+  the driver cannot be asked (`renderer`, the uniform limits and the extensions stay unknown,
+  `shaderSupport` cannot refuse a shader) and float render targets are not checked: HDR renders in
+  8 bits and shadow depths are packed, as on an OpenGL ES device without the check;
+- the process needs an interactive desktop. Started from a service or an ssh session (session 0),
+  ANGLE cannot create the window's swap chain (`DXGI_ERROR_NOT_CURRENTLY_AVAILABLE`), the context
+  is lost and Flutter GPU reports "Unable to retrieve the Impeller context"
+  (`GpuBackend.isAvailable` is `false`).
+
+Linux has not been tried: Flutter's Linux embedder also defaults to Impeller on OpenGL ES (through
+EGL) and has `fl_dart_project_set_enable_flutter_gpu`, the same switch.
+
 
 ### What the device offers
 
@@ -48,8 +68,8 @@ Mac's GPU through a translator: it is not a phone.
 (a `GpuDeviceCapabilities`, also printable as JSON with `toJson()`):
 
 - `api`: `vulkan` or `openGLES` on Android (Flutter GPU does not say; rendering into mip levels,
-  which it reports as supported on Vulkan only, tells them apart), `metal` on iOS and macOS,
-  `unknown` under `flutter test`;
+  which it reports as supported on Vulkan only, tells them apart), `openGLES` on Windows, `metal`
+  on iOS and macOS, `unknown` under `flutter test`;
 - `offscreenMsaa` and `manualMipmaps` (from Flutter GPU): a device without offscreen multisampling
   renders without MSAA, one that cannot sample mip levels uploaded by hand gets textures without
   mipmaps;
@@ -112,8 +132,8 @@ error: Flutter keeps its GPU context alive, so a real loss is a driver reset, wh
 provoked there.
 
 `GpuBackend.isAvailable` tells whether the GPU backend can run in this process: it is `false` when
-Flutter GPU is not enabled, when Impeller is off, on Windows and Linux, and in browsers without
-WebGPU. Without it, constructing a `FlameGame3D` (or anything else with the `Game3D` mixin) throws,
+Flutter GPU is not enabled, when Impeller is off, in a Windows process without an interactive
+desktop, and in browsers without WebGPU. Without it, constructing a `FlameGame3D` (or anything else with the `Game3D` mixin) throws,
 and so does the first render of a `Scene3DComponent`.
 
 
@@ -211,6 +231,14 @@ Switch Flutter GPU on for each platform:
   <meta-data
       android:name="io.flutter.embedding.android.EnableFlutterGPU"
       android:value="true" />
+  ```
+
+- Windows, in `windows/runner/main.cpp`, after the project is created (Impeller is on by default
+  there):
+
+  ```cpp
+  flutter::DartProject project(L"data");
+  project.set_enable_flutter_gpu(true);
   ```
 
 - For a quick try without changing the project files, `flutter run --enable-flutter-gpu` (add

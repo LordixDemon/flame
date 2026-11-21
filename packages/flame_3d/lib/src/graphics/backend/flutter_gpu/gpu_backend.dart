@@ -89,8 +89,9 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
   ///
   /// Flutter GPU does not say: on Android, rendering into mip levels is
   /// documented as supported on Vulkan and not on OpenGL ES, which tells
-  /// them apart; iOS and macOS apps render with Metal; the renderer of
-  /// `flutter test` is not known.
+  /// them apart (Windows renders with OpenGL ES through ANGLE, without
+  /// rendering into mip levels); iOS and macOS apps render with Metal; the
+  /// renderer of `flutter test` is not known.
   late final GpuGraphicsApi api = () {
     final renderMipmaps = _context.doesSupportFramebufferRenderMipmap;
     if (Platform.isAndroid) {

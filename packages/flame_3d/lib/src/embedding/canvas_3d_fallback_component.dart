@@ -14,7 +14,7 @@ import 'package:flame_3d/src/extensions/clip_space.dart';
 /// {@template canvas_3d_fallback_component}
 /// A CPU fallback that draws a [World3D] on a 2D [Canvas] with one
 /// [Canvas.drawVertices] call, for platforms where `GpuBackend.isAvailable`
-/// is `false` (Windows, Linux, devices without Flutter GPU).
+/// is `false` (devices and processes without Flutter GPU).
 ///
 /// It draws the [MeshComponent]s, the instances of [InstancedGroup3D]s and
 /// the nodes of [ModelComponent]s that a pass of [camera] would draw (visible,

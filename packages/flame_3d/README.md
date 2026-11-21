@@ -54,7 +54,8 @@ on Flutter GPU, see [Testing](#testing)), not by runs on Android or iOS devices.
 | Android             | Flutter GPU on Vulkan    | Supported                        |
 | Android, older GPUs | Flutter GPU on OpenGL ES | Supported, with limits           |
 | Web                 | WebGPU                   | Partial                          |
-| Windows, Linux      | none (no Flutter GPU)    | Only `Canvas3DFallbackComponent` |
+| Windows             | Flutter GPU on OpenGL ES | Supported, with limits           |
+| Linux               | Flutter GPU on OpenGL ES | Not tried                        |
 
 - **OpenGL ES**: no floating-point render targets, so HDR renders in 8 bits, order-independent
   transparency falls back to sorting and shadow depths are packed into 8-bit channels; no
@@ -66,9 +67,12 @@ on Flutter GPU, see [Testing](#testing)), not by runs on Android or iOS devices.
   throw an `UnsupportedError` when created; HDR, bloom and post-processing, the depth-normal
   prepass, order-independent transparency and `WaterMaterial` throw when they first render;
   shadows are skipped. The package's tests do not run in a browser.
-- **Windows, Linux**: `Canvas3DFallbackComponent` draws a `World3D` on the CPU with
-  `Canvas.drawVertices`: flat triangles sorted by depth, one directional light, no textures, no
-  depth buffer. It suits previews, not a game.
+- **Windows**: OpenGL ES through ANGLE on Direct3D 11, with the OpenGL ES limits above; the
+  runner switches Flutter GPU on (`project.set_enable_flutter_gpu(true)`); the driver cannot be
+  queried, so float render targets stay off; the app needs an interactive desktop session.
+- **Linux** (not tried) **and platforms without Flutter GPU**: `Canvas3DFallbackComponent` draws a
+  `World3D` on the CPU with `Canvas.drawVertices`: flat triangles sorted by depth, one directional
+  light, no textures, no depth buffer. It suits previews, not a game.
 
 See [Getting Started][getting-started] for the details.
 
