@@ -22,7 +22,8 @@ import 'package:flame_3d/src/extensions/clip_space.dart';
 /// the world keeps landing on the same spot of a texel and the edges of the
 /// shadows do not shimmer.
 ///
-/// It keeps the size of the last fit, so use one per scene.
+/// It keeps the size of the last fit, so use one per scene. [fitBounds] fits
+/// it to given boxes instead, from them alone (`ShadowFit.fixed`).
 /// {@endtemplate}
 class DirectionalShadowProjection() {
   /// The light's view matrix: from world space to the light's view space,
@@ -273,6 +274,71 @@ class DirectionalShadowProjection() {
     projection.storage.setAll(0, _projection);
     viewProjection.storage.setAll(0, _viewProjection);
     return true;
+  }
+
+  /// Fits the projection to the whole of [receivers], with a depth range
+  /// over [casters] as well (`ShadowFit.fixed`), from these alone: the same
+  /// [direction], boxes and [resolution] give the same projection to the
+  /// last bit, whatever was fitted before.
+  ///
+  /// [direction] is the direction the light travels in (it need not be
+  /// normalized). The map covers the extent of [receivers] seen from the
+  /// light, made one texel larger so that its edges lie on whole texels of
+  /// the light's view (the ladder of sizes of `stabilize` does not apply:
+  /// nothing here follows a camera). Its depth range reaches from the
+  /// farthest corner of [receivers] back towards the light over every corner
+  /// of [casters] and [receivers], with the margin [update] leaves.
+  void fitBounds({
+    required Vector3 direction,
+    required Aabb3 receivers,
+    required Aabb3 casters,
+    required int resolution,
+  }) {
+    writeLookAt(_view, 0, 0, 0, direction.x, direction.y, direction.z, 0, 1, 0);
+    _resetBounds();
+    _addBoxCorners(receivers);
+    var nearest = _minDepth;
+    final cMin = casters.min;
+    final cMax = casters.max;
+    for (var corner = 0; corner < 8; corner++) {
+      final depth = -_viewZ(
+        corner & 1 == 0 ? cMin.x : cMax.x,
+        corner & 2 == 0 ? cMin.y : cMax.y,
+        corner & 4 == 0 ? cMin.z : cMax.z,
+      );
+      nearest = math.min(nearest, depth);
+    }
+    final scale = math.max(
+      _maxDepth - nearest,
+      math.max(_maxX - _minX, _maxY - _minY),
+    );
+    final depthPad = scale * 1e-3 + 1e-6;
+    _near = nearest - depthPad;
+    _far = _maxDepth + depthPad;
+    _nearHeld = false;
+    _windowHeld = false;
+    _resolution = resolution;
+    final minimum = scale * 1e-6 + 1e-9;
+    final grow = resolution / (resolution - 1);
+    _width = math.max(_maxX - _minX, minimum) * grow;
+    _height = math.max(_maxY - _minY, minimum) * grow;
+    final texelX = _width / resolution;
+    final texelY = _height / resolution;
+    _left = (_minX / texelX).floorToDouble() * texelX;
+    _bottom = (_minY / texelY).floorToDouble() * texelY;
+    writeOrthographic(
+      _projection,
+      _left,
+      _left + _width,
+      _bottom,
+      _bottom + _height,
+      _near,
+      _far,
+    );
+    multiplyMatrices(_projection, _view, _viewProjection);
+    view.storage.setAll(0, _view);
+    projection.storage.setAll(0, _projection);
+    viewProjection.storage.setAll(0, _viewProjection);
   }
 
   /// The size of the ladder for a map that needs [needed], keeping

@@ -356,6 +356,120 @@ void main() {
         }
       });
     });
+
+    group('fitted to given bounds', () {
+      final receivers = Aabb3.minMax(
+        Vector3(-14, -14, -1.4),
+        Vector3(14, 14, 3),
+      );
+      final casters = Aabb3.minMax(Vector3(-20, -20, -2), Vector3(20, 20, 8));
+      final light = Vector3(0.34, -0.46, -0.82);
+
+      Float64List fitted(DirectionalShadowProjection projection) {
+        projection.fitBounds(
+          direction: light,
+          receivers: receivers,
+          casters: casters,
+          resolution: 2048,
+        );
+        return Float64List.fromList([
+          ...projection.viewProjection.storage,
+          projection.left,
+          projection.bottom,
+          projection.right,
+          projection.top,
+          projection.near,
+          projection.far,
+        ]);
+      }
+
+      test(
+        'covers the receivers, and no caster is nearer than its near end',
+        () {
+          final projection = DirectionalShadowProjection();
+          fitted(projection);
+          for (final corner in _corners(receivers)) {
+            expect(_clip(projection, corner), _inMap());
+          }
+          // Nothing of the casters is nearer to the light than the near end
+          // (what lies beyond the far end is behind every receiver).
+          for (final corner in _corners(casters)) {
+            expect(_clip(projection, corner).z, greaterThanOrEqualTo(0));
+          }
+          // No larger than the receivers need: one texel more than their
+          // extent seen from the light.
+          final extent = DirectionalShadowProjection()
+            ..update(
+              direction: light,
+              casters: receivers,
+              resolution: 2048,
+              stabilize: false,
+            );
+          expect(
+            projection.right - projection.left,
+            closeTo(extent.right - extent.left, 1e-9),
+          );
+          expect(
+            projection.top - projection.bottom,
+            closeTo(extent.top - extent.bottom, 1e-9),
+          );
+        },
+      );
+
+      test('is the same to the last bit whatever was fitted before', () {
+        final fresh = fitted(DirectionalShadowProjection());
+        final reused = DirectionalShadowProjection();
+        // Fits that move the size, the edges and the near end around.
+        final (view, viewProjection) = _topDownCamera(x: 3, size: 6);
+        reused
+          ..update(
+            direction: light,
+            casters: casters,
+            receivers: receivers,
+            cameraViewProjection: viewProjection,
+            cameraView: view,
+            resolution: 1024,
+            holdNear: true,
+            holdWindow: true,
+          )
+          ..update(
+            direction: Vector3(0.5, -0.4, -0.7),
+            casters: Aabb3.minMax(Vector3.all(-3), Vector3.all(30)),
+            resolution: 512,
+          );
+        expect(fitted(reused), fresh);
+        expect(fitted(reused), fresh);
+      });
+
+      test('keeps its edges on whole texels of the light view', () {
+        final projection = DirectionalShadowProjection();
+        fitted(projection);
+        final across = projection.left / projection.texelWidth;
+        expect(across, closeTo(across.roundToDouble(), 1e-6));
+        final up = projection.bottom / projection.texelHeight;
+        expect(up, closeTo(up.roundToDouble(), 1e-6));
+      });
+
+      test('does not depend on the casters beyond their depth', () {
+        // Only the corner of the casters nearest to the light matters, and
+        // only for the near end: wider casters leave the window as it is.
+        final narrow = DirectionalShadowProjection()
+          ..fitBounds(
+            direction: light,
+            receivers: receivers,
+            casters: receivers,
+            resolution: 2048,
+          );
+        final wide = DirectionalShadowProjection();
+        fitted(wide);
+        expect(wide.left, narrow.left);
+        expect(wide.bottom, narrow.bottom);
+        expect(wide.texelWidth, narrow.texelWidth);
+        expect(wide.texelHeight, narrow.texelHeight);
+        expect(wide.far, greaterThanOrEqualTo(narrow.far));
+        expect(wide.near, lessThan(narrow.near));
+      });
+    });
   });
 }
 

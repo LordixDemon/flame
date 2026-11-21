@@ -1978,6 +1978,15 @@ class SceneSerializer3D({
           b.max.y,
           b.max.z,
         ],
+      if (s.casterBounds case final b?)
+        'casterBounds': <double>[
+          b.min.x,
+          b.min.y,
+          b.min.z,
+          b.max.x,
+          b.max.y,
+          b.max.z,
+        ],
       'maxDistance': ?s.maxDistance,
       'strength': s.strength,
       'color': _encodeColor(s.color),
@@ -2005,10 +2014,18 @@ class SceneSerializer3D({
         Vector3(b[3], b[4], b[5]),
       );
     }
+    Aabb3? casterBounds;
+    if (_asDoubleList(data['casterBounds']) case final b? when b.length >= 6) {
+      casterBounds = Aabb3.minMax(
+        Vector3(b[0], b[1], b[2]),
+        Vector3(b[3], b[4], b[5]),
+      );
+    }
     return ShadowSettings(
       resolution: _asInt(data['resolution']) ?? 1024,
       fit: _enumByName(ShadowFit.values, data['fit']) ?? ShadowFit.view,
       bounds: bounds,
+      casterBounds: casterBounds,
       maxDistance: _asDouble(data['maxDistance']),
       strength: _asDouble(data['strength']) ?? 1.0,
       color: _decodeColorOrNull(data['color']) ?? const Color(0xFF000000),

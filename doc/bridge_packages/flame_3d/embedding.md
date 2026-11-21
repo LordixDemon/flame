@@ -340,7 +340,9 @@ What a game can rely on:
   the group changes (the group's `castersVersion`) and when a layer of the group moves on the screen
   (the group's `viewsVersion`). The other changes of the other layers that leave the bounds of
   their worlds alone (colors, materials, objects that cast no shadows moving inside those bounds)
-  leave its image alone, and it stays identical to a fresh render.
+  leave its image alone, and it stays identical to a fresh render. With `ShadowFit.fixed` the
+  bounds of the worlds do not reach the map at all (see
+  [A map that does not move](shadows.md#a-map-that-does-not-move)).
 - While the retained layer reuses its image it renders no shadow map, and the next layer of the
   group that renders draws the group's map instead: the group still costs one shadow pass per frame
   while any of its layers renders, and none while all of them reuse their images (or with

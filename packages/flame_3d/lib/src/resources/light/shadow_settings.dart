@@ -28,8 +28,17 @@ class ShadowSettings({
 
   /// The region that receives shadows, in world space, instead of the bounds
   /// of the whole scene: see [ShadowFit]. Casters outside it still cast
-  /// shadows into it.
+  /// shadows into it. [ShadowFit.fixed] needs it.
   var Aabb3? bounds,
+
+  /// With [ShadowFit.fixed], the region that holds every caster, in world
+  /// space: the depth range of the map reaches from the far end of [bounds]
+  /// back towards the light over all of it, instead of over the bounds of
+  /// the scene. `null` takes [bounds]. A caster nearer to the light than
+  /// every corner of it is cut off where it is nearer, so let it hold
+  /// everything that can cast, at the highest it can rise. Other fits ignore
+  /// it.
+  var Aabb3? casterBounds,
 
   /// With [ShadowFit.view], the farthest distance from the camera, along the
   /// direction it looks in, that receives shadows; `null` for no limit
@@ -229,6 +238,19 @@ enum ShadowFit() {
   /// the region does, which suits small scenes seen whole, and scenes whose
   /// camera moves a lot.
   scene,
+
+  /// The whole of [ShadowSettings.bounds], with a depth range over
+  /// [ShadowSettings.casterBounds], held: the projection depends on the
+  /// light's direction, these two boxes and the resolution alone, not on the
+  /// camera, the bounds of the scene, nor earlier frames. As long as the
+  /// light does not turn, every frame has the same projection to the last
+  /// bit, so the edges of the shadows stay where they are, and the kept map
+  /// of [ShadowSettings.cacheWhenStatic] and the kept layer of
+  /// [ShadowSettings.cacheStillCasters] last while the casters do not change.
+  /// The map covers the bounds exactly: [ShadowSettings.stabilize] does not
+  /// apply. Needs [ShadowSettings.bounds]: a shadow pass without them throws
+  /// a [StateError].
+  fixed,
 }
 
 /// How a shadow map stores depths.

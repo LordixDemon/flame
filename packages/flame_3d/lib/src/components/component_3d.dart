@@ -684,6 +684,9 @@ abstract class Component3D({
       resolution: shadows.resolution,
       fit: shadows.fit,
       bounds: shadows.bounds == null ? null : Aabb3.copy(shadows.bounds!),
+      casterBounds: shadows.casterBounds == null
+          ? null
+          : Aabb3.copy(shadows.casterBounds!),
       maxDistance: shadows.maxDistance,
       strength: shadows.strength,
       color: shadows.color,

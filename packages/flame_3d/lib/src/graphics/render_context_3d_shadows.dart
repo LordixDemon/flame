@@ -423,6 +423,17 @@ class _ShadowPass(final RenderContext3D _context) {
       texelWorldSize =
           (2.0 * math.tan(spot.outerConeAngle.clamp(0.05, 1.4)) * zFar * 0.35) /
           resolution;
+    } else if (settings.fit == ShadowFit.fixed) {
+      projection.fitBounds(
+        direction: direction,
+        receivers: _fixedBounds(settings),
+        casters: settings.casterBounds ?? settings.bounds!,
+        resolution: resolution,
+      );
+      _lightViewProjection.setFrom(projection.viewProjection);
+      activeLightView = projection.view;
+      activeLightProj = projection.projection;
+      texelWorldSize = math.max(projection.texelWidth, projection.texelHeight);
     } else {
       final fitView = settings.fit == ShadowFit.view;
       final views = _fitViewProjections;
@@ -1290,6 +1301,19 @@ class _ShadowPass(final RenderContext3D _context) {
   // [_fitCascades], one bit per cascade.
   int _cascadeMask = 0;
 
+  /// The receiving region of [settings] with [ShadowFit.fixed], which needs
+  /// one.
+  static Aabb3 _fixedBounds(ShadowSettings settings) {
+    final bounds = settings.bounds;
+    if (bounds == null) {
+      throw StateError(
+        'ShadowFit.fixed needs ShadowSettings.bounds: the region that '
+        'receives shadows',
+      );
+    }
+    return bounds;
+  }
+
   /// Fits the [count] cascades of a directional light travelling along
   /// [direction] into [cascades], setting a bit of [_cascadeMask] for each
   /// cascade kept.
@@ -1314,16 +1338,28 @@ class _ShadowPass(final RenderContext3D _context) {
     final context = _context;
     _cascadeSplits(settings, count);
     final perspective = context._projectionMatrix.storage[15].abs() < 0.5;
+    final fixed = settings.fit == ShadowFit.fixed;
     final fitView = settings.fit == ShadowFit.view;
     final views = _fitViewProjections;
-    final region = settings.bounds ?? sceneBounds;
+    final region = fixed
+        ? _fixedBounds(settings)
+        : settings.bounds ?? sceneBounds;
+    final fixedCasters = settings.casterBounds ?? region;
     final far = settings.maxDistance ?? _viewDepthExtent(region);
     _cascadeMask = 0;
     var outerTexel = double.infinity;
     for (var c = count - 1; c >= 0; c--) {
       final proj = cascades[c];
       final bool fitted;
-      if (c == count - 1) {
+      if (fixed && c == count - 1) {
+        proj.fitBounds(
+          direction: direction,
+          receivers: region,
+          casters: fixedCasters,
+          resolution: tileSize,
+        );
+        fitted = true;
+      } else if (c == count - 1) {
         fitted = proj.update(
           direction: direction,
           casters: sceneBounds,
@@ -1369,14 +1405,24 @@ class _ShadowPass(final RenderContext3D _context) {
         final hz = (max.z - min.z) * scale;
         _subBox.min.setValues(cx - hx, cy - hy, cz - hz);
         _subBox.max.setValues(cx + hx, cy + hy, cz + hz);
-        fitted = proj.update(
-          direction: direction,
-          casters: sceneBounds,
-          receivers: _subBox,
-          resolution: tileSize,
-          stabilize: settings.stabilize,
-          holdNear: hold,
-        );
+        if (fixed) {
+          proj.fitBounds(
+            direction: direction,
+            receivers: _subBox,
+            casters: fixedCasters,
+            resolution: tileSize,
+          );
+          fitted = true;
+        } else {
+          fitted = proj.update(
+            direction: direction,
+            casters: sceneBounds,
+            receivers: _subBox,
+            resolution: tileSize,
+            stabilize: settings.stabilize,
+            holdNear: hold,
+          );
+        }
       }
       if (!fitted) {
         continue;

@@ -57,7 +57,17 @@ MeshComponent _cube() {
 LightComponent _sun({ShadowFit fit = ShadowFit.view, int cascades = 1}) {
   return LightComponent.directional(
     direction: Vector3(1, 0, -1),
-    shadows: ShadowSettings(fit: fit, cascades: cascades),
+    shadows: ShadowSettings(
+      fit: fit,
+      cascades: cascades,
+      // The ground of the catcher, and above it the cube, for the fixed fit.
+      bounds: fit == ShadowFit.fixed
+          ? Aabb3.minMax(Vector3(-3, -3, 0), Vector3(7, 7, 0))
+          : null,
+      casterBounds: fit == ShadowFit.fixed
+          ? Aabb3.minMax(Vector3(-3, -3, 0), Vector3(7, 7, 2))
+          : null,
+    ),
   );
 }
 

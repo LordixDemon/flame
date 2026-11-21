@@ -141,16 +141,70 @@ receives shadows:
   sharpens them for a perspective camera that sees far.
 - With `ShadowFit.scene`, the whole region, whatever the camera sees: the map only changes when the
   region does.
+- With `ShadowFit.fixed`, the whole of the settings' `bounds`, held: see
+  [A map that does not move](#a-map-that-does-not-move).
 
-Either way, the map reaches from the receivers back towards the light over the whole scene, so that
-every object between the light and the visible receivers casts its shadow, even when it is not on
-screen itself.
+With `view` and `scene`, the map reaches from the receivers back towards the light over the whole
+scene, so that every object between the light and the visible receivers casts its shadow, even when
+it is not on screen itself.
 
 The light's view looks along its direction from the world origin, and does not move with the
 camera. With `stabilize` (the default), the width and height of the map only take sizes on a ladder
 (steps of `2^(1/8)`, about 9 %, kept while they still fit) and its edges are snapped to whole texels
 of the light's view: as the camera pans, a point of the world keeps landing on the same spot of a
 texel, and the edges of the shadows stay still instead of shimmering.
+
+
+### A map that does not move
+
+With `ShadowFit.view` the map follows the camera, and with `view` and `scene` its depth range
+follows the bounds of the scene, which hold every component, whether it casts shadows or not: a
+bird that flies higher, a particle that rises or a token that walks to the edge of the board moves
+the far end of the map by a little. Each such move draws the map again, and its depths, which a
+kept map or a kept layer of still casters (see [Still casters](#still-casters)) hold, then differ
+from those of the next frame by the last bits.
+
+`ShadowFit.fixed` fits the map to boxes you give instead, once:
+
+```dart
+LightComponent.directional(
+  direction: Vector3(0.34, -0.46, -0.82),
+  shadows: ShadowSettings(
+    fit: ShadowFit.fixed,
+    resolution: 2048,
+    // What receives shadows: the map covers exactly this, seen from the light.
+    bounds: Aabb3.minMax(Vector3(-14, -14, -1.4), Vector3(14, 14, 2.6)),
+    // What can cast: the depth range reaches back towards the light over it.
+    casterBounds: Aabb3.minMax(Vector3(-22, -22, -2), Vector3(22, 22, 8)),
+    cacheStillCasters: true,
+  ),
+);
+```
+
+- The map covers the extent of `bounds` seen from the light, one texel larger so that its edges lie
+  on whole texels of the light's view. `stabilize` does not apply: nothing follows a camera, so no
+  ladder of sizes is needed, and the map is as sharp as the bounds allow.
+- Its depth range reaches from the farthest corner of `bounds` back towards the light over every
+  corner of `casterBounds` (`bounds` when it is `null`).
+- The projection depends on the light's direction, these two boxes and the `resolution` alone: not
+  on the camera, not on the bounds of the scene, not on earlier frames. While the light does not
+  turn, every frame has the same projection to the last bit, so the edges of the shadows stand
+  still while the camera pans and zooms and things that cast nothing move, and a kept map or a kept
+  layer of still casters lasts while the casters do not change. A light that turns and comes back
+  gives the projection it had.
+- A shadow pass without `bounds` throws a `StateError`.
+
+Since the map covers the whole region at any zoom, a camera that comes close sees larger texels than
+with `ShadowFit.view`, which spends the map on what it sees: give it the resolution the closest view
+needs, or cascades. With cascades, the last one covers `bounds` as above and cascade `c` the middle
+`splits[c]` of `bounds` (each axis scaled about its center), each with the depth range over
+`casterBounds`.
+
+A caster nearer to the light than every corner of `casterBounds` is cut off where it is nearer:
+let the box hold everything that can cast, at the highest it can rise, and wide enough on the side
+of the light for the casters out of `bounds` whose shadows fall into it. A larger box only costs
+depth precision (a 32-bit map keeps about 7 significant digits of the range, a packed one
+`1/16777216` of it).
 
 
 ### How depths are stored
@@ -334,8 +388,9 @@ The map is reused when all of these match the frame that rendered it:
   `stabilize` and `cascades` of its settings;
 - the resolution and the encoding of the map (for the atlas, its size);
 - the fitted light view-projection, compared element by element: the bounds of the scene, the
-  settings' `bounds`, the position and direction of a spot light, and, with `ShadowFit.view`, the
-  camera are all part of it. On the atlas, every tile is compared: its light, its rectangle, and its
+  settings' `bounds` (and `casterBounds` with `ShadowFit.fixed`, which leaves out the bounds of the
+  scene), the position and direction of a spot light, and, with `ShadowFit.view`, the camera are
+  all part of it. On the atlas, every tile is compared: its light, its rectangle, and its
   view-projection (the position and range of a point light).
 
 `strength`, `color`, `softness` and the biases are not part of the key: they are applied by the
@@ -384,7 +439,8 @@ next time the world renders without the cache, or switches between the single ma
 
 With `ShadowFit.view`, every move of the camera refits the map and renders it again: the cache only
 helps a still camera. With `ShadowFit.scene`, the map depends on the bounds of the scene alone, and
-the cache holds while the camera pans. The map of a `ShadowGroup` is fitted to what all its layers
+the cache holds while the camera pans. With `ShadowFit.fixed`, it depends on the boxes of the
+settings alone, and holds while things that cast nothing move too. The map of a `ShadowGroup` is fitted to what all its layers
 show, so its cache holds while no layer moves on the screen and no caster of the group changes,
 whichever layers render.
 
@@ -489,7 +545,9 @@ directional light (and each of its cascades) is held:
 The receiving region is `bounds`, or the bounds of the scene: without `bounds`, a caster that rises
 above the others grows the scene bounds and refits the map, so give `bounds` the region that
 receives shadows (a board, a level) and casters can rise above it, a podium or a die in the air,
-within the room in front of them. A view whose projection changes is rendered whole for that frame,
+within the room in front of them. `ShadowFit.fixed` holds nothing of this: its projection is the
+same in every frame (see [A map that does not move](#a-map-that-does-not-move)), so a layer lasts
+until a still caster changes. A view whose projection changes is rendered whole for that frame,
 as without the option, so a camera that `ShadowFit.view` follows costs what it costs without it
 while it moves; its layer is rendered again in the first frame the camera holds still. Spot lights
 and point lights do not depend on the bounds.
@@ -826,8 +884,10 @@ These are the parts of shadows that are not finished at this point:
   `ChunkedTerrain3D`, `FoliageSystem3D` and `LodMeshComponent` (when it has no `shadowMesh` and
   `lowestLodInShadowPass` is off) cast from the detail the camera of the frame selects (see
   [Large Worlds](world_scale.md#frustum-culling-and-bounds)).
-- The sun's map is fitted to `World3D.sceneBounds`, the union of the bounds of the components of
-  the world, whether they cast shadows or not. A component with huge bounds spreads the map over
+- With `ShadowFit.fixed`, a caster nearer to the light than every corner of `casterBounds` is cut
+  off where it is nearer, and the map spends its texels on the whole of `bounds` at every zoom.
+- With `ShadowFit.view` and `ShadowFit.scene`, the sun's map is fitted to `World3D.sceneBounds`, the
+  union of the bounds of the components of the world, whether they cast shadows or not. A component with huge bounds spreads the map over
   them until the shadows vanish, unless its `Component3D.includeInSceneBounds` is `false`, which
   leaves it out of the scene bounds (only for direct children of the world; `DebugRenderer3D`,
   whose bounds reach ±100000 units, sets it). Set it on such components.

@@ -181,6 +181,33 @@ void main() {
       }
     });
 
+    test('a fixed fit keeps its bounds and caster bounds', () {
+      final world = World3D(
+        children: [
+          LightComponent(
+            source: DirectionalLight(
+              shadows: ShadowSettings(
+                fit: ShadowFit.fixed,
+                bounds: Aabb3.minMax(Vector3(-4, -1, -4), Vector3(4, 1, 4)),
+                casterBounds: Aabb3.minMax(
+                  Vector3(-6, -1, -6),
+                  Vector3(6, 5, 6),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+      for (final loaded in _roundTrip(SceneSerializer3D(), world)) {
+        final light = loaded.children.whereType<LightComponent>().single;
+        final shadows = (light.source as DirectionalLight).shadows!;
+        expect(shadows.fit, ShadowFit.fixed);
+        expect(shadows.bounds!.max, Vector3(4, 1, 4));
+        expect(shadows.casterBounds!.min, Vector3(-6, -1, -6));
+        expect(shadows.casterBounds!.max, Vector3(6, 5, 6));
+      }
+    });
+
     test(
       'primitives keep their segment counts and are saved as primitives',
       () {
