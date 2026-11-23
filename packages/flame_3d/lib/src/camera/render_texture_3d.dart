@@ -106,38 +106,24 @@ class RenderTexture3D({
     if (_isRendering) {
       return false;
     }
-    GraphicsDevice resolvedDevice;
-    RenderContext3D resolvedContext;
-    var closeFrame = false;
-    EmbeddedRenderer? embedded;
-    var closeEmbedded = false;
-
-    if (device != null && context != null) {
-      resolvedDevice = device;
-      resolvedContext = context;
-    } else {
-      final game = world.findGame();
-      if (game case final Game3D g3d) {
-        resolvedDevice = g3d.device;
-        resolvedContext = g3d.context;
-        if (!g3d.isRenderingFrame) {
-          resolvedDevice.begin();
-          closeFrame = true;
-        }
-      } else {
-        embedded = EmbeddedRenderer.of(game ?? world);
-        resolvedDevice = embedded.device;
-        resolvedContext = embedded.context;
-        closeEmbedded = embedded.open();
-      }
-    }
+    final game = world.findGame();
+    final game3d = switch (game) {
+      final Game3D g => g,
+      _ => null,
+    };
+    final session = DeviceFrameSession.acquire(
+      fallbackKey: game ?? world,
+      device: device,
+      context: context,
+      hostDevice: game3d?.device,
+      hostContext: game3d?.context,
+      isHostRenderingFrame: game3d?.isRenderingFrame ?? false,
+    );
+    final resolvedDevice = session.device;
+    final resolvedContext = session.context;
 
     if (!resolvedDevice.backend.supportsTextureTargets) {
-      if (closeFrame) {
-        resolvedDevice.end();
-      } else if (closeEmbedded) {
-        embedded!.close();
-      }
+      session.end();
       return false;
     }
 
@@ -173,11 +159,7 @@ class RenderTexture3D({
         ..cameraMask = savedMask
         ..setCamera(_savedView, _savedProjection);
       world.disposeFallbackDummyCanvas();
-      if (closeFrame) {
-        resolvedDevice.end();
-      } else if (closeEmbedded) {
-        embedded!.close();
-      }
+      session.end();
     }
   }
 

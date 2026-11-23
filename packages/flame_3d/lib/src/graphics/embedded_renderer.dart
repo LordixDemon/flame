@@ -60,3 +60,63 @@ class EmbeddedRenderer._() {
     }
   }
 }
+
+/// Scoped graphics-device + render-context handle that opens a frame on
+/// demand when invoked outside an enclosing `Game3D` render frame and closes it
+/// on [end].
+@internal
+final class DeviceFrameSession._({
+  /// Resolved graphics device for the pass.
+  required final GraphicsDevice device,
+
+  /// Resolved render context for the pass.
+  required final RenderContext3D context,
+  final EmbeddedRenderer? _embedded,
+  final bool _closeDevice = false,
+  final bool _closeEmbedded = false,
+}) {
+  /// Acquires an active `(device, context)` pair, reusing caller-supplied
+  /// handles or host handles when present, otherwise borrowing an
+  /// [EmbeddedRenderer] keyed by [fallbackKey].
+  factory DeviceFrameSession.acquire({
+    required Object fallbackKey,
+    GraphicsDevice? device,
+    RenderContext3D? context,
+    GraphicsDevice? hostDevice,
+    RenderContext3D? hostContext,
+    bool isHostRenderingFrame = false,
+  }) {
+    if (device != null && context != null) {
+      return DeviceFrameSession._(device: device, context: context);
+    }
+    if (hostDevice != null && hostContext != null) {
+      var closeDevice = false;
+      if (!isHostRenderingFrame) {
+        hostDevice.begin();
+        closeDevice = true;
+      }
+      return DeviceFrameSession._(
+        device: hostDevice,
+        context: hostContext,
+        closeDevice: closeDevice,
+      );
+    }
+    final embedded = EmbeddedRenderer.of(fallbackKey);
+    final closeEmbedded = embedded.open();
+    return DeviceFrameSession._(
+      device: embedded.device,
+      context: embedded.context,
+      embedded: embedded,
+      closeEmbedded: closeEmbedded,
+    );
+  }
+
+  /// Closes any frame opened by [DeviceFrameSession.acquire].
+  void end() {
+    if (_closeDevice) {
+      device.end();
+    } else if (_closeEmbedded) {
+      _embedded!.close();
+    }
+  }
+}

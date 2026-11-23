@@ -467,21 +467,22 @@ class WaterMaterial({
   // Whether the masked variant drew: only then are its values written.
   bool _maskedInUse = false;
 
-  VertexLayout? _lastLayout;
-  Shader? _lastShader;
+  final VertexShaderLayoutCache _vertexLayoutCache = VertexShaderLayoutCache();
 
   @override
   Shader vertexShaderFor(VertexLayout layout) {
-    if (!identical(layout, _lastLayout)) {
-      _lastLayout = layout;
-      if (layout.offsetOf(waterAttribute) != null) {
-        _lastShader = _maskedVertexShader;
-        _maskedInUse = true;
-      } else {
-        _lastShader = vertexShader;
-      }
+    final cached = _vertexLayoutCache.lookup(layout);
+    if (cached != null) {
+      return cached;
     }
-    return _lastShader!;
+    final Shader selected;
+    if (layout.offsetOf(waterAttribute) != null) {
+      selected = _maskedVertexShader;
+      _maskedInUse = true;
+    } else {
+      selected = vertexShader;
+    }
+    return _vertexLayoutCache.store(layout, selected);
   }
 
   static final Vector3 _up = Vector3.zero();

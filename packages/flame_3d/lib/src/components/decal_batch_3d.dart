@@ -7,6 +7,7 @@ import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/extensions/clip_space.dart';
+import 'package:flame_3d/src/resources/mesh/unit_quad_surface.dart';
 
 /// {@template decal_batch_3d}
 /// Draws many flat 3D surface decals in a single instanced draw call using
@@ -74,20 +75,6 @@ class DecalBatch3D({
   int _sortCount = 0;
 
   static const int _stride = VertexLayout.instanceStrideInFloats;
-
-  static final Surface _unitQuad = Surface.fromBuffers(
-    vertices: Float32List.fromList(const [
-      -0.5, -0.5, 0.0, 0.0, 1.0, //
-      0.5, -0.5, 0.0, 1.0, 1.0, //
-      0.5, 0.5, 0.0, 1.0, 0.0, //
-      -0.5, 0.5, 0.0, 0.0, 0.0, //
-    ]),
-    indices: Uint16List.fromList(const [0, 1, 2, 0, 2, 3]),
-    layout: VertexLayout(const [
-      VertexAttribute(VertexLayout.positionAttribute, 3),
-      VertexAttribute('vertexTexCoord', 2),
-    ]),
-  );
 
   int _capacity = 16;
   int _length = 0;
@@ -296,7 +283,7 @@ class DecalBatch3D({
     worldTransformMatrix.transform3(center);
     final buffer = _resolvedBuffer();
     context.drawInstances(
-      _unitQuad,
+      unitQuadSurface3D,
       instances: _sortByDepth ? _sortedBuffer(buffer, context) : buffer,
       count: _length,
       material: material,

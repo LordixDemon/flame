@@ -1,8 +1,8 @@
 import 'dart:ui' hide FragmentShader;
 
-import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/resources/material/material_apply_cache.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 /// {@template outline_material}
@@ -83,59 +83,116 @@ class OutlineMaterial({
   );
 
   bool _skinnedInUse = false;
-  VertexLayout? _lastLayout;
-  Shader? _lastShader;
+  final VertexShaderLayoutCache _vertexLayoutCache = VertexShaderLayoutCache();
+
+  int _appliedVersion = -1;
+  Shader? _appliedVert;
+  int _appliedVertGen = -1;
+  double _appliedAspect = double.nan;
 
   @override
   Shader vertexShaderFor(VertexLayout layout) {
-    if (!identical(layout, _lastLayout)) {
-      _lastLayout = layout;
-      final skinned =
-          layout.offsetOf('vertexJoints') != null &&
-          layout.offsetOf('vertexWeights') != null;
-      if (skinned) {
-        _skinnedInUse = true;
-        _lastShader = _skinnedVertexShader;
-      } else {
-        _lastShader = vertexShader;
-      }
+    final cached = _vertexLayoutCache.lookup(layout);
+    if (cached != null) {
+      return cached;
     }
-    return _lastShader!;
+    final skinned =
+        layout.offsetOf('vertexJoints') != null &&
+        layout.offsetOf('vertexWeights') != null;
+    if (skinned) {
+      _skinnedInUse = true;
+      return _vertexLayoutCache.store(layout, _skinnedVertexShader);
+    }
+    return _vertexLayoutCache.store(layout, vertexShader);
   }
 
-  final Vector4 _params = Vector4.zero();
+  @override
+  bool get hasPassStableFragmentShader => runtimeType == OutlineMaterial;
 
   @override
-  void apply(RenderContext context) {
-    var aspect = 1.0;
+  bool get cachesApply => runtimeType == OutlineMaterial;
+
+  @override
+  void invalidateApplyCache() {
+    _appliedVersion = -1;
+  }
+
+  @override
+  bool isApplyCacheValid(
+    RenderContext context,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) {
+    return _appliedVersion == version &&
+        identical(_appliedVert, vertexShader) &&
+        _appliedVertGen == vertexShader.generation &&
+        _appliedAspect == _aspectOf(context);
+  }
+
+  @override
+  void recordApplyCache(
+    RenderContext context,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) {
+    _appliedVersion = version;
+    _appliedVert = vertexShader;
+    _appliedVertGen = vertexShader.generation;
+    _appliedAspect = _aspectOf(context);
+  }
+
+  static double _aspectOf(RenderContext context) {
     if (context is RenderContext3D) {
       final p = context.projection.storage;
       if (p[0].abs() > 1e-6 && p[5].abs() > 1e-6) {
-        aspect = (p[0] / p[5]).abs();
+        return (p[0] / p[5]).abs();
       }
     }
-    _params.setValues(
-      thickness,
-      depthBias,
-      screenSpace ? 1.0 : 0.0,
-      aspect,
-    );
+    return 1.0;
+  }
+
+  void _writeShader(Shader target, double aspect) {
+    target.resource;
+    final idx = target.blockIndexOf('Outline');
+    if (idx < 0) {
+      return;
+    }
+    final block = target.blockAt(idx);
+    final off =
+        (block.cachedWriterOffsets as _OutlineOffsets?) ??
+        (block.cachedWriterOffsets = _OutlineOffsets(block));
+    if (off._color >= 0) {
+      block.writeColorAt(off._color, color);
+    }
+    if (off._params >= 0) {
+      block.writeVec4ValuesAt(
+        off._params,
+        thickness,
+        depthBias,
+        screenSpace ? 1.0 : 0.0,
+        aspect,
+      );
+    }
+  }
+
+  @override
+  void apply(RenderContext context) {
+    final aspect = _aspectOf(context);
     final activeVert = context is RenderContext3D
         ? context.activeApplyVertexShader
         : null;
     if (activeVert != null) {
-      activeVert
-        ..setColor('Outline.color', color)
-        ..setVector4('Outline.params', _params);
+      _writeShader(activeVert, aspect);
     } else {
-      vertexShader
-        ..setColor('Outline.color', color)
-        ..setVector4('Outline.params', _params);
+      _writeShader(vertexShader, aspect);
       if (_skinnedInUse) {
-        _skinnedVertexShader
-          ..setColor('Outline.color', color)
-          ..setVector4('Outline.params', _params);
+        _writeShader(_skinnedVertexShader, aspect);
       }
     }
   }
+}
+
+class _OutlineOffsets(final UniformBlock _b) {
+  late final int _color = _b.resolveOffset('color');
+  late final int _params = _b.resolveOffset('params');
 }

@@ -3,7 +3,28 @@ part of 'barrier_material.dart';
 extension _BarrierUniforms on BarrierMaterial {
   /// Writes this material's values into the shaders of [target] (this
   /// material, or its reaction material with [reactionScale] above `0`).
-  void _write(Material target, RenderContext3D context, double reactionScale) {
+  void _write(
+    Material target,
+    RenderContext3D context,
+    double reactionScale,
+    CameraPassApplyCache applyCache,
+  ) {
+    final vertex = target.vertexShaderFor(BarrierMesh.layout)..resource;
+    final shader = target.fragmentShader..resource;
+    final lookIdx = shader.blockIndexOf('BarrierLook');
+    if (applyCache.isShaderAndVersionValid(target.version, vertex, shader)) {
+      if (lookIdx >= 0) {
+        final lb = shader.blockAt(lookIdx);
+        final lo =
+            (lb.cachedWriterOffsets as _BarrierLookOffsets?) ??
+            (lb.cachedWriterOffsets = _BarrierLookOffsets(lb));
+        if (lo._viewer >= 0) {
+          _writeViewerTo(context, lb, lo._viewer);
+        }
+      }
+      return;
+    }
+
     final appear = this.appear.clamp(0.0, 1.0);
     final count = _packImpacts();
 
@@ -12,7 +33,6 @@ extension _BarrierUniforms on BarrierMaterial {
     final wavelength = math.max(wobbleWavelength, 1e-3);
     final radius = math.max(wobbleRadius, 1e-3);
     final amplitude = wobbleAmplitude > 0 ? wobbleAmplitude : 0.0;
-    final vertex = target.vertexShaderFor(BarrierMesh.layout)..resource;
     final shapeIdx = vertex.blockIndexOf('BarrierShape');
     final p = _packedImpacts;
     if (shapeIdx >= 0) {
@@ -80,8 +100,6 @@ extension _BarrierUniforms on BarrierMaterial {
 
     final blend = renderState.blend;
     final colors = _colors;
-    final shader = target.fragmentShader..resource;
-    final lookIdx = shader.blockIndexOf('BarrierLook');
     if (lookIdx < 0) {
       return;
     }

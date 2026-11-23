@@ -6,14 +6,15 @@ import 'dart:ui';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/resources.dart';
 
-// TODO(wolfenrain): heavily inspired by the Godot one, maybe this should be
-// part of the core package
+/// Procedural triangle/vertex builder that deduplicates shared vertices into an
+/// indexed [Mesh] [Surface] with optional normals, UVs, colors, and tangents.
 class SurfaceTool() {
   final List<Vertex> _vertices = [];
   final List<int> _indices = [];
 
   Color _lastColor = const Color(0xFFFFFFFF);
   Vector3? _lastNormal;
+  Vector4? _lastTangent;
   final Vector2 _lastTexCoord = Vector2.zero();
   Material _lastMaterial = SpatialMaterial();
 
@@ -27,6 +28,16 @@ class SurfaceTool() {
     }
   }
 
+  /// Sets the tangent (`xyz` tangent direction, `w` bitangent sign) applied to
+  /// subsequently added vertices, or `null` to omit tangents.
+  void setTangent(Vector4? tangent) {
+    if (tangent == null) {
+      _lastTangent = null;
+    } else {
+      (_lastTangent ??= Vector4.zero()).setFrom(tangent);
+    }
+  }
+
   void setTexCoord(Vector2 texCoord) => _lastTexCoord.setFrom(texCoord);
 
   void setMaterial(Material material) => _lastMaterial = material;
@@ -36,7 +47,7 @@ class SurfaceTool() {
     List<Vector2> texCoords, [
     List<Vector3> normals = const [],
     List<Color> colors = const [],
-    // TODO(wolfenrain): support tangents
+    List<Vector4> tangents = const [],
   ]) {
     assert(vertices.length == 3, 'Expected a length of 3 for vertices');
 
@@ -52,7 +63,11 @@ class SurfaceTool() {
       } else {
         setNormal(null);
       }
-      // TODO(wolfenrain): tangents
+      if (tangents.length > n) {
+        setTangent(tangents[n]);
+      } else {
+        setTangent(null);
+      }
       addVertex(vertices[n]);
     }
 
@@ -69,6 +84,7 @@ class SurfaceTool() {
       texCoord: _lastTexCoord,
       normal: _lastNormal,
       color: _lastColor,
+      tangent: _lastTangent,
     );
 
     _vertices.add(vertex);

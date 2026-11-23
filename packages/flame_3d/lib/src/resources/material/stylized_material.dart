@@ -936,49 +936,49 @@ class StylizedMaterial({
   Shader get fragmentShader =>
       _textured ? _texturedFragment : super.fragmentShader;
 
-  VertexLayout? _lastLayout;
-  bool _lastTextured = false;
-  Shader? _lastShader;
+  final VertexShaderLayoutCache _vertexLayoutCache = VertexShaderLayoutCache();
 
   @override
   Shader vertexShaderFor(VertexLayout layout) {
     final textured = _textured;
-    if (!identical(layout, _lastLayout) || textured != _lastTextured) {
-      if (textured && layout.offsetOf(texCoordAttribute) == null) {
-        throw StateError(
-          'A StylizedMaterial with a baseColorTexture draws surfaces with '
-          'texture coordinates ("$texCoordAttribute"): the standard layout, '
-          'texturedVertexLayout or texturedSkinnedVertexLayout (buildSurface '
-          'with texCoords). This surface is laid out as $layout',
-        );
-      }
-      _lastLayout = layout;
-      _lastTextured = textured;
-      if (layout.offsetOf(masksAttribute) == null) {
-        if (textured) {
-          _lastShader = _texturedStandardVertexShader;
-          _texturedStandardInUse = true;
-        } else {
-          _lastShader = _standardVertexShader;
-          _standardInUse = true;
-        }
-      } else if (layout.offsetOf(jointsAttribute) != null &&
-          layout.offsetOf(weightsAttribute) != null) {
-        if (textured) {
-          _lastShader = _texturedSkinnedVertexShader;
-          _texturedSkinnedInUse = true;
-        } else {
-          _lastShader = _skinnedVertexShader;
-          _skinnedInUse = true;
-        }
-      } else if (textured) {
-        _lastShader = _texturedVertexShader;
-        _texturedInUse = true;
-      } else {
-        _lastShader = vertexShader;
-      }
+    final key = textured ? 1 : 0;
+    final cached = _vertexLayoutCache.lookup(layout, key);
+    if (cached != null) {
+      return cached;
     }
-    return _lastShader!;
+    if (textured && layout.offsetOf(texCoordAttribute) == null) {
+      throw StateError(
+        'A StylizedMaterial with a baseColorTexture draws surfaces with '
+        'texture coordinates ("$texCoordAttribute"): the standard layout, '
+        'texturedVertexLayout or texturedSkinnedVertexLayout (buildSurface '
+        'with texCoords). This surface is laid out as $layout',
+      );
+    }
+    final Shader selected;
+    if (layout.offsetOf(masksAttribute) == null) {
+      if (textured) {
+        selected = _texturedStandardVertexShader;
+        _texturedStandardInUse = true;
+      } else {
+        selected = _standardVertexShader;
+        _standardInUse = true;
+      }
+    } else if (layout.offsetOf(jointsAttribute) != null &&
+        layout.offsetOf(weightsAttribute) != null) {
+      if (textured) {
+        selected = _texturedSkinnedVertexShader;
+        _texturedSkinnedInUse = true;
+      } else {
+        selected = _skinnedVertexShader;
+        _skinnedInUse = true;
+      }
+    } else if (textured) {
+      selected = _texturedVertexShader;
+      _texturedInUse = true;
+    } else {
+      selected = vertexShader;
+    }
+    return _vertexLayoutCache.store(layout, selected, key);
   }
 
   final MultiVariantApplyCache _applyCache = MultiVariantApplyCache(

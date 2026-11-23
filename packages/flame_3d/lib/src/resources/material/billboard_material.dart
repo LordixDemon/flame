@@ -3,6 +3,7 @@ import 'dart:ui' hide FragmentShader;
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/resources/material/material_apply_cache.dart';
 
 const bool _kIsWeb = identical(0, 0.0);
 
@@ -113,7 +114,6 @@ class BillboardMaterial3D({
   static final Vector3 _right = Vector3.zero();
   static final Vector3 _up = Vector3.zero();
   static final Vector3 _back = Vector3.zero();
-  static final Vector4 _vec = Vector4.zero();
 
   /// Billboard instances hold a center, an up axis and a size, not model
   /// matrices: the opaque ones reach the depth-normal prepass through
@@ -134,26 +134,55 @@ class BillboardMaterial3D({
     visitor(albedoTexture);
   }
 
+  final SimpleApplyCache _fragApplyCache = SimpleApplyCache();
+  Shader? _cachedFrag;
+  int _cachedFragGen = -1;
+  int _albedoTexIdx = -1;
+
   @override
   void apply(RenderContext context) {
     _writeFrame(context as RenderContext3D, vertexShader);
+    final frag = fragmentShader..resource;
+    if (_fragApplyCache.isValid(version, frag)) {
+      return;
+    }
+    _fragApplyCache.record(version, frag);
+
+    if (!identical(_cachedFrag, frag) || _cachedFragGen != frag.generation) {
+      _cachedFrag = frag;
+      _cachedFragGen = frag.generation;
+      _albedoTexIdx = frag.samplerIndexOf('albedoTexture');
+    }
+    if (_albedoTexIdx >= 0) {
+      frag.setTextureAt(_albedoTexIdx, albedoTexture);
+    } else {
+      frag.setTexture('albedoTexture', albedoTexture);
+    }
+
     // 1 when blending premultiplied colors, plus 2 when the texture holds
     // premultiplied colors.
     final blendFlags =
         (renderState.blend == BlendState.premultipliedAlpha ? 1.0 : 0.0) +
         (premultipliedTexture ? 2.0 : 0.0);
-    fragmentShader
-      ..setTexture('albedoTexture', albedoTexture)
-      ..setColor('BillboardLook.albedoColor', albedoColor)
-      ..setVector4(
-        'BillboardLook.params',
-        _vec..setValues(
+    final idx = frag.blockIndexOf('BillboardLook');
+    if (idx >= 0) {
+      final block = frag.blockAt(idx);
+      final off =
+          (block.cachedWriterOffsets as _BillboardLookOffsets?) ??
+          (block.cachedWriterOffsets = _BillboardLookOffsets(block));
+      if (off._albedoColor >= 0) {
+        block.writeColorAt(off._albedoColor, albedoColor);
+      }
+      if (off._params >= 0) {
+        block.writeVec4ValuesAt(
+          off._params,
           alphaCutoff,
           shadeWeight,
           blendFlags,
           ditherFade ? 1.0 : 0.0,
-        ),
-      );
+        );
+      }
+    }
   }
 
   /// Writes the camera's right, up and back directions, as the billboards of
@@ -180,19 +209,24 @@ class BillboardMaterial3D({
       _back.normalize();
     }
 
-    vertexShader
-      ..setVector4(
-        'BillboardFrame.camRight',
-        _vec..setValues(_right.x, _right.y, _right.z, 0),
-      )
-      ..setVector4(
-        'BillboardFrame.camUp',
-        _vec..setValues(_up.x, _up.y, _up.z, 0),
-      )
-      ..setVector4(
-        'BillboardFrame.camBack',
-        _vec..setValues(_back.x, _back.y, _back.z, 0),
-      );
+    vertexShader.resource;
+    final idx = vertexShader.blockIndexOf('BillboardFrame');
+    if (idx < 0) {
+      return;
+    }
+    final block = vertexShader.blockAt(idx);
+    final off =
+        (block.cachedWriterOffsets as _BillboardFrameOffsets?) ??
+        (block.cachedWriterOffsets = _BillboardFrameOffsets(block));
+    if (off._camRight >= 0) {
+      block.writeVec4ValuesAt(off._camRight, _right.x, _right.y, _right.z, 0);
+    }
+    if (off._camUp >= 0) {
+      block.writeVec4ValuesAt(off._camUp, _up.x, _up.y, _up.z, 0);
+    }
+    if (off._camBack >= 0) {
+      block.writeVec4ValuesAt(off._camBack, _back.x, _back.y, _back.z, 0);
+    }
   }
 }
 
@@ -214,20 +248,62 @@ class _BillboardDepthNormalMaterial(final BillboardMaterial3D _source)
   static const String _bundle =
       'packages/flame_3d/assets/shaders/billboard_depth_normal.shaderbundle';
 
+  final SimpleApplyCache _fragApplyCache = SimpleApplyCache();
+  Shader? _cachedFrag;
+  int _cachedFragGen = -1;
+  int _albedoTexIdx = -1;
+
   @override
   void apply(RenderContext context) {
     BillboardMaterial3D._writeFrame(context as RenderContext3D, vertexShader);
     final source = _source;
-    fragmentShader
-      ..setTexture('albedoTexture', source.albedoTexture)
-      ..setVector4(
-        'BillboardDepthLook.params',
-        BillboardMaterial3D._vec..setValues(
+    final frag = fragmentShader..resource;
+    if (_fragApplyCache.isValid(source.version, frag)) {
+      return;
+    }
+    _fragApplyCache.record(source.version, frag);
+
+    if (!identical(_cachedFrag, frag) || _cachedFragGen != frag.generation) {
+      _cachedFrag = frag;
+      _cachedFragGen = frag.generation;
+      _albedoTexIdx = frag.samplerIndexOf('albedoTexture');
+    }
+    if (_albedoTexIdx >= 0) {
+      frag.setTextureAt(_albedoTexIdx, source.albedoTexture);
+    } else {
+      frag.setTexture('albedoTexture', source.albedoTexture);
+    }
+
+    final idx = frag.blockIndexOf('BillboardDepthLook');
+    if (idx >= 0) {
+      final block = frag.blockAt(idx);
+      final off =
+          (block.cachedWriterOffsets as _BillboardDepthLookOffsets?) ??
+          (block.cachedWriterOffsets = _BillboardDepthLookOffsets(block));
+      if (off._params >= 0) {
+        block.writeVec4ValuesAt(
+          off._params,
           source.alphaCutoff,
           source.albedoColor.a,
           0,
           source.ditherFade ? 1.0 : 0.0,
-        ),
-      );
+        );
+      }
+    }
   }
+}
+
+class _BillboardFrameOffsets(final UniformBlock _b) {
+  late final int _camRight = _b.resolveOffset('camRight');
+  late final int _camUp = _b.resolveOffset('camUp');
+  late final int _camBack = _b.resolveOffset('camBack');
+}
+
+class _BillboardLookOffsets(final UniformBlock _b) {
+  late final int _albedoColor = _b.resolveOffset('albedoColor');
+  late final int _params = _b.resolveOffset('params');
+}
+
+class _BillboardDepthLookOffsets(final UniformBlock _b) {
+  late final int _params = _b.resolveOffset('params');
 }

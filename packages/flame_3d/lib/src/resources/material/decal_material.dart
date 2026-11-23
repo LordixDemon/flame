@@ -1,8 +1,8 @@
 import 'dart:ui' hide FragmentShader;
 
-import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/resources/material/material_apply_cache.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 /// {@template decal_material}
@@ -85,8 +85,43 @@ class DecalMaterial({
   static const String _bundle =
       'packages/flame_3d/assets/shaders/decal_material.shaderbundle';
 
-  final Vector4 _params = Vector4.zero();
-  final Vector4 _cutoff = Vector4.zero();
+  final MultiVariantApplyCache _applyCache = MultiVariantApplyCache(1);
+  Shader? _cachedFrag;
+  int _cachedFragGen = -1;
+  int _albedoTexIdx = -1;
+
+  @override
+  bool get hasPassStableFragmentShader => runtimeType == DecalMaterial;
+
+  @override
+  bool get cachesApply => runtimeType == DecalMaterial;
+
+  @override
+  void invalidateApplyCache() => _applyCache.invalidate();
+
+  @override
+  bool isApplyCacheValid(
+    RenderContext context,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) => _applyCache.isValid(
+    version: version,
+    vertexShader: vertexShader,
+    fragmentShader: fragmentShader,
+    variantSlot: identical(vertexShader, super.vertexShader) ? 0 : -1,
+  );
+
+  @override
+  void recordApplyCache(
+    RenderContext context,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) => _applyCache.record(
+    version: version,
+    vertexShader: vertexShader,
+    fragmentShader: fragmentShader,
+    variantSlot: identical(vertexShader, super.vertexShader) ? 0 : -1,
+  );
 
   @override
   void visitTextures(void Function(Texture texture) visitor) {
@@ -95,24 +130,62 @@ class DecalMaterial({
     }
   }
 
+  void _writeDecalBlock(
+    Shader shader,
+    double hasProceduralMask,
+    double premulFlag,
+  ) {
+    final idx = shader.blockIndexOf('Decal');
+    if (idx < 0) {
+      return;
+    }
+    final block = shader.blockAt(idx);
+    final off =
+        (block.cachedWriterOffsets as _DecalOffsets?) ??
+        (block.cachedWriterOffsets = _DecalOffsets(block));
+    if (off._albedoColor >= 0) {
+      block.writeColorAt(off._albedoColor, albedoColor);
+    }
+    if (off._params >= 0) {
+      block.writeVec4ValuesAt(
+        off._params,
+        depthBias,
+        softness,
+        innerRadius,
+        hasProceduralMask,
+      );
+    }
+    if (off._cutoff >= 0) {
+      block.writeVec4ValuesAt(off._cutoff, alphaCutoff, premulFlag, 0, 0);
+    }
+  }
+
   @override
   void apply(RenderContext context) {
     final tex = texture;
-    _params.setValues(
-      depthBias,
-      softness,
-      innerRadius,
-      tex == null ? 1.0 : 0.0,
-    );
-    _cutoff.setValues(alphaCutoff, premultipliedTexture ? 1.0 : 0.0, 0, 0);
-    vertexShader
-      ..setColor('Decal.albedoColor', albedoColor)
-      ..setVector4('Decal.params', _params)
-      ..setVector4('Decal.cutoff', _cutoff);
-    fragmentShader
-      ..setTexture('albedoTexture', tex ?? Texture.standard)
-      ..setColor('Decal.albedoColor', albedoColor)
-      ..setVector4('Decal.params', _params)
-      ..setVector4('Decal.cutoff', _cutoff);
+    final proceduralFlag = tex == null ? 1.0 : 0.0;
+    final premulFlag = premultipliedTexture ? 1.0 : 0.0;
+
+    final vert = vertexShader..resource;
+    _writeDecalBlock(vert, proceduralFlag, premulFlag);
+
+    final frag = fragmentShader..resource;
+    if (!identical(_cachedFrag, frag) || _cachedFragGen != frag.generation) {
+      _cachedFrag = frag;
+      _cachedFragGen = frag.generation;
+      _albedoTexIdx = frag.samplerIndexOf('albedoTexture');
+    }
+    if (_albedoTexIdx >= 0) {
+      frag.setTextureAt(_albedoTexIdx, tex ?? Texture.standard);
+    } else {
+      frag.setTexture('albedoTexture', tex ?? Texture.standard);
+    }
+    _writeDecalBlock(frag, proceduralFlag, premulFlag);
   }
+}
+
+class _DecalOffsets(final UniformBlock _b) {
+  late final int _albedoColor = _b.resolveOffset('albedoColor');
+  late final int _params = _b.resolveOffset('params');
+  late final int _cutoff = _b.resolveOffset('cutoff');
 }

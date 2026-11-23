@@ -109,3 +109,96 @@ final class MultiVariantApplyCache(
     }
   }
 }
+
+/// Shared camera-pass apply-cache tracking [Material.version], active
+/// vertex and fragment [Shader]s + generations, and `(context, cameraPass)`.
+@internal
+final class CameraPassApplyCache() {
+  int _appliedVersion = -1;
+  Shader? _appliedVert;
+  int _appliedVertGen = -1;
+  Shader? _appliedFrag;
+  int _appliedFragGen = -1;
+  RenderContext? _appliedContext;
+  int _appliedCameraPass = -1;
+
+  /// Invalidates any cached apply signature.
+  void invalidate() {
+    _appliedVersion = -1;
+  }
+
+  /// Returns `true` when material [version] and compiled [vertexShader] /
+  /// [fragmentShader] match the previous upload.
+  bool isShaderAndVersionValid(
+    int version,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) {
+    return _appliedVersion == version &&
+        identical(_appliedVert, vertexShader) &&
+        _appliedVertGen == vertexShader.generation &&
+        identical(_appliedFrag, fragmentShader) &&
+        _appliedFragGen == fragmentShader.generation;
+  }
+
+  /// Returns `true` when shaders, [version], [context], and `cameraPass` all
+  /// match the previous upload.
+  bool isValid(
+    RenderContext context,
+    int version,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) {
+    return isShaderAndVersionValid(version, vertexShader, fragmentShader) &&
+        identical(_appliedContext, context) &&
+        context is RenderContext3D &&
+        _appliedCameraPass == context.cameraPass;
+  }
+
+  /// Records [context], [version], [vertexShader], and [fragmentShader] as
+  /// cleanly uploaded.
+  void record(
+    RenderContext context,
+    int version,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) {
+    _appliedVersion = version;
+    _appliedVert = vertexShader;
+    _appliedVertGen = vertexShader.generation;
+    _appliedFrag = fragmentShader;
+    _appliedFragGen = fragmentShader.generation;
+    _appliedContext = context;
+    if (context is RenderContext3D) {
+      _appliedCameraPass = context.cameraPass;
+    }
+  }
+}
+
+/// Single-slot identity cache mapping `(VertexLayout, key)` to a compiled
+/// vertex [Shader], eliminating repeated attribute lookups on homogenous draws.
+@internal
+final class VertexShaderLayoutCache() {
+  VertexLayout? _lastLayout;
+  int _lastKey = 0;
+  Shader? _lastShader;
+
+  /// Returns the cached shader if [layout] is identical to the last entry and
+  /// [key] matches, otherwise `null`.
+  @pragma('vm:prefer-inline')
+  Shader? lookup(VertexLayout layout, [int key = 0]) {
+    if (identical(layout, _lastLayout) && key == _lastKey) {
+      return _lastShader;
+    }
+    return null;
+  }
+
+  /// Stores [shader] for `(layout, key)` and returns [shader].
+  @pragma('vm:prefer-inline')
+  Shader store(VertexLayout layout, Shader shader, [int key = 0]) {
+    _lastLayout = layout;
+    _lastKey = key;
+    _lastShader = shader;
+    return shader;
+  }
+}

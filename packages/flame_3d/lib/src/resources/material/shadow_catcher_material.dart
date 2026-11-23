@@ -2,6 +2,7 @@ import 'dart:ui' hide FragmentShader;
 
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/resources/material/material_apply_cache.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 /// {@template shadow_catcher_material}
@@ -117,8 +118,48 @@ class ShadowCatcherMaterial({
   static const _bundle =
       'packages/flame_3d/assets/shaders/shadow_catcher.shaderbundle';
 
+  final SimpleApplyCache _applyCache = SimpleApplyCache();
+
+  @override
+  bool get hasPassStableFragmentShader => runtimeType == ShadowCatcherMaterial;
+
+  @override
+  bool get cachesApply => runtimeType == ShadowCatcherMaterial;
+
+  @override
+  void invalidateApplyCache() => _applyCache.invalidate();
+
+  @override
+  bool isApplyCacheValid(
+    RenderContext context,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) => _applyCache.isValid(version, fragmentShader);
+
+  @override
+  void recordApplyCache(
+    RenderContext context,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) => _applyCache.record(version, fragmentShader);
+
   @override
   void apply(RenderContext context) {
-    fragmentShader.setColor('Material.color', color);
+    final frag = fragmentShader..resource;
+    final idx = frag.blockIndexOf('Material');
+    if (idx < 0) {
+      return;
+    }
+    final block = frag.blockAt(idx);
+    final off =
+        (block.cachedWriterOffsets as _ShadowCatcherOffsets?) ??
+        (block.cachedWriterOffsets = _ShadowCatcherOffsets(block));
+    if (off._color >= 0) {
+      block.writeColorAt(off._color, color);
+    }
   }
+}
+
+class _ShadowCatcherOffsets(final UniformBlock _b) {
+  late final int _color = _b.resolveOffset('color');
 }

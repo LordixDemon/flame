@@ -11,6 +11,7 @@ import 'package:flame_3d/particles.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/extensions/clip_space.dart';
 import 'package:flame_3d/src/extensions/geometry_math.dart';
+import 'package:flame_3d/src/resources/mesh/unit_quad_surface.dart';
 import 'package:meta/meta.dart';
 
 part 'particle_system_emitter_3d.dart';
@@ -760,7 +761,7 @@ class ParticleSystem3D({
     RenderProfile.lap(RenderPhase.particles);
     if (material != null) {
       context.drawInstances(
-        _quad,
+        unitQuadSurface3D,
         material: material,
         instances: _instances,
         count: count,
@@ -818,23 +819,7 @@ class ParticleSystem3D({
   @visibleForTesting
   Int32List get drawOrder => _order;
 
-  /// The quad every billboard is drawn with: corners in `[-0.5, 0.5]`,
-  /// texture coordinates with `v` growing downwards.
-  static final Surface _quad = Surface.fromBuffers(
-    vertices: Float32List.fromList(const [
-      -0.5, -0.5, 0, 0, 1, //
-      0.5, -0.5, 0, 1, 1, //
-      0.5, 0.5, 0, 1, 0, //
-      -0.5, 0.5, 0, 0, 0, //
-    ]),
-    indices: Uint16List.fromList(const [0, 1, 2, 2, 3, 0]),
-    layout: quadLayout,
-  );
-
   /// The vertex layout of the quad billboards are drawn with: a corner
   /// position and texture coordinates.
-  static final VertexLayout quadLayout = VertexLayout(const [
-    VertexAttribute(VertexLayout.positionAttribute, 3),
-    VertexAttribute('vertexTexCoord', 2),
-  ]);
+  static final VertexLayout quadLayout = unitQuadVertexLayout;
 }

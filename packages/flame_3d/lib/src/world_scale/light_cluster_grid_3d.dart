@@ -4,6 +4,7 @@ import 'dart:ui' show Color;
 
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/graphics/light_culling_math.dart';
 
 /// Type of local light stored in a [LightClusterGrid3D].
 enum ClusterLightKind3D() {
@@ -216,6 +217,9 @@ class LightClusterGrid3D({
   );
   final Float32List _clusterBoundsView = Float32List(
     clustersX * clustersY * clustersZ * 6,
+  );
+  final Float32List _clusterSpheres = Float32List(
+    clustersX * clustersY * clustersZ * 4,
   );
   final Float32List _rowBoundsY = Float32List(clustersY * clustersZ * 2);
   final Float32List _sliceNear = Float32List(clustersZ);
@@ -481,6 +485,9 @@ class LightClusterGrid3D({
       final iz0 = zSliceForViewDepth(math.max(near, minDepth));
       final iz1 = zSliceForViewDepth(math.min(far, maxDepth));
       final rSq = r * r;
+      final cosA2 = cosA * cosA;
+      final sinA2 = sinA * sinA;
+      final outerEps = cosA <= -1.0 + 1e-6 ? math.pi : 0.0;
 
       for (var iz = iz0; iz <= iz1; iz++) {
         final rowBase = iz * clustersY;
@@ -498,39 +505,48 @@ class LightClusterGrid3D({
               continue;
             }
             final b = c * 6;
-            final bMinX = _clusterBoundsView[b];
-            final bMinY = _clusterBoundsView[b + 1];
-            final bMinZ = _clusterBoundsView[b + 2];
-            final bMaxX = _clusterBoundsView[b + 3];
-            final bMaxY = _clusterBoundsView[b + 4];
-            final bMaxZ = _clusterBoundsView[b + 5];
-
-            final qx = vx < bMinX ? bMinX - vx : (vx > bMaxX ? vx - bMaxX : 0);
-            final qy = vy < bMinY ? bMinY - vy : (vy > bMaxY ? vy - bMaxY : 0);
-            final qz = vz < bMinZ ? bMinZ - vz : (vz > bMaxZ ? vz - bMaxZ : 0);
-            if (qx * qx + qy * qy + qz * qz > rSq) {
+            if (!sphereIntersectsAabb(
+              vx,
+              vy,
+              vz,
+              rSq,
+              _clusterBoundsView[b],
+              _clusterBoundsView[b + 1],
+              _clusterBoundsView[b + 2],
+              _clusterBoundsView[b + 3],
+              _clusterBoundsView[b + 4],
+              _clusterBoundsView[b + 5],
+            )) {
               continue;
             }
 
-            if (isSpot &&
-                !_coneIntersectsAabb(
-                  vx,
-                  vy,
-                  vz,
-                  vdx,
-                  vdy,
-                  vdz,
-                  r,
-                  cosA,
-                  sinA,
-                  bMinX,
-                  bMinY,
-                  bMinZ,
-                  bMaxX,
-                  bMaxY,
-                  bMaxZ,
-                )) {
-              continue;
+            if (isSpot) {
+              final cs = c * 4;
+              final cx = _clusterSpheres[cs];
+              final cy = _clusterSpheres[cs + 1];
+              final cz = _clusterSpheres[cs + 2];
+              final cr = _clusterSpheres[cs + 3];
+              final axial = (cx - vx) * vdx + (cy - vy) * vdy + (cz - vz) * vdz;
+              if (axial > r + cr ||
+                  !coneIntersectsSphereFast(
+                    vx,
+                    vy,
+                    vz,
+                    vdx,
+                    vdy,
+                    vdz,
+                    outerEps,
+                    sinA,
+                    cosA,
+                    cosA2,
+                    sinA2,
+                    cx,
+                    cy,
+                    cz,
+                    cr,
+                  )) {
+                continue;
+              }
             }
 
             _scratchIndices[c * maxLightsPerCluster + slotCount] = i;
@@ -870,7 +886,8 @@ class LightClusterGrid3D({
             rMaxY = maxY;
           }
 
-          final cb = ((iz * clustersY + iy) * clustersX + ix) * 6;
+          final clusterIdx = (iz * clustersY + iy) * clustersX + ix;
+          final cb = clusterIdx * 6;
           _clusterBoundsView
             ..[cb] = minX
             ..[cb + 1] = minY
@@ -878,6 +895,15 @@ class LightClusterGrid3D({
             ..[cb + 3] = maxX
             ..[cb + 4] = maxY
             ..[cb + 5] = -d0;
+          final hx = 0.5 * (maxX - minX);
+          final hy = 0.5 * (maxY - minY);
+          final hz = 0.5 * (d1 - d0);
+          final cs = clusterIdx * 4;
+          _clusterSpheres
+            ..[cs] = 0.5 * (minX + maxX)
+            ..[cs + 1] = 0.5 * (minY + maxY)
+            ..[cs + 2] = -0.5 * (d0 + d1)
+            ..[cs + 3] = math.sqrt(hx * hx + hy * hy + hz * hz);
         }
 
         final rb = (iz * clustersY + iy) * 2;
@@ -923,65 +949,6 @@ class LightClusterGrid3D({
         ..[offset + 1] = ndcY * fallbackDepth
         ..[offset + 2] = -fallbackDepth;
     }
-  }
-
-  /// Conservative spotlight cone vs cluster bounding-sphere test in view space.
-  static bool _coneIntersectsAabb(
-    double lx,
-    double ly,
-    double lz,
-    double dx,
-    double dy,
-    double dz,
-    double range,
-    double cosA,
-    double sinA,
-    double minX,
-    double minY,
-    double minZ,
-    double maxX,
-    double maxY,
-    double maxZ,
-  ) {
-    final cx = 0.5 * (minX + maxX);
-    final cy = 0.5 * (minY + maxY);
-    final cz = 0.5 * (minZ + maxZ);
-    final hx = 0.5 * (maxX - minX);
-    final hy = 0.5 * (maxY - minY);
-    final hz = 0.5 * (maxZ - minZ);
-    final cr = math.sqrt(hx * hx + hy * hy + hz * hz);
-
-    final vx = cx - lx;
-    final vy = cy - ly;
-    final vz = cz - lz;
-    final vLenSq = vx * vx + vy * vy + vz * vz;
-    if (vLenSq <= cr * cr) {
-      return true;
-    }
-
-    final axial = vx * dx + vy * dy + vz * dz;
-    if (axial > range + cr) {
-      return false;
-    }
-    if (cosA >= 0 && axial < -cr) {
-      return false;
-    }
-
-    final vLen = math.sqrt(vLenSq);
-    // Sphere center lies inside infinite cone (`cos(theta) >= cos(alpha)`).
-    if (axial >= vLen * cosA) {
-      return true;
-    }
-
-    final perp = math.sqrt(math.max(0.0, vLenSq - axial * axial));
-    // When `cos(theta - alpha) >= 0`, closest point on the cone lies on its
-    // side ray at perpendicular distance `perp * cosA - axial * sinA`.
-    if (axial * cosA + perp * sinA >= 0) {
-      return perp * cosA - axial * sinA <= cr;
-    }
-    // Otherwise closest point on the solid cone is the apex itself
-    // (`vLen <= cr` already returned `true` above).
-    return false;
   }
 
   static void _partialSortTopK(

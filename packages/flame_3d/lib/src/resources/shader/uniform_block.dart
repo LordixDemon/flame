@@ -78,9 +78,11 @@ class UniformBlock(
 
   /// Returns the float offset of [member] within this block, or
   /// [missingOffset] (`-1`) if the block declares no such member.
+  @pragma('vm:prefer-inline')
   int resolveOffset(String member) => memberOffset(member) ?? missingOffset;
 
   /// Writes [values] at [offset] floats into the block.
+  @pragma('vm:prefer-inline')
   void writeAt(int offset, Float32List values) {
     if (offset < 0 || offset + values.length > data.length) {
       return;
@@ -90,6 +92,7 @@ class UniformBlock(
   }
 
   /// Writes a single float at [offset] (in floats) without string lookup.
+  @pragma('vm:prefer-inline')
   void writeFloatAt(int offset, double value) {
     if (offset < 0 || offset >= data.length) {
       return;
@@ -99,6 +102,7 @@ class UniformBlock(
   }
 
   /// Writes two floats at [offset] (in floats).
+  @pragma('vm:prefer-inline')
   void writeVec2ValuesAt(int offset, double x, double y) {
     if (offset < 0 || offset + 2 > data.length) {
       return;
@@ -110,6 +114,7 @@ class UniformBlock(
   }
 
   /// Writes three floats at [offset] (in floats).
+  @pragma('vm:prefer-inline')
   void writeVec3ValuesAt(int offset, double x, double y, double z) {
     if (offset < 0 || offset + 3 > data.length) {
       return;
@@ -122,6 +127,7 @@ class UniformBlock(
   }
 
   /// Writes four floats at [offset] (in floats).
+  @pragma('vm:prefer-inline')
   void writeVec4ValuesAt(int offset, double x, double y, double z, double w) {
     if (offset < 0 || offset + 4 > data.length) {
       return;
@@ -135,6 +141,7 @@ class UniformBlock(
   }
 
   /// Writes RGBA components of [color] at [offset] (in floats).
+  @pragma('vm:prefer-inline')
   void writeColorAt(int offset, Color color) {
     if (offset < 0 || offset + 4 > data.length) {
       return;
@@ -148,6 +155,7 @@ class UniformBlock(
   }
 
   /// Writes 16 floats of [matrix] at [offset] (in floats).
+  @pragma('vm:prefer-inline')
   void writeMatrix4At(int offset, Matrix4 matrix) {
     if (offset < 0 || offset + 16 > data.length) {
       return;

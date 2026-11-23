@@ -460,32 +460,18 @@ extension _World3DPipeline on World3D {
     final width = math.max(1, size.width.round());
     final height = math.max(1, size.height.round());
 
-    GraphicsDevice resolvedDevice;
-    RenderContext3D resolvedContext;
-    var closeFrame = false;
-    EmbeddedRenderer? resolvedEmbedded;
-
-    if (device != null && context != null) {
-      resolvedDevice = device;
-      resolvedContext = context;
-    } else {
-      final hostRef = _contextOrNull != null ? host : null;
-      if (hostRef is Game3D) {
-        resolvedDevice = hostRef.device;
-        resolvedContext = hostRef.context;
-        if (!hostRef.isRenderingFrame) {
-          resolvedDevice.begin();
-          closeFrame = true;
-        }
-      } else {
-        final embedded = resolvedEmbedded = EmbeddedRenderer.of(
-          _resolveGame() ?? this,
-        );
-        resolvedDevice = embedded.device;
-        resolvedContext = embedded.context;
-        closeFrame = embedded.open();
-      }
-    }
+    final hostRef = _contextOrNull != null ? host : null;
+    final game3d = hostRef is Game3D ? hostRef : null;
+    final session = DeviceFrameSession.acquire(
+      fallbackKey: _resolveGame() ?? this,
+      device: device,
+      context: context,
+      hostDevice: game3d?.device,
+      hostContext: game3d?.context,
+      isHostRenderingFrame: game3d?.isRenderingFrame ?? false,
+    );
+    final resolvedDevice = session.device;
+    final resolvedContext = session.context;
 
     try {
       return renderWithHost(resolvedDevice, resolvedContext, msaa: msaa, () {
@@ -528,13 +514,7 @@ extension _World3DPipeline on World3D {
       });
     } finally {
       disposeFallbackDummyCanvas();
-      if (closeFrame) {
-        if (resolvedEmbedded != null) {
-          resolvedEmbedded.close();
-        } else {
-          resolvedDevice.end();
-        }
-      }
+      session.end();
     }
   }
 

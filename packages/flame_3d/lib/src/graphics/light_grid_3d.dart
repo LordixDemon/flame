@@ -5,6 +5,7 @@ import 'dart:ui' show PixelFormat;
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/graphics/light_culling_math.dart';
 import 'package:meta/meta.dart';
 
 /// {@template light_grid_stats}
@@ -747,7 +748,7 @@ class LightGrid3D() {
               continue;
             }
             if (isSpot &&
-                !_coneReachesFast(
+                !coneIntersectsSphereFast(
                   x,
                   y,
                   z,
@@ -893,46 +894,7 @@ class LightGrid3D() {
     return next;
   }
 
-  // Algebraic cone-sphere test equivalent to `outer + asin(r/d) + 1e-3`,
-  // avoiding per-cell `sqrt`, `asin`, and `cos`.
-  @pragma('vm:prefer-inline')
-  static bool _coneReachesFast(
-    double x,
-    double y,
-    double z,
-    double ax,
-    double ay,
-    double az,
-    double outerEps,
-    double sinA,
-    double cosA,
-    double cosA2,
-    double sinA2,
-    double cx,
-    double cy,
-    double cz,
-    double radius,
-  ) {
-    final vx = cx - x;
-    final vy = cy - y;
-    final vz = cz - z;
-    final d2 = vx * vx + vy * vy + vz * vz;
-    final r2 = radius * radius;
-    if (d2 <= r2 || outerEps >= math.pi) {
-      return true;
-    }
-    final axisDot = vx * ax + vy * ay + vz * az;
-    final rhs = axisDot + radius * sinA;
-    if (cosA >= 0) {
-      return rhs >= 0 && rhs * rhs >= cosA2 * (d2 - r2);
-    }
-    if (r2 >= d2 * sinA2 || rhs >= 0) {
-      return true;
-    }
-    return rhs * rhs <= cosA2 * (d2 - r2);
-  }
-
-  /// Test hook exposing [_coneReachesFast] for equivalence tests.
+  /// Test hook exposing [coneIntersectsSphereFast] for equivalence tests.
   @visibleForTesting
   static bool coneReachesForTest(
     double x,
@@ -950,7 +912,7 @@ class LightGrid3D() {
     final outerEps = outer + 1e-3;
     final sinA = math.sin(outerEps);
     final cosA = math.cos(outerEps);
-    return _coneReachesFast(
+    return coneIntersectsSphereFast(
       x,
       y,
       z,

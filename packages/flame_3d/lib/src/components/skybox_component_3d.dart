@@ -1,11 +1,11 @@
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' hide FragmentShader;
 
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/graphics/fullscreen_quad.dart';
 
 /// Material rendered by [SkyboxComponent3D] at clip depth `1.0` behind all
 /// opaque geometry.
@@ -187,19 +187,6 @@ class SkyboxComponent3D({
 
   final SkyboxMaterial3D material = material ?? SkyboxMaterial3D();
 
-  static final Surface _clipQuad = Surface.fromBuffers(
-    vertices: Float32List.fromList(const [
-      -1.0, -1.0, 0.0, //
-      1.0, -1.0, 0.0, //
-      1.0, 1.0, 0.0, //
-      -1.0, 1.0, 0.0, //
-    ]),
-    indices: Uint16List.fromList(const [0, 1, 2, 0, 2, 3]),
-    layout: VertexLayout(const [
-      VertexAttribute(VertexLayout.positionAttribute, 3),
-    ]),
-  );
-
   static final Aabb3 _skyBounds = Aabb3.minMax(
     Vector3.all(-0.01),
     Vector3.all(0.01),
@@ -216,7 +203,7 @@ class SkyboxComponent3D({
     if (context.isShadowPass) {
       return;
     }
-    context.drawSurface(_clipQuad, material: material);
+    context.drawSurface(fullscreenQuadSurface, material: material);
   }
 
   @override

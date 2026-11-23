@@ -5,6 +5,7 @@ import 'package:flame/game.dart' show NotifyingVector2;
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/resources/material/material_apply_cache.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 
 const bool _kIsWeb = identical(0, 0.0);
@@ -316,21 +317,30 @@ class SpatialMaterial({
   Shader? _basicFragmentShader;
 
   Shader? _tangentVertexShader;
+  final VertexShaderLayoutCache _vertexLayoutCache = VertexShaderLayoutCache();
 
   @override
   Shader vertexShaderFor(VertexLayout layout) {
+    final key = usesSimpleShader ? 0 : 1;
+    final cached = _vertexLayoutCache.lookup(layout, key);
+    if (cached != null) {
+      return cached;
+    }
+    final Shader resolved;
     if (!usesSimpleShader &&
         layout.attribute(VertexLayout.tangentAttribute) != null &&
         layout.attribute(VertexLayout.texCoord1Attribute) != null) {
-      return _tangentVertexShader ??= VertexShader.fromAsset(
+      resolved = _tangentVertexShader ??= VertexShader.fromAsset(
         _pbrTangentBundle,
         slots: [
           RenderContext3D.cameraMatricesBlock,
           RenderContext3D.jointMatricesBlock,
         ],
       );
+    } else {
+      resolved = vertexShader;
     }
-    return vertexShader;
+    return _vertexLayoutCache.store(layout, resolved, key);
   }
 
   Shader _activeFragmentShader(RenderContext? context) {

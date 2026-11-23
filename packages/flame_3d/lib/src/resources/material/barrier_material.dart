@@ -5,6 +5,7 @@ import 'dart:ui' hide FragmentShader;
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/resources/material/material_apply_cache.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 part 'barrier_reaction.dart';
@@ -1137,6 +1138,18 @@ class BarrierMaterial({
   ///
   /// It allocates nothing (unless the blend changes from a custom render
   /// state).
+  bool _batchingChanges = false;
+  bool _batchDirty = false;
+
+  @override
+  void markChanged() {
+    if (_batchingChanges) {
+      _batchDirty = true;
+      return;
+    }
+    super.markChanged();
+  }
+
   void applyLook(BarrierLook look) => applyLookLerp(look, look, 0);
 
   /// Takes the settings between [a] (at `t = 0`) and [b] (at `t = 1`), as
@@ -1146,6 +1159,25 @@ class BarrierMaterial({
   /// animate a look (noon to dusk, calm to alarm); it allocates nothing
   /// (unless the blend changes from a custom render state).
   void applyLookLerp(BarrierLook a, BarrierLook b, double t) {
+    final outer = !_batchingChanges;
+    if (outer) {
+      _batchingChanges = true;
+      _batchDirty = false;
+    }
+    try {
+      _applyLookLerpImpl(a, b, t);
+    } finally {
+      if (outer) {
+        _batchingChanges = false;
+        if (_batchDirty) {
+          _batchDirty = false;
+          super.markChanged();
+        }
+      }
+    }
+  }
+
+  void _applyLookLerpImpl(BarrierLook a, BarrierLook b, double t) {
     double d(double x, double y) => BarrierLook.lerpLookDouble(x, y, t);
     int i(int x, int y) => BarrierLook.lerpLookInt(x, y, t);
     final second = t >= 0.5;
@@ -1277,13 +1309,7 @@ class BarrierMaterial({
     renderState = state.copyWith(blend: blend);
   }
 
-  int _appliedVersion = -1;
-  Shader? _appliedVert;
-  int _appliedVertGen = -1;
-  Shader? _appliedFrag;
-  int _appliedFragGen = -1;
-  RenderContext? _appliedContext;
-  int _appliedCameraPass = -1;
+  final CameraPassApplyCache _applyCache = CameraPassApplyCache();
 
   @override
   bool get hasPassStableFragmentShader => runtimeType == BarrierMaterial;
@@ -1292,45 +1318,24 @@ class BarrierMaterial({
   bool get cachesApply => runtimeType == BarrierMaterial;
 
   @override
-  void invalidateApplyCache() {
-    _appliedVersion = -1;
-  }
+  void invalidateApplyCache() => _applyCache.invalidate();
 
   @override
   bool isApplyCacheValid(
     RenderContext context,
     Shader vertexShader,
     Shader fragmentShader,
-  ) {
-    return _appliedVersion == version &&
-        identical(_appliedVert, vertexShader) &&
-        _appliedVertGen == vertexShader.generation &&
-        identical(_appliedFrag, fragmentShader) &&
-        _appliedFragGen == fragmentShader.generation &&
-        identical(_appliedContext, context) &&
-        context is RenderContext3D &&
-        _appliedCameraPass == context.cameraPass;
-  }
+  ) => _applyCache.isValid(context, version, vertexShader, fragmentShader);
 
   @override
   void recordApplyCache(
     RenderContext context,
     Shader vertexShader,
     Shader fragmentShader,
-  ) {
-    _appliedVersion = version;
-    _appliedVert = vertexShader;
-    _appliedVertGen = vertexShader.generation;
-    _appliedFrag = fragmentShader;
-    _appliedFragGen = fragmentShader.generation;
-    _appliedContext = context;
-    if (context is RenderContext3D) {
-      _appliedCameraPass = context.cameraPass;
-    }
-  }
+  ) => _applyCache.record(context, version, vertexShader, fragmentShader);
 
   @override
   void apply(RenderContext context) {
-    _write(this, context as RenderContext3D, 0);
+    _write(this, context as RenderContext3D, 0, _applyCache);
   }
 }

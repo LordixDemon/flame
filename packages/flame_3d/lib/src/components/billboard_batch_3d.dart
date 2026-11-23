@@ -6,6 +6,7 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/resources/mesh/unit_quad_surface.dart';
 import 'package:meta/meta.dart';
 
 /// Draws `N` depth-buffered HD-2D sprites, standees, foliage cards, or world
@@ -31,20 +32,6 @@ class BillboardBatch3D({
   final BillboardMaterial3D material = material ?? BillboardMaterial3D();
 
   static const int _stride = VertexLayout.instanceStrideInFloats;
-
-  static final Surface _unitQuad = Surface.fromBuffers(
-    vertices: Float32List.fromList(const [
-      -0.5, -0.5, 0.0, 0.0, 1.0, //
-      0.5, -0.5, 0.0, 1.0, 1.0, //
-      0.5, 0.5, 0.0, 1.0, 0.0, //
-      -0.5, 0.5, 0.0, 0.0, 0.0, //
-    ]),
-    indices: Uint16List.fromList(const [0, 1, 2, 0, 2, 3]),
-    layout: VertexLayout(const [
-      VertexAttribute(VertexLayout.positionAttribute, 3),
-      VertexAttribute('vertexTexCoord', 2),
-    ]),
-  );
 
   static final Vector3 _defaultUp = Vector3(0, 1, 0);
   static final Vector3 _defaultRight = Vector3(1, 0, 0);
@@ -352,7 +339,7 @@ class BillboardBatch3D({
     transform.transform3(_sortCenter);
     final isId = transform.isIdentity();
     context.drawInstances(
-      _unitQuad,
+      unitQuadSurface3D,
       instances: isId
           ? _instances
           : _placed(transform, transformVersion: transformVersion),
