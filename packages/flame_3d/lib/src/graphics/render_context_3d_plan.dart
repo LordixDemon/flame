@@ -155,6 +155,17 @@ extension _RenderContext3DPlan on RenderContext3D {
     _jointCache.writeAndBind(device, js, joints);
   }
 
+  void _bindBatchObjects(Shader vertexShader, RigidBatchBuffer? batch) {
+    if (batch == null) {
+      return;
+    }
+    final slot = _planFor(vertexShader).batchObjectsSlot;
+    if (slot == null) {
+      return;
+    }
+    device.bindRigidBatch(slot, batch);
+  }
+
   void _bindMaterialPlan(_ShaderPlan plan, Shader shader) {
     final blocks = plan.materialBlocks;
     for (var i = 0; i < blocks.length; i++) {
@@ -267,6 +278,7 @@ extension _RenderContext3DPlan on RenderContext3D {
     final materialBlocks = <_MatBlockEntry>[];
     final materialSamplers = <_MatSamplerEntry>[];
     _JointsEntry? jointsSlot;
+    GpuUniformSlot? batchObjectsSlot;
 
     final shaderSlots = shader.slots;
     final resolvedSlots = shader.resolvedSlots;
@@ -316,6 +328,8 @@ extension _RenderContext3DPlan on RenderContext3D {
           capacity,
           sig,
         );
+      } else if (name == RenderContext3D.batchObjectsBlock) {
+        batchObjectsSlot = slot;
       } else {
         materialBlocks.add(
           _MatBlockEntry(slot, shader.blockIndexOf(name)),
@@ -332,6 +346,7 @@ extension _RenderContext3DPlan on RenderContext3D {
       materialBlocks: materialBlocks,
       materialSamplers: materialSamplers,
       jointsSlot: jointsSlot,
+      batchObjectsSlot: batchObjectsSlot,
     );
     shader.renderCache = plan;
     return plan;
@@ -495,4 +510,5 @@ class _ShaderPlan({
   required final List<_MatBlockEntry> materialBlocks,
   required final List<_MatSamplerEntry> materialSamplers,
   required final _JointsEntry? jointsSlot,
+  required final GpuUniformSlot? batchObjectsSlot,
 });

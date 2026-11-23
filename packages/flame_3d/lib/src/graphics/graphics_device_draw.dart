@@ -11,6 +11,15 @@ class _InstanceUploadCache() {
   int spanFloats = -1;
 }
 
+class _BatchUploadCache() {
+  GpuBuffer? gpuBuffer;
+  GpuBuffer? arenaBuffer;
+  int arenaOffset = 0;
+  int frame = -1;
+  int deviceGeneration = -1;
+  int version = -1;
+}
+
 class _PassBindingState() {
   GpuPipeline? pipeline;
   Surface? surface;

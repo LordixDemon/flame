@@ -108,6 +108,10 @@ class VertexLayout(List<VertexAttribute> attributes) {
   /// The name of the secondary 2-component UV attribute (`TEXCOORD_1`).
   static const String texCoord1Attribute = 'vertexTexCoord1';
 
+  /// The name of the per-vertex object-slot attribute for rigid multi-mesh
+  /// batching (`vertexObjectId`, 1 float).
+  static const String objectIdAttribute = 'vertexObjectId';
+
   /// The per-instance inputs flame_3d feeds from its instance buffer, in the
   /// order they are stored for each instance: the four columns of the model
   /// matrix, a color and four floats of data that materials interpret as they

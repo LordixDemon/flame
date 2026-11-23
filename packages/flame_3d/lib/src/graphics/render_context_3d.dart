@@ -130,6 +130,10 @@ class RenderContext3D(super.device) extends RenderContext {
   /// [jointMatricesBlock].
   static const String jointRowsMember = 'jointRows';
 
+  /// The name of the rigid multi-mesh batch uniform block (`BatchObjects`),
+  /// see `flame_3d/rigid_batch.glsl`.
+  static const String batchObjectsBlock = 'BatchObjects';
+
   /// The name of the directional shadow mapping uniform block.
   static const String shadowsBlock = 'Shadows';
 
@@ -799,6 +803,105 @@ class RenderContext3D(super.device) extends RenderContext {
       queue.probeSlots[i] = 0;
       queue.probeWeights[i] = 0;
     }
+    queue.depths[i] = center == null
+        ? d[3]
+        : d[0] * center.x + d[1] * center.y + d[2] * center.z + d[3];
+    final prepass =
+        drawMaterial.renderState.translucent &&
+        drawMaterial.renderState.depthPrepass;
+    if (prepass && drawMaterial.depthPrepassGroup != null) {
+      queue.depths[i] = queue.joinSharedPrepassGroup(
+        i,
+        drawMaterial.depthPrepassGroup!,
+        queue.depths[i],
+      );
+    } else {
+      queue.prepassGroups[i] = prepass
+          ? (queue.activePrepassGroup != 0
+                ? queue.activePrepassGroup
+                : queue.nextPrepassGroupId++)
+          : 0;
+    }
+    RenderProfile.lap(RenderPhase.recording);
+  }
+
+  /// Records a single multi-mesh rigid batch draw of [surface] using per-object
+  /// transforms, colors, and instance data packed in [batch].
+  void drawRigidBatch(
+    Surface surface, {
+    required RigidBatchBuffer batch,
+    Material? material,
+    Vector3? center,
+    bool mirrored = false,
+  }) {
+    final drawMaterial = material ?? surface.material;
+    final shadowPass = _shadows.recording;
+    if (shadowPass) {
+      drawMaterial.wasRecorded = true;
+      if (!drawMaterial.castsShadows ||
+          !drawMaterial.instancesHoldModelMatrices) {
+        return;
+      }
+    }
+    if (_depthNormal.recording) {
+      return;
+    }
+    DevicePipeline? pipeline;
+    Shader? vertShader;
+    Shader? fragShader;
+    if (!shadowPass) {
+      _pipelineCache.resolve(this, drawMaterial, surface.layout);
+      pipeline = _pipelineCache.lastDev!;
+      vertShader = _pipelineCache.lastVert!;
+      fragShader = _pipelineCache.lastFrag!;
+    }
+    final queue = _queue;
+    final i = queue.count;
+    if (i == queue.capacity) {
+      queue.grow();
+    }
+    queue.count++;
+
+    queue.surfaces[i] = surface;
+    queue.materials[i] = drawMaterial;
+    queue.pipelines[i] = pipeline;
+    queue.vertexShaders[i] = vertShader;
+    queue.fragmentShaders[i] = fragShader;
+    queue.joints[i] = null;
+    queue.external[i] = null;
+    queue.batches[i] = batch;
+    queue.mirrored[i] = mirrored ? 1 : 0;
+
+    if (shadowPass) {
+      queue.probeSlots[i] = 0;
+      queue.probeWeights[i] = 0;
+      queue.prepassGroups[i] = 0;
+      queue.depths[i] = 0;
+      RenderProfile.lap(RenderPhase.recording);
+      return;
+    }
+
+    if (queue.cachedOpaqueCount >= 0 || _oitGrab.hasSortCache) {
+      queue.cachedOpaqueCount = -1;
+      _oitGrab.resetSortCache();
+    }
+    if (drawMaterial.renderState.translucent) {
+      queue.hasRecordedTranslucent = true;
+    }
+    if (!queue.hasRecordedRefractive &&
+        drawMaterial is SpatialMaterial &&
+        drawMaterial.transmission > 1e-4) {
+      queue.hasRecordedRefractive = true;
+    }
+
+    if (_probeSelector.probes.isNotEmpty && drawMaterial.usesReflectionProbes) {
+      final at = center ?? _camera.cameraPosition;
+      _probeSelector.selectForDraw(queue, i, _pass, at.x, at.y, at.z);
+    } else {
+      queue.probeSlots[i] = 0;
+      queue.probeWeights[i] = 0;
+    }
+    final d = _camera.depthRow;
     queue.depths[i] = center == null
         ? d[3]
         : d[0] * center.x + d[1] * center.y + d[2] * center.z + d[3];

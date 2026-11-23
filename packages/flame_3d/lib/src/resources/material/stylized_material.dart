@@ -821,6 +821,10 @@ class StylizedMaterial({
   /// The name of the joint weights attribute of [skinnedVertexLayout].
   static const String weightsAttribute = 'vertexWeights';
 
+  /// The name of the per-vertex object slot attribute of
+  /// [batchedVertexLayout] (`vertexObjectId`, 1 float).
+  static const String objectIdAttribute = VertexLayout.objectIdAttribute;
+
   /// The layout of skinned vertices, 26 floats per vertex: [vertexLayout]
   /// followed by four joint indices (`vertexJoints`) and their four weights
   /// (`vertexWeights`). See the "Skinning" section of [StylizedMaterial].
@@ -847,8 +851,18 @@ class StylizedMaterial({
     const VertexAttribute(weightsAttribute, 4),
   ]);
 
+  /// The layout of rigid multi-mesh batched vertices, 19 floats per vertex:
+  /// [vertexLayout] followed by `vertexObjectId` (1 float).
+  static final VertexLayout batchedVertexLayout = VertexLayout([
+    ...vertexLayout.attributes,
+    const VertexAttribute(objectIdAttribute, 1),
+  ]);
+
   /// The number of joint matrices a skinned draw may have.
   static const int maxJoints = 64;
+
+  /// The maximum number of objects packed into a single rigid batch draw.
+  static const int maxBatchObjects = RigidBatchBuffer.maxObjects;
 
   // The variant for skinned surfaces in the stylized layout.
   final Shader _skinnedVertexShader = VertexShader.fromAsset(
@@ -875,6 +889,17 @@ class StylizedMaterial({
 
   // Whether the standard variant drew: only then is its value written.
   bool _standardInUse = false;
+
+  // The variant for rigid multi-mesh batched surfaces (`batchedVertexLayout`).
+  late final Shader _batchedVertexShader = VertexShader.fromAsset(
+    'packages/flame_3d/assets/shaders/stylized_material_batched.shaderbundle',
+    slots: [
+      RenderContext3D.cameraMatricesBlock,
+      'Wind',
+      RenderContext3D.batchObjectsBlock,
+    ],
+  );
+  bool _batchedInUse = false;
 
   static const _texturedBundle =
       'packages/flame_3d/assets/shaders/stylized_material_textured.shaderbundle';
@@ -955,7 +980,16 @@ class StylizedMaterial({
       );
     }
     final Shader selected;
-    if (layout.offsetOf(masksAttribute) == null) {
+    if (layout.offsetOf(objectIdAttribute) != null) {
+      if (textured) {
+        throw StateError(
+          'A StylizedMaterial with a baseColorTexture does not support '
+          'batchedVertexLayout ($layout)',
+        );
+      }
+      selected = _batchedVertexShader;
+      _batchedInUse = true;
+    } else if (layout.offsetOf(masksAttribute) == null) {
       if (textured) {
         selected = _texturedStandardVertexShader;
         _texturedStandardInUse = true;
@@ -982,7 +1016,7 @@ class StylizedMaterial({
   }
 
   final MultiVariantApplyCache _applyCache = MultiVariantApplyCache(
-    6,
+    7,
     trackDeviceGeneration: true,
   );
 
@@ -997,7 +1031,7 @@ class StylizedMaterial({
   int _vertFullNonTimeVersion = -1;
   int _vertFullMask = 0;
   int _vertFullDeviceGen = -1;
-  final List<int> _vertFullVarGens = List<int>.filled(6, -1);
+  final List<int> _vertFullVarGens = List<int>.filled(7, -1);
   Shader? _vertFullCustomShader;
   int _vertFullCustomGen = -1;
 
@@ -1019,6 +1053,9 @@ class StylizedMaterial({
     }
     if (identical(vert, _texturedStandardVertexShader)) {
       return 5;
+    }
+    if (identical(vert, _batchedVertexShader)) {
+      return 6;
     }
     return -1;
   }
@@ -1154,4 +1191,17 @@ class StylizedMaterial({
       aabb: aabb,
     );
   }
+
+  /// Packs up to [maxBatchObjects] (`40`) rigid [vertexLayout] triangle
+  /// surfaces into a single [batchedVertexLayout] surface so
+  /// `RenderContext3D.drawRigidBatch` can draw all of them in one draw call.
+  static Surface buildBatchedSurface({
+    required List<Surface> surfaces,
+    required Material material,
+    Aabb3? aabb,
+  }) => _buildBatchedStylizedSurface(
+    surfaces: surfaces,
+    material: material,
+    aabb: aabb,
+  );
 }

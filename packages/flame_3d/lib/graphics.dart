@@ -14,6 +14,7 @@ export 'src/graphics/render_graph_3d.dart';
 export 'src/graphics/render_profile.dart';
 export 'src/graphics/render_state.dart';
 export 'src/graphics/render_stats.dart';
+export 'src/graphics/rigid_batch_buffer.dart';
 export 'src/graphics/shadow_atlas_3d.dart';
 export 'src/graphics/shadow_projection.dart';
 export 'src/graphics/vertex_layout.dart';

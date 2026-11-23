@@ -105,6 +105,10 @@ extension _StylizedUniforms on StylizedMaterial {
           deviceGen,
         );
       }
+      if (_batchedInUse) {
+        _applyWind(_batchedVertexShader, space);
+        _recordVertexFull(_batchedVertexShader, nonTimeVersion, deviceGen);
+      }
     }
 
     if (fragClean) {

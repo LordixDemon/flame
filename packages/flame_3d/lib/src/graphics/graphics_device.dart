@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
 
@@ -81,6 +82,7 @@ class GraphicsDevice({
   DevicePipeline? _lastPipeResult;
 
   final Expando<_InstanceUploadCache> _instanceCache = Expando();
+  final Expando<_BatchUploadCache> _batchCache = Expando();
 
   /// Incremented whenever the pass's bindings are cleared (by [clearBindings]
   /// or by binding a different pipeline), after which every resource of the
@@ -864,6 +866,87 @@ class GraphicsDevice({
       block.uploadBuffer!,
       block.uploadOffset,
       block.bytes.lengthInBytes,
+    );
+    RenderProfile.lap(RenderPhase.binding);
+  }
+
+  /// Uploads or binds [batch] to [slot], promoting static batches to a
+  /// persistent [GpuBuffer] after two unchanged frames.
+  @internal
+  void bindRigidBatch(GpuUniformSlot slot, RigidBatchBuffer batch) {
+    if (_suspended) {
+      return;
+    }
+    final totalBytes = batch.bytes.lengthInBytes;
+    final bindLength = math.min(slot.sizeInBytes ?? totalBytes, totalBytes);
+    var entry = _batchCache[batch];
+    if (entry == null) {
+      entry = _BatchUploadCache();
+      _batchCache[batch] = entry;
+    }
+    final gen = GpuBackend.deviceGeneration;
+    final ver = batch.version;
+
+    final gpuBuf = entry.gpuBuffer;
+    if (gpuBuf != null &&
+        entry.deviceGeneration == gen &&
+        entry.version == ver) {
+      _bindings.bindUniformResolved(_pass, slot, gpuBuf, 0, bindLength);
+      RenderProfile.lap(RenderPhase.binding);
+      return;
+    }
+
+    final arenaBuf = entry.arenaBuffer;
+    if (arenaBuf != null &&
+        entry.frame == _frame &&
+        entry.deviceGeneration == gen &&
+        entry.version == ver) {
+      _bindings.bindUniformResolved(
+        _pass,
+        slot,
+        arenaBuf,
+        entry.arenaOffset,
+        bindLength,
+      );
+      RenderProfile.lap(RenderPhase.binding);
+      return;
+    }
+
+    if (entry.frame >= 0 &&
+        entry.frame != _frame &&
+        entry.deviceGeneration == gen &&
+        entry.version == ver) {
+      final persistent = backend.createBuffer(
+        storageMode: GpuStorageMode.hostVisible,
+        sizeInBytes: totalBytes,
+      )..write(ByteData.sublistView(batch.bytes));
+      entry
+        ..gpuBuffer = persistent
+        ..arenaBuffer = null;
+      stats
+        ..uniformUploads += 1
+        ..uploadedBytes += totalBytes;
+      RenderProfile.lap(RenderPhase.upload);
+      _bindings.bindUniformResolved(_pass, slot, persistent, 0, bindLength);
+      RenderProfile.lap(RenderPhase.binding);
+      return;
+    }
+
+    final block = _uploadUniformRange(batch.bytes, totalBytes);
+    entry
+      ..gpuBuffer = null
+      ..arenaBuffer = block.buffer
+      ..arenaOffset = block.lastOffset
+      ..frame = _frame
+      ..deviceGeneration = gen
+      ..version = ver;
+    RenderProfile.lap(RenderPhase.upload);
+    _bindings.bindUniformResolved(
+      _pass,
+      slot,
+      block.buffer,
+      block.lastOffset,
+      bindLength,
     );
     RenderProfile.lap(RenderPhase.binding);
   }

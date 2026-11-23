@@ -26,6 +26,7 @@ class _DrawQueue() {
   List<Shader?> fragmentShaders = [];
   List<List<Matrix4>?> joints = [];
   List<Float32List?> external = [];
+  List<RigidBatchBuffer?> batches = [];
   Int32List externalCounts = Int32List(0);
   Int32List externalOffsets = Int32List(0);
   Int32List externalVersions = Int32List(0);
@@ -87,7 +88,8 @@ class _DrawQueue() {
       identical(surfaces[first], surfaces[other]) &&
       identical(pipelines[first], pipelines[other]) &&
       joints[other] == null &&
-      external[other] == null;
+      external[other] == null &&
+      batches[other] == null;
 
   void grow() {
     final nextCapacity = capacity == 0 ? 64 : capacity * 2;
@@ -102,6 +104,7 @@ class _DrawQueue() {
     fragmentShaders = growList(fragmentShaders);
     joints = growList(joints);
     external = growList(external);
+    batches = growList(batches);
     externalCounts = Int32List(nextCapacity)
       ..setRange(0, externalCounts.length, externalCounts);
     externalOffsets = Int32List(nextCapacity)
@@ -142,6 +145,7 @@ class _DrawQueue() {
     fragmentShaders.fillRange(0, releasedCount, null);
     joints.fillRange(0, releasedCount, null);
     external.fillRange(0, releasedCount, null);
+    batches.fillRange(0, releasedCount, null);
   }
 
   void resetPrepassGroups() {

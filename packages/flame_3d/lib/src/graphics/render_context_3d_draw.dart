@@ -239,7 +239,8 @@ extension _RenderContext3DDraw on RenderContext3D {
       var end = start + 1;
       if (queue.pipelines[first]!.instanced &&
           queue.joints[first] == null &&
-          queue.external[first] == null) {
+          queue.external[first] == null &&
+          queue.batches[first] == null) {
         while (end < limit && _batchesWith(first, order[end])) {
           end++;
         }
@@ -392,6 +393,22 @@ extension _RenderContext3DDraw on RenderContext3D {
           cacheSpanCount: span > 0 ? span : null,
         )
         ..drawSurface(surface, instanceCount: instanceCount);
+      RenderProfile.lap(RenderPhase.draw);
+      return;
+    }
+
+    final batch = queue.batches[first];
+    if (batch != null) {
+      _probeSelector.drawProbeSlot = queue.probeSlots[first];
+      _probeSelector.drawProbeWeight = queue.probeWeights[first];
+      if (!identical(material, _boundMaterial) || _probeChanged) {
+        _jointCache.activeTransforms = joints;
+        _applyMaterial(material, vertexShader, fragmentShader);
+      }
+      _bindBatchObjects(vertexShader, batch);
+      device
+        ..bindSurface(surface)
+        ..drawSurface(surface);
       RenderProfile.lap(RenderPhase.draw);
       return;
     }

@@ -1,0 +1,140 @@
+#ifndef FLAME_STYLIZED_MATERIAL_VERTEX_CORE_GLSL_
+#define FLAME_STYLIZED_MATERIAL_VERTEX_CORE_GLSL_
+
+in vec3 vertexPosition;
+in vec3 vertexNormal;
+// rgb: the vertex color, a: its alpha.
+in vec4 vertexColor;
+// x: tint mask, y: accent mask, z: emissive mask, w: gloss.
+in vec4 vertexMasks;
+// Ambient occlusion: 1 is unoccluded, 0 fully occluded.
+in float vertexOcclusion;
+// The wind of the vertex. x: how much it sways (its sway weight), y: the
+// phase of its sway and flutter, in turns (1 is a full turn), z: how much it
+// flutters (its flutter weight).
+in vec3 vertexWind;
+#ifdef FLAME_STYLIZED_TEXTURED
+// The texture coordinates of the base color texture, in the textured layouts
+// (StylizedMaterial.texturedVertexLayout) only.
+in vec2 vertexTexCoord;
+#endif
+
+#include <flame_3d/camera.glsl>
+#include <flame_3d/stylized_instance_data.glsl>
+
+// The wind. A vertex moves by
+//
+//   offset  = (sway + flutter) * gust * (1 + instData.z)
+//   sway    = amplitude * sin(time * frequency + dot(origin, phaseScale)
+//                             + vertexPhase) * sway weight
+//   flutter = flutterAmplitude * sin(time * flutterFrequency
+//                                    + dot(origin, phaseScale) + vertexPhase)
+//             * flutter weight
+//   gust    = 1 + gustAmplitude * sin(time * gustFrequency
+//                                     - dot(origin, gustWave))
+//
+// where `origin` is the world position of its object and `vertexPhase` the
+// phase of the vertex in radians. The offset goes along `direction` in world
+// space and along `modelDirection` in the model space of its object (so that
+// it turns and scales with the object): the material sets one of the two
+// directions and zeroes the other. When `upAxis` (a unit vector in model
+// space) is not zero, the world-space offset is scaled by the length the
+// object's transform gives it, the scale of the object along its up axis.
+// `gustWave` is the direction gusts travel in, in world space, times how fast
+// their phase changes along it.
+uniform Wind {
+  vec3 direction;
+  float amplitude;
+  vec3 modelDirection;
+  float frequency;
+  vec3 phaseScale;
+  float time;
+  vec3 upAxis;
+  float flutterAmplitude;
+  vec3 gustWave;
+  float flutterFrequency;
+  float gustAmplitude;
+  float gustFrequency;
+  // Not wind: StylizedMaterial.depthBias, kept in this block to save a
+  // binding per draw. It is subtracted from the clip-space depth (times w)
+  // of every vertex, so the object is drawn in front of what is up to that
+  // much depth nearer, without moving on screen.
+  float depthBias;
+} wind;
+
+out vec3 fragPosition;
+out vec3 fragNormal;
+out vec4 fragColor;
+out vec4 fragMasks;
+out float fragOcclusion;
+out vec4 fragInstanceColor;
+// The boost, the highlight, the palette slot and the fade, see
+// flame_3d/stylized_instance_data.glsl.
+out vec4 fragInstanceData;
+// The instance color less its nearest multiple of 2^-16, see
+// flame_3d/stylized_instance_data.glsl. Last, so that the outputs of before
+// keep their locations.
+out vec3 fragInstanceColorFine;
+#ifdef FLAME_STYLIZED_TEXTURED
+out vec2 fragTexCoord;
+#endif
+
+// Transforms normals by the model matrix: its cofactor matrix, which is the
+// inverse transpose up to a scale, keeps them perpendicular to the surface
+// under any scale.
+vec3 transformNormal(mat4 model, vec3 normal) {
+  vec3 x = model[0].xyz;
+  vec3 y = model[1].xyz;
+  vec3 z = model[2].xyz;
+  mat3 cofactor = mat3(cross(y, z), cross(z, x), cross(x, y));
+  float side = dot(x, cross(y, z)) < 0.0 ? -1.0 : 1.0;
+  return cofactor * normal * side;
+}
+
+// Emits the vertex whose model-space position and normal are [position] and
+// [normal] (the vertex's own, skinned, or per-object batched): the wind
+// offset is added in model space, then the object's model matrix places it
+// in the world.
+void emitStylizedVertexCore(
+  vec3 position,
+  vec3 normal,
+  mat4 model,
+  vec4 instColor,
+  vec4 instData
+) {
+  vec3 origin = model[3].xyz;
+  float objectPhase = dot(origin, wind.phaseScale);
+  float vertexPhase = vertexWind.y * 6.283185307;
+  float phase = wind.time * wind.frequency + objectPhase + vertexPhase;
+  float sway = sin(phase) * wind.amplitude * vertexWind.x;
+  float flutter = sin(
+    wind.time * wind.flutterFrequency + objectPhase + vertexPhase
+  ) * wind.flutterAmplitude * vertexWind.z;
+  float gust = 1.0 + wind.gustAmplitude *
+    sin(wind.time * wind.gustFrequency - dot(origin, wind.gustWave));
+  float offset = (sway + flutter) * gust * (1.0 + instData.z);
+  // The scale of the object along its up axis, in WindSpace.worldScaled.
+  float worldScale = dot(wind.upAxis, wind.upAxis) > 0.0
+    ? length(mat3(model) * wind.upAxis)
+    : 1.0;
+
+  vec4 worldPosition =
+    model * vec4(position + wind.modelDirection * offset, 1.0);
+  worldPosition.xyz += wind.direction * (offset * worldScale);
+  gl_Position = camera.viewProjection * worldPosition;
+  gl_Position.z -= wind.depthBias * gl_Position.w;
+
+  fragPosition = worldPosition.xyz;
+  fragNormal = transformNormal(model, normal);
+  fragColor = vertexColor;
+  fragMasks = vertexMasks;
+  fragOcclusion = vertexOcclusion;
+  fragInstanceColor = instColor;
+  fragInstanceData = stylizedFragmentInstanceData(instData);
+  fragInstanceColorFine = stylizedInstanceColorFine(instColor.rgb);
+#ifdef FLAME_STYLIZED_TEXTURED
+  fragTexCoord = vertexTexCoord;
+#endif
+}
+
+#endif

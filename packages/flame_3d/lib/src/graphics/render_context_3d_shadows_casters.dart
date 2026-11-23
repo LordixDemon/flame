@@ -48,7 +48,9 @@ extension _ShadowPassCasters on _ShadowPass {
     while (start < casters) {
       final first = order[start];
       var end = start + 1;
-      if (queue.joints[first] == null && queue.external[first] == null) {
+      if (queue.joints[first] == null &&
+          queue.external[first] == null &&
+          queue.batches[first] == null) {
         while (end < casters && _batchesWith(first, order[end])) {
           end++;
         }
@@ -124,8 +126,16 @@ extension _ShadowPassCasters on _ShadowPass {
       ..setRenderState(_ShadowPass._renderState)
       ..setFrontFace(WindingOrder.counterClockwise);
     RenderProfile.lap(RenderPhase.state);
-    context._bindJoints(vertexShader, joints);
-    context._drawBatchGeometry(surface, order, start, count);
+    final batch = queue.batches[first];
+    if (batch != null) {
+      context._bindBatchObjects(vertexShader, batch);
+      context.device
+        ..bindSurface(surface)
+        ..drawSurface(surface);
+    } else {
+      context._bindJoints(vertexShader, joints);
+      context._drawBatchGeometry(surface, order, start, count);
+    }
     RenderProfile.lap(RenderPhase.draw);
   }
 
@@ -148,6 +158,7 @@ extension _ShadowPassCasters on _ShadowPass {
               _paraboloidMovingVertexShader,
               _paraboloidMovingSkinnedVertexShader,
               _paraboloidMovingFragmentShader,
+              batchedVertex: _paraboloidMovingBatchedVertexShader,
             )
           : _casterIn(
               _movingPipelines,
@@ -155,6 +166,7 @@ extension _ShadowPassCasters on _ShadowPass {
               _movingVertexShader,
               _movingSkinnedVertexShader,
               _movingFragmentShader,
+              batchedVertex: _movingBatchedVertexShader,
             );
     }
     return _recordingParaboloidTile
@@ -164,6 +176,7 @@ extension _ShadowPassCasters on _ShadowPass {
             _paraboloidVertexShader,
             _paraboloidSkinnedVertexShader,
             _paraboloidFragmentShader,
+            batchedVertex: _paraboloidBatchedVertexShader,
           )
         : _casterIn(
             _pipelines,
@@ -171,6 +184,7 @@ extension _ShadowPassCasters on _ShadowPass {
             _vertexShader,
             _skinnedVertexShader,
             _fragmentShader,
+            batchedVertex: _batchedVertexShader,
           );
   }
 
@@ -179,20 +193,23 @@ extension _ShadowPassCasters on _ShadowPass {
     VertexLayout layout,
     Shader vertex,
     Shader skinnedVertex,
-    Shader fragment,
-  ) => _CasterPipeline.resolve(
+    Shader fragment, {
+    Shader? batchedVertex,
+  }) => _CasterPipeline.resolve(
     _context.device,
     pipelines,
     layout,
     vertex,
     skinnedVertex,
     fragment,
+    batchedVertex: batchedVertex,
   );
 }
 
 class _CasterPipeline({
   required final bool drawable,
   required final bool skinned,
+  required final bool batched,
 }) {
   DevicePipeline? _pipeline;
   int _vertexGeneration = -1;
@@ -212,23 +229,32 @@ class _CasterPipeline({
     VertexLayout layout,
     Shader vertex,
     Shader skinnedVertex,
-    Shader fragment,
-  ) {
+    Shader fragment, {
+    Shader? batchedVertex,
+  }) {
     var caster = pipelines[layout];
     if (caster == null) {
       final position = layout.attribute(VertexLayout.positionAttribute);
+      final batched =
+          layout.attribute(VertexLayout.objectIdAttribute)?.components == 1;
       final skinned =
           layout.attribute('vertexJoints')?.components == 4 &&
           layout.attribute('vertexWeights')?.components == 4;
       caster = pipelines[layout] = _CasterPipeline(
-        drawable: position != null && position.components == 3,
+        drawable:
+            position != null &&
+            position.components == 3 &&
+            (!batched || batchedVertex != null),
         skinned: skinned,
+        batched: batched,
       );
     }
     if (!caster.drawable) {
       return null;
     }
-    final vertexShader = caster.skinned ? skinnedVertex : vertex;
+    final vertexShader = caster.batched
+        ? batchedVertex!
+        : (caster.skinned ? skinnedVertex : vertex);
     final fragmentShader = fragment;
     vertexShader.resource;
     fragmentShader.resource;

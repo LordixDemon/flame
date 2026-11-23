@@ -112,3 +112,80 @@ Surface _buildStylizedSurface({
     aabb: aabb,
   );
 }
+
+Surface _buildBatchedStylizedSurface({
+  required List<Surface> surfaces,
+  required Material material,
+  Aabb3? aabb,
+}) {
+  if (surfaces.isEmpty) {
+    throw ArgumentError.value(surfaces, 'surfaces', 'Must not be empty');
+  }
+  if (surfaces.length > StylizedMaterial.maxBatchObjects) {
+    throw ArgumentError.value(
+      surfaces.length,
+      'surfaces',
+      'At most ${StylizedMaterial.maxBatchObjects} surfaces per rigid batch',
+    );
+  }
+  var totalVertices = 0;
+  var totalIndices = 0;
+  for (var i = 0; i < surfaces.length; i++) {
+    final s = surfaces[i];
+    if (s.layout != StylizedMaterial.vertexLayout) {
+      throw ArgumentError.value(
+        s.layout,
+        'surfaces[$i]',
+        'Rigid batches require StylizedMaterial.vertexLayout',
+      );
+    }
+    if (s.topology != PrimitiveTopology.triangles) {
+      throw ArgumentError.value(
+        s.topology,
+        'surfaces[$i]',
+        'Rigid batches merge triangle lists only',
+      );
+    }
+    totalVertices += s.vertexCount;
+    totalIndices += s.indexCount;
+  }
+
+  const srcStride = 18;
+  const dstStride = 19;
+  final verts = Float32List(totalVertices * dstStride);
+  final List<int> indices = totalVertices > 0xFFFF
+      ? Uint32List(totalIndices)
+      : Uint16List(totalIndices);
+
+  var vertBase = 0;
+  var idxCursor = 0;
+  for (var objIdx = 0; objIdx < surfaces.length; objIdx++) {
+    final s = surfaces[objIdx];
+    final vCount = s.vertexCount;
+    final srcVerts = s.vertexData;
+    final objId = objIdx.toDouble();
+    for (var v = 0; v < vCount; v++) {
+      final srcOff = v * srcStride;
+      final dstOff = (vertBase + v) * dstStride;
+      for (var k = 0; k < srcStride; k++) {
+        verts[dstOff + k] = srcVerts[srcOff + k];
+      }
+      verts[dstOff + srcStride] = objId;
+    }
+    final srcIndices = s.indices;
+    final iCount = srcIndices.length;
+    for (var t = 0; t < iCount; t++) {
+      indices[idxCursor + t] = vertBase + srcIndices[t];
+    }
+    vertBase += vCount;
+    idxCursor += iCount;
+  }
+
+  return Surface.fromBuffers(
+    vertices: verts,
+    indices: indices,
+    layout: StylizedMaterial.batchedVertexLayout,
+    material: material,
+    aabb: aabb,
+  );
+}
