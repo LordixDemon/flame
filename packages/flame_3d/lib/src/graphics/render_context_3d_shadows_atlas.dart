@@ -237,7 +237,9 @@ extension _ShadowPassAtlas on _ShadowPass {
     if (cache) {
       _writeAtlasSignature(atlasWidth, atlasHeight, float);
       var entry = _staticAtlases[projection];
-      if (entry != null && entry.castersKey == castersKey) {
+      if (entry != null &&
+          entry.deviceGeneration == GpuBackend.deviceGeneration &&
+          entry.castersKey == castersKey) {
         if (entry.matches(_atlasSignature, _atlasSignatureLength)) {
           // The atlas of an earlier frame holds the same tiles of the same
           // casters: receive it again, without rendering.
@@ -280,6 +282,7 @@ extension _ShadowPassAtlas on _ShadowPass {
       }
       entry
         ..castersKey = castersKey
+        ..deviceGeneration = GpuBackend.deviceGeneration
         ..store(_atlasSignature, _atlasSignatureLength);
       target = entry.target;
       _target = target;
@@ -609,6 +612,7 @@ class _StaticShadowAtlas({
   static const int signatureCapacity = 4 + 21 * 8;
 
   Object? castersKey;
+  int deviceGeneration = -1;
   final Float64List _signature = Float64List(signatureCapacity);
   int _length = 0;
 

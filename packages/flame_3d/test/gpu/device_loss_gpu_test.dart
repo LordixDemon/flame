@@ -1,12 +1,19 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'dart:ui' show Color, Size;
 
+import 'package:flame/components.dart' show World;
+import 'package:flame/game.dart' show FlameGame, GameWidget;
+import 'package:flame_3d/components.dart';
+import 'package:flame_3d/core.dart';
 import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/graphics/backend/flutter_gpu/gpu_backend.dart'
     as flutter_gpu;
+import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
+import 'package:flutter/widgets.dart' show GlobalKey, RepaintBoundary;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'gpu_test_helpers.dart';
@@ -168,6 +175,106 @@ void main() {
         expect(await backend().debugSimulateDeviceLoss(), isTrue);
         final after = await renderFrame(draw: (c) => c.drawSurface(surface));
         expect(after.pixels.at(32, 32), (0, 0, 0, 0));
+      },
+    );
+
+    testGpu(
+      'rebuilds kept still-caster shadow layers after device loss',
+      (tester) async {
+        final layer = Scene3DComponent(
+          projection: Scene3DProjection.affine(
+            origin: Vector2(80, 40),
+            xAxis: Vector2(12, 6),
+            yAxis: Vector2(-12, 6),
+            zAxis: Vector2(0, -14),
+            towardsViewer: Vector3(1, 1, 1.2),
+            near: -60,
+            far: 60,
+          ),
+        );
+        final settings = ShadowSettings(
+          resolution: 128,
+          fit: ShadowFit.fixed,
+          bounds: Aabb3.minMax(Vector3(-6, -6, -1), Vector3(6, 6, 4)),
+          cacheStillCasters: true,
+          stillCasterFrames: 1,
+        );
+        layer.world.addAll([
+          LightComponent.ambient(intensity: 0.35),
+          LightComponent.directional(
+            direction: Vector3(0.45, -0.3, -1),
+            intensity: 0.8,
+            shadows: settings,
+          ),
+          MeshComponent(
+            mesh: PlaneMesh(
+              size: Vector2.all(10),
+              material: StylizedMaterial(albedoColor: const Color(0xFFD8D0C0)),
+            ),
+            rotation: Quaternion.axisAngle(Vector3(1, 0, 0), math.pi / 2),
+          ),
+          MeshComponent(
+            mesh: CuboidMesh(
+              size: Vector3(1.0, 1.0, 2.0),
+              material: StylizedMaterial(albedoColor: const Color(0xFFC05040)),
+            ),
+            position: Vector3(0, 0, 1.0),
+          ),
+        ]);
+
+        final game = FlameGame(world: World(children: [layer]));
+        game.camera.viewfinder
+          ..position = Vector2(80, 60)
+          ..zoom = 1;
+        tester.view
+          ..physicalSize = const Size(160, 120)
+          ..devicePixelRatio = 1;
+        addTearDown(tester.view.reset);
+
+        final key = GlobalKey();
+        await tester.pumpWidget(
+          RepaintBoundary(
+            key: key,
+            child: GameWidget(game: game),
+          ),
+        );
+
+        Future<Pixels> pumpAndCapture() async {
+          await tester.pump(const Duration(milliseconds: 16));
+          final boundary =
+              key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+          return (await tester.runAsync(() async {
+            final image = await boundary.toImage();
+            final out = await readImage(image);
+            image.dispose();
+            return out;
+          }))!;
+        }
+
+        // Frame 1 marks still casters; frame 2 caches their shadow layers.
+        await pumpAndCapture();
+        await pumpAndCapture();
+        final before = await pumpAndCapture();
+        expect(layer.renderStats.shadowLayersReused, greaterThan(0));
+        // Confirm both shadowed and lit ground pixels exist before loss.
+        expect(
+          before.count((r, g, b, a) => a > 200 && r < 140 && g < 140),
+          greaterThan(20),
+        );
+        expect(
+          before.count((r, g, b, a) => a > 200 && r > 170 && g > 160),
+          greaterThan(200),
+        );
+
+        expect(
+          await tester.runAsync(() => backend().debugSimulateDeviceLoss()),
+          isTrue,
+        );
+        layer.markDirty();
+        final after = await pumpAndCapture();
+        expect(differingPixels(before, after), 0);
+
+        await tester.pumpWidget(const RepaintBoundary());
       },
     );
   });

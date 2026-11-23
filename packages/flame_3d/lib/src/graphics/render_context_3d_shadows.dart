@@ -487,6 +487,7 @@ class _ShadowPass(final RenderContext3D _context) {
     if (settings.cacheWhenStatic && castersKey != null) {
       final cached = _staticMaps[projection];
       if (cached != null &&
+          cached.deviceGeneration == GpuBackend.deviceGeneration &&
           cached.resolution == resolution &&
           cached.packDepth == !float &&
           cached.castersKey == castersKey &&
@@ -532,7 +533,9 @@ class _ShadowPass(final RenderContext3D _context) {
         );
         _staticMaps[projection] = entry;
       }
-      entry.castersKey = castersKey;
+      entry
+        ..castersKey = castersKey
+        ..deviceGeneration = GpuBackend.deviceGeneration;
       for (var i = 0; i < 16; i++) {
         entry.lightVp[i] = vpStorage[i];
       }

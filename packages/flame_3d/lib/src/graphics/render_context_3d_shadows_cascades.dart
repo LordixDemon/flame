@@ -75,6 +75,15 @@ extension _ShadowPassCascades on _ShadowPass {
     _staticMaps[owner] = null;
     _staticAtlases[owner] = null;
     final layers = _stillLayers[owner] ??= _StillLayers();
+    final generation = GpuBackend.deviceGeneration;
+    if (layers.deviceGeneration != generation) {
+      layers
+        ..deviceGeneration = generation
+        ..liveKey = null;
+      for (final view in layers.views) {
+        view.valid = false;
+      }
+    }
     _splitAtlas = atlasPath;
     final viewCount = atlasPath ? atlas.tiles.length : 1;
 
@@ -743,12 +752,14 @@ class _StaticShadowMap({
   required final Texture texture,
 }) {
   Object? castersKey;
+  int deviceGeneration = -1;
   final Float32List lightVp = Float32List(16);
 }
 
 class _StillLayers() {
   final List<_StillView> views = [];
 
+  int deviceGeneration = GpuBackend.deviceGeneration;
   GpuTextureTarget? live;
   Texture? liveTexture;
   int liveWidth = 0;

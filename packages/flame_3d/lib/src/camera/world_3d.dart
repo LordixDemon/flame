@@ -148,6 +148,7 @@ class World3D({
   int get _stillCastersVersion =>
       _versions.shadowCasters.version +
       Material.castsShadowsRevision +
+      GpuBackend.renderEpoch +
       (_lighting.lightsFrom?._lighting.lightsCastersVersion ?? 0);
 
   int get _shadowKeyVersion => _versions.shadowCasters.alwaysMoving > 0
