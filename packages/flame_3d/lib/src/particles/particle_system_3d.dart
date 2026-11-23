@@ -14,8 +14,9 @@ import 'package:flame_3d/src/extensions/geometry_math.dart';
 import 'package:flame_3d/src/resources/mesh/unit_quad_surface.dart';
 import 'package:meta/meta.dart';
 
-part 'particle_system_emitter_3d.dart';
+part 'particle_packer_3d.dart';
 part 'particle_simulation_3d.dart';
+part 'particle_system_emitter_3d.dart';
 
 /// The space a [ParticleSystem3D] simulates its particles in.
 enum ParticleSpace() {
@@ -320,30 +321,7 @@ class ParticleSystem3D({
   bool _everSpawned = false;
   bool _muted = false;
   int _stateVersion = 0;
-  int _sortSerial = 0;
-  int _cachedSortVersion = -1;
-  int _cachedSortWorldVer = -1;
-  bool _cachedSortLocal = false;
-  final Float32List _cachedSortView = Float32List(16);
-  int _cachedPackVersion = -1;
-  int _cachedPackSortSerial = -1;
-  int _cachedPackWorldVer = -1;
-  bool _cachedPackLocal = false;
-  bool _cachedPackSorted = false;
-  Material? _cachedPackMaterial;
-  ParticleFlipbook3D? _cachedPackFlipbook;
-  int _cachedPackFrames = -1;
-  bool _cachedPackBlending = false;
-  ParticleCurve? _cachedSizeCurve;
-  ColorRamp? _cachedColorRamp;
-  ParticleCurve? _cachedOpacityCurve;
-  ParticleCurve? _cachedRotationCurve;
-  double _cachedVelStretch = -1;
-  double _cachedMaxStretch = -1;
-  double _cachedInstD0 = 0;
-  double _cachedInstD1 = 0;
-  double _cachedInstD2 = 0;
-  double _cachedInstD3 = 0;
+  final _ParticleDrawCache _drawCache = _ParticleDrawCache();
 
   static final ParticleEmitter3D _defaultEmitter = ParticleEmitter3D();
 
@@ -679,77 +657,7 @@ class ParticleSystem3D({
     final sorted = sortsParticles;
     final isLocal = space == ParticleSpace.local;
     final worldVer = isLocal ? worldTransformVersion : 0;
-    if (sorted) {
-      final viewStorage = context.view.storage;
-      if (_cachedSortVersion != _stateVersion ||
-          _cachedSortLocal != isLocal ||
-          _cachedSortWorldVer != worldVer ||
-          !sameMatrix16Approx(viewStorage, _cachedSortView)) {
-        _sortBackToFront(context.view);
-        _cachedSortVersion = _stateVersion;
-        _cachedSortLocal = isLocal;
-        _cachedSortWorldVer = worldVer;
-        for (var i = 0; i < 16; i++) {
-          _cachedSortView[i] = viewStorage[i];
-        }
-        _sortSerial++;
-      }
-    }
-
-    final frames = material?.frameCount ?? 0;
-    final blending = material?.frameBlending ?? false;
-    final instData = instanceData.storage;
-    final d0 = instData[0];
-    final d1 = instData[1];
-    final d2 = instData[2];
-    final d3 = instData[3];
-    final packStale =
-        _cachedPackVersion != _stateVersion ||
-        _cachedPackSorted != sorted ||
-        (sorted && _cachedPackSortSerial != _sortSerial) ||
-        _cachedPackLocal != isLocal ||
-        _cachedPackWorldVer != worldVer ||
-        !identical(_cachedPackMaterial, material) ||
-        !identical(_cachedPackFlipbook, flipbook) ||
-        _cachedPackFrames != frames ||
-        _cachedPackBlending != blending ||
-        !identical(_cachedSizeCurve, sizeOverLife) ||
-        !identical(_cachedColorRamp, colorOverLife) ||
-        !identical(_cachedOpacityCurve, opacityOverLife) ||
-        !identical(_cachedRotationCurve, rotationOverLife) ||
-        _cachedVelStretch != velocityStretch ||
-        _cachedMaxStretch != maxStretch ||
-        _cachedInstD0 != d0 ||
-        _cachedInstD1 != d1 ||
-        _cachedInstD2 != d2 ||
-        _cachedInstD3 != d3;
-
-    if (packStale) {
-      if (material != null) {
-        _writeBillboards(sorted, material);
-      } else {
-        _writeMeshes(sorted);
-      }
-      _cachedPackVersion = _stateVersion;
-      _cachedPackSorted = sorted;
-      _cachedPackSortSerial = _sortSerial;
-      _cachedPackLocal = isLocal;
-      _cachedPackWorldVer = worldVer;
-      _cachedPackMaterial = material;
-      _cachedPackFlipbook = flipbook;
-      _cachedPackFrames = frames;
-      _cachedPackBlending = blending;
-      _cachedSizeCurve = sizeOverLife;
-      _cachedColorRamp = colorOverLife;
-      _cachedOpacityCurve = opacityOverLife;
-      _cachedRotationCurve = rotationOverLife;
-      _cachedVelStretch = velocityStretch;
-      _cachedMaxStretch = maxStretch;
-      _cachedInstD0 = d0;
-      _cachedInstD1 = d1;
-      _cachedInstD2 = d2;
-      _cachedInstD3 = d3;
-    }
+    _syncSortAndPack(context.view, sorted, isLocal, worldVer, material);
 
     final center = _center
       ..setFrom(_bounds.min)

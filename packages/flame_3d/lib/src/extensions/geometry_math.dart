@@ -577,3 +577,44 @@ void closestPointOnTriangle3D(
     a.z + abz * v + acz * w,
   );
 }
+
+/// Computes the signed scalar parameter along [unitAxis] (anchored at
+/// [anchor]) closest to the ray `(rayOrigin, rayDirection)`, or `null` when
+/// parallel (`denom <= minDenom`) or [rayDirection] is degenerate.
+@internal
+double? closestRayAxisParam3D(
+  Vector3 anchor,
+  Vector3 unitAxis,
+  Vector3 rayOrigin,
+  Vector3 rayDirection, {
+  bool directionIsUnit = false,
+  double minDenom = 1e-8,
+}) {
+  double dx;
+  double dy;
+  double dz;
+  if (directionIsUnit) {
+    dx = rayDirection.x;
+    dy = rayDirection.y;
+    dz = rayDirection.z;
+  } else {
+    final dirLen = rayDirection.length;
+    if (dirLen <= 1e-12) {
+      return null;
+    }
+    dx = rayDirection.x / dirLen;
+    dy = rayDirection.y / dirLen;
+    dz = rayDirection.z / dirLen;
+  }
+  final wx = anchor.x - rayOrigin.x;
+  final wy = anchor.y - rayOrigin.y;
+  final wz = anchor.z - rayOrigin.z;
+  final b = unitAxis.x * dx + unitAxis.y * dy + unitAxis.z * dz;
+  final denom = 1.0 - b * b;
+  if (denom <= minDenom) {
+    return null;
+  }
+  final d = unitAxis.x * wx + unitAxis.y * wy + unitAxis.z * wz;
+  final e = dx * wx + dy * wy + dz * wz;
+  return (b * e - d) / denom;
+}
