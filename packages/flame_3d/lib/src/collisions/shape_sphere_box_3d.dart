@@ -72,12 +72,12 @@ class SphereShape3D({
     if (!_prepareLocalRay(worldRay, worldTransform, maxDistance)) {
       return null;
     }
-    final ox = _localOrigin.x;
-    final oy = _localOrigin.y;
-    final oz = _localOrigin.z;
-    final dx = _localDir.x;
-    final dy = _localDir.y;
-    final dz = _localDir.z;
+    final ox = Shape3D._rayScratch.localOrigin.x;
+    final oy = Shape3D._rayScratch.localOrigin.y;
+    final oz = Shape3D._rayScratch.localOrigin.z;
+    final dx = Shape3D._rayScratch.localDir.x;
+    final dy = Shape3D._rayScratch.localDir.y;
+    final dz = Shape3D._rayScratch.localDir.z;
 
     final a = dx * dx + dy * dy + dz * dz;
     if (a <= 1e-24) {
@@ -110,7 +110,14 @@ class SphereShape3D({
         _transformLocalNormalToWorld(px / pLen, py / pLen, pz / pLen),
       );
     }
-    return (t, Vector3(-_unitWorldDir.x, -_unitWorldDir.y, -_unitWorldDir.z));
+    return (
+      t,
+      Vector3(
+        -Shape3D._rayScratch.unitWorldDir.x,
+        -Shape3D._rayScratch.unitWorldDir.y,
+        -Shape3D._rayScratch.unitWorldDir.z,
+      ),
+    );
   }
 
   @override
@@ -149,6 +156,9 @@ class BoxShape3D({
 
   /// Local half-extents `(hx, hy, hz)`.
   final Vector3 halfExtents = halfExtents.clone();
+
+  @override
+  bool get hasSupportFace => true;
 
   @override
   double get inscribedSphereRadius =>
@@ -213,12 +223,12 @@ class BoxShape3D({
     if (!_prepareLocalRay(worldRay, worldTransform, maxDistance)) {
       return null;
     }
-    final ox = _localOrigin.x;
-    final oy = _localOrigin.y;
-    final oz = _localOrigin.z;
-    final dx = _localDir.x;
-    final dy = _localDir.y;
-    final dz = _localDir.z;
+    final ox = Shape3D._rayScratch.localOrigin.x;
+    final oy = Shape3D._rayScratch.localOrigin.y;
+    final oz = Shape3D._rayScratch.localOrigin.z;
+    final dx = Shape3D._rayScratch.localDir.x;
+    final dy = Shape3D._rayScratch.localDir.y;
+    final dz = Shape3D._rayScratch.localDir.z;
     final hx = halfExtents.x;
     final hy = halfExtents.y;
     final hz = halfExtents.z;
@@ -325,7 +335,11 @@ class BoxShape3D({
     if (tMin < 0.0) {
       return (
         0.0,
-        Vector3(-_unitWorldDir.x, -_unitWorldDir.y, -_unitWorldDir.z),
+        Vector3(
+          -Shape3D._rayScratch.unitWorldDir.x,
+          -Shape3D._rayScratch.unitWorldDir.y,
+          -Shape3D._rayScratch.unitWorldDir.z,
+        ),
       );
     }
     if (tMin > maxDistance) {

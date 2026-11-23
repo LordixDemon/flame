@@ -7,6 +7,7 @@ import 'package:meta/meta.dart';
 part 'shape_capsule_3d.dart';
 part 'shape_compound_3d.dart';
 part 'shape_convex_hull_3d.dart';
+part 'shape_convex_hull_topology_3d.dart';
 part 'shape_heightfield_3d.dart';
 part 'shape_sphere_box_3d.dart';
 
@@ -103,6 +104,14 @@ enum Axis3D() {
 /// queries take an explicit `worldTransform` [Matrix4] so one shape instance
 /// can be shared across many colliders or rigid bodies.
 sealed class Shape3D() {
+  /// Whether this shape is convex (`false` for [CompoundShape3D] and
+  /// [HeightfieldShape3D]).
+  bool get isConvex => true;
+
+  /// Whether this shape exposes planar support faces for multi-point manifold
+  /// clipping (`true` for [BoxShape3D] and non-degenerate [ConvexHullShape3D]).
+  bool get hasSupportFace => false;
+
   /// Minimum inscribed sphere radius used by default for continuous collision
   /// detection (`RigidBody3D.ccdSweptSphereRadius`).
   double get inscribedSphereRadius;
@@ -152,12 +161,15 @@ sealed class Shape3D() {
 
   static final Vector3 _zeroCenterOfMass = Vector3.zero();
   static final Vector3 _inertiaDiagScratch = Vector3.zero();
+  static final _ShapeRayScratch _rayScratch = _ShapeRayScratch();
 }
 
-final Matrix4 _invTransform = Matrix4.identity();
-final Vector3 _unitWorldDir = Vector3.zero();
-final Vector3 _localOrigin = Vector3.zero();
-final Vector3 _localDir = Vector3.zero();
+class _ShapeRayScratch() {
+  final Matrix4 invTransform = Matrix4.identity();
+  final Vector3 unitWorldDir = Vector3.zero();
+  final Vector3 localOrigin = Vector3.zero();
+  final Vector3 localDir = Vector3.zero();
+}
 
 bool _invertAffineMatrixFast(Matrix4 src, Matrix4 dst) {
   final s = src.storage;
@@ -225,21 +237,21 @@ bool _prepareLocalRay(
   final wx = worldRay.direction.x * invLen;
   final wy = worldRay.direction.y * invLen;
   final wz = worldRay.direction.z * invLen;
-  _unitWorldDir.setValues(wx, wy, wz);
+  final scratch = Shape3D._rayScratch..unitWorldDir.setValues(wx, wy, wz);
 
-  if (!_invertAffineMatrixFast(worldTransform, _invTransform)) {
+  if (!_invertAffineMatrixFast(worldTransform, scratch.invTransform)) {
     return false;
   }
-  final m = _invTransform.storage;
+  final m = scratch.invTransform.storage;
   final ox = worldRay.origin.x;
   final oy = worldRay.origin.y;
   final oz = worldRay.origin.z;
-  _localOrigin.setValues(
+  scratch.localOrigin.setValues(
     m[0] * ox + m[4] * oy + m[8] * oz + m[12],
     m[1] * ox + m[5] * oy + m[9] * oz + m[13],
     m[2] * ox + m[6] * oy + m[10] * oz + m[14],
   );
-  _localDir.setValues(
+  scratch.localDir.setValues(
     m[0] * wx + m[4] * wy + m[8] * wz,
     m[1] * wx + m[5] * wy + m[9] * wz,
     m[2] * wx + m[6] * wy + m[10] * wz,
@@ -248,7 +260,7 @@ bool _prepareLocalRay(
 }
 
 Vector3 _transformLocalNormalToWorld(double lnx, double lny, double lnz) {
-  final m = _invTransform.storage;
+  final m = Shape3D._rayScratch.invTransform.storage;
   var wnx = m[0] * lnx + m[1] * lny + m[2] * lnz;
   var wny = m[4] * lnx + m[5] * lny + m[6] * lnz;
   var wnz = m[8] * lnx + m[9] * lny + m[10] * lnz;

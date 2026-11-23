@@ -25,6 +25,8 @@ class ShapeCastHit3D({
 /// `convexCast`) against [CollisionSystem3D] colliders and static
 /// [MeshComponent] / [TerrainMesh3D] / `ModelComponent` surfaces.
 abstract final class ShapeCast3D._() {
+  static final _ShapeCastScratch _scratch = _ShapeCastScratch();
+
   /// Sweeps a sphere of [radius] from [origin] along [delta], returning the
   /// earliest [ShapeCastHit3D] (`toi` in `[0..1]`) or `null` when clear.
   static ShapeCastHit3D? sphereCast({
@@ -39,11 +41,11 @@ abstract final class ShapeCast3D._() {
     bool Function(Component3D candidate)? filter,
   }) {
     final shape = SphereShape3D(radius: radius);
-    _startMat.setIdentity();
-    _startMat.setTranslation(origin);
+    ShapeCast3D._scratch.startMat.setIdentity();
+    ShapeCast3D._scratch.startMat.setTranslation(origin);
     return convexCast(
       shape: shape,
-      startTransform: _startMat,
+      startTransform: ShapeCast3D._scratch.startMat,
       delta: delta,
       collisionSystem: collisionSystem,
       world: world,
@@ -72,14 +74,14 @@ abstract final class ShapeCast3D._() {
     bool Function(Component3D candidate)? filter,
   }) {
     final shape = CapsuleShape3D(radius: radius, height: height, axis: axis);
-    _startMat.setFromTranslationRotationScale(
+    ShapeCast3D._scratch.startMat.setFromTranslationRotationScale(
       origin,
-      rotation ?? _identityQuat,
-      _unitScale,
+      rotation ?? ShapeCast3D._scratch.identityQuat,
+      ShapeCast3D._scratch.unitScale,
     );
     return convexCast(
       shape: shape,
-      startTransform: _startMat,
+      startTransform: ShapeCast3D._scratch.startMat,
       delta: delta,
       collisionSystem: collisionSystem,
       world: world,
@@ -136,23 +138,44 @@ abstract final class ShapeCast3D._() {
     }
     final sweepLen = math.sqrt(sweepLen2);
 
-    shape.computeWorldAabb(startTransform, _aabbStart);
-    _endMat.setFrom(startTransform);
-    _endMat.storage[12] += delta.x;
-    _endMat.storage[13] += delta.y;
-    _endMat.storage[14] += delta.z;
-    shape.computeWorldAabb(_endMat, _aabbEnd);
+    shape.computeWorldAabb(startTransform, ShapeCast3D._scratch.aabbStart);
+    ShapeCast3D._scratch.endMat.setFrom(startTransform);
+    ShapeCast3D._scratch.endMat.storage[12] += delta.x;
+    ShapeCast3D._scratch.endMat.storage[13] += delta.y;
+    ShapeCast3D._scratch.endMat.storage[14] += delta.z;
+    shape.computeWorldAabb(
+      ShapeCast3D._scratch.endMat,
+      ShapeCast3D._scratch.aabbEnd,
+    );
 
-    _sweptAabb
+    ShapeCast3D._scratch.sweptAabb
       ..min.setValues(
-        math.min(_aabbStart.min.x, _aabbEnd.min.x),
-        math.min(_aabbStart.min.y, _aabbEnd.min.y),
-        math.min(_aabbStart.min.z, _aabbEnd.min.z),
+        math.min(
+          ShapeCast3D._scratch.aabbStart.min.x,
+          ShapeCast3D._scratch.aabbEnd.min.x,
+        ),
+        math.min(
+          ShapeCast3D._scratch.aabbStart.min.y,
+          ShapeCast3D._scratch.aabbEnd.min.y,
+        ),
+        math.min(
+          ShapeCast3D._scratch.aabbStart.min.z,
+          ShapeCast3D._scratch.aabbEnd.min.z,
+        ),
       )
       ..max.setValues(
-        math.max(_aabbStart.max.x, _aabbEnd.max.x),
-        math.max(_aabbStart.max.y, _aabbEnd.max.y),
-        math.max(_aabbStart.max.z, _aabbEnd.max.z),
+        math.max(
+          ShapeCast3D._scratch.aabbStart.max.x,
+          ShapeCast3D._scratch.aabbEnd.max.x,
+        ),
+        math.max(
+          ShapeCast3D._scratch.aabbStart.max.y,
+          ShapeCast3D._scratch.aabbEnd.max.y,
+        ),
+        math.max(
+          ShapeCast3D._scratch.aabbStart.max.z,
+          ShapeCast3D._scratch.aabbEnd.max.z,
+        ),
       );
 
     ShapeCastHit3D? best;
@@ -161,13 +184,13 @@ abstract final class ShapeCast3D._() {
     // 1. Test against CollisionSystem3D colliders via dynamic BVH broadphase.
     if (collisionSystem != null) {
       collisionSystem.syncBroadphase();
-      _colliderScratch.clear();
+      ShapeCast3D._scratch.colliderScratch.clear();
       collisionSystem.broadphaseTree.queryAabb(
-        _sweptAabb,
-        out: _colliderScratch,
+        ShapeCast3D._scratch.sweptAabb,
+        out: ShapeCast3D._scratch.colliderScratch,
       );
-      for (var i = 0; i < _colliderScratch.length; i++) {
-        final c = _colliderScratch[i];
+      for (var i = 0; i < ShapeCast3D._scratch.colliderScratch.length; i++) {
+        final c = ShapeCast3D._scratch.colliderScratch[i];
         if (!includeTriggers && c.isTrigger) {
           continue;
         }
@@ -178,7 +201,7 @@ abstract final class ShapeCast3D._() {
         if (filter != null && (!filter(c) || !filter(host))) {
           continue;
         }
-        if (!aabbOverlaps(_sweptAabb, c.cachedWorldAabb)) {
+        if (!aabbOverlaps(ShapeCast3D._scratch.sweptAabb, c.cachedWorldAabb)) {
           continue;
         }
         final hit = _sweepShapeAgainstCollider(
@@ -201,7 +224,7 @@ abstract final class ShapeCast3D._() {
       if (filter != null && !filter(obj)) {
         return;
       }
-      if (!aabbOverlaps(_sweptAabb, obj.aabb)) {
+      if (!aabbOverlaps(ShapeCast3D._scratch.sweptAabb, obj.aabb)) {
         return;
       }
       obj.visitCollisionMeshes((mesh, matrix) {
@@ -232,7 +255,7 @@ abstract final class ShapeCast3D._() {
     if (world != null) {
       void visit(Component comp) {
         if (comp is Component3D) {
-          if (!aabbOverlaps(_sweptAabb, comp.aabb)) {
+          if (!aabbOverlaps(ShapeCast3D._scratch.sweptAabb, comp.aabb)) {
             return;
           }
           if (comp is Object3D) {
@@ -453,8 +476,8 @@ abstract final class ShapeCast3D._() {
       (dir, out) => shapeA.supportPoint(dir, startA, out),
       (dir, out) => shapeB.supportPoint(dir, matB, out),
       () => Narrowphase3D.test(shapeA, startA, shapeB, matB),
-      centerOfMatrix3D(startA, _cA),
-      centerOfMatrix3D(matB, _cB),
+      centerOfMatrix3D(startA, ShapeCast3D._scratch.cA),
+      centerOfMatrix3D(matB, ShapeCast3D._scratch.cB),
       delta,
       initialMaxToi,
     );
@@ -560,7 +583,7 @@ abstract final class ShapeCast3D._() {
             wv01,
             wv11,
           ),
-          centerOfMatrix3D(startA, _cA),
+          centerOfMatrix3D(startA, ShapeCast3D._scratch.cA),
           triC,
           delta,
           limit,
@@ -585,7 +608,7 @@ abstract final class ShapeCast3D._() {
             wv11,
             wv10,
           ),
-          centerOfMatrix3D(startA, _cA),
+          centerOfMatrix3D(startA, ShapeCast3D._scratch.cA),
           triC,
           delta,
           limit,
@@ -609,14 +632,14 @@ abstract final class ShapeCast3D._() {
     Matrix4 meshMatrix,
     double initialMaxToi,
   ) {
-    _invMesh.setFrom(meshMatrix);
-    if (_invMesh.invert().abs() < 1e-15) {
+    ShapeCast3D._scratch.invMesh.setFrom(meshMatrix);
+    if (ShapeCast3D._scratch.invMesh.invert().abs() < 1e-15) {
       return null;
     }
 
-    _localSweptAabb
-      ..setFrom(_sweptAabb)
-      ..transform(_invMesh);
+    ShapeCast3D._scratch.localSweptAabb
+      ..setFrom(ShapeCast3D._scratch.sweptAabb)
+      ..transform(ShapeCast3D._scratch.invMesh);
 
     ShapeCastHit3D? best;
     var maxToi = initialMaxToi;
@@ -624,24 +647,27 @@ abstract final class ShapeCast3D._() {
 
     for (final surface in mesh.surfaces) {
       if (surface.indexCount < 3 ||
-          !aabbOverlaps(_localSweptAabb, surface.aabb)) {
+          !aabbOverlaps(ShapeCast3D._scratch.localSweptAabb, surface.aabb)) {
         continue;
       }
       final bvhRef = surface.bvh;
       if (bvhRef.triangleCount == 0) {
         continue;
       }
-      _triCandidates.clear();
-      bvhRef.queryAabb(_localSweptAabb, _triCandidates);
-      if (_triCandidates.isEmpty) {
+      ShapeCast3D._scratch.triCandidates.clear();
+      bvhRef.queryAabb(
+        ShapeCast3D._scratch.localSweptAabb,
+        ShapeCast3D._scratch.triCandidates,
+      );
+      if (ShapeCast3D._scratch.triCandidates.isEmpty) {
         continue;
       }
 
       final positions = surface.positions;
       final indices = surface.indices;
 
-      for (var i = 0; i < _triCandidates.length; i++) {
-        final tri = _triCandidates[i];
+      for (var i = 0; i < ShapeCast3D._scratch.triCandidates.length; i++) {
+        final tri = ShapeCast3D._scratch.triCandidates[i];
         final base = tri * 3;
         final i0 = indices[base] * 3;
         final i1 = indices[base + 1] * 3;
@@ -652,41 +678,56 @@ abstract final class ShapeCast3D._() {
           positions[i0],
           positions[i0 + 1],
           positions[i0 + 2],
-          _tv0,
+          ShapeCast3D._scratch.tv0,
         );
         transformPoint3D(
           m,
           positions[i1],
           positions[i1 + 1],
           positions[i1 + 2],
-          _tv1,
+          ShapeCast3D._scratch.tv1,
         );
         transformPoint3D(
           m,
           positions[i2],
           positions[i2 + 1],
           positions[i2 + 2],
-          _tv2,
+          ShapeCast3D._scratch.tv2,
         );
 
-        _triCenter.setValues(
-          (_tv0.x + _tv1.x + _tv2.x) * (1.0 / 3.0),
-          (_tv0.y + _tv1.y + _tv2.y) * (1.0 / 3.0),
-          (_tv0.z + _tv1.z + _tv2.z) * (1.0 / 3.0),
+        ShapeCast3D._scratch.triCenter.setValues(
+          (ShapeCast3D._scratch.tv0.x +
+                  ShapeCast3D._scratch.tv1.x +
+                  ShapeCast3D._scratch.tv2.x) *
+              (1.0 / 3.0),
+          (ShapeCast3D._scratch.tv0.y +
+                  ShapeCast3D._scratch.tv1.y +
+                  ShapeCast3D._scratch.tv2.y) *
+              (1.0 / 3.0),
+          (ShapeCast3D._scratch.tv0.z +
+                  ShapeCast3D._scratch.tv1.z +
+                  ShapeCast3D._scratch.tv2.z) *
+              (1.0 / 3.0),
         );
 
         final res = _gjkConvexSweep(
           (dir, out) => shapeA.supportPoint(dir, startA, out),
-          (dir, out) => triangleSupport3D(_tv0, _tv1, _tv2, dir, out),
+          (dir, out) => triangleSupport3D(
+            ShapeCast3D._scratch.tv0,
+            ShapeCast3D._scratch.tv1,
+            ShapeCast3D._scratch.tv2,
+            dir,
+            out,
+          ),
           () => Narrowphase3D.intersectShapeWithTriangle(
             shapeA,
             startA,
-            _tv0,
-            _tv1,
-            _tv2,
+            ShapeCast3D._scratch.tv0,
+            ShapeCast3D._scratch.tv1,
+            ShapeCast3D._scratch.tv2,
           ),
-          centerOfMatrix3D(startA, _cA),
-          _triCenter,
+          centerOfMatrix3D(startA, ShapeCast3D._scratch.cA),
+          ShapeCast3D._scratch.triCenter,
           delta,
           maxToi,
         );

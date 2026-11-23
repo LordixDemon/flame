@@ -1,15 +1,5 @@
 part of 'collision_manifold_3d.dart';
 
-final Vector3 _segA0 = Vector3.zero();
-final Vector3 _segA1 = Vector3.zero();
-final Vector3 _segB0 = Vector3.zero();
-final Vector3 _segB1 = Vector3.zero();
-final Vector3 _ptA = Vector3.zero();
-final Vector3 _ptB = Vector3.zero();
-final Float64List _segBreaks = Float64List(8);
-final Vector3 _candSeg = Vector3.zero();
-final Vector3 _candTri = Vector3.zero();
-
 double _closestSegmentParamToAabb(
   double p0x,
   double p0y,
@@ -21,7 +11,7 @@ double _closestSegmentParamToAabb(
   double hy,
   double hz,
 ) {
-  final breaks = _segBreaks;
+  final breaks = Narrowphase3D._scratch.dist.segBreaks;
   var count = 2;
   breaks[0] = 0.0;
   breaks[1] = 1.0;
@@ -146,18 +136,64 @@ void _closestPointsSegmentTriangle(
   }
 
   // 1. Segment endpoints against triangle.
-  closestPointOnTriangle3D(p0.x, p0.y, p0.z, v0, v1, v2, _candTri);
-  consider(p0, _candTri);
-  closestPointOnTriangle3D(p1.x, p1.y, p1.z, v0, v1, v2, _candTri);
-  consider(p1, _candTri);
+  closestPointOnTriangle3D(
+    p0.x,
+    p0.y,
+    p0.z,
+    v0,
+    v1,
+    v2,
+    Narrowphase3D._scratch.dist.candTri,
+  );
+  consider(p0, Narrowphase3D._scratch.dist.candTri);
+  closestPointOnTriangle3D(
+    p1.x,
+    p1.y,
+    p1.z,
+    v0,
+    v1,
+    v2,
+    Narrowphase3D._scratch.dist.candTri,
+  );
+  consider(p1, Narrowphase3D._scratch.dist.candTri);
 
   // 2. Segment against the 3 triangle edges.
-  closestPointsSegmentSegment3D(p0, p1, v0, v1, _candSeg, _candTri);
-  consider(_candSeg, _candTri);
-  closestPointsSegmentSegment3D(p0, p1, v1, v2, _candSeg, _candTri);
-  consider(_candSeg, _candTri);
-  closestPointsSegmentSegment3D(p0, p1, v2, v0, _candSeg, _candTri);
-  consider(_candSeg, _candTri);
+  closestPointsSegmentSegment3D(
+    p0,
+    p1,
+    v0,
+    v1,
+    Narrowphase3D._scratch.dist.candSeg,
+    Narrowphase3D._scratch.dist.candTri,
+  );
+  consider(
+    Narrowphase3D._scratch.dist.candSeg,
+    Narrowphase3D._scratch.dist.candTri,
+  );
+  closestPointsSegmentSegment3D(
+    p0,
+    p1,
+    v1,
+    v2,
+    Narrowphase3D._scratch.dist.candSeg,
+    Narrowphase3D._scratch.dist.candTri,
+  );
+  consider(
+    Narrowphase3D._scratch.dist.candSeg,
+    Narrowphase3D._scratch.dist.candTri,
+  );
+  closestPointsSegmentSegment3D(
+    p0,
+    p1,
+    v2,
+    v0,
+    Narrowphase3D._scratch.dist.candSeg,
+    Narrowphase3D._scratch.dist.candTri,
+  );
+  consider(
+    Narrowphase3D._scratch.dist.candSeg,
+    Narrowphase3D._scratch.dist.candTri,
+  );
 
   // 3. Segment piercing the triangle plane.
   final e1x = v1.x - v0.x;
@@ -177,17 +213,24 @@ void _closestPointsSegmentTriangle(
     final t =
         -(nx * (p0.x - v0.x) + ny * (p0.y - v0.y) + nz * (p0.z - v0.z)) / denom;
     if (t > 0.0 && t < 1.0) {
-      _candSeg.setValues(p0.x + dx * t, p0.y + dy * t, p0.z + dz * t);
+      Narrowphase3D._scratch.dist.candSeg.setValues(
+        p0.x + dx * t,
+        p0.y + dy * t,
+        p0.z + dz * t,
+      );
       closestPointOnTriangle3D(
-        _candSeg.x,
-        _candSeg.y,
-        _candSeg.z,
+        Narrowphase3D._scratch.dist.candSeg.x,
+        Narrowphase3D._scratch.dist.candSeg.y,
+        Narrowphase3D._scratch.dist.candSeg.z,
         v0,
         v1,
         v2,
-        _candTri,
+        Narrowphase3D._scratch.dist.candTri,
       );
-      consider(_candSeg, _candTri);
+      consider(
+        Narrowphase3D._scratch.dist.candSeg,
+        Narrowphase3D._scratch.dist.candTri,
+      );
     }
   }
 }

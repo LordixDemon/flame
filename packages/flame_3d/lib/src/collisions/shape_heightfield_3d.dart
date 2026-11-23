@@ -34,6 +34,9 @@ class HeightfieldShape3D({
     _maxY = maxH.isFinite ? maxH : 0.0;
   }
 
+  @override
+  bool get isConvex => false;
+
   /// Immutable copy of the `columns * rows` raw height grid.
   final Float32List heights = Float32List.fromList(heights);
 
@@ -219,12 +222,12 @@ class HeightfieldShape3D({
     if (!_prepareLocalRay(worldRay, worldTransform, maxDistance)) {
       return null;
     }
-    final ox = _localOrigin.x;
-    final oy = _localOrigin.y;
-    final oz = _localOrigin.z;
-    final dx = _localDir.x;
-    final dy = _localDir.y;
-    final dz = _localDir.z;
+    final ox = Shape3D._rayScratch.localOrigin.x;
+    final oy = Shape3D._rayScratch.localOrigin.y;
+    final oz = Shape3D._rayScratch.localOrigin.z;
+    final dx = Shape3D._rayScratch.localDir.x;
+    final dy = Shape3D._rayScratch.localDir.y;
+    final dz = Shape3D._rayScratch.localDir.z;
 
     final halfW = width * 0.5;
     final halfD = depth * 0.5;

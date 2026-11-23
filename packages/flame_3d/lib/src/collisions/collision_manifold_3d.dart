@@ -7,10 +7,13 @@ import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/extensions/geometry_math.dart';
 import 'package:meta/meta.dart';
 
+part 'narrowphase_clipping_3d.dart';
 part 'narrowphase_distance_3d.dart';
 part 'narrowphase_gjk_epa_3d.dart';
+part 'narrowphase_manifold_merge_3d.dart';
 part 'narrowphase_mesh_terrain_3d.dart';
 part 'narrowphase_primitives_3d.dart';
+part 'narrowphase_scratch_3d.dart';
 
 /// A single contact point pair inside a [CollisionManifold3D].
 ///
@@ -488,6 +491,7 @@ class MutableManifoldBuffer3D() {
 /// OBB SAT with Sutherland-Hodgman face clipping, general GJK+EPA convex
 /// hulls, and `O(log T)` [Surface] triangle BVH queries.
 abstract final class Narrowphase3D._() {
+  static final _NarrowphaseScratch _scratch = _NarrowphaseScratch();
   static final MutableManifoldBuffer3D _publicOutBuf =
       MutableManifoldBuffer3D();
   static bool _inPublicQuery = false;
@@ -555,44 +559,44 @@ abstract final class Narrowphase3D._() {
     MutableManifoldBuffer3D out,
   ) {
     if (shapeA is CompoundShape3D) {
-      final raw = _acquireRawManifoldBuf();
+      final raw = _scratch.mesh.acquireRawBuffer();
       try {
         _collectCompoundRawInto(shapeA, transformA, shapeB, transformB, raw, 0);
         _mergeCoDirectionalInto(raw, out);
       } finally {
-        _releaseRawManifoldBuf(raw);
+        _scratch.mesh.releaseRawBuffer(raw);
       }
       return;
     }
     if (shapeB is CompoundShape3D) {
-      final raw = _acquireRawManifoldBuf();
+      final raw = _scratch.mesh.acquireRawBuffer();
       try {
         _collectCompoundRawInto(shapeB, transformB, shapeA, transformA, raw, 0);
         raw.flipManifoldsFrom(0);
         _mergeCoDirectionalInto(raw, out);
       } finally {
-        _releaseRawManifoldBuf(raw);
+        _scratch.mesh.releaseRawBuffer(raw);
       }
       return;
     }
     if (shapeA is HeightfieldShape3D) {
-      final raw = _acquireRawManifoldBuf();
+      final raw = _scratch.mesh.acquireRawBuffer();
       try {
         _heightfieldShapeRawInto(shapeB, transformB, shapeA, transformA, raw);
         raw.flipManifoldsFrom(0);
         _mergeCoDirectionalInto(raw, out);
       } finally {
-        _releaseRawManifoldBuf(raw);
+        _scratch.mesh.releaseRawBuffer(raw);
       }
       return;
     }
     if (shapeB is HeightfieldShape3D) {
-      final raw = _acquireRawManifoldBuf();
+      final raw = _scratch.mesh.acquireRawBuffer();
       try {
         _heightfieldShapeRawInto(shapeA, transformA, shapeB, transformB, raw);
         _mergeCoDirectionalInto(raw, out);
       } finally {
-        _releaseRawManifoldBuf(raw);
+        _scratch.mesh.releaseRawBuffer(raw);
       }
       return;
     }

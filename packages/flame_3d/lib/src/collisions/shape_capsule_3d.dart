@@ -164,26 +164,26 @@ class CapsuleShape3D({
     final double dv;
     switch (axis) {
       case Axis3D.x:
-        oa = _localOrigin.x;
-        ou = _localOrigin.y;
-        ov = _localOrigin.z;
-        da = _localDir.x;
-        du = _localDir.y;
-        dv = _localDir.z;
+        oa = Shape3D._rayScratch.localOrigin.x;
+        ou = Shape3D._rayScratch.localOrigin.y;
+        ov = Shape3D._rayScratch.localOrigin.z;
+        da = Shape3D._rayScratch.localDir.x;
+        du = Shape3D._rayScratch.localDir.y;
+        dv = Shape3D._rayScratch.localDir.z;
       case Axis3D.y:
-        oa = _localOrigin.y;
-        ou = _localOrigin.x;
-        ov = _localOrigin.z;
-        da = _localDir.y;
-        du = _localDir.x;
-        dv = _localDir.z;
+        oa = Shape3D._rayScratch.localOrigin.y;
+        ou = Shape3D._rayScratch.localOrigin.x;
+        ov = Shape3D._rayScratch.localOrigin.z;
+        da = Shape3D._rayScratch.localDir.y;
+        du = Shape3D._rayScratch.localDir.x;
+        dv = Shape3D._rayScratch.localDir.z;
       case Axis3D.z:
-        oa = _localOrigin.z;
-        ou = _localOrigin.x;
-        ov = _localOrigin.y;
-        da = _localDir.z;
-        du = _localDir.x;
-        dv = _localDir.y;
+        oa = Shape3D._rayScratch.localOrigin.z;
+        ou = Shape3D._rayScratch.localOrigin.x;
+        ov = Shape3D._rayScratch.localOrigin.y;
+        da = Shape3D._rayScratch.localDir.z;
+        du = Shape3D._rayScratch.localDir.x;
+        dv = Shape3D._rayScratch.localDir.y;
     }
 
     final hs = halfSegment;
@@ -195,7 +195,11 @@ class CapsuleShape3D({
     if (diffA * diffA + ou * ou + ov * ov <= r2) {
       return (
         0.0,
-        Vector3(-_unitWorldDir.x, -_unitWorldDir.y, -_unitWorldDir.z),
+        Vector3(
+          -Shape3D._rayScratch.unitWorldDir.x,
+          -Shape3D._rayScratch.unitWorldDir.y,
+          -Shape3D._rayScratch.unitWorldDir.z,
+        ),
       );
     }
 

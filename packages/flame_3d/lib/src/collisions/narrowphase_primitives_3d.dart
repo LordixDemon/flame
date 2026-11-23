@@ -1,12 +1,5 @@
 part of 'collision_manifold_3d.dart';
 
-final Vector3 _boxNormalScratch = Vector3.zero();
-final Vector3 _boxNormalNegScratch = Vector3.zero();
-final _ObbFrame _obbA = _ObbFrame();
-final _ObbFrame _obbB = _ObbFrame();
-int _satBestAxisCode = -1;
-double _satMinPen = 0.0;
-
 void _sphereSphereInto(
   SphereShape3D a,
   Matrix4 transformA,
@@ -43,16 +36,27 @@ void _sphereCapsuleInto(
   final cAy = mA[13];
   final cAz = mA[14];
   final rA = a.worldRadius(transformA);
-  final rB = b.worldSpine(transformB, _segB0, _segB1);
-  closestPointOnSegment3D(cAx, cAy, cAz, _segB0, _segB1, _ptB);
+  final rB = b.worldSpine(
+    transformB,
+    Narrowphase3D._scratch.dist.segB0,
+    Narrowphase3D._scratch.dist.segB1,
+  );
+  closestPointOnSegment3D(
+    cAx,
+    cAy,
+    cAz,
+    Narrowphase3D._scratch.dist.segB0,
+    Narrowphase3D._scratch.dist.segB1,
+    Narrowphase3D._scratch.dist.ptB,
+  );
   _pushSphereSphereInto(
     cAx,
     cAy,
     cAz,
     rA,
-    _ptB.x,
-    _ptB.y,
-    _ptB.z,
+    Narrowphase3D._scratch.dist.ptB.x,
+    Narrowphase3D._scratch.dist.ptB.y,
+    Narrowphase3D._scratch.dist.ptB.z,
     rB,
     out,
     flip: flip,
@@ -66,17 +70,32 @@ void _capsuleCapsuleInto(
   Matrix4 transformB,
   MutableManifoldBuffer3D out,
 ) {
-  final rA = a.worldSpine(transformA, _segA0, _segA1);
-  final rB = b.worldSpine(transformB, _segB0, _segB1);
-  closestPointsSegmentSegment3D(_segA0, _segA1, _segB0, _segB1, _ptA, _ptB);
+  final rA = a.worldSpine(
+    transformA,
+    Narrowphase3D._scratch.dist.segA0,
+    Narrowphase3D._scratch.dist.segA1,
+  );
+  final rB = b.worldSpine(
+    transformB,
+    Narrowphase3D._scratch.dist.segB0,
+    Narrowphase3D._scratch.dist.segB1,
+  );
+  closestPointsSegmentSegment3D(
+    Narrowphase3D._scratch.dist.segA0,
+    Narrowphase3D._scratch.dist.segA1,
+    Narrowphase3D._scratch.dist.segB0,
+    Narrowphase3D._scratch.dist.segB1,
+    Narrowphase3D._scratch.dist.ptA,
+    Narrowphase3D._scratch.dist.ptB,
+  );
   _pushSphereSphereInto(
-    _ptA.x,
-    _ptA.y,
-    _ptA.z,
+    Narrowphase3D._scratch.dist.ptA.x,
+    Narrowphase3D._scratch.dist.ptA.y,
+    Narrowphase3D._scratch.dist.ptA.z,
     rA,
-    _ptB.x,
-    _ptB.y,
-    _ptB.z,
+    Narrowphase3D._scratch.dist.ptB.x,
+    Narrowphase3D._scratch.dist.ptB.y,
+    Narrowphase3D._scratch.dist.ptB.z,
     rB,
     out,
     flip: false,
@@ -93,8 +112,16 @@ void _sphereBoxInto(
 }) {
   final mA = transformA.storage;
   final rA = a.worldRadius(transformA);
-  _obbB.extract(b, transformB);
-  _pushSphereObbInto(mA[12], mA[13], mA[14], rA, _obbB, out, flip: flip);
+  Narrowphase3D._scratch.prim.obbB.extract(b, transformB);
+  _pushSphereObbInto(
+    mA[12],
+    mA[13],
+    mA[14],
+    rA,
+    Narrowphase3D._scratch.prim.obbB,
+    out,
+    flip: flip,
+  );
 }
 
 void _capsuleBoxInto(
@@ -105,15 +132,43 @@ void _capsuleBoxInto(
   MutableManifoldBuffer3D out, {
   required bool flip,
 }) {
-  final rA = a.worldSpine(transformA, _segA0, _segA1);
-  _obbB.extract(b, transformB);
+  final rA = a.worldSpine(
+    transformA,
+    Narrowphase3D._scratch.dist.segA0,
+    Narrowphase3D._scratch.dist.segA1,
+  );
+  Narrowphase3D._scratch.prim.obbB.extract(b, transformB);
 
-  final p0x = _obbB.toLocalX(_segA0.x, _segA0.y, _segA0.z);
-  final p0y = _obbB.toLocalY(_segA0.x, _segA0.y, _segA0.z);
-  final p0z = _obbB.toLocalZ(_segA0.x, _segA0.y, _segA0.z);
-  final p1x = _obbB.toLocalX(_segA1.x, _segA1.y, _segA1.z);
-  final p1y = _obbB.toLocalY(_segA1.x, _segA1.y, _segA1.z);
-  final p1z = _obbB.toLocalZ(_segA1.x, _segA1.y, _segA1.z);
+  final p0x = Narrowphase3D._scratch.prim.obbB.toLocalX(
+    Narrowphase3D._scratch.dist.segA0.x,
+    Narrowphase3D._scratch.dist.segA0.y,
+    Narrowphase3D._scratch.dist.segA0.z,
+  );
+  final p0y = Narrowphase3D._scratch.prim.obbB.toLocalY(
+    Narrowphase3D._scratch.dist.segA0.x,
+    Narrowphase3D._scratch.dist.segA0.y,
+    Narrowphase3D._scratch.dist.segA0.z,
+  );
+  final p0z = Narrowphase3D._scratch.prim.obbB.toLocalZ(
+    Narrowphase3D._scratch.dist.segA0.x,
+    Narrowphase3D._scratch.dist.segA0.y,
+    Narrowphase3D._scratch.dist.segA0.z,
+  );
+  final p1x = Narrowphase3D._scratch.prim.obbB.toLocalX(
+    Narrowphase3D._scratch.dist.segA1.x,
+    Narrowphase3D._scratch.dist.segA1.y,
+    Narrowphase3D._scratch.dist.segA1.z,
+  );
+  final p1y = Narrowphase3D._scratch.prim.obbB.toLocalY(
+    Narrowphase3D._scratch.dist.segA1.x,
+    Narrowphase3D._scratch.dist.segA1.y,
+    Narrowphase3D._scratch.dist.segA1.z,
+  );
+  final p1z = Narrowphase3D._scratch.prim.obbB.toLocalZ(
+    Narrowphase3D._scratch.dist.segA1.x,
+    Narrowphase3D._scratch.dist.segA1.y,
+    Narrowphase3D._scratch.dist.segA1.z,
+  );
 
   final bestT = _closestSegmentParamToAabb(
     p0x,
@@ -122,15 +177,35 @@ void _capsuleBoxInto(
     p1x - p0x,
     p1y - p0y,
     p1z - p0z,
-    _obbB.ex,
-    _obbB.ey,
-    _obbB.ez,
+    Narrowphase3D._scratch.prim.obbB.ex,
+    Narrowphase3D._scratch.prim.obbB.ey,
+    Narrowphase3D._scratch.prim.obbB.ez,
   );
 
-  final sx = _segA0.x + (_segA1.x - _segA0.x) * bestT;
-  final sy = _segA0.y + (_segA1.y - _segA0.y) * bestT;
-  final sz = _segA0.z + (_segA1.z - _segA0.z) * bestT;
-  _pushSphereObbInto(sx, sy, sz, rA, _obbB, out, flip: flip);
+  final sx =
+      Narrowphase3D._scratch.dist.segA0.x +
+      (Narrowphase3D._scratch.dist.segA1.x -
+              Narrowphase3D._scratch.dist.segA0.x) *
+          bestT;
+  final sy =
+      Narrowphase3D._scratch.dist.segA0.y +
+      (Narrowphase3D._scratch.dist.segA1.y -
+              Narrowphase3D._scratch.dist.segA0.y) *
+          bestT;
+  final sz =
+      Narrowphase3D._scratch.dist.segA0.z +
+      (Narrowphase3D._scratch.dist.segA1.z -
+              Narrowphase3D._scratch.dist.segA0.z) *
+          bestT;
+  _pushSphereObbInto(
+    sx,
+    sy,
+    sz,
+    rA,
+    Narrowphase3D._scratch.prim.obbB,
+    out,
+    flip: flip,
+  );
 }
 
 void _boxBoxInto(
@@ -143,21 +218,33 @@ void _boxBoxInto(
   if (!_solveBoxBoxSat(a, transformA, b, transformB)) {
     return;
   }
-  final bestAxisCode = _satBestAxisCode;
-  final minPen = _satMinPen;
-  final nx = _boxNormalScratch.x;
-  final ny = _boxNormalScratch.y;
-  final nz = _boxNormalScratch.z;
+  final bestAxisCode = Narrowphase3D._scratch.prim.satBestAxisCode;
+  final minPen = Narrowphase3D._scratch.prim.satMinPen;
+  final nx = Narrowphase3D._scratch.prim.boxNormal.x;
+  final ny = Narrowphase3D._scratch.prim.boxNormal.y;
+  final nz = Narrowphase3D._scratch.prim.boxNormal.z;
 
   if (bestAxisCode < 6) {
-    _writeObbFace(_obbA, nx, ny, nz, _faceA);
-    _writeObbFace(_obbB, -nx, -ny, -nz, _faceB);
+    _writeObbFace(
+      Narrowphase3D._scratch.prim.obbA,
+      nx,
+      ny,
+      nz,
+      Narrowphase3D._scratch.clip.faceA,
+    );
+    _writeObbFace(
+      Narrowphase3D._scratch.prim.obbB,
+      -nx,
+      -ny,
+      -nz,
+      Narrowphase3D._scratch.clip.faceB,
+    );
     if (_clipSupportFacesInto(
       nx,
       ny,
       nz,
-      _faceA,
-      _faceB,
+      Narrowphase3D._scratch.clip.faceA,
+      Narrowphase3D._scratch.clip.faceB,
       out,
       forceReference: bestAxisCode < 3 ? 1 : 2,
       depthOverride: minPen,
@@ -170,45 +257,67 @@ void _boxBoxInto(
     final edgePair = bestAxisCode - 6;
     final axisA = edgePair ~/ 3;
     final axisB = edgePair % 3;
-    _obbA.supportEdge(axisA, nx, ny, nz, _segA0, _segA1);
-    _obbB.supportEdge(axisB, -nx, -ny, -nz, _segB0, _segB1);
+    Narrowphase3D._scratch.prim.obbA.supportEdge(
+      axisA,
+      nx,
+      ny,
+      nz,
+      Narrowphase3D._scratch.dist.segA0,
+      Narrowphase3D._scratch.dist.segA1,
+    );
+    Narrowphase3D._scratch.prim.obbB.supportEdge(
+      axisB,
+      -nx,
+      -ny,
+      -nz,
+      Narrowphase3D._scratch.dist.segB0,
+      Narrowphase3D._scratch.dist.segB1,
+    );
     closestPointsSegmentSegment3D(
-      _segA0,
-      _segA1,
-      _segB0,
-      _segB1,
-      _ptA,
-      _ptB,
+      Narrowphase3D._scratch.dist.segA0,
+      Narrowphase3D._scratch.dist.segA1,
+      Narrowphase3D._scratch.dist.segB0,
+      Narrowphase3D._scratch.dist.segB1,
+      Narrowphase3D._scratch.dist.ptA,
+      Narrowphase3D._scratch.dist.ptB,
     );
     out.pushSingle(
       nx,
       ny,
       nz,
       minPen,
-      _ptA.x,
-      _ptA.y,
-      _ptA.z,
-      _ptB.x,
-      _ptB.y,
-      _ptB.z,
+      Narrowphase3D._scratch.dist.ptA.x,
+      Narrowphase3D._scratch.dist.ptA.y,
+      Narrowphase3D._scratch.dist.ptA.z,
+      Narrowphase3D._scratch.dist.ptB.x,
+      Narrowphase3D._scratch.dist.ptB.y,
+      Narrowphase3D._scratch.dist.ptB.z,
     );
     return;
   }
 
-  a.supportPoint(_boxNormalScratch, transformA, _ptA);
-  _boxNormalNegScratch.setValues(-nx, -ny, -nz);
-  b.supportPoint(_boxNormalNegScratch, transformB, _ptB);
+  a.supportPoint(
+    Narrowphase3D._scratch.prim.boxNormal,
+    transformA,
+    Narrowphase3D._scratch.dist.ptA,
+  );
+  Narrowphase3D._scratch.prim.boxNormalNeg.setValues(-nx, -ny, -nz);
+  b.supportPoint(
+    Narrowphase3D._scratch.prim.boxNormalNeg,
+    transformB,
+    Narrowphase3D._scratch.dist.ptB,
+  );
   out.pushSingle(
     nx,
     ny,
     nz,
     minPen,
-    _ptA.x,
-    _ptA.y,
-    _ptA.z,
-    _ptB.x,
-    _ptB.y,
-    _ptB.z,
+    Narrowphase3D._scratch.dist.ptA.x,
+    Narrowphase3D._scratch.dist.ptA.y,
+    Narrowphase3D._scratch.dist.ptA.z,
+    Narrowphase3D._scratch.dist.ptB.x,
+    Narrowphase3D._scratch.dist.ptB.y,
+    Narrowphase3D._scratch.dist.ptB.z,
   );
 }
 
@@ -218,12 +327,15 @@ bool _solveBoxBoxSat(
   BoxShape3D b,
   Matrix4 transformB,
 ) {
-  _obbA.extract(a, transformA);
-  _obbB.extract(b, transformB);
+  Narrowphase3D._scratch.prim.obbA.extract(a, transformA);
+  Narrowphase3D._scratch.prim.obbB.extract(b, transformB);
 
-  final tx = _obbB.cx - _obbA.cx;
-  final ty = _obbB.cy - _obbA.cy;
-  final tz = _obbB.cz - _obbA.cz;
+  final tx =
+      Narrowphase3D._scratch.prim.obbB.cx - Narrowphase3D._scratch.prim.obbA.cx;
+  final ty =
+      Narrowphase3D._scratch.prim.obbB.cy - Narrowphase3D._scratch.prim.obbA.cy;
+  final tz =
+      Narrowphase3D._scratch.prim.obbB.cz - Narrowphase3D._scratch.prim.obbA.cz;
 
   var minPen = double.infinity;
   var bestAxisCode = -1;
@@ -245,8 +357,8 @@ bool _solveBoxBoxSat(
     var uy = ay * invLen;
     var uz = az * invLen;
 
-    final projA = _obbA.projectRadius(ux, uy, uz);
-    final projB = _obbB.projectRadius(ux, uy, uz);
+    final projA = Narrowphase3D._scratch.prim.obbA.projectRadius(ux, uy, uz);
+    final projB = Narrowphase3D._scratch.prim.obbB.projectRadius(ux, uy, uz);
     var dist = tx * ux + ty * uy + tz * uz;
     if (dist < 0.0) {
       dist = -dist;
@@ -261,28 +373,67 @@ bool _solveBoxBoxSat(
     if (overlap * bias + slack < minPen) {
       minPen = overlap;
       bestAxisCode = code;
-      _boxNormalScratch.setValues(ux, uy, uz);
+      Narrowphase3D._scratch.prim.boxNormal.setValues(ux, uy, uz);
     }
     return true;
   }
 
-  if (!testAxis(_obbA.u0x, _obbA.u0y, _obbA.u0z, 0, 1.0) ||
-      !testAxis(_obbA.u1x, _obbA.u1y, _obbA.u1z, 1, 1.0) ||
-      !testAxis(_obbA.u2x, _obbA.u2y, _obbA.u2z, 2, 1.0) ||
-      !testAxis(_obbB.u0x, _obbB.u0y, _obbB.u0z, 3, 1.05, 2e-4) ||
-      !testAxis(_obbB.u1x, _obbB.u1y, _obbB.u1z, 4, 1.05, 2e-4) ||
-      !testAxis(_obbB.u2x, _obbB.u2y, _obbB.u2z, 5, 1.05, 2e-4)) {
+  if (!testAxis(
+        Narrowphase3D._scratch.prim.obbA.u0x,
+        Narrowphase3D._scratch.prim.obbA.u0y,
+        Narrowphase3D._scratch.prim.obbA.u0z,
+        0,
+        1.0,
+      ) ||
+      !testAxis(
+        Narrowphase3D._scratch.prim.obbA.u1x,
+        Narrowphase3D._scratch.prim.obbA.u1y,
+        Narrowphase3D._scratch.prim.obbA.u1z,
+        1,
+        1.0,
+      ) ||
+      !testAxis(
+        Narrowphase3D._scratch.prim.obbA.u2x,
+        Narrowphase3D._scratch.prim.obbA.u2y,
+        Narrowphase3D._scratch.prim.obbA.u2z,
+        2,
+        1.0,
+      ) ||
+      !testAxis(
+        Narrowphase3D._scratch.prim.obbB.u0x,
+        Narrowphase3D._scratch.prim.obbB.u0y,
+        Narrowphase3D._scratch.prim.obbB.u0z,
+        3,
+        1.05,
+        2e-4,
+      ) ||
+      !testAxis(
+        Narrowphase3D._scratch.prim.obbB.u1x,
+        Narrowphase3D._scratch.prim.obbB.u1y,
+        Narrowphase3D._scratch.prim.obbB.u1z,
+        4,
+        1.05,
+        2e-4,
+      ) ||
+      !testAxis(
+        Narrowphase3D._scratch.prim.obbB.u2x,
+        Narrowphase3D._scratch.prim.obbB.u2y,
+        Narrowphase3D._scratch.prim.obbB.u2z,
+        5,
+        1.05,
+        2e-4,
+      )) {
     return false;
   }
 
   for (var i = 0; i < 3; i++) {
-    final aUx = _obbA.axisX(i);
-    final aUy = _obbA.axisY(i);
-    final aUz = _obbA.axisZ(i);
+    final aUx = Narrowphase3D._scratch.prim.obbA.axisX(i);
+    final aUy = Narrowphase3D._scratch.prim.obbA.axisY(i);
+    final aUz = Narrowphase3D._scratch.prim.obbA.axisZ(i);
     for (var j = 0; j < 3; j++) {
-      final bUx = _obbB.axisX(j);
-      final bUy = _obbB.axisY(j);
-      final bUz = _obbB.axisZ(j);
+      final bUx = Narrowphase3D._scratch.prim.obbB.axisX(j);
+      final bUy = Narrowphase3D._scratch.prim.obbB.axisY(j);
+      final bUz = Narrowphase3D._scratch.prim.obbB.axisZ(j);
       final cx = aUy * bUz - aUz * bUy;
       final cy = aUz * bUx - aUx * bUz;
       final cz = aUx * bUy - aUy * bUx;
@@ -296,14 +447,14 @@ bool _solveBoxBoxSat(
     return false;
   }
 
-  if (tx * _boxNormalScratch.x +
-          ty * _boxNormalScratch.y +
-          tz * _boxNormalScratch.z <
+  if (tx * Narrowphase3D._scratch.prim.boxNormal.x +
+          ty * Narrowphase3D._scratch.prim.boxNormal.y +
+          tz * Narrowphase3D._scratch.prim.boxNormal.z <
       0.0) {
-    _boxNormalScratch.negate();
+    Narrowphase3D._scratch.prim.boxNormal.negate();
   }
-  _satBestAxisCode = bestAxisCode;
-  _satMinPen = minPen;
+  Narrowphase3D._scratch.prim.satBestAxisCode = bestAxisCode;
+  Narrowphase3D._scratch.prim.satMinPen = minPen;
   return true;
 }
 
@@ -385,11 +536,11 @@ void _pushSphereObbInto(
 
   if (dist2 > 1e-12) {
     final dist = math.sqrt(dist2);
-    obb.toWorld(cx, cy, cz, _ptB);
+    obb.toWorld(cx, cy, cz, Narrowphase3D._scratch.dist.ptB);
     final inv = 1.0 / dist;
-    final nx = (_ptB.x - sx) * inv;
-    final ny = (_ptB.y - sy) * inv;
-    final nz = (_ptB.z - sz) * inv;
+    final nx = (Narrowphase3D._scratch.dist.ptB.x - sx) * inv;
+    final ny = (Narrowphase3D._scratch.dist.ptB.y - sy) * inv;
+    final nz = (Narrowphase3D._scratch.dist.ptB.z - sz) * inv;
     final pax = sx + nx * rA;
     final pay = sy + ny * rA;
     final paz = sz + nz * rA;
@@ -400,9 +551,9 @@ void _pushSphereObbInto(
         -ny,
         -nz,
         depth,
-        _ptB.x,
-        _ptB.y,
-        _ptB.z,
+        Narrowphase3D._scratch.dist.ptB.x,
+        Narrowphase3D._scratch.dist.ptB.y,
+        Narrowphase3D._scratch.dist.ptB.z,
         pax,
         pay,
         paz,
@@ -416,9 +567,9 @@ void _pushSphereObbInto(
         pax,
         pay,
         paz,
-        _ptB.x,
-        _ptB.y,
-        _ptB.z,
+        Narrowphase3D._scratch.dist.ptB.x,
+        Narrowphase3D._scratch.dist.ptB.y,
+        Narrowphase3D._scratch.dist.ptB.z,
       );
     }
     return;
@@ -453,11 +604,11 @@ void _pushSphereObbInto(
     faceLz = sign * hz;
   }
 
-  obb.dirToWorld(nLx, nLy, nLz, _boxNormalScratch);
-  obb.toWorld(faceLx, faceLy, faceLz, _ptB);
-  final nx = _boxNormalScratch.x;
-  final ny = _boxNormalScratch.y;
-  final nz = _boxNormalScratch.z;
+  obb.dirToWorld(nLx, nLy, nLz, Narrowphase3D._scratch.prim.boxNormal);
+  obb.toWorld(faceLx, faceLy, faceLz, Narrowphase3D._scratch.dist.ptB);
+  final nx = Narrowphase3D._scratch.prim.boxNormal.x;
+  final ny = Narrowphase3D._scratch.prim.boxNormal.y;
+  final nz = Narrowphase3D._scratch.prim.boxNormal.z;
   final pax = sx + nx * rA;
   final pay = sy + ny * rA;
   final paz = sz + nz * rA;
@@ -468,9 +619,9 @@ void _pushSphereObbInto(
       -ny,
       -nz,
       depth,
-      _ptB.x,
-      _ptB.y,
-      _ptB.z,
+      Narrowphase3D._scratch.dist.ptB.x,
+      Narrowphase3D._scratch.dist.ptB.y,
+      Narrowphase3D._scratch.dist.ptB.z,
       pax,
       pay,
       paz,
@@ -484,9 +635,9 @@ void _pushSphereObbInto(
       pax,
       pay,
       paz,
-      _ptB.x,
-      _ptB.y,
-      _ptB.z,
+      Narrowphase3D._scratch.dist.ptB.x,
+      Narrowphase3D._scratch.dist.ptB.y,
+      Narrowphase3D._scratch.dist.ptB.z,
     );
   }
 }

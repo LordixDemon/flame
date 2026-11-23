@@ -94,6 +94,9 @@ class CompoundShape3D(List<CompoundChildShape3D> children) extends Shape3D {
     }
   }
 
+  @override
+  bool get isConvex => false;
+
   /// Immutable list of child shapes in local space.
   final List<CompoundChildShape3D> children = List.unmodifiable(children);
 
