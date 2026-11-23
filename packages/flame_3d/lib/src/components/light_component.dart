@@ -154,14 +154,14 @@ class LightComponent({
   @override
   void onMount() {
     super.onMount();
-    worldRef.addLight(_light);
+    worldOrNull?.addLight(_light);
     source.addChangeListener(_onSourceChanged);
   }
 
   @override
   void onRemove() {
     source.removeChangeListener(_onSourceChanged);
-    worldRef.removeLight(_light);
+    worldOrNull?.removeLight(_light);
     super.onRemove();
   }
 

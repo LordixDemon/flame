@@ -662,6 +662,12 @@ class PointerRouter3D._({
   @override
   void onRemove() {
     dispatchHoverExit(pointerId: null);
+    for (final pointerId in _activeTaps.keys.toList(growable: false)) {
+      dispatchTapCancel(pointerId: pointerId);
+    }
+    for (final pointerId in _activeDrags.keys.toList(growable: false)) {
+      dispatchDragEnd(pointerId: pointerId, wasCancelled: true);
+    }
     _activeTaps.clear();
     _activeDrags.clear();
     _lastPointerPositions.clear();

@@ -130,6 +130,11 @@ class BillboardMaterial3D({
   _BillboardDepthNormalMaterial? _depthNormalMaterial;
 
   @override
+  void visitTextures(void Function(Texture texture) visitor) {
+    visitor(albedoTexture);
+  }
+
+  @override
   void apply(RenderContext context) {
     _writeFrame(context as RenderContext3D, vertexShader);
     // 1 when blending premultiplied colors, plus 2 when the texture holds

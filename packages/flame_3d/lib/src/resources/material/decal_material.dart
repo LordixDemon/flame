@@ -89,6 +89,13 @@ class DecalMaterial({
   final Vector4 _cutoff = Vector4.zero();
 
   @override
+  void visitTextures(void Function(Texture texture) visitor) {
+    if (texture case final tex?) {
+      visitor(tex);
+    }
+  }
+
+  @override
   void apply(RenderContext context) {
     final tex = texture;
     _params.setValues(

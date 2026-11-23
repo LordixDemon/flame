@@ -310,9 +310,16 @@ class SurfaceBvh {
   final Int32List _counts;
   final Int32List _triangles;
 
-  final Int32List _stack = Int32List(128);
+  Int32List _stack = Int32List(128);
   Int32List _queryStack = Int32List(128);
   bool _inQuery = false;
+  bool _inRaycast = false;
+
+  static Int32List _growStack(Int32List current, int used) {
+    final grown = Int32List(current.length * 2);
+    grown.setRange(0, used, current);
+    return grown;
+  }
 
   /// Appends indices of triangles in [surface] whose BVH leaf (or individual
   /// triangle bounds when [filterTriangles] is `true`) overlaps [localAabb].
@@ -555,104 +562,122 @@ class SurfaceBvh {
     var bestNy = 0.0;
     var bestNz = 1.0;
 
+    final reentrant = _inRaycast;
+    var stack = reentrant ? Int32List(128) : _stack;
+    if (!reentrant) {
+      _inRaycast = true;
+    }
+
     var sp = 0;
-    _stack[sp++] = 0;
+    stack[sp++] = 0;
 
-    while (sp > 0) {
-      final node = _stack[--sp];
-      if (_rayBoxEntry(node, ox, oy, oz, dx, dy, dz, bestT) ==
-          double.infinity) {
-        continue;
-      }
-
-      final count = _counts[node];
-      if (count > 0) {
-        final start = _leftOrFirst[node];
-        for (var i = start; i < start + count; i++) {
-          final tri = _triangles[i];
-          final b = tri * 3;
-          final i0 = indices[b] * stride + posOffset;
-          final i1 = indices[b + 1] * stride + posOffset;
-          final i2 = indices[b + 2] * stride + posOffset;
-
-          final v0x = verts[i0];
-          final v0y = verts[i0 + 1];
-          final v0z = verts[i0 + 2];
-          final e1x = verts[i1] - v0x;
-          final e1y = verts[i1 + 1] - v0y;
-          final e1z = verts[i1 + 2] - v0z;
-          final e2x = verts[i2] - v0x;
-          final e2y = verts[i2 + 1] - v0y;
-          final e2z = verts[i2 + 2] - v0z;
-
-          final hx = dy * e2z - dz * e2y;
-          final hy = dz * e2x - dx * e2z;
-          final hz = dx * e2y - dy * e2x;
-          final det = e1x * hx + e1y * hy + e1z * hz;
-
-          switch (cullMode) {
-            case CullMode.none:
-              if (det.abs() < 1e-12) {
-                continue;
-              }
-            case CullMode.backFace:
-              if (det < 1e-12) {
-                continue;
-              }
-            case CullMode.frontFace:
-              if (det > -1e-12) {
-                continue;
-              }
-          }
-
-          final invDet = 1.0 / det;
-          final sx = ox - v0x;
-          final sy = oy - v0y;
-          final sz = oz - v0z;
-          final u = (sx * hx + sy * hy + sz * hz) * invDet;
-          if (u < -1e-6 || u > 1.0 + 1e-6) {
-            continue;
-          }
-
-          final qx = sy * e1z - sz * e1y;
-          final qy = sz * e1x - sx * e1z;
-          final qz = sx * e1y - sy * e1x;
-          final v = (dx * qx + dy * qy + dz * qz) * invDet;
-          if (v < -1e-6 || u + v > 1.0 + 1e-6) {
-            continue;
-          }
-
-          final t = (e2x * qx + e2y * qy + e2z * qz) * invDet;
-          if (t > 1e-7 && t < bestT) {
-            bestT = t;
-            bestU = u;
-            bestV = v;
-            bestTri = tri;
-            bestNx = e1y * e2z - e1z * e2y;
-            bestNy = e1z * e2x - e1x * e2z;
-            bestNz = e1x * e2y - e1y * e2x;
-          }
+    try {
+      while (sp > 0) {
+        final node = stack[--sp];
+        if (_rayBoxEntry(node, ox, oy, oz, dx, dy, dz, bestT) ==
+            double.infinity) {
+          continue;
         }
-      } else {
-        final left = _leftOrFirst[node];
-        final right = _rightChild[node];
-        final tLeft = _rayBoxEntry(left, ox, oy, oz, dx, dy, dz, bestT);
-        final tRight = _rayBoxEntry(right, ox, oy, oz, dx, dy, dz, bestT);
-        if (tLeft < tRight) {
-          if (tRight < bestT) {
-            _stack[sp++] = right;
-          }
-          if (tLeft < bestT) {
-            _stack[sp++] = left;
+
+        final count = _counts[node];
+        if (count > 0) {
+          final start = _leftOrFirst[node];
+          for (var i = start; i < start + count; i++) {
+            final tri = _triangles[i];
+            final b = tri * 3;
+            final i0 = indices[b] * stride + posOffset;
+            final i1 = indices[b + 1] * stride + posOffset;
+            final i2 = indices[b + 2] * stride + posOffset;
+
+            final v0x = verts[i0];
+            final v0y = verts[i0 + 1];
+            final v0z = verts[i0 + 2];
+            final e1x = verts[i1] - v0x;
+            final e1y = verts[i1 + 1] - v0y;
+            final e1z = verts[i1 + 2] - v0z;
+            final e2x = verts[i2] - v0x;
+            final e2y = verts[i2 + 1] - v0y;
+            final e2z = verts[i2 + 2] - v0z;
+
+            final hx = dy * e2z - dz * e2y;
+            final hy = dz * e2x - dx * e2z;
+            final hz = dx * e2y - dy * e2x;
+            final det = e1x * hx + e1y * hy + e1z * hz;
+
+            switch (cullMode) {
+              case CullMode.none:
+                if (det.abs() < 1e-12) {
+                  continue;
+                }
+              case CullMode.backFace:
+                if (det < 1e-12) {
+                  continue;
+                }
+              case CullMode.frontFace:
+                if (det > -1e-12) {
+                  continue;
+                }
+            }
+
+            final invDet = 1.0 / det;
+            final sx = ox - v0x;
+            final sy = oy - v0y;
+            final sz = oz - v0z;
+            final u = (sx * hx + sy * hy + sz * hz) * invDet;
+            if (u < -1e-6 || u > 1.0 + 1e-6) {
+              continue;
+            }
+
+            final qx = sy * e1z - sz * e1y;
+            final qy = sz * e1x - sx * e1z;
+            final qz = sx * e1y - sy * e1x;
+            final v = (dx * qx + dy * qy + dz * qz) * invDet;
+            if (v < -1e-6 || u + v > 1.0 + 1e-6) {
+              continue;
+            }
+
+            final t = (e2x * qx + e2y * qy + e2z * qz) * invDet;
+            if (t > 1e-7 && t < bestT) {
+              bestT = t;
+              bestU = u;
+              bestV = v;
+              bestTri = tri;
+              bestNx = e1y * e2z - e1z * e2y;
+              bestNy = e1z * e2x - e1x * e2z;
+              bestNz = e1x * e2y - e1y * e2x;
+            }
           }
         } else {
-          if (tLeft < bestT) {
-            _stack[sp++] = left;
+          final left = _leftOrFirst[node];
+          final right = _rightChild[node];
+          final tLeft = _rayBoxEntry(left, ox, oy, oz, dx, dy, dz, bestT);
+          final tRight = _rayBoxEntry(right, ox, oy, oz, dx, dy, dz, bestT);
+          if (sp + 2 > stack.length) {
+            stack = _growStack(stack, sp);
+            if (!reentrant) {
+              _stack = stack;
+            }
           }
-          if (tRight < bestT) {
-            _stack[sp++] = right;
+          if (tLeft < tRight) {
+            if (tRight < bestT) {
+              stack[sp++] = right;
+            }
+            if (tLeft < bestT) {
+              stack[sp++] = left;
+            }
+          } else {
+            if (tLeft < bestT) {
+              stack[sp++] = left;
+            }
+            if (tRight < bestT) {
+              stack[sp++] = right;
+            }
           }
         }
+      }
+    } finally {
+      if (!reentrant) {
+        _inRaycast = false;
       }
     }
 
@@ -698,95 +723,113 @@ class SurfaceBvh {
     final stride = _stride;
     final posOffset = _positionOffset;
 
+    final reentrant = _inRaycast;
+    var stack = reentrant ? Int32List(128) : _stack;
+    if (!reentrant) {
+      _inRaycast = true;
+    }
+
     var sp = 0;
-    _stack[sp++] = 0;
+    stack[sp++] = 0;
 
-    while (sp > 0) {
-      final node = _stack[--sp];
-      if (_rayBoxEntry(node, ox, oy, oz, dx, dy, dz, maxDistance) ==
-          double.infinity) {
-        continue;
-      }
-
-      final count = _counts[node];
-      if (count > 0) {
-        final start = _leftOrFirst[node];
-        for (var i = start; i < start + count; i++) {
-          final tri = _triangles[i];
-          final b = tri * 3;
-          final i0 = indices[b] * stride + posOffset;
-          final i1 = indices[b + 1] * stride + posOffset;
-          final i2 = indices[b + 2] * stride + posOffset;
-
-          final v0x = verts[i0];
-          final v0y = verts[i0 + 1];
-          final v0z = verts[i0 + 2];
-          final e1x = verts[i1] - v0x;
-          final e1y = verts[i1 + 1] - v0y;
-          final e1z = verts[i1 + 2] - v0z;
-          final e2x = verts[i2] - v0x;
-          final e2y = verts[i2 + 1] - v0y;
-          final e2z = verts[i2 + 2] - v0z;
-
-          final hx = dy * e2z - dz * e2y;
-          final hy = dz * e2x - dx * e2z;
-          final hz = dx * e2y - dy * e2x;
-          final det = e1x * hx + e1y * hy + e1z * hz;
-
-          switch (cullMode) {
-            case CullMode.none:
-              if (det.abs() < 1e-12) {
-                continue;
-              }
-            case CullMode.backFace:
-              if (det < 1e-12) {
-                continue;
-              }
-            case CullMode.frontFace:
-              if (det > -1e-12) {
-                continue;
-              }
-          }
-
-          final invDet = 1.0 / det;
-          final sx = ox - v0x;
-          final sy = oy - v0y;
-          final sz = oz - v0z;
-          final u = (sx * hx + sy * hy + sz * hz) * invDet;
-          if (u < -1e-6 || u > 1.0 + 1e-6) {
-            continue;
-          }
-
-          final qx = sy * e1z - sz * e1y;
-          final qy = sz * e1x - sx * e1z;
-          final qz = sx * e1y - sy * e1x;
-          final v = (dx * qx + dy * qy + dz * qz) * invDet;
-          if (v < -1e-6 || u + v > 1.0 + 1e-6) {
-            continue;
-          }
-
-          final t = (e2x * qx + e2y * qy + e2z * qz) * invDet;
-          if (t > 1e-7 && t <= maxDistance) {
-            final nx = e1y * e2z - e1z * e2y;
-            final ny = e1z * e2x - e1x * e2z;
-            final nz = e1x * e2y - e1y * e2x;
-            final nLen = math.sqrt(nx * nx + ny * ny + nz * nz);
-            final invLen = nLen > 1e-12 ? 1.0 / nLen : 0.0;
-            out.add(
-              SurfaceRayHit(
-                distance: t,
-                point: Vector3(ox + dx * t, oy + dy * t, oz + dz * t),
-                normal: Vector3(nx * invLen, ny * invLen, nz * invLen),
-                barycentricU: u,
-                barycentricV: v,
-                triangleIndex: tri,
-              ),
-            );
-          }
+    try {
+      while (sp > 0) {
+        final node = stack[--sp];
+        if (_rayBoxEntry(node, ox, oy, oz, dx, dy, dz, maxDistance) ==
+            double.infinity) {
+          continue;
         }
-      } else {
-        _stack[sp++] = _rightChild[node];
-        _stack[sp++] = _leftOrFirst[node];
+
+        final count = _counts[node];
+        if (count > 0) {
+          final start = _leftOrFirst[node];
+          for (var i = start; i < start + count; i++) {
+            final tri = _triangles[i];
+            final b = tri * 3;
+            final i0 = indices[b] * stride + posOffset;
+            final i1 = indices[b + 1] * stride + posOffset;
+            final i2 = indices[b + 2] * stride + posOffset;
+
+            final v0x = verts[i0];
+            final v0y = verts[i0 + 1];
+            final v0z = verts[i0 + 2];
+            final e1x = verts[i1] - v0x;
+            final e1y = verts[i1 + 1] - v0y;
+            final e1z = verts[i1 + 2] - v0z;
+            final e2x = verts[i2] - v0x;
+            final e2y = verts[i2 + 1] - v0y;
+            final e2z = verts[i2 + 2] - v0z;
+
+            final hx = dy * e2z - dz * e2y;
+            final hy = dz * e2x - dx * e2z;
+            final hz = dx * e2y - dy * e2x;
+            final det = e1x * hx + e1y * hy + e1z * hz;
+
+            switch (cullMode) {
+              case CullMode.none:
+                if (det.abs() < 1e-12) {
+                  continue;
+                }
+              case CullMode.backFace:
+                if (det < 1e-12) {
+                  continue;
+                }
+              case CullMode.frontFace:
+                if (det > -1e-12) {
+                  continue;
+                }
+            }
+
+            final invDet = 1.0 / det;
+            final sx = ox - v0x;
+            final sy = oy - v0y;
+            final sz = oz - v0z;
+            final u = (sx * hx + sy * hy + sz * hz) * invDet;
+            if (u < -1e-6 || u > 1.0 + 1e-6) {
+              continue;
+            }
+
+            final qx = sy * e1z - sz * e1y;
+            final qy = sz * e1x - sx * e1z;
+            final qz = sx * e1y - sy * e1x;
+            final v = (dx * qx + dy * qy + dz * qz) * invDet;
+            if (v < -1e-6 || u + v > 1.0 + 1e-6) {
+              continue;
+            }
+
+            final t = (e2x * qx + e2y * qy + e2z * qz) * invDet;
+            if (t > 1e-7 && t <= maxDistance) {
+              final nx = e1y * e2z - e1z * e2y;
+              final ny = e1z * e2x - e1x * e2z;
+              final nz = e1x * e2y - e1y * e2x;
+              final nLen = math.sqrt(nx * nx + ny * ny + nz * nz);
+              final invLen = nLen > 1e-12 ? 1.0 / nLen : 0.0;
+              out.add(
+                SurfaceRayHit(
+                  distance: t,
+                  point: Vector3(ox + dx * t, oy + dy * t, oz + dz * t),
+                  normal: Vector3(nx * invLen, ny * invLen, nz * invLen),
+                  barycentricU: u,
+                  barycentricV: v,
+                  triangleIndex: tri,
+                ),
+              );
+            }
+          }
+        } else {
+          if (sp + 2 > stack.length) {
+            stack = _growStack(stack, sp);
+            if (!reentrant) {
+              _stack = stack;
+            }
+          }
+          stack[sp++] = _rightChild[node];
+          stack[sp++] = _leftOrFirst[node];
+        }
+      }
+    } finally {
+      if (!reentrant) {
+        _inRaycast = false;
       }
     }
   }

@@ -136,4 +136,11 @@ class RibbonMaterial3D({
       ..setColor('RibbonLook.albedoColor', albedoColor)
       ..setVector4('RibbonLook.params', _params);
   }
+
+  @override
+  void visitTextures(void Function(Texture texture) visitor) {
+    if (texture case final tex?) {
+      visitor(tex);
+    }
+  }
 }

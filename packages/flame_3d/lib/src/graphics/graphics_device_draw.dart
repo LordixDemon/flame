@@ -131,13 +131,15 @@ extension _GraphicsDeviceDraw on GraphicsDevice {
     if (idx == _boundUniformSlots.length) {
       _boundUniformSlots.add(slot);
       _boundUniformBuffers.add(buffer);
+    } else {
+      _boundUniformSlots[idx] = slot;
+      _boundUniformBuffers[idx] = buffer;
+    }
+    if (idx >= _boundUniformOffsets.length) {
       _boundUniformOffsets = Int32List(_boundUniformOffsets.length * 2)
         ..setRange(0, _boundUniformOffsets.length, _boundUniformOffsets);
       _boundUniformLengths = Int32List(_boundUniformLengths.length * 2)
         ..setRange(0, _boundUniformLengths.length, _boundUniformLengths);
-    } else {
-      _boundUniformSlots[idx] = slot;
-      _boundUniformBuffers[idx] = buffer;
     }
     _boundUniformOffsets[idx] = offsetInBytes;
     _boundUniformLengths[idx] = lengthInBytes;

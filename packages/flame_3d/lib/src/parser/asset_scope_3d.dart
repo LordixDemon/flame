@@ -95,17 +95,7 @@ class AssetScope3D() {
 
     void addSurface(Surface surface) {
       out.add(surface);
-      final mat = surface.material;
-      if (mat is SpatialMaterial) {
-        addTexture(mat.albedoTexture);
-        addTexture(mat.normalTexture);
-        addTexture(mat.metallicRoughnessTexture);
-        addTexture(mat.occlusionTexture);
-        addTexture(mat.emissiveTexture);
-        addTexture(mat.environmentTexture);
-      } else if (mat is UnlitMaterial) {
-        addTexture(mat.albedoTexture);
-      }
+      surface.material.visitTextures(addTexture);
     }
 
     if (asset is Texture) {

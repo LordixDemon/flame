@@ -112,4 +112,9 @@ class UnlitMaterial({
       frag.setColor('Material.albedoColor', albedoColor);
     }
   }
+
+  @override
+  void visitTextures(void Function(Texture texture) visitor) {
+    visitor(albedoTexture);
+  }
 }

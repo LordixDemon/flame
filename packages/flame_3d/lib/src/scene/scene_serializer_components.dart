@@ -26,6 +26,12 @@ extension _SceneSerializerComponents on SceneSerializer3D {
       if (world.shadowGroup != null) {
         _issue('world.shadowGroup', 'shadow groups are not saved');
       }
+      if (world.waterVolume != null) {
+        _issue('world.waterVolume', 'water volumes are not saved');
+      }
+      if (world.occlusionCuller != null) {
+        _issue('world.occlusionCuller', 'occlusion cullers are not saved');
+      }
       return <String, Object?>{
         'format': 'F3DS',
         'schemaVersion': SceneSerializer3D.currentSchemaVersion,

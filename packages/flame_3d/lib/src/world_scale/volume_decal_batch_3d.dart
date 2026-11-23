@@ -709,10 +709,15 @@ class VolumeDecalBatch3D({
     return _localAabb;
   }
 
+  /// Releases GPU buffers held by this batch while retaining CPU geometry so
+  /// a later [onMount] recreates the surface automatically.
+  void disposeGpuResources() {
+    _mergedSurface?.dispose();
+  }
+
   @override
   void onRemove() {
-    _mergedSurface?.dispose();
-    _mergedSurface = null;
+    disposeGpuResources();
     super.onRemove();
   }
 

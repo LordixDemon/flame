@@ -363,6 +363,10 @@ abstract class Material({
   @protected
   void invalidateApplyCache() {}
 
+  /// Visits every GPU [Texture] referenced by this material (for resource
+  /// ownership tracking and disposal in asset scopes).
+  void visitTextures(void Function(Texture texture) visitor) {}
+
   /// Writes this material's values into its shaders, see [Material].
   ///
   /// Uniform blocks filled by the [RenderContext3D] (see

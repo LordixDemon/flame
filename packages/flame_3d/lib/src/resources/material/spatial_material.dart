@@ -759,6 +759,29 @@ class SpatialMaterial({
       }
     }
   }
+
+  @override
+  void visitTextures(void Function(Texture texture) visitor) {
+    visitor(albedoTexture);
+    if (normalTexture case final tex?) {
+      visitor(tex);
+    }
+    if (metallicRoughnessTexture case final tex?) {
+      visitor(tex);
+    }
+    if (occlusionTexture case final tex?) {
+      visitor(tex);
+    }
+    if (emissiveTexture case final tex?) {
+      visitor(tex);
+    }
+    if (environmentTexture case final tex?) {
+      visitor(tex);
+    }
+    if (lightmapTexture case final tex?) {
+      visitor(tex);
+    }
+  }
 }
 
 class _SpatialMaterialOffsets(final UniformBlock _b) {

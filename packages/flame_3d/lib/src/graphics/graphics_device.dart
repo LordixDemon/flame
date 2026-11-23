@@ -967,11 +967,13 @@ class GraphicsDevice({
     if (idx == _boundTexSlots.length) {
       _boundTexSlots.add(slot);
       _boundTexHandles.add(gpuTex);
-      _boundTexSamplerKeys = Int32List(_boundTexSamplerKeys.length * 2)
-        ..setRange(0, _boundTexSamplerKeys.length, _boundTexSamplerKeys);
     } else {
       _boundTexSlots[idx] = slot;
       _boundTexHandles[idx] = gpuTex;
+    }
+    if (idx >= _boundTexSamplerKeys.length) {
+      _boundTexSamplerKeys = Int32List(_boundTexSamplerKeys.length * 2)
+        ..setRange(0, _boundTexSamplerKeys.length, _boundTexSamplerKeys);
     }
     _boundTexSamplerKeys[idx] = samplerKey;
     _pass.bindTexture(slot, gpuTex, sampler: sampler);

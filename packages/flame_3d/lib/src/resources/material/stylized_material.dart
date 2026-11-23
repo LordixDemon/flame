@@ -1042,6 +1042,19 @@ class StylizedMaterial({
   );
 
   @override
+  void visitTextures(void Function(Texture texture) visitor) {
+    if (_matCapTexture case final tex?) {
+      visitor(tex);
+    }
+    if (_gemMatCapTexture case final tex?) {
+      visitor(tex);
+    }
+    if (_baseColorTexture case final tex?) {
+      visitor(tex);
+    }
+  }
+
+  @override
   void apply(RenderContext context) => _applyUniforms(context);
 
   Shader? _samplerCacheFrag;

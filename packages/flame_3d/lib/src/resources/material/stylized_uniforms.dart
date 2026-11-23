@@ -248,7 +248,7 @@ extension _StylizedUniforms on StylizedMaterial {
     shader.resource;
     final idx = shader.blockIndexOf(StylizedMaterial._depthBlock);
     if (idx < 0) {
-      shader.setFloat('$StylizedMaterial._depthBlock.bias', depthBias);
+      shader.setFloat('${StylizedMaterial._depthBlock}.bias', depthBias);
       return;
     }
     final block = shader.blockAt(idx);

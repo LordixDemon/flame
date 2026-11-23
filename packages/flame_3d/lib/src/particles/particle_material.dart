@@ -366,6 +366,11 @@ class ParticleMaterial({
         ),
       );
   }
+
+  @override
+  void visitTextures(void Function(Texture texture) visitor) {
+    visitor(texture);
+  }
 }
 
 /// Draws the opaque particles of [_source] in the depth-normal prepass.

@@ -145,8 +145,10 @@ class CompiledRenderGraph3D({
   }
 }
 
-class _RenderGraphPoolEntry(this.desc) {
+class _RenderGraphPoolEntry(this.desc, this.backend, this.deviceGeneration) {
   final RenderGraphTextureDesc3D desc;
+  final GpuBackend backend;
+  final int deviceGeneration;
   final List<GpuTextureTarget> targets = [];
   int used = 0;
   int lastUsed = 0;
@@ -464,14 +466,20 @@ class RenderGraph3D() {
     );
   }
 
-  _RenderGraphPoolEntry _poolEntryFor(RenderGraphTextureDesc3D desc) {
+  _RenderGraphPoolEntry _poolEntryFor(
+    RenderGraphTextureDesc3D desc,
+    GpuBackend backend,
+    int deviceGeneration,
+  ) {
     for (var i = 0; i < _pool.length; i++) {
       final entry = _pool[i];
-      if (entry.desc == desc) {
+      if (entry.desc == desc &&
+          identical(entry.backend, backend) &&
+          entry.deviceGeneration == deviceGeneration) {
         return entry;
       }
     }
-    final created = _RenderGraphPoolEntry(desc);
+    final created = _RenderGraphPoolEntry(desc, backend, deviceGeneration);
     _pool.add(created);
     return created;
   }
@@ -488,22 +496,30 @@ class RenderGraph3D() {
       return plan;
     }
 
+    final backend = device.backend;
+    final deviceGeneration = GpuBackend.deviceGeneration;
     final execution = ++_executions;
-    for (var i = 0; i < _pool.length; i++) {
-      _pool[i].used = 0;
+    for (var i = _pool.length - 1; i >= 0; i--) {
+      final entry = _pool[i];
+      if (!identical(entry.backend, backend) ||
+          entry.deviceGeneration != deviceGeneration) {
+        _pool.removeAt(i);
+      } else {
+        entry.used = 0;
+      }
     }
     final slotTargets = _slotTargets..clear();
     final descs = plan.physicalSlotDescriptors;
     for (var i = 0; i < descs.length; i++) {
       final desc = descs[i];
-      final entry = _poolEntryFor(desc);
+      final entry = _poolEntryFor(desc, backend, deviceGeneration);
       final idx = entry.used++;
       entry.lastUsed = execution;
       final list = entry.targets;
       if (idx < list.length) {
         slotTargets.add(list[idx]);
       } else {
-        final created = device.backend.createTextureTarget(
+        final created = backend.createTextureTarget(
           width: desc.width,
           height: desc.height,
           format: desc.format,

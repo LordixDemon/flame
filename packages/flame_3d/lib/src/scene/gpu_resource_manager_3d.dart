@@ -196,20 +196,23 @@ class GpuResourceManager3D({
     }
     _maxVramBytes = maxVramBytes;
     if (recoverOnDeviceLoss) {
-      // The listener does not keep the manager alive, and is removed once
-      // the manager is garbage collected.
+      // The listener does not keep the manager alive, and is removed on
+      // explicit [dispose] or once the manager is garbage collected.
       final manager = WeakReference(this);
       final listener = GpuDeviceListener(
         onRecovered: (_) => manager.target?.recoverAfterDeviceLoss(),
       );
+      _deviceListener = listener;
       GpuBackend.addDeviceListener(listener);
-      _listeners.attach(this, listener);
+      _listeners.attach(this, listener, detach: this);
     }
   }
 
   static final Finalizer<GpuDeviceListener> _listeners = Finalizer(
     GpuBackend.removeDeviceListener,
   );
+
+  GpuDeviceListener? _deviceListener;
 
   int _maxVramBytes = 256 * 1024 * 1024;
 
@@ -465,6 +468,18 @@ class GpuResourceManager3D({
     _entries.clear();
     _zeroRefLru.clear();
     _estimatedTotalBytes = 0;
+  }
+
+  /// Disposes every cached resource and deterministically detaches this
+  /// manager's [GpuBackend] device-loss listener.
+  void dispose() {
+    disposeAll();
+    final listener = _deviceListener;
+    if (listener != null) {
+      _deviceListener = null;
+      _listeners.detach(this);
+      GpuBackend.removeDeviceListener(listener);
+    }
   }
 
   void _evictEntry(_ResourceEntry entry) {

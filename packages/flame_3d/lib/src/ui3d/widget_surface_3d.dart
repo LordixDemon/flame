@@ -70,6 +70,7 @@ class SurfaceButton2D({
   final ui.Paint _fillPaint = ui.Paint();
   final ui.Paint _borderPaint = ui.Paint()..style = ui.PaintingStyle.stroke;
   TextPainter? _textPainter;
+  bool _hasLayout = false;
   String? _cachedLabel;
   ui.Color? _cachedTextColor;
   double _cachedFontSize = -1;
@@ -79,6 +80,35 @@ class SurfaceButton2D({
   void dispose() {
     _textPainter?.dispose();
     _textPainter = null;
+    _hasLayout = false;
+  }
+
+  TextPainter _ensureLabelPainter(double maxW) {
+    var painter = _textPainter;
+    if (painter == null ||
+        !_hasLayout ||
+        _cachedLabel != label ||
+        _cachedTextColor != textColor ||
+        _cachedFontSize != fontSize ||
+        _cachedMaxWidth != maxW) {
+      painter ??= _textPainter = TextPainter(textDirection: TextDirection.ltr);
+      painter
+        ..text = TextSpan(
+          text: label,
+          style: TextStyle(
+            color: textColor,
+            fontSize: fontSize,
+            fontWeight: ui.FontWeight.w600,
+          ),
+        )
+        ..layout(maxWidth: maxW);
+      _hasLayout = true;
+      _cachedLabel = label;
+      _cachedTextColor = textColor;
+      _cachedFontSize = fontSize;
+      _cachedMaxWidth = maxW;
+    }
+    return painter;
   }
 
   @override
@@ -110,30 +140,7 @@ class SurfaceButton2D({
       ..drawRRect(rrect, _borderPaint);
 
     if (label.isNotEmpty) {
-      final maxW = math.max(0.0, bounds.width - 8.0);
-      var painter = _textPainter;
-      if (painter == null ||
-          _cachedLabel != label ||
-          _cachedTextColor != textColor ||
-          _cachedFontSize != fontSize ||
-          _cachedMaxWidth != maxW) {
-        painter?.dispose();
-        painter = _textPainter = TextPainter(
-          text: TextSpan(
-            text: label,
-            style: TextStyle(
-              color: textColor,
-              fontSize: fontSize,
-              fontWeight: ui.FontWeight.w600,
-            ),
-          ),
-          textDirection: TextDirection.ltr,
-        )..layout(maxWidth: maxW);
-        _cachedLabel = label;
-        _cachedTextColor = textColor;
-        _cachedFontSize = fontSize;
-        _cachedMaxWidth = maxW;
-      }
+      final painter = _ensureLabelPainter(math.max(0.0, bounds.width - 8.0));
       final tx = bounds.left + (bounds.width - painter.width) * 0.5;
       final ty = bounds.top + (bounds.height - painter.height) * 0.5;
       painter.paint(canvas, ui.Offset(tx, ty));
@@ -427,10 +434,13 @@ class WidgetSurface3D({
   @override
   void onRemove() {
     GpuBackend.removeDeviceListener(_deviceListener);
+    ++_rasterRequest;
     final texture = _surfaceTexture;
     if (texture != null && texture.hasResource) {
       texture.dispose();
     }
+    _surfaceTexture = null;
+    _material.albedoTexture = Texture.empty;
     for (var i = 0; i < _controls.length; i++) {
       _controls[i].dispose();
     }
