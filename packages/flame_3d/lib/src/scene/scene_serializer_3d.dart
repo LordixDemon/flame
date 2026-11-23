@@ -16,6 +16,7 @@ part 'scene_serializer_binary.dart';
 part 'scene_serializer_components.dart';
 part 'scene_serializer_materials.dart';
 part 'scene_serializer_meshes.dart';
+part 'scene_serializer_settings.dart';
 
 /// Custom component codec registered with [SceneSerializer3D] to serialize and
 /// deserialize application-defined [Component] / [Component3D] subclasses.

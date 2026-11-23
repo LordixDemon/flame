@@ -7,12 +7,14 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/model.dart';
 import 'package:flame_3d/resources.dart' as flame_3d;
-import 'package:flame_3d/src/parser/gltf/camera.dart' as gltf_cam;
-import 'package:flame_3d/src/parser/gltf/camera_type.dart';
 import 'package:flame_3d/src/parser/gltf/glb_chunk.dart';
+import 'package:flame_3d/src/parser/gltf/gltf_enums.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_extensions.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_root.dart';
-import 'package:flame_3d/src/parser/gltf/node.dart';
+import 'package:flame_3d/src/parser/gltf/gltf_scene_graph.dart' show Node;
+import 'package:flame_3d/src/parser/gltf/gltf_scene_graph.dart'
+    as gltf_cam
+    show Camera;
 import 'package:flame_3d/src/parser/model_parser.dart';
 
 /// Camera configuration extracted from a glTF camera node by [SceneLoader3D].

@@ -1,5 +1,4 @@
 import 'package:flame_3d/core.dart';
-import 'package:flame_3d/src/parser/gltf/gltf_ref.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_root.dart';
 
 /// A base class for all data classes representing the GLTF schema.
@@ -180,6 +179,30 @@ class Parser._() {
   }
 
   static Object? extras(Map<String, Object?> map) => map['extras'];
+}
+
+/// A wrapper over an index reference within the GLTF spec, allowing the data
+/// structure to be navigated with ease.
+class GltfRef<T extends GltfNode>({
+  required super.root,
+  required final int index,
+}) extends GltfNode {
+  T get() {
+    return root.resolve<T>(index);
+  }
+}
+
+/// A [GltfNode] with some sort of associated data that needs to be loaded
+/// with an async [init] method.
+mixin GltfNodeWithData<T> on GltfNode {
+  late T _data;
+
+  Future<void> init() async {
+    _data = await loadData();
+  }
+
+  Future<T> loadData();
+  T getData() => _data;
 }
 
 extension _Let<T> on T {

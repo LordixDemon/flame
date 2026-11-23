@@ -1,12 +1,29 @@
 import 'dart:typed_data';
 
-import 'package:flame_3d/src/parser/gltf/buffer.dart';
-import 'package:flame_3d/src/parser/gltf/buffer_view_target.dart';
+import 'package:flame_3d/src/parser/gltf/gltf_enums.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_node.dart';
-import 'package:flame_3d/src/parser/gltf/gltf_node_with_data.dart';
-import 'package:flame_3d/src/parser/gltf/gltf_ref.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_root.dart';
 import 'package:flame_3d/src/parser/meshopt_decoder_3d.dart';
+
+/// A buffer points to binary geometry, animation, or skins.
+class Buffer({
+  required super.root,
+
+  /// The length of the buffer in bytes.
+  required final int byteLength,
+
+  /// The URI of the buffer.
+  required final String? uri,
+}) extends GltfNode {
+  Buffer.parse(
+    GltfRoot root,
+    Map<String, Object?> map,
+  ) : this(
+        root: root,
+        byteLength: Parser.integer(map, 'byteLength')!,
+        uri: Parser.string(map, 'uri'),
+      );
+}
 
 /// Parsed `EXT_meshopt_compression` payload attached to a glTF [BufferView].
 class ExtMeshoptCompression({
@@ -119,4 +136,102 @@ class BufferView({
       byteOffset + byteLength,
     );
   }
+}
+
+/// Sparse storage of accessor values that deviate from their initialization
+/// value.
+class SparseAccessor({
+  required super.root,
+
+  /// Number of deviating accessor values stored in the sparse array.
+  required final int count,
+
+  /// An object pointing to a buffer view containing the indices of deviating
+  /// accessor values.
+  /// The number of indices is equal to `count`.
+  /// Indices **MUST** strictly increase.
+  required final SparseAccessorIndices indices,
+
+  /// An object pointing to a buffer view containing the deviating
+  /// accessor values.
+  required final SparseAccessorValues values,
+}) extends GltfNode {
+  SparseAccessor.parse(
+    GltfRoot root,
+    Map<String, Object?> map,
+  ) : this(
+        root: root,
+        count: Parser.integer(map, 'count') ?? 0,
+        indices: Parser.object(
+          root,
+          map,
+          'indices',
+          SparseAccessorIndices.parse,
+        )!,
+        values: Parser.object(
+          root,
+          map,
+          'values',
+          SparseAccessorValues.parse,
+        )!,
+      );
+}
+
+/// An object pointing to a buffer view containing the indices of deviating
+/// accessor values.
+/// The number of indices is equal to `accessor.sparse.count`. Indices **MUST**
+/// strictly increase.
+class SparseAccessorIndices({
+  required super.root,
+
+  /// The reference to the buffer view with sparse indices.
+  /// The referenced buffer view **MUST NOT** have its `target` or `byteStride`
+  /// properties defined.
+  /// The buffer view and the optional `byteOffset` **MUST** be aligned to the
+  /// `componentType` byte length."
+  required final GltfRef<BufferView> bufferView,
+
+  /// The offset relative to the start of the buffer view in bytes.
+  required final int byteOffset,
+
+  /// The indices data type.
+  required final ComponentType componentType,
+}) extends GltfNode {
+  SparseAccessorIndices.parse(
+    GltfRoot root,
+    Map<String, Object?> map,
+  ) : this(
+        root: root,
+        bufferView: Parser.ref(root, map, 'bufferView')!,
+        byteOffset: Parser.integer(map, 'byteOffset') ?? 0,
+        componentType: ComponentType.parse(map, 'componentType')!,
+      );
+}
+
+/// An object pointing to a buffer view containing the deviating accessor
+/// values.
+/// The number of elements is equal to `accessor.sparse.count` times number of
+/// components.
+/// The elements have the same component type as the base accessor.
+/// The elements are tightly packed. Data **MUST** be aligned following the
+/// same rules as the base accessor.
+class SparseAccessorValues({
+  required super.root,
+
+  /// The index of the bufferView with sparse values.
+  /// The referenced buffer view **MUST NOT** have its `target` or `byteStride`
+  /// properties defined.
+  required final GltfRef<BufferView> bufferView,
+
+  /// The offset relative to the start of the bufferView in bytes.
+  required final int byteOffset,
+}) extends GltfNode {
+  SparseAccessorValues.parse(
+    GltfRoot root,
+    Map<String, Object?> map,
+  ) : this(
+        root: root,
+        bufferView: Parser.ref(root, map, 'bufferView')!,
+        byteOffset: Parser.integer(map, 'byteOffset') ?? 0,
+      );
 }

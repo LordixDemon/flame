@@ -2,13 +2,10 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flame_3d/core.dart';
-import 'package:flame_3d/src/parser/gltf/accessor_type.dart';
-import 'package:flame_3d/src/parser/gltf/buffer_view.dart';
-import 'package:flame_3d/src/parser/gltf/component_type.dart';
+import 'package:flame_3d/src/parser/gltf/gltf_buffers.dart';
+import 'package:flame_3d/src/parser/gltf/gltf_enums.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_node.dart';
-import 'package:flame_3d/src/parser/gltf/gltf_ref.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_root.dart';
-import 'package:flame_3d/src/parser/gltf/sparse_accessor.dart';
 
 /// A untyped GLTF accessor; it is typically wrapped into a specific accessor
 /// type on the data model. This provides the backing implementation.

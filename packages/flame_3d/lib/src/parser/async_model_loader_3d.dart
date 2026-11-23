@@ -14,6 +14,8 @@ import 'package:flame_3d/src/parser/gltf/gltf_warnings.dart';
 import 'package:flame_3d/src/parser/meshopt_decoder_3d.dart';
 import 'package:flame_3d/src/resources/texture/mipmaps.dart';
 
+part 'async_model_loader_glb_packer_3d.dart';
+part 'async_model_loader_glb_worker_3d.dart';
 part 'async_model_loader_prepared_3d.dart';
 part 'async_model_loader_workers_3d.dart';
 

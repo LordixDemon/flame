@@ -1,11 +1,100 @@
 import 'package:flame_3d/core.dart' show AnimationInterpolation;
 import 'package:flame_3d/src/model/model_animation.dart';
-import 'package:flame_3d/src/parser/gltf/animation_channel.dart';
-import 'package:flame_3d/src/parser/gltf/animation_path.dart';
-import 'package:flame_3d/src/parser/gltf/animation_sampler.dart';
+import 'package:flame_3d/src/parser/gltf/accessor.dart';
+import 'package:flame_3d/src/parser/gltf/gltf_enums.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_node.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_root.dart';
+import 'package:flame_3d/src/parser/gltf/gltf_scene_graph.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_warnings.dart';
+
+class AnimationChannel({
+  required super.root,
+
+  /// The ID of a sampler in this animation used to compute the value for the
+  /// target, e.g., a node's translation, rotation, or scale (TRS).
+  required final int sampler,
+
+  /// The descriptor of the animated property.
+  required final AnimationTarget target,
+}) extends GltfNode {
+  AnimationChannel.parse(
+    GltfRoot root,
+    Map<String, Object?> map,
+  ) : this(
+        root: root,
+        sampler: Parser.integer(map, 'sampler')!,
+        target: Parser.object(root, map, 'target', AnimationTarget.parse)!,
+      );
+}
+
+/// An animation sampler combines timestamps with a sequence of output values
+/// and defines an interpolation algorithm.
+class AnimationSampler({
+  required super.root,
+
+  /// The index of an accessor containing keyframe timestamps.
+  /// The accessor **MUST** be of scalar type with floating-point components.
+  /// The values represent time in seconds with `time[0] >= 0.0`, and strictly
+  /// increasing values, i.e., `time[n + 1] > time[n]`.
+  required final GltfRef<FloatAccessor> input,
+
+  /// Interpolation algorithm.
+  required final AnimationInterpolation interpolation,
+
+  /// The index of an accessor, containing keyframe output values.
+  required final GltfRef<RawAccessor> output,
+}) extends GltfNode {
+  AnimationSampler.parse(
+    GltfRoot root,
+    Map<String, Object?> map,
+  ) : this(
+        root: root,
+        input: Parser.ref(root, map, 'input')!,
+        interpolation:
+            Parser.stringEnum(
+              map,
+              'interpolation',
+              AnimationInterpolation.valueOf,
+            ) ??
+            AnimationInterpolation.linear,
+        output: Parser.ref(root, map, 'output')!,
+      );
+}
+
+/// The descriptor of the animated property.
+class AnimationTarget({
+  required super.root,
+
+  /// The reference to the node to animate. When undefined, the animated object
+  /// **MAY** be defined by an extension.
+  required final GltfRef<Node>? node,
+
+  /// The name of the node's TRS property to animate, or the `weights` of the
+  /// Morph Targets it instantiates.
+  /// For the `translation` property, the values that are provided by the
+  /// sampler are the translation along the X, Y, and Z axes.
+  /// For the `rotation` property, the values are a quaternion in the order
+  /// (x, y, z, w), where w is the scalar.
+  /// For the `scale` property, the values are the scaling factors along the
+  /// X, Y, and Z axes.
+  ///
+  /// `null` for paths this reader does not animate, such as the `pointer`
+  /// of `KHR_animation_pointer` (see [rawPath]).
+  required final AnimationPath? path,
+
+  /// The `path` as written in the file.
+  final String? rawPath,
+}) extends GltfNode {
+  AnimationTarget.parse(
+    GltfRoot root,
+    Map<String, Object?> map,
+  ) : this(
+        root: root,
+        node: Parser.ref(root, map, 'node'),
+        path: AnimationPath.tryParse(Parser.string(map, 'path')),
+        rawPath: Parser.string(map, 'path'),
+      );
+}
 
 /// A keyframe animation.
 class Animation({

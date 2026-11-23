@@ -5,23 +5,13 @@ import 'package:flame/flame.dart';
 import 'package:flame_3d/model.dart';
 import 'package:flame_3d/src/parser/gltf/accessor.dart';
 import 'package:flame_3d/src/parser/gltf/animation.dart';
-import 'package:flame_3d/src/parser/gltf/buffer.dart';
-import 'package:flame_3d/src/parser/gltf/buffer_view.dart';
-import 'package:flame_3d/src/parser/gltf/camera.dart';
 import 'package:flame_3d/src/parser/gltf/glb_chunk.dart';
+import 'package:flame_3d/src/parser/gltf/gltf_buffers.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_extensions.dart';
+import 'package:flame_3d/src/parser/gltf/gltf_materials_textures.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_node.dart';
-import 'package:flame_3d/src/parser/gltf/gltf_node_with_data.dart';
-import 'package:flame_3d/src/parser/gltf/gltf_ref.dart';
+import 'package:flame_3d/src/parser/gltf/gltf_scene_graph.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_warnings.dart';
-import 'package:flame_3d/src/parser/gltf/image.dart';
-import 'package:flame_3d/src/parser/gltf/material.dart';
-import 'package:flame_3d/src/parser/gltf/mesh.dart';
-import 'package:flame_3d/src/parser/gltf/node.dart';
-import 'package:flame_3d/src/parser/gltf/sampler.dart';
-import 'package:flame_3d/src/parser/gltf/scene.dart';
-import 'package:flame_3d/src/parser/gltf/skin.dart';
-import 'package:flame_3d/src/parser/gltf/texture.dart';
 
 /// The root schema of a GLTF file.
 class GltfRoot._({

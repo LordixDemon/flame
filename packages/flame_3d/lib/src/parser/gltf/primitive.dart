@@ -6,14 +6,12 @@ import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart' as flame_gfx;
 import 'package:flame_3d/resources.dart' as flame_3d;
 import 'package:flame_3d/src/parser/gltf/accessor.dart';
-import 'package:flame_3d/src/parser/gltf/accessor_type.dart';
+import 'package:flame_3d/src/parser/gltf/gltf_enums.dart';
+import 'package:flame_3d/src/parser/gltf/gltf_materials_textures.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_node.dart';
-import 'package:flame_3d/src/parser/gltf/gltf_ref.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_root.dart';
+import 'package:flame_3d/src/parser/gltf/gltf_scene_graph.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_warnings.dart';
-import 'package:flame_3d/src/parser/gltf/material.dart';
-import 'package:flame_3d/src/parser/gltf/morph_target.dart';
-import 'package:flame_3d/src/parser/gltf/primitive_mode.dart';
 
 // cSpell:ignore TEXCOORD
 

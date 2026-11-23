@@ -3,8 +3,8 @@ import 'dart:typed_data';
 
 import 'package:flame/flame.dart';
 import 'package:flame_3d/src/model/model.dart';
-import 'package:flame_3d/src/parser/gltf/component_type.dart';
 import 'package:flame_3d/src/parser/gltf/glb_chunk.dart';
+import 'package:flame_3d/src/parser/gltf/gltf_enums.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_root.dart';
 import 'package:flame_3d/src/parser/model_parser.dart';
 
