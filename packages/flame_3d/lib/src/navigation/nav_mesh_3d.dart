@@ -8,8 +8,10 @@ import 'package:flame_3d/src/spatial/static_bvh_3d.dart';
 
 part 'nav_mesh_bvh_3d.dart';
 part 'nav_mesh_factories_3d.dart';
+part 'nav_mesh_funnel_3d.dart';
 part 'nav_mesh_obstacles_3d.dart';
 part 'nav_mesh_pathfinder_3d.dart';
+part 'nav_mesh_query_context_3d.dart';
 part 'nav_mesh_types_3d.dart';
 
 /// 3D triangle navigation mesh built from any [Mesh] or by the voxel
@@ -86,30 +88,10 @@ class NavMesh3D._({
   final Map<int, List<int>> _linksFromPoly = {};
   bool _linksDirty = false;
 
-  // Search state reused by every A* query (`O(P)` once, not per query). An
-  // entry is valid for the running search only when its stamp equals
-  // `_searchStamp`.
-  Float64List? _gScore;
-  Int32List? _cameFrom;
-  Int32List? _cameViaLink;
-  Int32List? _openStamp;
-  Int32List? _closedStamp;
-  _MinPolyHeap? _heap;
-  int _searchStamp = 0;
-
-  // Scratch of the corridor string pulling.
-  final List<Vector3> _portalLeft = [];
-  final List<Vector3> _portalRight = [];
-  final List<int> _portalLeftVertex = [];
-  final List<int> _portalRightVertex = [];
-  final List<Vector3> _cornerPoints = [];
-  final List<int> _cornerPortal = [];
-  final List<int> _cornerVertex = [];
-  final List<int> _cornerSide = [];
+  final NavQueryContext3D _defaultQuery = NavQueryContext3D();
 
   final Vector3 _basisU = Vector3.zero();
   final Vector3 _basisV = Vector3.zero();
-  final List<int> _bvhCandidatesScratch = [];
   late final _NavPolyBvh _bvh = _NavPolyBvh.build(vertices, polygons);
 
   /// Number of walkable triangles in this navmesh.
@@ -163,9 +145,9 @@ class NavMesh3D._({
       return Int32List(0);
     }
     final worldBox = obstacle.computeWorldAabb();
-    _bvhCandidatesScratch.clear();
-    _bvh.queryAabb(worldBox, _bvhCandidatesScratch);
-    if (_bvhCandidatesScratch.isEmpty) {
+    final candidates = _defaultQuery.bvhCandidates..clear();
+    _bvh.queryAabb(worldBox, candidates);
+    if (candidates.isEmpty) {
       return Int32List(0);
     }
 
@@ -176,8 +158,8 @@ class NavMesh3D._({
     final v2L = Vector3.zero();
     final matched = <int>[];
 
-    for (var i = 0; i < _bvhCandidatesScratch.length; i++) {
-      final pIdx = _bvhCandidatesScratch[i];
+    for (var i = 0; i < candidates.length; i++) {
+      final pIdx = candidates[i];
       final poly = polygons[pIdx];
       _toLocalObb(vertices[poly.v0], obstacle.center, rotT, v0L);
       _toLocalObb(vertices[poly.v1], obstacle.center, rotT, v1L);
@@ -193,7 +175,11 @@ class NavMesh3D._({
   NavPolyHit3D? findNearestPoly(
     Vector3 point, {
     bool ignoreObstacles = false,
-  }) => _findNearestPolyImpl(point, ignoreObstacles: ignoreObstacles);
+    NavQueryContext3D? context,
+  }) => _findNearestPolyImpl(
+    point,
+    ignoreObstacles: ignoreObstacles,
+  );
 
   /// Samples the walkable surface elevation (coordinate along [upAxis]) at the
   /// horizontal projection of [pos], picking the layer closest in elevation to
@@ -203,7 +189,7 @@ class NavMesh3D._({
   /// Only the polygons whose bounds the vertical line through [pos] crosses
   /// are tested (through the navmesh BVH), so a query costs `O(log P)` plus
   /// the number of layers at that point.
-  double? sampleHeightAt(Vector3 pos) {
+  double? sampleHeightAt(Vector3 pos, {NavQueryContext3D? context}) {
     if (polygons.isEmpty) {
       return null;
     }
@@ -214,7 +200,7 @@ class NavMesh3D._({
     double? bestElevation;
     var bestVerticalDiff = double.infinity;
 
-    final candidates = _bvhCandidatesScratch..clear();
+    final candidates = (context ?? _defaultQuery).bvhCandidates..clear();
     _bvh.queryLine(pos, upAxis, candidates);
     for (var k = 0; k < candidates.length; k++) {
       final i = candidates[k];
@@ -262,14 +248,23 @@ class NavMesh3D._({
   }
 
   /// Returns a centroid waypoint path from [start] to [goal].
-  List<Vector3> findCentroidPath(Vector3 start, Vector3 goal) =>
-      _findCentroidPathImpl(start, goal);
+  List<Vector3> findCentroidPath(
+    Vector3 start,
+    Vector3 goal, {
+    NavQueryContext3D? context,
+  }) => _findCentroidPathImpl(start, goal, context ?? _defaultQuery);
 
   /// Computes a segmented path including off-mesh traversal segments.
-  List<NavPathSegment3D> findSegmentedPath(Vector3 start, Vector3 goal) =>
-      _findSegmentedPathImpl(start, goal);
+  List<NavPathSegment3D> findSegmentedPath(
+    Vector3 start,
+    Vector3 goal, {
+    NavQueryContext3D? context,
+  }) => _findSegmentedPathImpl(start, goal, context ?? _defaultQuery);
 
   /// Computes a funnel-smoothed path from [start] to [goal].
-  List<Vector3> findPath(Vector3 start, Vector3 goal) =>
-      _findPathImpl(start, goal);
+  List<Vector3> findPath(
+    Vector3 start,
+    Vector3 goal, {
+    NavQueryContext3D? context,
+  }) => _findPathImpl(start, goal, context ?? _defaultQuery);
 }

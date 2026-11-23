@@ -9,11 +9,11 @@ extension _NavMeshObstacles3D on NavMesh3D {
     if (polygons.isEmpty) {
       return 0;
     }
-    _bvhCandidatesScratch.clear();
-    _bvh.queryAabb(bounds, _bvhCandidatesScratch);
+    final candidates = _defaultQuery.bvhCandidates..clear();
+    _bvh.queryAabb(bounds, candidates);
     var updated = 0;
-    for (var i = 0; i < _bvhCandidatesScratch.length; i++) {
-      final pIdx = _bvhCandidatesScratch[i];
+    for (var i = 0; i < candidates.length; i++) {
+      final pIdx = candidates[i];
       final poly = polygons[pIdx];
       if (_triangleIntersectsAabb(
         vertices[poly.v0],

@@ -5,7 +5,9 @@ import 'package:flame_3d/physics.dart';
 import 'package:flame_3d/src/extensions/geometry_math.dart';
 import 'package:meta/meta.dart';
 
-final Vector3 _comRotScratch = Vector3.zero();
+abstract final class _PhysicsSolverMathScratch._() {
+  static final Vector3 comRot = Vector3.zero();
+}
 
 /// Applies a small angular pseudo-rotation delta [dTheta] (in radians) to
 /// [body] while preserving its world center of mass and updating its world
@@ -47,11 +49,15 @@ void applyDeltaQuatToBody(RigidBody3D body, Vector3 dTheta) {
   final invNorm = 1.0 / math.sqrt(nx * nx + ny * ny + nz * nz + nw * nw);
   q.setValues(nx * invNorm, ny * invNorm, nz * invNorm, nw * invNorm);
   if (hasCom) {
-    rotateVectorByQuat(q, body.localCenterOfMass, _comRotScratch);
+    rotateVectorByQuat(
+      q,
+      body.localCenterOfMass,
+      _PhysicsSolverMathScratch.comRot,
+    );
     body.bodyPosition.setValues(
-      oldComX - _comRotScratch.x,
-      oldComY - _comRotScratch.y,
-      oldComZ - _comRotScratch.z,
+      oldComX - _PhysicsSolverMathScratch.comRot.x,
+      oldComY - _PhysicsSolverMathScratch.comRot.y,
+      oldComZ - _PhysicsSolverMathScratch.comRot.z,
     );
   }
   body.updateWorldInertia();

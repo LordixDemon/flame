@@ -8,7 +8,8 @@ import 'package:flame_3d/src/physics/physics_solver_math_3d.dart';
 part 'joint_cone_twist_3d.dart';
 part 'joint_distance_ball_3d.dart';
 part 'joint_generic_6dof_3d.dart';
-part 'joint_hinge_slider_3d.dart';
+part 'joint_hinge_fixed_3d.dart';
+part 'joint_slider_3d.dart';
 
 /// Base class for 3D constraints connecting two [RigidBody3D] instances inside
 /// a [PhysicsWorld3D].

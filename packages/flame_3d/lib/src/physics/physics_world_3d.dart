@@ -1,3 +1,4 @@
+import 'dart:collection' show UnmodifiableListView;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -14,8 +15,27 @@ import 'package:meta/meta.dart';
 
 part 'physics_world_broadphase_3d.dart';
 part 'physics_world_ccd_3d.dart';
+part 'physics_world_contact_constraint_3d.dart';
 part 'physics_world_contact_solver_3d.dart';
 part 'physics_world_snapshot_access_3d.dart';
+
+/// Execution stage inside [PhysicsWorld3D.step] for a [PhysicsForceSolver3D].
+enum PhysicsForceStage3D() {
+  /// Runs right before symplectic Euler force/velocity integration.
+  preIntegration,
+
+  /// Runs right after broadphase trees are synced, before narrowphase contacts.
+  postBroadphase,
+}
+
+/// Pluggable external force/impulse solver stepped by [PhysicsWorld3D.step].
+abstract interface class PhysicsForceSolver3D() {
+  /// Step stage in which [applyForces] runs.
+  PhysicsForceStage3D get forceStage;
+
+  /// Applies forces or impulses to bodies in [world] for time step [dt].
+  void applyForces(PhysicsWorld3D world, double dt);
+}
 
 /// Deterministic fixed-timestep Sequential Impulse 3D rigid-body physics world.
 ///
@@ -80,7 +100,11 @@ class PhysicsWorld3D({
   final List<Joint3D> _joints = [];
   final List<BuoyancyVolume3D> _buoyancyVolumes = [];
   final List<RaycastVehicle3D> _vehicles = [];
+  final List<PhysicsForceSolver3D> _forceSolvers = [];
   final List<RigidBody3D> _activeBodies = [];
+  late final List<RigidBody3D> _activeBodiesView = UnmodifiableListView(
+    _activeBodies,
+  );
   final Map<RigidBody3D, int> _bodyProxies = {};
   final Set<RigidBody3D> _seenBodiesScratch = {};
   final List<RigidBody3D> _staleBodiesScratch = [];
@@ -144,6 +168,19 @@ class PhysicsWorld3D({
 
   /// Registered [RaycastVehicle3D] controllers stepped automatically in [step].
   List<RaycastVehicle3D> get vehicles => List.unmodifiable(_vehicles);
+
+  /// Custom [PhysicsForceSolver3D]s stepped automatically in [step].
+  List<PhysicsForceSolver3D> get forceSolvers =>
+      List.unmodifiable(_forceSolvers);
+
+  /// Read-only live view of active rigid bodies in deterministic order.
+  @internal
+  List<RigidBody3D> get activeBodies => _activeBodiesView;
+
+  /// Resolves the [CollisionSystem3D] associated with this physics world.
+  @internal
+  CollisionSystem3D? resolveActiveCollisionSystem() =>
+      _resolveCollisionSystem();
 
   /// Explicitly registers [body] for standalone simulation outside a mounted
   /// [World3D].
@@ -214,6 +251,18 @@ class PhysicsWorld3D({
   /// Unregisters [vehicle].
   void removeVehicle(RaycastVehicle3D vehicle) {
     _vehicles.remove(vehicle);
+  }
+
+  /// Registers a custom [PhysicsForceSolver3D] stepped during [step].
+  void addForceSolver(PhysicsForceSolver3D solver) {
+    if (!_forceSolvers.contains(solver)) {
+      _forceSolvers.add(solver);
+    }
+  }
+
+  /// Unregisters [solver].
+  void removeForceSolver(PhysicsForceSolver3D solver) {
+    _forceSolvers.remove(solver);
   }
 
   /// Encodes the complete deterministic simulation state of this world into a
@@ -435,6 +484,12 @@ class PhysicsWorld3D({
         );
       }
     }
+    for (var i = 0; i < _forceSolvers.length; i++) {
+      final solver = _forceSolvers[i];
+      if (solver.forceStage == PhysicsForceStage3D.preIntegration) {
+        solver.applyForces(this, dt);
+      }
+    }
 
     // Keep bodies connected by a joint awake together if either is awake.
     for (var i = 0; i < _joints.length; i++) {
@@ -501,6 +556,12 @@ class PhysicsWorld3D({
           bodyBroadphase: broadphaseTree,
           gravityMagnitude: gMag,
         );
+      }
+    }
+    for (var i = 0; i < _forceSolvers.length; i++) {
+      final solver = _forceSolvers[i];
+      if (solver.forceStage == PhysicsForceStage3D.postBroadphase) {
+        solver.applyForces(this, dt);
       }
     }
 
