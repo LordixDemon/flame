@@ -1,15 +1,147 @@
 part of 'world_3d.dart';
 
+class _WorldVisibilityCache() {
+  SceneOcclusionCuller3D? _lastRasterizedCuller;
+  int _occFrame = -1;
+  final Float32List _occVp = Float32List(16);
+
+  final List<Object3D> visibleObjects = [];
+  bool collectingVisible = false;
+  bool hasVisibleCache = false;
+  RenderContext3D? _visibleCtx;
+  int _visibleCameraMask = 0;
+  int _visibleSceneVersion = -1;
+  final Float32List _visibleVp = Float32List(16);
+
+  List<Component3D>? rootComponents3D;
+  int nonComponent3DRootCount = 0;
+  bool rootHasPrioritizedChild = false;
+
+  PictureRecorder? _fallbackRecorder;
+  Canvas? _fallbackCanvas;
+
+  void invalidateOcclusion() {
+    _lastRasterizedCuller = null;
+  }
+
+  void prepareOcclusionCuller(
+    SceneOcclusionCuller3D? culler,
+    RenderContext3D ctx,
+  ) {
+    if (culler == null || ctx.isShadowPass || !culler.hasOccluders) {
+      return;
+    }
+    final frame = ctx.device.frame;
+    final vp = ctx.viewProjection.storage;
+    if (identical(_lastRasterizedCuller, culler) &&
+        _occFrame == frame &&
+        sameMatrix16(vp, _occVp)) {
+      return;
+    }
+    _lastRasterizedCuller = culler;
+    _occFrame = frame;
+    for (var i = 0; i < 16; i++) {
+      _occVp[i] = vp[i];
+    }
+    culler.rasterizeOccluders(ctx.viewProjection);
+  }
+
+  void recordVisibleObject(Object3D object) {
+    if (collectingVisible) {
+      visibleObjects.add(object);
+    }
+  }
+
+  void storeVisibleCache(RenderContext3D ctx, int sceneVersion) {
+    hasVisibleCache = true;
+    _visibleCtx = ctx;
+    _visibleCameraMask = ctx.cameraMask;
+    _visibleSceneVersion = sceneVersion;
+    _visibleVp.setAll(0, ctx.viewProjection.storage);
+  }
+
+  bool consumeReusableVisible(RenderContext3D ctx, int sceneVersion) {
+    final reuse =
+        hasVisibleCache &&
+        identical(ctx, _visibleCtx) &&
+        ctx.cameraMask == _visibleCameraMask &&
+        sceneVersion == _visibleSceneVersion &&
+        sameMatrix16(ctx.viewProjection.storage, _visibleVp);
+    hasVisibleCache = false;
+    return reuse;
+  }
+
+  void onMount() {
+    rootComponents3D?.clear();
+    nonComponent3DRootCount = 0;
+    rootHasPrioritizedChild = false;
+  }
+
+  void onRebalance() {
+    rootHasPrioritizedChild = true;
+  }
+
+  void onChildAdded(flame.Component child) {
+    if (child is Component3D) {
+      (rootComponents3D ??= <Component3D>[]).add(child);
+      if (child.priority != 0) {
+        rootHasPrioritizedChild = true;
+      }
+    } else {
+      nonComponent3DRootCount++;
+    }
+  }
+
+  void onChildRemoved(flame.Component child) {
+    if (child is Component3D) {
+      rootComponents3D?.remove(child);
+    } else if (nonComponent3DRootCount > 0) {
+      nonComponent3DRootCount--;
+    }
+  }
+
+  bool allRootChildrenComponent3D(World3D world) {
+    if (world.isMounted) {
+      return nonComponent3DRootCount == 0;
+    }
+    for (final child in world.children) {
+      if (child is! Component3D) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  Canvas fallbackDummyCanvas() =>
+      _fallbackCanvas ??= Canvas(_fallbackRecorder = PictureRecorder());
+
+  void disposeFallbackDummyCanvas() {
+    final recorder = _fallbackRecorder;
+    if (recorder != null) {
+      _fallbackRecorder = null;
+      _fallbackCanvas = null;
+      recorder.endRecording().dispose();
+    }
+  }
+
+  void clearOnRemove() {
+    visibleObjects.clear();
+    hasVisibleCache = false;
+    disposeFallbackDummyCanvas();
+  }
+}
+
 extension _World3DPipeline on World3D {
   void _traverseWorldChildren(RenderContext3D ctx, Canvas? canvas) {
     _rendering = true;
     _traversingTree = true;
     try {
+      final vis = _visibility;
       if (isMounted &&
-          _nonComponent3DRootCount == 0 &&
-          !_rootHasPrioritizedChild &&
+          vis.nonComponent3DRootCount == 0 &&
+          !vis.rootHasPrioritizedChild &&
           !debugMode) {
-        final roots = _rootComponents3D;
+        final roots = vis.rootComponents3D;
         if (roots != null) {
           for (var i = 0; i < roots.length; i++) {
             roots[i].renderTree3D(this, ctx, canvas);
@@ -42,12 +174,12 @@ extension _World3DPipeline on World3D {
     ctx
       ..setWorldLights(lights, lightsVersion)
       ..fog = _fog;
-    final group = _shadowGroup;
+    final group = _shadowState.group;
     if (group != null && overrideContext == null) {
       return group._renderFor(this, ctx, canvas);
     }
     if (!ctx.beginShadowPass(
-      projection: _shadowProjection,
+      projection: _shadowState.projection,
       sceneBounds: sceneBounds,
       castersKey: World3D._shadowCasterKey(this, _shadowKeyVersion, lights),
       stillCastersKey: _prepareStillCasters(this, lights),
@@ -74,7 +206,7 @@ extension _World3DPipeline on World3D {
     int height, {
     RenderContext3D? overrideContext,
   }) {
-    _hasVisibleCache = false;
+    final vis = _visibility..hasVisibleCache = false;
     final ctx = overrideContext ?? context;
     final debugNeedsDn =
         _renderDebugMode3D == RenderDebugMode3D.depth ||
@@ -91,21 +223,17 @@ extension _World3DPipeline on World3D {
       return false;
     }
     prepareOcclusionCuller(ctx);
-    _visibleObjects.clear();
-    _collectingVisible = true;
+    vis.visibleObjects.clear();
+    vis.collectingVisible = true;
     final onlyComponent3D = _allRootChildrenComponent3D();
     try {
       _traverseWorldChildren(ctx, canvas);
     } finally {
-      _collectingVisible = false;
+      vis.collectingVisible = false;
       ctx.endDepthNormalPass();
     }
     if (onlyComponent3D) {
-      _hasVisibleCache = true;
-      _visibleCtx = ctx;
-      _visibleCameraMask = ctx.cameraMask;
-      _visibleSceneVersion = sceneVersion;
-      _visibleVp.setAll(0, ctx.viewProjection.storage);
+      vis.storeVisibleCache(ctx, sceneVersion);
     }
     return true;
   }
@@ -114,7 +242,7 @@ extension _World3DPipeline on World3D {
     final ctx = context;
     if (ctx.isShadowPass &&
         ctx.shadowCasterLayer == ShadowCasterLayer.moving &&
-        _shadowCasters.moversComplete &&
+        _versions.shadowCasters.moversComplete &&
         _allRootChildrenComponent3D()) {
       _recordMovingCasters(ctx);
       return;
@@ -123,7 +251,7 @@ extension _World3DPipeline on World3D {
   }
 
   void _recordMovingCasters(RenderContext3D ctx) {
-    final movers = _shadowCasters.movers;
+    final movers = _versions.shadowCasters.movers;
     if (movers.isEmpty) {
       return;
     }
@@ -146,7 +274,7 @@ extension _World3DPipeline on World3D {
             obj.usesDefaultFrustumVisibility ||
             obj.isVisible(frustum)) {
           if (obj.shadowMotion == ShadowCasterMotion.auto) {
-            _shadowCasters.drawnMoving(obj);
+            _versions.shadowCasters.drawnMoving(obj);
           }
           obj.draw(ctx);
         }
@@ -160,17 +288,10 @@ extension _World3DPipeline on World3D {
     final ctx = overrideContext ?? context;
     syncContextOptions(ctx);
     prepareOcclusionCuller(ctx);
-    final reuseVisible =
-        _hasVisibleCache &&
-        identical(ctx, _visibleCtx) &&
-        ctx.cameraMask == _visibleCameraMask &&
-        sceneVersion == _visibleSceneVersion &&
-        sameMatrix16(ctx.viewProjection.storage, _visibleVp);
-    _hasVisibleCache = false;
-    if (reuseVisible) {
+    if (_visibility.consumeReusableVisible(ctx, sceneVersion)) {
       _rendering = true;
       try {
-        final visible = _visibleObjects;
+        final visible = _visibility.visibleObjects;
         for (var i = 0; i < visible.length; i++) {
           visible[i].draw(ctx);
         }
@@ -194,8 +315,6 @@ extension _World3DPipeline on World3D {
     Rect? visibleFrame,
   }) {
     final usePost = needsPostCompositePass(device);
-    // The scene (and the targets composited into it) is the HDR target only
-    // when the composite decodes it.
     final nextHdr = _hdrEnabled && usePost;
     syncContextOptions(renderContext, hdrEnabled: nextHdr);
     renderContext.clearActiveSceneColorTarget();
@@ -215,9 +334,6 @@ extension _World3DPipeline on World3D {
       }
     }
 
-    // Record the 3D scene's draws ONCE up front so we know whether refractive
-    // or WBOIT translucent surfaces are present without traversing components
-    // twice!
     final prevHdr = _pipelineHdrOverride;
     _pipelineHdrOverride = nextHdr;
     try {
@@ -240,8 +356,6 @@ extension _World3DPipeline on World3D {
     final runGrab =
         supportsTexTargets &&
         (_grabSceneColorEnabled || renderContext.hasRefractiveDraws);
-    // The accumulation target needs floats: without them (OpenGL ES) the
-    // translucent draws are sorted instead.
     final runWboit =
         supportsTexTargets &&
         _oitMode == OitMode3D.weightedBlended &&
@@ -443,10 +557,6 @@ extension _World3DPipeline on World3D {
     }
   }
 
-  /// [renderToImage] into [target] when given, a render target the caller
-  /// keeps from frame to frame instead of a new one per call; the image is
-  /// then only valid until the target renders into its color texture again
-  /// (two frames later), so it must be drawn in the current frame.
   Image _renderToImageIntoImpl(
     Size size, {
     required Matrix4 view,
@@ -518,9 +628,6 @@ extension _World3DPipeline on World3D {
     }
   }
 
-  /// Renders a non-post-processed pass directly into [target], preserving prior
-  /// contents when [keepContents] is `true`. Used by `CameraStack3D` to chain
-  /// compatible `depthOnly` slots onto a single native-keep texture target.
   void _renderChainedIntoTextureTargetImpl({
     required Size size,
     required Matrix4 view,

@@ -1,45 +1,170 @@
 part of 'scene_3d_component.dart';
 
-extension _Scene3DRetainedCache on Scene3DComponent {
-  Game? _resolveGame() {
-    if (!isMounted) {
-      return findGame();
-    }
-    return _cachedGame ??= findGame();
+/// Retained GPU target and key-comparison state owned by [Scene3DComponent].
+class _Scene3DRetainedCacheState() {
+  int cacheHitCount = 0;
+  int manualVersion = 0;
+
+  GpuRenderTarget? sceneTarget;
+  int sceneTargetWidth = 0;
+  int sceneTargetHeight = 0;
+  int sceneTargetMsaa = 0;
+
+  GpuRenderTarget? bloomTarget;
+  int bloomTargetWidth = 0;
+  int bloomTargetHeight = 0;
+
+  GpuRenderTarget? imageTarget;
+  Image? image;
+
+  Float64List _retainedNumbers = Float64List(Scene3DComponent._keyNumberCount);
+  Float64List _nextNumbers = Float64List(Scene3DComponent._keyNumberCount);
+  List<Object?> _retainedObjects = List.filled(
+    Scene3DComponent._keyObjectCount,
+    null,
+  );
+  List<Object?> _nextObjects = List.filled(
+    Scene3DComponent._keyObjectCount,
+    null,
+  );
+  final Float32List retainedView = Float32List(16);
+  final Float32List retainedProj = Float32List(16);
+
+  void dispose() {
+    image?.dispose();
+    image = null;
+    imageTarget = null;
+    sceneTarget = null;
+    bloomTarget = null;
+    sceneTargetWidth = 0;
+    sceneTargetHeight = 0;
+    sceneTargetMsaa = 0;
+    bloomTargetWidth = 0;
+    bloomTargetHeight = 0;
   }
 
-  double _pixelRatioOfGame(Game? game) {
-    final buildContext = game?.buildContext;
-    if (buildContext == null) {
-      return 1.0;
+  /// Checks if the cached image still matches the current frame, and always
+  /// populates [_nextNumbers] / [_nextObjects] on miss so [storeRendered] can
+  /// swap them into the kept key.
+  bool checkHit({
+    required Scene3DComponent owner,
+    required ShadowGroup? group,
+    required int left,
+    required int top,
+    required int pixelWidth,
+    required int pixelHeight,
+    required int targetWidth,
+    required int targetHeight,
+    required double pixelScale,
+    required Rect visibleFrame,
+    required Matrix4 viewMatrix,
+    required Matrix4 projectionMatrix,
+  }) {
+    final retainedImage = image;
+    final retainedTarget = imageTarget;
+    final world = owner.world;
+    if (retainedImage != null && retainedTarget != null) {
+      final kept = _retainedNumbers;
+      final sceneMatch =
+          world.sceneVersion.toDouble() == kept[0] &&
+          manualVersion.toDouble() == kept[1] &&
+          (group?.castersVersion ?? world.castersVersion).toDouble() ==
+              kept[2] &&
+          (group?.viewsVersion ?? 0).toDouble() == kept[38] &&
+          left.toDouble() == kept[3] &&
+          top.toDouble() == kept[4] &&
+          pixelWidth.toDouble() == kept[5] &&
+          pixelHeight.toDouble() == kept[6] &&
+          targetWidth.toDouble() == kept[7] &&
+          targetHeight.toDouble() == kept[8] &&
+          pixelScale == kept[9] &&
+          owner.msaa.sampleCount.toDouble() == kept[10] &&
+          owner.cameraMask.toDouble() == kept[11];
+      if (sceneMatch &&
+          sameMatrix16Approx(viewMatrix.storage, retainedView, 1e-9) &&
+          sameMatrix16Approx(projectionMatrix.storage, retainedProj, 1e-9)) {
+        final vignette = (world.postProcess?.vignetteIntensity ?? 0) > 0;
+        if (!vignette ||
+            (visibleFrame.left == kept[34] &&
+                visibleFrame.top == kept[35] &&
+                visibleFrame.right == kept[36] &&
+                visibleFrame.bottom == kept[37])) {
+          return true;
+        }
+      }
     }
-    if (!isMounted) {
-      return MediaQuery.devicePixelRatioOf(buildContext);
-    }
-    if (!_pixelRatioDirty && identical(buildContext, _cachedDprContext)) {
-      return _cachedPixelRatio;
-    }
-    _cachedDprContext = buildContext;
-    _pixelRatioDirty = false;
-    return _cachedPixelRatio = MediaQuery.devicePixelRatioOf(buildContext);
+    _writeKey(
+      owner,
+      left,
+      top,
+      pixelWidth,
+      pixelHeight,
+      targetWidth,
+      targetHeight,
+      pixelScale,
+      visibleFrame,
+    );
+    return retainedImage != null &&
+        retainedTarget != null &&
+        _keyMatches() &&
+        sameMatrix16Approx(viewMatrix.storage, retainedView, 1e-9) &&
+        sameMatrix16Approx(projectionMatrix.storage, retainedProj, 1e-9);
   }
 
-  void _disposeRetained() {
-    _retainedImage?.dispose();
-    _retainedImage = null;
-    _retainedImageTarget = null;
-    _retainedSceneTarget = null;
-    _retainedBloomTarget = null;
-    _sceneTargetWidth = 0;
-    _sceneTargetHeight = 0;
-    _sceneTargetMsaa = 0;
-    _bloomTargetWidth = 0;
-    _bloomTargetHeight = 0;
+  GpuRenderTarget acquireTarget({
+    required GraphicsDevice device,
+    required bool usePost,
+    required int targetWidth,
+    required int targetHeight,
+    required int msaaSampleCount,
+  }) {
+    if (usePost) {
+      if (bloomTarget == null ||
+          bloomTargetWidth != targetWidth ||
+          bloomTargetHeight != targetHeight) {
+        bloomTargetWidth = targetWidth;
+        bloomTargetHeight = targetHeight;
+        bloomTarget = device.backend.createRenderTarget(
+          width: targetWidth,
+          height: targetHeight,
+          clearValue: device.clearValue,
+        );
+      }
+      return bloomTarget!;
+    }
+    if (sceneTarget == null ||
+        sceneTargetWidth != targetWidth ||
+        sceneTargetHeight != targetHeight ||
+        sceneTargetMsaa != msaaSampleCount) {
+      sceneTargetWidth = targetWidth;
+      sceneTargetHeight = targetHeight;
+      sceneTargetMsaa = msaaSampleCount;
+      sceneTarget = device.backend.createRenderTarget(
+        width: targetWidth,
+        height: targetHeight,
+        clearValue: device.clearValue,
+        msaaSampleCount: msaaSampleCount,
+      );
+    }
+    return sceneTarget!;
   }
 
-  /// Writes the values a retained image depends on, besides the camera
-  /// matrices, into [_nextNumbers] and [_nextObjects], without allocating.
+  void storeRendered({
+    required Image renderedImage,
+    required GpuRenderTarget? ownedTarget,
+    required Matrix4 viewMatrix,
+    required Matrix4 projectionMatrix,
+  }) {
+    image?.dispose();
+    image = renderedImage;
+    imageTarget = ownedTarget;
+    _keepKey();
+    retainedView.setAll(0, viewMatrix.storage);
+    retainedProj.setAll(0, projectionMatrix.storage);
+  }
+
   void _writeKey(
+    Scene3DComponent owner,
     int left,
     int top,
     int pixelWidth,
@@ -49,7 +174,7 @@ extension _Scene3DRetainedCache on Scene3DComponent {
     double pixelScale,
     Rect visibleFrame,
   ) {
-    final world = this.world;
+    final world = owner.world;
     final bloom = world.bloom;
     final post = world.postProcess;
     final group = world.shadowGroup;
@@ -57,7 +182,7 @@ extension _Scene3DRetainedCache on Scene3DComponent {
     final vignette = (post?.vignetteIntensity ?? 0) > 0;
     _nextNumbers
       ..[0] = world.sceneVersion.toDouble()
-      ..[1] = _manualVersion.toDouble()
+      ..[1] = manualVersion.toDouble()
       ..[2] = (group?.castersVersion ?? world.castersVersion).toDouble()
       ..[3] = left.toDouble()
       ..[4] = top.toDouble()
@@ -66,8 +191,8 @@ extension _Scene3DRetainedCache on Scene3DComponent {
       ..[7] = targetWidth.toDouble()
       ..[8] = targetHeight.toDouble()
       ..[9] = pixelScale
-      ..[10] = msaa.sampleCount.toDouble()
-      ..[11] = cameraMask.toDouble()
+      ..[10] = owner.msaa.sampleCount.toDouble()
+      ..[11] = owner.cameraMask.toDouble()
       ..[12] = world.hdrEnabled ? 1 : 0
       ..[13] = world.grabSceneColorEnabled ? 1 : 0
       ..[14] = bloom == null ? 0 : 1
@@ -102,8 +227,6 @@ extension _Scene3DRetainedCache on Scene3DComponent {
       ..[3] = post?.colorLut;
   }
 
-  /// Whether the values written by [_writeKey] equal those of the retained
-  /// image.
   bool _keyMatches() {
     final next = _nextNumbers;
     final kept = _retainedNumbers;
@@ -120,7 +243,6 @@ extension _Scene3DRetainedCache on Scene3DComponent {
     return true;
   }
 
-  /// Keeps the values written by [_writeKey] as those of the retained image.
   void _keepKey() {
     final numbers = _retainedNumbers;
     _retainedNumbers = _nextNumbers;

@@ -1,5 +1,15 @@
 part of 'world_3d.dart';
 
+class _WorldShadowGroupState() {
+  final DirectionalShadowProjection projection = DirectionalShadowProjection();
+  ShadowGroup? group;
+  final Matrix4 groupView = Matrix4.zero();
+  final Matrix4 groupProjection = Matrix4.zero();
+  final Matrix4 groupViewProjection = Matrix4.zero();
+  int groupRound = -1;
+  bool groupNotedByHost = false;
+}
+
 /// {@template shadow_group}
 /// Worlds that share one shadow map: the objects of every world of the group
 /// cast their shadows onto the objects of every other, as if they were one
@@ -89,30 +99,31 @@ class ShadowGroup() {
     Matrix4 projection, {
     required bool byHost,
   }) {
-    if (!identical(world._shadowGroup, this)) {
+    final st = world._shadowState;
+    if (!identical(st.group, this)) {
       return;
     }
-    final startsRound = _round == 0 || world._groupRound == _round;
+    final startsRound = _round == 0 || st.groupRound == _round;
     // A world drawn after the first of the round with another camera than
     // the one the map of the round is fitted to: the next frame fits it to
     // this one, and must be painted, also in a game that only paints changed
     // frames.
     final lags =
         !startsRound &&
-        (world._groupRound < _round - 1 ||
-            !sameMatrix16(world._groupView.storage, view.storage) ||
+        (st.groupRound < _round - 1 ||
+            !sameMatrix16(st.groupView.storage, view.storage) ||
             !sameMatrix16(
-              world._groupProjection.storage,
+              st.groupProjection.storage,
               projection.storage,
             ));
-    world._groupView.setFrom(view);
-    world._groupProjection.setFrom(projection);
-    world._groupViewProjection
+    st.groupView.setFrom(view);
+    st.groupProjection.setFrom(projection);
+    st.groupViewProjection
       ..setFrom(projection)
       ..multiply(view);
-    world
-      .._groupRound = startsRound ? ++_round : _round
-      .._groupNotedByHost = byHost;
+    st
+      ..groupRound = startsRound ? ++_round : _round
+      ..groupNotedByHost = byHost;
     if (startsRound) {
       _gatherViews();
     } else if (lags && _mapFollowsViews) {
@@ -126,11 +137,12 @@ class ShadowGroup() {
     var count = 0;
     var changed = false;
     for (final member in _worlds) {
-      if (member._groupRound < _round - 1) {
+      final st = member._shadowState;
+      if (st.groupRound < _round - 1) {
         continue;
       }
-      final view = member._groupView;
-      final viewProjection = member._groupViewProjection;
+      final view = st.groupView;
+      final viewProjection = st.groupViewProjection;
       if (_hasView(count, view, viewProjection)) {
         continue;
       }
@@ -202,13 +214,14 @@ class ShadowGroup() {
   /// [ShadowSettings.cacheWhenStatic]) and is still bound, rendered
   /// otherwise. Returns whether the pass receives shadows.
   bool _renderFor(World3D world, RenderContext3D context, Canvas? canvas) {
+    final st = world._shadowState;
     // A world whose host does not report its camera (one that is not a
     // Scene3DComponent) is drawn with the camera of the pass.
-    if (world._groupRound != _round ||
-        (!world._groupNotedByHost &&
-            (!sameMatrix16(world._groupView.storage, context.view.storage) ||
+    if (st.groupRound != _round ||
+        (!st.groupNotedByHost &&
+            (!sameMatrix16(st.groupView.storage, context.view.storage) ||
                 !sameMatrix16(
-                  world._groupProjection.storage,
+                  st.groupProjection.storage,
                   context.projection.storage,
                 )))) {
       _note(world, context.view, context.projection, byHost: false);
@@ -244,7 +257,7 @@ class ShadowGroup() {
         member._shadowKeyVersion,
       );
       if (stillSettings != null) {
-        member._shadowCasters.prepare(stillSettings.stillCasterFrames);
+        member._versions.shadowCasters.prepare(stillSettings.stillCasterFrames);
         groupStillHash = Object.hash(
           groupStillHash,
           member,

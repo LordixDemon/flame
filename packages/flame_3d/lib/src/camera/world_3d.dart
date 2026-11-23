@@ -49,10 +49,10 @@ class World3D({
   bool depthPrepassEnabled = false,
   SceneOcclusionCuller3D? occlusionCuller,
 }) extends flame.World {
-  final List<Light> _lights = [];
-  // Increases when a light joins or leaves [_lights], see [_passLights].
-  int _lightListRevision = 0;
-  final List<ReflectionProbeVolume3D> _reflectionProbes = [];
+  final _WorldLightRegistry _lighting = _WorldLightRegistry();
+  final _WorldVersionState _versions = _WorldVersionState();
+  final _WorldVisibilityCache _visibility = _WorldVisibilityCache();
+  final _WorldShadowGroupState _shadowState = _WorldShadowGroupState();
 
   /// User-defined GPU [CustomRenderPass3D] hooks executed before or after the
   /// main scene pass.
@@ -67,30 +67,13 @@ class World3D({
   /// [spatialIndex3DEnabled] is `true` (or when queried directly).
   final SceneSpatialIndex3D spatialIndex3D = SceneSpatialIndex3D();
 
-  int _ownSceneVersion = 0;
-  int _ownCastersVersion = 0;
-
-  // The changes of this world's own lights, which the worlds that borrow them
-  // ([lightsFrom]) add to their versions.
-  int _lightsVersion = 0;
-  int _lightsCastersVersion = 0;
-
-  // Material.castsShadows is shared by every world that draws the material,
-  // so its changes are counted globally and added here, as are the changes of
-  // the lights this world borrows and the losses and recoveries of the GPU
-  // device (what was cached before is gone).
   int get _sceneVersion => componentsVersion + _valuesVersion;
 
-  // The versions of the values this world draws with, which report their
-  // own changes: its settings, and the materials of its last render (see
-  // [MaterialTracker]), plus one per update while one of those is marked
-  // `Material.animated`, and the materials given to surfaces (shared by
-  // every world, as Material.castsShadows).
   int get _valuesVersion =>
-      _settingsOffset +
+      _versions.settingsOffset +
       _settingsVersion +
-      _drawnMaterials.version +
-      _animationTicks +
+      _versions.drawnMaterials.version +
+      _versions.animationTicks +
       Material.assignmentRevision;
 
   int get _settingsVersion =>
@@ -99,12 +82,6 @@ class World3D({
       (_bloom?.version ?? 0) +
       (_postProcess?.version ?? 0);
 
-  // Keeps [_valuesVersion] from going back when a setting is replaced by one
-  // of a lower version.
-  int _settingsOffset = 0;
-  int _animationTicks = 0;
-  final MaterialTracker _drawnMaterials = MaterialTracker();
-
   /// The part of [sceneVersion] that follows the components of this world
   /// (and the lights and world settings it draws with), without the values
   /// that report their own changes (materials, fog, water, bloom and
@@ -112,57 +89,20 @@ class World3D({
   /// built for.
   @internal
   int get componentsVersion =>
-      _ownSceneVersion +
+      _versions.ownSceneVersion +
       Material.castsShadowsRevision +
       GpuBackend.renderEpoch +
-      (_lightsFrom?._lightsVersion ?? 0);
+      (_lighting.lightsFrom?._lighting.lightsVersion ?? 0);
 
   int get _castersVersion =>
-      _ownCastersVersion +
+      _versions.ownCastersVersion +
       Material.castsShadowsRevision +
       GpuBackend.renderEpoch +
-      (_lightsFrom?._lightsCastersVersion ?? 0);
+      (_lighting.lightsFrom?._lighting.lightsCastersVersion ?? 0);
 
   /// Monotonically increasing counter that increases whenever the rendered
   /// output of this world may change: `Scene3DCacheMode.retained` layers
   /// render again when it differs.
-  ///
-  /// It increases when a component is added, removed, moved, shown, hidden or
-  /// gets another `cameraMask`; when a property of a component that changes
-  /// its draws is assigned (`Object3D.castsShadows`, `MeshComponent.color`,
-  /// `instanceData` and `jointTransforms`, the same on `ModelComponent` and
-  /// `LodMeshComponent`, the instances of an `InstancedGroup3D`); when a
-  /// field of a light source is assigned, a light is added or removed, or
-  /// its `lightMask` changes; when an animation or active particles advance,
-  /// or particles are spawned or cleared (`ParticleSystem3D.burst`, `spawn`,
-  /// `clear`);
-  /// when a `Material.castsShadows` changes; when a setting of this world is
-  /// assigned ([fog], [waterVolume], [bloom], [postProcess], [hdrEnabled],
-  /// [depthPrepassEnabled], ...); and when the lights it borrows change (see
-  /// [lightsFrom] and [lightsVersion]).
-  ///
-  /// It also increases when a value this world draws with changes, as those
-  /// values report their own changes ([Versioned]): a field of [fog], of
-  /// [waterVolume], of [bloom] or of [postProcess], a field of one of the
-  /// materials its last render drew (`Material.version`), of their palettes
-  /// or of the state they read (`WaterRipples`, `WaterFoamSources`), and a
-  /// `Surface` given another material. A material this world did not draw
-  /// in its last render (one hidden, culled, or drawn in another world
-  /// only) does not change it; neither does writing the value a field
-  /// already holds. While the last render drew a material marked
-  /// `Material.animated`, it increases on every update. None of these
-  /// changes [castersVersion]: a material moves no shadow, besides its
-  /// `Material.castsShadows` (and the `Material.renderState` it follows).
-  ///
-  /// The engine cannot see changes made in place: a field of a light's
-  /// `ShadowSettings`, a vector of a light source, joint matrices written
-  /// into an existing list, the buffers of a custom `Object3D.draw`,
-  /// [customPasses], the contents of a texture rendered again, an object a
-  /// material or a setting holds changed in place (an `Aabb3`, an
-  /// `EnvironmentProbe3D`), and the [lightProbeGrid] changed in place. Report
-  /// them with `Component3D.markDrawDirty`, `LightSource.markChanged`,
-  /// `Material.markChanged` (or [Versioned.markChanged] of the setting) or
-  /// [markSceneDirty].
   int get sceneVersion => _sceneVersion;
 
   /// Monotonically increasing counter that increases whenever the shadow
@@ -182,7 +122,7 @@ class World3D({
   /// that only that object is drawn again.
   void markSceneDirty({bool shadows = true}) {
     if (shadows) {
-      _shadowCasters.invalidate();
+      _versions.shadowCasters.invalidate();
     }
     markComponentDirty(shadows: shadows);
   }
@@ -193,9 +133,9 @@ class World3D({
   /// without rendering the kept layer of still casters again.
   @internal
   void markComponentDirty({required bool shadows}) {
-    _ownSceneVersion++;
+    _versions.ownSceneVersion++;
     if (shadows) {
-      _ownCastersVersion++;
+      _versions.ownCastersVersion++;
     }
     Game.notifyVisualMutation();
   }
@@ -203,21 +143,15 @@ class World3D({
   /// The change tracking of this world's shadow casters, see
   /// [ShadowSettings.cacheStillCasters].
   @internal
-  ShadowCasterTracker get shadowCasters => _shadowCasters;
-  final ShadowCasterTracker _shadowCasters = ShadowCasterTracker();
+  ShadowCasterTracker get shadowCasters => _versions.shadowCasters;
 
-  // The version of the still casters: that of [shadowCasters], and the
-  // changes it does not see, as [_castersVersion] counts them.
   int get _stillCastersVersion =>
-      _shadowCasters.version +
+      _versions.shadowCasters.version +
       Material.castsShadowsRevision +
-      (_lightsFrom?._lightsCastersVersion ?? 0);
+      (_lighting.lightsFrom?._lighting.lightsCastersVersion ?? 0);
 
-  // The version of the casters a cached shadow map is keyed with: while a
-  // caster whose changes the engine cannot see is in the world (see
-  // ShadowCasterMotion.moving), one that never repeats.
-  int get _shadowKeyVersion => _shadowCasters.alwaysMoving > 0
-      ? -1 - _shadowCasters.clock
+  int get _shadowKeyVersion => _versions.shadowCasters.alwaysMoving > 0
+      ? -1 - _versions.shadowCasters.clock
       : _castersVersion;
 
   /// The settings of the first light of [lights] that casts shadows with
@@ -237,15 +171,12 @@ class World3D({
     return null;
   }
 
-  /// Prepares the still casters of this world for a render of the shadows
-  /// whose lights are [lights], returning the key of the still casters, or
-  /// `null` when no light keeps them.
   Object? _prepareStillCasters(Object owner, List<Light> lights) {
     final settings = _stillCasterSettings(lights);
     if (settings == null) {
       return null;
     }
-    _shadowCasters.prepare(settings.stillCasterFrames);
+    _versions.shadowCasters.prepare(settings.stillCasterFrames);
     return _shadowCasterKey(owner, _stillCastersVersion, lights);
   }
 
@@ -254,67 +185,23 @@ class World3D({
   void markShadowsDirty() => markSceneDirty();
 
   /// Monotonically increasing counter that increases whenever a light of
-  /// this world changes: a `LightComponent` is mounted or removed, moves
-  /// (also when one of its ancestors moves), gets another `lightMask`, or a
-  /// field of its source is assigned (or reported with
-  /// `LightSource.markChanged`).
-  ///
-  /// The worlds that borrow this world's lights ([lightsFrom]) add it to
-  /// their [sceneVersion], and add the part of it that can move shadows to
-  /// their [castersVersion], so their retained layers and cached shadow maps
-  /// follow the lights they borrow. Every change of [lightsVersion] also
-  /// changes this world's [sceneVersion].
-  int get lightsVersion => _lightsVersion;
+  /// this world changes.
+  int get lightsVersion => _lighting.lightsVersion;
 
   /// Marks the lights of this world as changed: [lightsVersion] and
   /// [sceneVersion] increase, and so does [castersVersion] unless [shadows]
   /// is `false`, here and in the worlds that borrow the lights.
   @internal
   void markLightsDirty({bool shadows = true}) {
-    _lightsVersion++;
-    if (shadows) {
-      _lightsCastersVersion++;
-    }
+    _lighting.markLightsDirty(shadows: shadows);
     markSceneDirty(shadows: shadows);
   }
 
   /// The world whose lights the passes of this world render with, before
   /// its own lights, or `null` (the default) for its own lights only.
-  ///
-  /// Layers that show one scene, such as the `Scene3DComponent`s of a
-  /// `ShadowGroup`, can keep their lights in one world and let the others
-  /// borrow them, instead of holding a copy of every light per layer:
-  ///
-  /// ```dart
-  /// characters.world.lightsFrom = buildings.world;
-  /// ```
-  ///
-  /// - The passes of this world use the lights of the lender, in the
-  ///   lender's order, followed by the lights of this world. The positions
-  ///   and directions of the lights are those in the lender's world space.
-  /// - A borrowed light reaches a pass of this world when its `lightMask`
-  ///   shares a bit with the pass's camera mask (the `cameraMask` of the
-  ///   `Scene3DComponent`, or of the camera), as in its own world: give the
-  ///   layers different `cameraMask` bits to keep a light out of some of
-  ///   them.
-  /// - Every change of a lent light (see [lightsVersion]) changes the
-  ///   [sceneVersion] of this world, and of its [castersVersion] when it can
-  ///   move shadows: its retained layers render again, its cached static
-  ///   shadow maps follow, and a game whose `idleRenderMode` skips unchanged
-  ///   frames wakes up. The other changes of the lender do not.
-  /// - The lights are those the lender has registered, which a light does
-  ///   when it is mounted. While the lender is not mounted (not added to a
-  ///   game yet, or removed from it), this world renders with its own lights
-  ///   only, and with the lender's again once it is mounted. The link stays
-  ///   until [lightsFrom] is set to `null`.
-  ///
-  /// A world cannot borrow its own lights, nor those of a world that borrows
-  /// lights itself, and a world that lends its lights cannot borrow: these
-  /// throw. Assigning another lender increases [sceneVersion] and
-  /// [castersVersion].
-  World3D? get lightsFrom => _lightsFrom;
+  World3D? get lightsFrom => _lighting.lightsFrom;
   set lightsFrom(World3D? lender) {
-    if (identical(lender, _lightsFrom)) {
+    if (identical(lender, _lighting.lightsFrom)) {
       return;
     }
     if (lender != null) {
@@ -325,7 +212,7 @@ class World3D({
           'A world cannot borrow its own lights',
         );
       }
-      if (lender._lightsFrom != null) {
+      if (lender._lighting.lightsFrom != null) {
         throw ArgumentError.value(
           lender,
           'lightsFrom',
@@ -333,65 +220,28 @@ class World3D({
               'one',
         );
       }
-      if (_borrowerCount > 0) {
+      if (_lighting.borrowerCount > 0) {
         throw StateError(
           'A world that lends its lights to other worlds cannot borrow '
           'lights itself.',
         );
       }
     }
-    final sceneVersion = _sceneVersion;
-    final castersVersion = _castersVersion;
-    _lightsFrom?._borrowerCount--;
-    _lightsFrom = lender;
-    lender?._borrowerCount++;
-    // The versions keep increasing, whatever those of the old and the new
-    // lender.
-    _ownSceneVersion += sceneVersion + 1 - _sceneVersion;
-    _ownCastersVersion += castersVersion + 1 - _castersVersion;
+    final prevScene = _sceneVersion;
+    final prevCasters = _castersVersion;
+    _lighting.lightsFrom?._lighting.borrowerCount--;
+    _lighting.lightsFrom = lender;
+    lender?._lighting.borrowerCount++;
+    _versions.ownSceneVersion += prevScene + 1 - _sceneVersion;
+    _versions.ownCastersVersion += prevCasters + 1 - _castersVersion;
     Game.notifyVisualMutation();
   }
 
-  World3D? _lightsFrom;
-  // The number of worlds that borrow this world's lights.
-  int _borrowerCount = 0;
-
   /// The lights the passes of this world render with: those of [lightsFrom]
   /// (see there), followed by the lights of this world.
-  ///
-  /// The list is a view that cannot be modified; it follows the lights as
-  /// they are mounted and removed.
   List<Light> get lights => UnmodifiableListView(_passLights);
 
-  /// The lights the passes of this world render with, see [lights].
-  List<Light> get _passLights {
-    final lender = _lightsFrom;
-    if (lender == null || lender._lights.isEmpty) {
-      return _lights;
-    }
-    if (_lights.isEmpty) {
-      return lender._lights;
-    }
-    if (!identical(_mergedLender, lender) ||
-        _mergedLenderRevision != lender._lightListRevision ||
-        _mergedOwnRevision != _lightListRevision) {
-      _mergedLender = lender;
-      _mergedLenderRevision = lender._lightListRevision;
-      _mergedOwnRevision = _lightListRevision;
-      _mergedLights
-        ..clear()
-        ..addAll(lender._lights)
-        ..addAll(_lights);
-    }
-    return _mergedLights;
-  }
-
-  // The borrowed lights followed by the own ones, rebuilt when a light joins
-  // or leaves either list.
-  final List<Light> _mergedLights = [];
-  World3D? _mergedLender;
-  int _mergedLenderRevision = -1;
-  int _mergedOwnRevision = -1;
+  List<Light> get _passLights => _lighting.passLights;
 
   /// Whether the half-resolution clip-depth + view-normal prepass renders
   /// every frame (soft particles, shoreline foam), see [renderDepthNormals].
@@ -420,19 +270,7 @@ class World3D({
   bool _prioritizeNearestLights = prioritizeNearestLights;
 
   /// How the passes of this world shade more point and spot lights than the
-  /// light blocks hold (8 point and 4 spot lights per pass), or `null` (the
-  /// default) to leave the lights beyond those out (see
-  /// [prioritizeNearestLights] for which stay).
-  ///
-  /// With settings, the point (or spot) lights of a pass that has more of
-  /// them than the block holds go into a grid of cells in world space, when
-  /// they have a `range` and cast no shadows, and every material that reads
-  /// the grid (`StylizedMaterial`, `SpatialMaterial`, `WaterMaterial`,
-  /// `BillboardMaterial3D`, and custom shaders through
-  /// `flame_3d/light_grid.glsl`) shades on each pixel the lights that reach
-  /// its cell. See [LightGridSettings].
-  ///
-  /// Assigning other settings increases [sceneVersion].
+  /// light blocks hold (8 point and 4 spot lights per pass), or `null`.
   LightGridSettings? get lightGrid => _lightGrid;
   set lightGrid(LightGridSettings? value) {
     if (value == _lightGrid) {
@@ -456,14 +294,7 @@ class World3D({
     markSceneDirty(shadows: false);
   }
 
-  /// The body of water of this world: the surfaces of `StylizedMaterial`s
-  /// below its level look submerged (tinted and darkened with their depth,
-  /// with caustics), and foam where they cross it (`null`, the default, for
-  /// none). See [WaterVolumeSettings].
-  ///
-  /// Assigning another object marks the scene changed, and so does changing
-  /// the fields of the current one (its `time`, for instance), see
-  /// [sceneVersion].
+  /// The body of water of this world (`null`, the default, for none).
   WaterVolumeSettings? get waterVolume => _waterVolume;
   WaterVolumeSettings? _waterVolume = waterVolume;
   set waterVolume(WaterVolumeSettings? value) {
@@ -511,22 +342,7 @@ class World3D({
   }
 
   /// Whether the main scene pass renders into a 16-bit floating-point
-  /// (`rgbaFloat16`) target that keeps colors above 1, decoded to linear light
-  /// for [bloom] and the tone mapping of [postProcess].
-  ///
-  /// Every material writes that target sRGB-encoded with an extended range:
-  /// `SpatialMaterial` encodes its un-tonemapped radiance (instead of its
-  /// built-in Reinhard curve), the other materials write their usual colors.
-  /// Blending therefore happens in the same space as without HDR, and with
-  /// [ToneMapMode.none] and an exposure of 1 those materials look exactly as
-  /// without HDR. When [postProcess] is `null`, [ToneMapMode.acesFilmic] is
-  /// applied.
-  ///
-  /// Backends without floating-point render targets (OpenGL ES) render into
-  /// an 8-bit target instead: the picture is the same, but colors above 1
-  /// clip before bloom and tone mapping. On the web the composite shaders
-  /// have no WebGPU build: the first frame throws an [UnsupportedError], as
-  /// with [bloom], [postProcess], [oitMode] and [depthPrepassEnabled].
+  /// (`rgbaFloat16`) target that keeps colors above 1.
   bool get hdrEnabled => _hdrEnabled;
   bool _hdrEnabled = hdrEnabled;
   set hdrEnabled(bool value) {
@@ -539,12 +355,6 @@ class World3D({
 
   /// Order-independent transparency mode (`OitMode3D.none` or
   /// `OitMode3D.weightedBlended`).
-  ///
-  /// With `OitMode3D.weightedBlended`, alpha-blended translucent draws are
-  /// drawn with their own materials into an accumulation and a revealage
-  /// target and composited as a weighted average, whatever their order;
-  /// other translucent draws are sorted. Backends without floating-point
-  /// render targets (OpenGL ES) sort all translucent draws instead.
   OitMode3D get oitMode => _oitMode;
   OitMode3D _oitMode = oitMode;
   set oitMode(OitMode3D value) {
@@ -556,8 +366,7 @@ class World3D({
   }
 
   /// Whether opaque geometry is captured into `sceneColorTexture` before
-  /// translucent draws so `WaterMaterial` and transmissive `SpatialMaterial`
-  /// refract the real scene behind them.
+  /// translucent draws so refractive materials refract the scene behind them.
   bool get grabSceneColorEnabled => _grabSceneColorEnabled;
   bool _grabSceneColorEnabled = grabSceneColorEnabled;
   set grabSceneColorEnabled(bool value) {
@@ -568,8 +377,7 @@ class World3D({
     markSceneDirty(shadows: false);
   }
 
-  /// Diagnostic buffer visualization mode (`none`, `normals`, `depth`, `ssao`,
-  /// `cascadeSplits`, `wireframe`, `overdraw`, `roughnessMetallic`, `albedo`).
+  /// Diagnostic buffer visualization mode.
   RenderDebugMode3D get renderDebugMode3D => _renderDebugMode3D;
   RenderDebugMode3D _renderDebugMode3D = renderDebugMode3D;
   set renderDebugMode3D(RenderDebugMode3D value) {
@@ -589,42 +397,19 @@ class World3D({
       return;
     }
     _occlusionCuller = value;
-    _lastRasterizedCuller = null;
+    _visibility.invalidateOcclusion();
     markSceneDirty(shadows: false);
   }
-
-  SceneOcclusionCuller3D? _lastRasterizedCuller;
-  int _occFrame = -1;
-  final Float32List _occVp = Float32List(16);
 
   /// Rasterizes registered occluders of [occlusionCuller] once per unique
   /// main-camera view-projection and frame before traversal.
   @internal
-  void prepareOcclusionCuller(RenderContext3D ctx) {
-    final culler = _occlusionCuller;
-    if (culler == null || ctx.isShadowPass || !culler.hasOccluders) {
-      return;
-    }
-    final frame = ctx.device.frame;
-    final vp = ctx.viewProjection.storage;
-    if (identical(_lastRasterizedCuller, culler) &&
-        _occFrame == frame &&
-        sameMatrix16(vp, _occVp)) {
-      return;
-    }
-    _lastRasterizedCuller = culler;
-    _occFrame = frame;
-    for (var i = 0; i < 16; i++) {
-      _occVp[i] = vp[i];
-    }
-    culler.rasterizeOccluders(ctx.viewProjection);
-  }
-
-  late final List<ReflectionProbeVolume3D> _reflectionProbesView =
-      UnmodifiableListView(_reflectionProbes);
+  void prepareOcclusionCuller(RenderContext3D ctx) =>
+      _visibility.prepareOcclusionCuller(_occlusionCuller, ctx);
 
   /// Mounted local box-projected `ReflectionProbeVolume3D` components.
-  List<ReflectionProbeVolume3D> get reflectionProbes => _reflectionProbesView;
+  List<ReflectionProbeVolume3D> get reflectionProbes =>
+      _lighting.reflectionProbesView;
 
   /// The [Scene3DHost] this world renders with.
   Scene3DHost get host => _host ??= _findHost();
@@ -643,53 +428,27 @@ class World3D({
   bool get isTraversingTree => _traversingTree;
   bool _traversingTree = false;
 
-  List<Component3D>? _rootComponents3D;
-  int _nonComponent3DRootCount = 0;
-  bool _rootHasPrioritizedChild = false;
-
-  bool _allRootChildrenComponent3D() {
-    if (isMounted) {
-      return _nonComponent3DRootCount == 0;
-    }
-    for (final child in children) {
-      if (child is! Component3D) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  PictureRecorder? _fallbackRecorder;
-  Canvas? _fallbackCanvas;
+  bool _allRootChildrenComponent3D() =>
+      _visibility.allRootChildrenComponent3D(this);
 
   /// Lazily creates a fallback offscreen [Canvas] only if a non-[Component3D]
   /// or `debugMode` component is encountered during no-canvas rendering.
   @internal
-  Canvas fallbackDummyCanvas() =>
-      _fallbackCanvas ??= Canvas(_fallbackRecorder = PictureRecorder());
+  Canvas fallbackDummyCanvas() => _visibility.fallbackDummyCanvas();
 
   /// Disposes any lazily allocated fallback [PictureRecorder].
   @internal
-  void disposeFallbackDummyCanvas() {
-    final recorder = _fallbackRecorder;
-    if (recorder != null) {
-      _fallbackRecorder = null;
-      _fallbackCanvas = null;
-      recorder.endRecording().dispose();
-    }
-  }
+  void disposeFallbackDummyCanvas() => _visibility.disposeFallbackDummyCanvas();
 
   @override
   void onMount() {
-    _rootComponents3D?.clear();
-    _nonComponent3DRootCount = 0;
-    _rootHasPrioritizedChild = false;
+    _visibility.onMount();
     super.onMount();
   }
 
   @override
   void rebalanceChildren() {
-    _rootHasPrioritizedChild = true;
+    _visibility.onRebalance();
     super.rebalanceChildren();
   }
 
@@ -711,56 +470,32 @@ class World3D({
 
   /// The union of the world-space bounds ([Component3D.aabb]) of the
   /// [Component3D]s of this world, or `null` when there are none.
-  ///
-  /// Lights, reflection probe volumes and the components that set
-  /// [Component3D.includeInSceneBounds] to `false` are left out. The sun's
-  /// shadow map is fitted to these bounds, and a `Scene3DComponent` renders
-  /// only the part of its area they cover unless [hasUnboundedComponents].
-  Aabb3? get sceneBounds => _sceneBounds.value;
-  final ComponentBounds _sceneBounds = ComponentBounds();
-  final Set<Component3D> _unboundedComponents = Set.identity();
+  Aabb3? get sceneBounds => _versions.sceneBounds.value;
 
   /// Whether this world holds a component left out of [sceneBounds] (see
   /// [Component3D.includeInSceneBounds]), which may draw outside them.
-  bool get hasUnboundedComponents => _unboundedComponents.isNotEmpty;
+  bool get hasUnboundedComponents => _versions.unboundedComponents.isNotEmpty;
 
   @override
   void onChildrenChanged(flame.Component child, flame.ChildrenChangeType type) {
     super.onChildrenChanged(child, type);
-    if (child is Component3D) {
-      switch (type) {
-        case flame.ChildrenChangeType.added:
-          (_rootComponents3D ??= <Component3D>[]).add(child);
-          if (child.priority != 0) {
-            _rootHasPrioritizedChild = true;
-          }
-        case flame.ChildrenChangeType.removed:
-          _rootComponents3D?.remove(child);
-      }
-    } else {
-      switch (type) {
-        case flame.ChildrenChangeType.added:
-          _nonComponent3DRootCount++;
-        case flame.ChildrenChangeType.removed:
-          if (_nonComponent3DRootCount > 0) {
-            _nonComponent3DRootCount--;
-          }
-      }
+    switch (type) {
+      case flame.ChildrenChangeType.added:
+        _visibility.onChildAdded(child);
+      case flame.ChildrenChangeType.removed:
+        _visibility.onChildRemoved(child);
     }
     final isVolumeOrLight =
         child is LightComponent || child is ReflectionProbeVolume3D;
-    // The casters tell the change tracking themselves when they are mounted
-    // or removed (see Component3D.onMount).
     markComponentDirty(shadows: !isVolumeOrLight);
     if (child is! Component3D || isVolumeOrLight) {
       return;
     }
     switch (type) {
       case flame.ChildrenChangeType.added:
-        _addToSceneBounds(child);
+        _versions.addToSceneBounds(child);
       case flame.ChildrenChangeType.removed:
-        _sceneBounds.remove(child);
-        _unboundedComponents.remove(child);
+        _versions.removeFromSceneBounds(child);
     }
   }
 
@@ -768,44 +503,36 @@ class World3D({
   /// [Component3D.includeInSceneBounds] changed.
   @internal
   void updateSceneBoundsMembership(Component3D child) {
-    final wasBounded = _sceneBounds.contains(child);
-    if (!wasBounded && !_unboundedComponents.remove(child)) {
-      return;
+    if (_versions.updateSceneBoundsMembership(child)) {
+      markSceneDirty();
     }
-    if (wasBounded) {
-      _sceneBounds.remove(child);
-    }
-    _addToSceneBounds(child);
-    markSceneDirty();
   }
 
   /// Register a [light] with this world.
   @internal
   void addLight(Light light) {
-    _lights.add(light);
-    _lightListRevision++;
+    _lighting.addLight(light);
     markLightsDirty();
   }
 
   /// Unregister a [light] from this world.
   @internal
   void removeLight(Light light) {
-    _lights.remove(light);
-    _lightListRevision++;
+    _lighting.removeLight(light);
     markLightsDirty();
   }
 
   /// Register a local [ReflectionProbeVolume3D] with this world.
   @internal
   void addReflectionProbe(ReflectionProbeVolume3D probe) {
-    _reflectionProbes.add(probe);
+    _lighting.addReflectionProbe(probe);
     markSceneDirty(shadows: false);
   }
 
   /// Unregister a local [ReflectionProbeVolume3D] from this world.
   @internal
   void removeReflectionProbe(ReflectionProbeVolume3D probe) {
-    _reflectionProbes.remove(probe);
+    _lighting.removeReflectionProbe(probe);
     markSceneDirty(shadows: false);
   }
 
@@ -814,37 +541,25 @@ class World3D({
     super.onRemove();
     _host = null;
     _cachedGame = null;
-    _visibleObjects.clear();
-    _hasVisibleCache = false;
-    disposeFallbackDummyCanvas();
+    _visibility.clearOnRemove();
   }
 
   Game? _cachedGame;
   final _SnapshotHost _snapshotHost = _SnapshotHost();
-  final List<Object3D> _visibleObjects = [];
-  bool _collectingVisible = false;
-  bool _hasVisibleCache = false;
-  RenderContext3D? _visibleCtx;
-  int _visibleCameraMask = 0;
-  int _visibleSceneVersion = -1;
-  final Float32List _visibleVp = Float32List(16);
 
   /// Records [object] as visible during the current traversal when the world
   /// is collecting visible objects for reuse in the main scene pass.
   @internal
-  void recordVisibleObject(Object3D object) {
-    if (_collectingVisible) {
-      _visibleObjects.add(object);
-    }
-  }
+  void recordVisibleObject(Object3D object) =>
+      _visibility.recordVisibleObject(object);
 
   @override
   void update(double dt) {
     super.update(dt);
     // A material marked animated changes on every frame: so does the scene
     // while the last render drew one.
-    if (_drawnMaterials.animatedCount > 0) {
-      _animationTicks++;
+    if (_versions.drawnMaterials.animatedCount > 0) {
+      _versions.animationTicks++;
       Game.notifyVisualMutation();
     }
   }
@@ -866,32 +581,21 @@ class World3D({
   }
 
   /// The projection of the shadow map of this world.
-  DirectionalShadowProjection get shadowProjection => _shadowProjection;
-  final DirectionalShadowProjection _shadowProjection =
-      DirectionalShadowProjection();
+  DirectionalShadowProjection get shadowProjection => _shadowState.projection;
 
   /// The group of worlds this world shares its shadow map with, or `null`.
-  ShadowGroup? get shadowGroup => _shadowGroup;
+  ShadowGroup? get shadowGroup => _shadowState.group;
   set shadowGroup(ShadowGroup? group) {
-    if (identical(group, _shadowGroup)) {
+    if (identical(group, _shadowState.group)) {
       return;
     }
-    _shadowGroup?._leave(this);
-    _shadowGroup = group;
-    _groupRound = -1;
+    _shadowState.group?._leave(this);
+    _shadowState
+      ..group = group
+      ..groupRound = -1;
     group?._worlds.add(this);
     markSceneDirty();
   }
-
-  ShadowGroup? _shadowGroup;
-
-  // The camera this world was last shown with in its shadow group, and the
-  // round of the group it was shown in, see [ShadowGroup.noteView].
-  final Matrix4 _groupView = Matrix4.zero();
-  final Matrix4 _groupProjection = Matrix4.zero();
-  final Matrix4 _groupViewProjection = Matrix4.zero();
-  int _groupRound = -1;
-  bool _groupNotedByHost = false;
 
   /// Renders (or reuses) the shadow map / unified `ShadowAtlas3D` of this
   /// world, returning whether the upcoming main pass receives shadows.
@@ -899,18 +603,17 @@ class World3D({
     try {
       return _renderShadows(canvas, overrideContext);
     } finally {
-      _shadowCasters.advance();
+      _versions.shadowCasters.advance();
     }
   }
 
-  /// Internal no-[Canvas] variant of [renderShadows], allocating a dummy
-  /// [PictureRecorder] lazily only if a non-[Component3D] child is met.
+  /// Internal no-[Canvas] variant of [renderShadows].
   @internal
   bool renderShadowsNoCanvas({RenderContext3D? overrideContext}) {
     try {
       return _renderShadows(null, overrideContext);
     } finally {
-      _shadowCasters.advance();
+      _versions.shadowCasters.advance();
     }
   }
 
@@ -996,7 +699,7 @@ class World3D({
       waterVolume: _waterVolume,
       renderDebugMode: _renderDebugMode3D,
       lightProbeGrid: _lightProbeGrid,
-      reflectionProbes: _reflectionProbes,
+      reflectionProbes: _lighting.reflectionProbes,
       prioritizeNearestLights: _prioritizeNearestLights,
       lightGrid: _lightGrid,
       lightGridBounds: bounds,
@@ -1012,7 +715,7 @@ class World3D({
       ..hdrEnabled = resolvedHdr
       ..renderDebugMode = _renderDebugMode3D
       ..lightProbeGrid = _lightProbeGrid
-      ..reflectionProbes = _reflectionProbes
+      ..reflectionProbes = _lighting.reflectionProbes
       ..prioritizeNearestLights = _prioritizeNearestLights
       ..lightGrid = _lightGrid
       ..lightGridBounds = bounds
@@ -1051,18 +754,7 @@ class World3D({
     return _hdrEnabled || hasBloom || hasPost || hasDebugPost || hasAfterCustom;
   }
 
-  /// Executes the complete 3D scene pass pipeline (Grab-Pass refraction,
-  /// Weighted Blended OIT, CustomRenderPass3D hooks, HDR float16 target, and
-  /// Bloom/PostProcess/ColorLut3D/Debug composite) once shadows & depth-normal
-  /// prepasses have completed, returning the final [Image].
-  ///
-  /// [visibleFrame], in the pixels of the target, is the part of it that is
-  /// seen, which the vignette is centered on (the whole target by default).
-  ///
-  /// The materials the render binds are kept with their versions, so that
-  /// [sceneVersion] follows their changes; the materials of the previous
-  /// render that changed since are counted in [RenderStats.updatedMaterials]
-  /// and [RenderStats.animatedMaterials] of the device.
+  /// Executes the complete 3D scene pass pipeline.
   @internal
   Image executeWorldRenderPipeline({
     required GraphicsDevice device,
@@ -1075,7 +767,7 @@ class World3D({
     GpuRenderTarget? ownedOutputTarget,
     Rect? visibleFrame,
   }) {
-    final tracker = _drawnMaterials..begin();
+    final tracker = _versions.drawnMaterials..begin();
     final previous = renderContext.materialTracker;
     renderContext.materialTracker = tracker;
     var completed = false;
@@ -1101,10 +793,6 @@ class World3D({
 
   /// Renders this world once at [size] physical pixels from [view] and
   /// [projection] into an independent [Image], which the caller disposes.
-  ///
-  /// The world need not be mounted: the lights of an unmounted world are
-  /// gathered from its tree for the render. Each call renders into a render
-  /// target of its own, so the image stays valid however long it is kept.
   Image renderToImage(
     Size size, {
     required Matrix4 view,
@@ -1167,13 +855,7 @@ class World3D({
     msaa: msaa,
   );
 
-  /// Runs [body] with [device] and [context] as this world's host, so that
-  /// its components record their draws into [context] whatever host the
-  /// world is mounted under (or without one).
-  ///
-  /// For an unmounted world, whose lights are not registered (they register
-  /// when mounted), the lights of its tree are gathered for the duration of
-  /// [body], and so are those of an unmounted [lightsFrom].
+  /// Runs [body] with [device] and [context] as this world's host.
   @internal
   T renderWithHost<T>(
     GraphicsDevice device,
@@ -1191,15 +873,15 @@ class World3D({
       .._context = context
       ..msaa = msaa;
     _host = snap;
-    final gatherLights = !isMounted && _lights.isEmpty;
+    final gatherLights = !isMounted && _lighting.lights.isEmpty;
     if (gatherLights) {
-      _gatherLights(this);
+      _lighting.gatherUnmountedLights(this);
     }
-    final lender = _lightsFrom;
+    final lender = _lighting.lightsFrom;
     final gatherLenderLights =
-        lender != null && !lender.isMounted && lender._lights.isEmpty;
+        lender != null && !lender.isMounted && lender._lighting.lights.isEmpty;
     if (gatherLenderLights) {
-      lender._gatherLights(lender);
+      lender._lighting.gatherUnmountedLights(lender);
     }
     try {
       return body();
@@ -1210,12 +892,10 @@ class World3D({
         .._context = prevContext
         ..msaa = prevMsaa;
       if (gatherLights) {
-        _lights.clear();
-        _lightListRevision++;
+        _lighting.clearGatheredLights();
       }
       if (gatherLenderLights) {
-        lender._lights.clear();
-        lender._lightListRevision++;
+        lender._lighting.clearGatheredLights();
       }
     }
   }
@@ -1254,8 +934,7 @@ class World3D({
     includeHidden: includeHidden,
   );
 
-  /// Whether a render pass with [cameraMask] draws [component] itself (its
-  /// ancestors aside).
+  /// Whether a render pass with [cameraMask] draws [component] itself.
   static bool _drawnFor(Component3D component, int cameraMask) =>
       component.visible && (component.cameraMask & cameraMask) != 0;
 
@@ -1296,7 +975,7 @@ class World3D({
             decorator.isLastDecorator) {
           _renderSceneImpl(canvas, overrideContext: context);
         } else {
-          _hasVisibleCache = false;
+          _visibility.hasVisibleCache = false;
           _rendering = true;
           _traversingTree = _allRootChildrenComponent3D();
           try {

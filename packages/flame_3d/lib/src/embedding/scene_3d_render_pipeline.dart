@@ -1,5 +1,84 @@
 part of 'scene_3d_component.dart';
 
+/// Renderer bindings, DPR cache, and per-frame scratch buffers for
+/// [Scene3DComponent].
+class _Scene3DRenderState() {
+  Game? cachedGame;
+  BuildContext? cachedDprContext;
+  double cachedPixelRatio = 1.0;
+  bool pixelRatioDirty = true;
+
+  GraphicsDevice? device;
+  RenderContext3D? context;
+  Game3D? game3D;
+  EmbeddedRenderer? renderer;
+
+  final Aabb3 sceneBox = Aabb3();
+  int targetWidth = 0;
+  int targetHeight = 0;
+
+  final Matrix4 viewMatrix = Matrix4.identity();
+  final Matrix4 projectionMatrix = Matrix4.identity();
+  // The projection of a camera that sees the part of the screen the layer
+  // may draw on, which it reports to its shadow group.
+  final Matrix4 groupProjectionMatrix = Matrix4.identity();
+  final Float64List inverseTransform = Float64List(16)
+    ..[10] = 1
+    ..[15] = 1;
+  final Paint paint = Paint();
+  final RenderStats statsBefore = RenderStats();
+  final Stopwatch stopwatch = Stopwatch();
+
+  Game? resolveGame(Scene3DComponent owner) {
+    if (!owner.isMounted) {
+      return owner.findGame();
+    }
+    return cachedGame ??= owner.findGame();
+  }
+
+  double pixelRatioOfGame(Scene3DComponent owner, Game? game) {
+    final buildContext = game?.buildContext;
+    if (buildContext == null) {
+      return 1.0;
+    }
+    if (!owner.isMounted) {
+      return MediaQuery.devicePixelRatioOf(buildContext);
+    }
+    if (!pixelRatioDirty && identical(buildContext, cachedDprContext)) {
+      return cachedPixelRatio;
+    }
+    cachedDprContext = buildContext;
+    pixelRatioDirty = false;
+    return cachedPixelRatio = MediaQuery.devicePixelRatioOf(buildContext);
+  }
+
+  void resolveRenderer(Scene3DComponent owner) {
+    if (context != null) {
+      return;
+    }
+    final game = owner.findGame();
+    if (game case final Game3D resolvedGame3D) {
+      game3D = resolvedGame3D;
+      device = resolvedGame3D.device;
+      context = resolvedGame3D.context;
+    } else {
+      final resolved = renderer = EmbeddedRenderer.of(game ?? owner);
+      device = resolved.device;
+      context = resolved.context;
+    }
+  }
+
+  void resetBindings() {
+    cachedGame = null;
+    cachedDprContext = null;
+    pixelRatioDirty = true;
+    device = null;
+    context = null;
+    game3D = null;
+    renderer = null;
+  }
+}
+
 extension _Scene3DRenderPipeline on Scene3DComponent {
   void _renderScene(Canvas canvas) {
     final transform = canvas.getTransform();
@@ -14,8 +93,9 @@ extension _Scene3DRenderPipeline on Scene3DComponent {
       return;
     }
 
+    final state = _renderState;
     var visible = canvas.getDestinationClipBounds();
-    final game = _resolveGame();
+    final game = state.resolveGame(this);
     if (visible.width > Scene3DComponent._unclipped ||
         visible.height > Scene3DComponent._unclipped) {
       if (game == null || !game.hasLayout) {
@@ -73,7 +153,7 @@ extension _Scene3DRenderPipeline on Scene3DComponent {
     // scaled world), its units are already the picture's pixels.
     final canvasPixelRatio = RasterScale.isActive
         ? 1.0
-        : _pixelRatioOfGame(game);
+        : state.pixelRatioOfGame(this, game);
     final fullScale = canvasPixelRatio * world.renderScale;
     var pixelScale = fullScale;
     var left = (visible.left * pixelScale).floor();
@@ -94,16 +174,17 @@ extension _Scene3DRenderPipeline on Scene3DComponent {
 
     final neededWidth = math.min(_roundUp(pixelWidth), maxSize);
     final neededHeight = math.min(_roundUp(pixelHeight), maxSize);
-    if (_targetWidth < neededWidth ||
-        _targetHeight < neededHeight ||
-        _targetWidth > maxSize ||
-        _targetHeight > maxSize ||
-        _targetWidth * _targetHeight > 2 * neededWidth * neededHeight) {
-      _targetWidth = neededWidth;
-      _targetHeight = neededHeight;
+    if (state.targetWidth < neededWidth ||
+        state.targetHeight < neededHeight ||
+        state.targetWidth > maxSize ||
+        state.targetHeight > maxSize ||
+        state.targetWidth * state.targetHeight >
+            2 * neededWidth * neededHeight) {
+      state.targetWidth = neededWidth;
+      state.targetHeight = neededHeight;
     }
-    final targetWidth = _targetWidth;
-    final targetHeight = _targetHeight;
+    final targetWidth = state.targetWidth;
+    final targetHeight = state.targetHeight;
 
     _writeCamera(
       a,
@@ -143,93 +224,50 @@ extension _Scene3DRenderPipeline on Scene3DComponent {
     }
 
     final isRetained = _cacheMode == Scene3DCacheMode.retained;
-    if (isRetained) {
-      final retainedImage = _retainedImage;
-      final retainedTarget = _retainedImageTarget;
-      var hit = false;
-      if (retainedImage != null && retainedTarget != null) {
-        final kept = _retainedNumbers;
-        final sceneMatch =
-            world.sceneVersion.toDouble() == kept[0] &&
-            _manualVersion.toDouble() == kept[1] &&
-            (group?.castersVersion ?? world.castersVersion).toDouble() ==
-                kept[2] &&
-            (group?.viewsVersion ?? 0).toDouble() == kept[38] &&
-            left.toDouble() == kept[3] &&
-            top.toDouble() == kept[4] &&
-            pixelWidth.toDouble() == kept[5] &&
-            pixelHeight.toDouble() == kept[6] &&
-            targetWidth.toDouble() == kept[7] &&
-            targetHeight.toDouble() == kept[8] &&
-            pixelScale == kept[9] &&
-            msaa.sampleCount.toDouble() == kept[10] &&
-            cameraMask.toDouble() == kept[11];
-        if (sceneMatch &&
-            sameMatrix16Approx(_viewMatrix.storage, _retainedView, 1e-9) &&
-            sameMatrix16Approx(
-              _projectionMatrix.storage,
-              _retainedProj,
-              1e-9,
-            )) {
-          final vignette = (world.postProcess?.vignetteIntensity ?? 0) > 0;
-          if (!vignette ||
-              (visibleFrame.left == kept[34] &&
-                  visibleFrame.top == kept[35] &&
-                  visibleFrame.right == kept[36] &&
-                  visibleFrame.bottom == kept[37])) {
-            hit = true;
-          }
-        }
-      }
-      if (!hit) {
-        _writeKey(
-          left,
-          top,
-          pixelWidth,
-          pixelHeight,
-          targetWidth,
-          targetHeight,
-          pixelScale,
-          visibleFrame,
-        );
-        hit =
-            retainedImage != null &&
-            retainedTarget != null &&
-            _keyMatches() &&
-            sameMatrix16Approx(_viewMatrix.storage, _retainedView, 1e-9) &&
-            sameMatrix16Approx(_projectionMatrix.storage, _retainedProj, 1e-9);
-      }
-      if (hit) {
-        _cacheHitCount++;
-        // The image is drawn again in this frame: its color texture must not
-        // be rendered into before Flutter has finished drawing it.
-        _resolveRenderer();
-        _device!.backend.representLastImage(retainedTarget!);
-        _compositeImage(
-          canvas,
-          retainedImage!,
-          pixelWidth,
-          pixelHeight,
-          destination,
-          a,
-          b,
-          c,
-          d,
-          tx,
-          ty,
-          determinant,
-          localClip,
-          pixelScale,
-          fullScale,
-        );
-        return;
-      }
+    if (isRetained &&
+        _retained.checkHit(
+          owner: this,
+          group: group,
+          left: left,
+          top: top,
+          pixelWidth: pixelWidth,
+          pixelHeight: pixelHeight,
+          targetWidth: targetWidth,
+          targetHeight: targetHeight,
+          pixelScale: pixelScale,
+          visibleFrame: visibleFrame,
+          viewMatrix: state.viewMatrix,
+          projectionMatrix: state.projectionMatrix,
+        )) {
+      _retained.cacheHitCount++;
+      // The image is drawn again in this frame: its color texture must not
+      // be rendered into before Flutter has finished drawing it.
+      state.resolveRenderer(this);
+      state.device!.backend.representLastImage(_retained.imageTarget!);
+      _compositeImage(
+        canvas,
+        _retained.image!,
+        pixelWidth,
+        pixelHeight,
+        destination,
+        a,
+        b,
+        c,
+        d,
+        tx,
+        ty,
+        determinant,
+        localClip,
+        pixelScale,
+        fullScale,
+      );
+      return;
     }
 
-    _resolveRenderer();
-    final device = _device!;
-    final context = _context!;
-    final game3D = _game3D;
+    state.resolveRenderer(this);
+    final device = state.device!;
+    final context = state.context!;
+    final game3D = state.game3D;
     final bool closeFrame;
     if (game3D != null) {
       closeFrame = !game3D.isRenderingFrame;
@@ -237,13 +275,13 @@ extension _Scene3DRenderPipeline on Scene3DComponent {
         device.begin();
       }
     } else {
-      closeFrame = _renderer!.open();
+      closeFrame = state.renderer!.open();
     }
 
-    _statsBefore.setFrom(device.stats);
+    state.statsBefore.setFrom(device.stats);
     context
       ..cameraMask = cameraMask
-      ..setCamera(_viewMatrix, _projectionMatrix);
+      ..setCamera(state.viewMatrix, state.projectionMatrix);
     world.syncContextOptions(
       context,
       hdrEnabled: world.effectiveHdrEnabled(device),
@@ -254,39 +292,15 @@ extension _Scene3DRenderPipeline on Scene3DComponent {
       ..renderDepthNormals(canvas, targetWidth, targetHeight);
 
     final usePost = world.needsPostCompositePass(device);
-    GpuRenderTarget? ownedTarget;
-    if (isRetained) {
-      if (usePost) {
-        if (_retainedBloomTarget == null ||
-            _bloomTargetWidth != targetWidth ||
-            _bloomTargetHeight != targetHeight) {
-          _bloomTargetWidth = targetWidth;
-          _bloomTargetHeight = targetHeight;
-          _retainedBloomTarget = device.backend.createRenderTarget(
-            width: targetWidth,
-            height: targetHeight,
-            clearValue: device.clearValue,
-          );
-        }
-        ownedTarget = _retainedBloomTarget;
-      } else {
-        if (_retainedSceneTarget == null ||
-            _sceneTargetWidth != targetWidth ||
-            _sceneTargetHeight != targetHeight ||
-            _sceneTargetMsaa != msaa.sampleCount) {
-          _sceneTargetWidth = targetWidth;
-          _sceneTargetHeight = targetHeight;
-          _sceneTargetMsaa = msaa.sampleCount;
-          _retainedSceneTarget = device.backend.createRenderTarget(
-            width: targetWidth,
-            height: targetHeight,
-            clearValue: device.clearValue,
+    final ownedTarget = isRetained
+        ? _retained.acquireTarget(
+            device: device,
+            usePost: usePost,
+            targetWidth: targetWidth,
+            targetHeight: targetHeight,
             msaaSampleCount: msaa.sampleCount,
-          );
-        }
-        ownedTarget = _retainedSceneTarget;
-      }
-    }
+          )
+        : null;
 
     final image = world.executeWorldRenderPipeline(
       device: device,
@@ -300,12 +314,12 @@ extension _Scene3DRenderPipeline on Scene3DComponent {
       visibleFrame: visibleFrame,
     );
 
-    _stats.setDifference(device.stats, _statsBefore);
+    _stats.setDifference(device.stats, state.statsBefore);
     if (closeFrame) {
       if (game3D != null) {
         device.end();
       } else {
-        _renderer!.close();
+        state.renderer!.close();
       }
     }
     RenderProfile.lap(RenderPhase.passEnd);
@@ -329,12 +343,12 @@ extension _Scene3DRenderPipeline on Scene3DComponent {
     );
 
     if (isRetained) {
-      _retainedImage?.dispose();
-      _retainedImage = image;
-      _retainedImageTarget = ownedTarget;
-      _keepKey();
-      _retainedView.setAll(0, _viewMatrix.storage);
-      _retainedProj.setAll(0, _projectionMatrix.storage);
+      _retained.storeRendered(
+        renderedImage: image,
+        ownedTarget: ownedTarget,
+        viewMatrix: state.viewMatrix,
+        projectionMatrix: state.projectionMatrix,
+      );
     } else {
       image.dispose();
     }
@@ -354,6 +368,7 @@ extension _Scene3DRenderPipeline on Scene3DComponent {
     double tx,
     double ty,
   ) {
+    final state = _renderState;
     var part = frame;
     final bound = visibleSceneBounds;
     if (bound != null) {
@@ -366,7 +381,7 @@ extension _Scene3DRenderPipeline on Scene3DComponent {
       part = frame;
     }
     _writeProjection(
-      _groupProjectionMatrix,
+      state.groupProjectionMatrix,
       a,
       b,
       c,
@@ -379,7 +394,7 @@ extension _Scene3DRenderPipeline on Scene3DComponent {
       part.width,
       part.height,
     );
-    group.noteView(world, _viewMatrix, _groupProjectionMatrix);
+    group.noteView(world, state.viewMatrix, state.groupProjectionMatrix);
   }
 
   void _compositeImage(
@@ -399,7 +414,8 @@ extension _Scene3DRenderPipeline on Scene3DComponent {
     double pixelScale,
     double fullScale,
   ) {
-    final inverse = _inverseTransform
+    final state = _renderState;
+    final inverse = state.inverseTransform
       ..[0] = d / determinant
       ..[1] = -b / determinant
       ..[4] = -c / determinant
@@ -413,14 +429,15 @@ extension _Scene3DRenderPipeline on Scene3DComponent {
       canvas.clipRect(localClip);
     }
     canvas.transform(inverse);
-    _paint.filterQuality = pixelScale == fullScale && world.renderScale == 1.0
+    state.paint.filterQuality =
+        pixelScale == fullScale && world.renderScale == 1.0
         ? FilterQuality.none
         : world.scaledFilterQuality;
     canvas.drawImageRect(
       image,
       Rect.fromLTWH(0, 0, pixelWidth.toDouble(), pixelHeight.toDouble()),
       destination,
-      _paint,
+      state.paint,
     );
     canvas.restore();
     _renderedRect = destination;
@@ -442,7 +459,7 @@ extension _Scene3DRenderPipeline on Scene3DComponent {
       if (box == null) {
         box = bound;
       } else {
-        box = _sceneBox
+        box = _renderState.sceneBox
           ..min.setValues(
             math.max(box.min.x, bound.min.x),
             math.max(box.min.y, bound.min.y),
@@ -518,8 +535,9 @@ extension _Scene3DRenderPipeline on Scene3DComponent {
     int targetWidth,
     int targetHeight,
   ) {
+    final state = _renderState;
     _writeProjection(
-      _projectionMatrix,
+      state.projectionMatrix,
       a,
       b,
       c,
@@ -532,7 +550,7 @@ extension _Scene3DRenderPipeline on Scene3DComponent {
       targetWidth.toDouble(),
       targetHeight.toDouble(),
     );
-    _viewMatrix.storage.setAll(0, projection.viewValues);
+    state.viewMatrix.storage.setAll(0, projection.viewValues);
   }
 
   /// Writes into [output] the projection of the camera whose picture covers

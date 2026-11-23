@@ -92,7 +92,7 @@ class Scene3DComponent({
     }
     _cacheMode = value;
     if (value == Scene3DCacheMode.none) {
-      _disposeRetained();
+      _retained.dispose();
     }
   }
 
@@ -120,15 +120,12 @@ class Scene3DComponent({
 
   /// Number of frames satisfied directly from the [Scene3DCacheMode.retained]
   /// image cache without opening a GPU pass.
-  int get cacheHitCount => _cacheHitCount;
-  int _cacheHitCount = 0;
-
-  int _manualVersion = 0;
+  int get cacheHitCount => _retained.cacheHitCount;
 
   /// Marks this layer's retained image cache (if any) as out of date, forcing a
   /// fresh GPU pass on the next frame.
   void markDirty() {
-    _manualVersion++;
+    _retained.manualVersion++;
     Game.notifyVisualMutation();
   }
 
@@ -275,8 +272,8 @@ class Scene3DComponent({
     );
     return world.renderToImage(
       Size(targetW.toDouble(), targetH.toDouble()),
-      view: _viewMatrix,
-      projection: _projectionMatrix,
+      view: _renderState.viewMatrix,
+      projection: _renderState.projectionMatrix,
       msaa: msaa,
       clearValue: clearValue,
     );
@@ -286,102 +283,53 @@ class Scene3DComponent({
 
   @override
   GraphicsDevice get device {
-    _resolveRenderer();
-    return _device!;
+    _renderState.resolveRenderer(this);
+    return _renderState.device!;
   }
 
   @override
   RenderContext3D get context {
-    _resolveRenderer();
-    return _context!;
+    _renderState.resolveRenderer(this);
+    return _renderState.context!;
   }
 
   @override
   int get msaaSampleCount => msaa.sampleCount;
 
   @override
-  double get pixelRatio => _pixelRatioOfGame(_resolveGame());
-
-  Game? _cachedGame;
-  BuildContext? _cachedDprContext;
-  double _cachedPixelRatio = 1.0;
-  bool _pixelRatioDirty = true;
+  double get pixelRatio =>
+      _renderState.pixelRatioOfGame(this, _renderState.resolveGame(this));
 
   @override
   void onMount() {
     super.onMount();
-    _cachedGame = findGame();
-    _pixelRatioDirty = true;
+    _renderState
+      ..cachedGame = findGame()
+      ..pixelRatioDirty = true;
   }
 
   @override
   void onGameResize(Vector2 size) {
     super.onGameResize(size);
-    _pixelRatioDirty = true;
+    _renderState.pixelRatioDirty = true;
   }
 
-  GraphicsDevice? _device;
-  RenderContext3D? _context;
-  Game3D? _game3D;
-  EmbeddedRenderer? _renderer;
-
-  // Retained GPU cache state. The scene target (rendered into directly) and
-  // the bloom target (the output of the post-processing composite) each
-  // remember the size they were created at.
-  GpuRenderTarget? _retainedSceneTarget;
-  int _sceneTargetWidth = 0;
-  int _sceneTargetHeight = 0;
-  int _sceneTargetMsaa = 0;
-  GpuRenderTarget? _retainedBloomTarget;
-  int _bloomTargetWidth = 0;
-  int _bloomTargetHeight = 0;
-  // The target whose last image is [_retainedImage].
-  GpuRenderTarget? _retainedImageTarget;
-  Image? _retainedImage;
-  // The values the retained image was rendered with, see [_writeKey]; the
-  // next frame's values are written into the second pair and compared.
-  Float64List _retainedNumbers = Float64List(_keyNumberCount);
-  Float64List _nextNumbers = Float64List(_keyNumberCount);
-  List<Object?> _retainedObjects = List.filled(_keyObjectCount, null);
-  List<Object?> _nextObjects = List.filled(_keyObjectCount, null);
-  final Float32List _retainedView = Float32List(16);
-  final Float32List _retainedProj = Float32List(16);
+  final _Scene3DRetainedCacheState _retained = _Scene3DRetainedCacheState();
+  final _Scene3DRenderState _renderState = _Scene3DRenderState();
 
   /// The render target whose image a [Scene3DCacheMode.retained] layer
   /// reuses, for tests.
   @visibleForTesting
-  GpuRenderTarget? get debugRetainedTarget => _retainedImageTarget;
+  GpuRenderTarget? get debugRetainedTarget => _retained.imageTarget;
 
   static const int _keyNumberCount = 39;
   static const int _keyObjectCount = 4;
 
-  void _resolveRenderer() {
-    if (_context != null) {
-      return;
-    }
-    final game = findGame();
-    if (game case final Game3D game3D) {
-      _game3D = game3D;
-      _device = game3D.device;
-      _context = game3D.context;
-    } else {
-      final renderer = _renderer = EmbeddedRenderer.of(game ?? this);
-      _device = renderer.device;
-      _context = renderer.context;
-    }
-  }
-
   @override
   void onRemove() {
-    _disposeRetained();
+    _retained.dispose();
     super.onRemove();
-    _cachedGame = null;
-    _cachedDprContext = null;
-    _pixelRatioDirty = true;
-    _device = null;
-    _context = null;
-    _game3D = null;
-    _renderer = null;
+    _renderState.resetBindings();
   }
 
   @override
@@ -392,7 +340,7 @@ class Scene3DComponent({
     if (!world.isMounted || world.children.isEmpty) {
       return;
     }
-    final stopwatch = _stopwatch
+    final stopwatch = _renderState.stopwatch
       ..reset()
       ..start();
     RenderProfile.start();
@@ -400,23 +348,6 @@ class Scene3DComponent({
     stopwatch.stop();
     _renderMicroseconds = stopwatch.elapsedMicroseconds;
   }
-
-  final Aabb3 _sceneBox = Aabb3();
-
-  int _targetWidth = 0;
-  int _targetHeight = 0;
-
-  final Matrix4 _viewMatrix = Matrix4.identity();
-  final Matrix4 _projectionMatrix = Matrix4.identity();
-  // The projection of a camera that sees the part of the screen the layer
-  // may draw on, which it reports to its shadow group.
-  final Matrix4 _groupProjectionMatrix = Matrix4.identity();
-  final Float64List _inverseTransform = Float64List(16)
-    ..[10] = 1
-    ..[15] = 1;
-  final Paint _paint = Paint();
-  final RenderStats _statsBefore = RenderStats();
-  final Stopwatch _stopwatch = Stopwatch();
 
   static const int _bucket = 64;
   static const double _unclipped = 1e6;
