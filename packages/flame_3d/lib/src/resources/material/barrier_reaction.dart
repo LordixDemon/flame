@@ -41,6 +41,58 @@ class _BarrierReactionMaterial(final BarrierMaterial _source) extends Material {
     );
   }
 
+  int _appliedVersion = -1;
+  Shader? _appliedVert;
+  int _appliedVertGen = -1;
+  Shader? _appliedFrag;
+  int _appliedFragGen = -1;
+  RenderContext? _appliedContext;
+  int _appliedCameraPass = -1;
+
+  @override
+  bool get hasPassStableFragmentShader => true;
+
+  @override
+  bool get cachesApply => true;
+
+  @override
+  void invalidateApplyCache() {
+    _appliedVersion = -1;
+  }
+
+  @override
+  bool isApplyCacheValid(
+    RenderContext context,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) {
+    return _appliedVersion == version &&
+        identical(_appliedVert, vertexShader) &&
+        _appliedVertGen == vertexShader.generation &&
+        identical(_appliedFrag, fragmentShader) &&
+        _appliedFragGen == fragmentShader.generation &&
+        identical(_appliedContext, context) &&
+        context is RenderContext3D &&
+        _appliedCameraPass == context.cameraPass;
+  }
+
+  @override
+  void recordApplyCache(
+    RenderContext context,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) {
+    _appliedVersion = version;
+    _appliedVert = vertexShader;
+    _appliedVertGen = vertexShader.generation;
+    _appliedFrag = fragmentShader;
+    _appliedFragGen = fragmentShader.generation;
+    _appliedContext = context;
+    if (context is RenderContext3D) {
+      _appliedCameraPass = context.cameraPass;
+    }
+  }
+
   @override
   void apply(RenderContext context) {
     _source._write(

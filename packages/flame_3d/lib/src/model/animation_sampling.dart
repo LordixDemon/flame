@@ -92,9 +92,12 @@ extension _AnimationStateSampling on AnimationState {
 
     final space1D = _blendSpace1D;
     if (space1D != null) {
-      final bracket = space1D.resolveBracket(blendParameter1D);
-      final sampleA = space1D.samples[bracket.indexA];
-      final sampleB = space1D.samples[bracket.indexB];
+      _ensure1DBracket(space1D);
+      final idxA = _cached1DIndexA;
+      final idxB = _cached1DIndexB;
+      final w = _cached1DT;
+      final sampleA = space1D.samples[idxA];
+      final sampleB = space1D.samples[idxB];
       final nodeA = sampleA.animation.nodes[nodeIndex];
       final nodeB = sampleB.animation.nodes[nodeIndex];
       if (nodeA == null && nodeB == null) {
@@ -105,18 +108,17 @@ extension _AnimationStateSampling on AnimationState {
           space1D.syncNormalizedPhase || overrideNormalizedPhase != null;
       final timeA = synced
           ? phase * sampleA.animation.lastTime
-          : _sampleClocks[bracket.indexA];
+          : _sampleClocks[idxA];
       nodeA?.sampleTrsInto(timeA, outT, outR, outS);
 
-      if (bracket.indexA != bracket.indexB && bracket.t > 0.0) {
+      if (idxA != idxB && w > 0.0) {
         final timeB = synced
             ? phase * sampleB.animation.lastTime
-            : _sampleClocks[bracket.indexB];
+            : _sampleClocks[idxB];
         _t0.setFrom(restTranslation);
         _r0.setFrom(restRotation);
         _s0.setFrom(restScale);
         nodeB?.sampleTrsInto(timeB, _t0, _r0, _s0);
-        final w = bracket.t;
         outT.setValues(
           outT.x + (_t0.x - outT.x) * w,
           outT.y + (_t0.y - outT.y) * w,
@@ -134,11 +136,7 @@ extension _AnimationStateSampling on AnimationState {
 
     final space2D = _blendSpace2D;
     if (space2D != null) {
-      final count = space2D.evaluateWeights(
-        _blendParam2D,
-        _active2DIndices,
-        _active2DWeights,
-      );
+      final count = _ensure2DWeights(space2D);
       var anyAnimated = false;
       for (var k = 0; k < count; k++) {
         if (space2D.samples[_active2DIndices[k]].animation.nodes[nodeIndex] !=
@@ -378,9 +376,12 @@ extension _AnimationStateSampling on AnimationState {
   int _sampleTargetMorphWeights(int nodeIndex, List<double> out) {
     final space1D = _blendSpace1D;
     if (space1D != null) {
-      final bracket = space1D.resolveBracket(blendParameter1D);
-      final sampleA = space1D.samples[bracket.indexA];
-      final sampleB = space1D.samples[bracket.indexB];
+      _ensure1DBracket(space1D);
+      final idxA = _cached1DIndexA;
+      final idxB = _cached1DIndexB;
+      final w = _cached1DT;
+      final sampleA = space1D.samples[idxA];
+      final sampleB = space1D.samples[idxB];
       final morphA = sampleA.animation.nodes[nodeIndex]?.morphWeights;
       final morphB = sampleB.animation.nodes[nodeIndex]?.morphWeights;
       final targetCount = math.max(
@@ -394,18 +395,17 @@ extension _AnimationStateSampling on AnimationState {
       if (morphA != null) {
         final timeA = space1D.syncNormalizedPhase
             ? _normalizedPhase * sampleA.animation.lastTime
-            : _sampleClocks[bracket.indexA];
+            : _sampleClocks[idxA];
         morphA.sampleInto(timeA, out);
       }
-      if (bracket.indexA != bracket.indexB && bracket.t > 0.0) {
+      if (idxA != idxB && w > 0.0) {
         _ensureZeroedList(_morphBlendScratch, targetCount);
         if (morphB != null) {
           final timeB = space1D.syncNormalizedPhase
               ? _normalizedPhase * sampleB.animation.lastTime
-              : _sampleClocks[bracket.indexB];
+              : _sampleClocks[idxB];
           morphB.sampleInto(timeB, _morphBlendScratch);
         }
-        final w = bracket.t;
         for (var k = 0; k < targetCount; k++) {
           out[k] += (_morphBlendScratch[k] - out[k]) * w;
         }
@@ -415,11 +415,7 @@ extension _AnimationStateSampling on AnimationState {
 
     final space2D = _blendSpace2D;
     if (space2D != null) {
-      final count = space2D.evaluateWeights(
-        _blendParam2D,
-        _active2DIndices,
-        _active2DWeights,
-      );
+      final count = _ensure2DWeights(space2D);
       var targetCount = 0;
       for (var k = 0; k < count; k++) {
         final m = space2D

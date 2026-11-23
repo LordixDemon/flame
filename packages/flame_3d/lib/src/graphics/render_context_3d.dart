@@ -295,10 +295,22 @@ class RenderContext3D(super.device) extends RenderContext {
     _lights = value;
     _worldLightsVersion = null;
     _syncedLightRev = -1;
+    _syncedOwner = null;
   }
 
   List<Light> _lights = const [];
   int? _worldLightsVersion;
+  Object? _syncedOwner;
+
+  /// World lights revision last supplied by [setWorldLights], or `null` when
+  /// [lights] was assigned directly.
+  @internal
+  int? get worldLightsVersion => _worldLightsVersion;
+
+  /// Owner that last synchronized options onto this context via
+  /// [needsSyncOptions].
+  @internal
+  Object? get syncedOwner => _syncedOwner;
 
   /// Sets [lights] together with the enclosing [World3D.lightsVersion] so
   /// light-grid builds can skip unchanged passes in O(1).
@@ -370,15 +382,51 @@ class RenderContext3D(super.device) extends RenderContext {
   int _passUniformsVersion = 0;
   int _pass = 0;
   int _cameraPass = 0;
+  int _nextPassEpoch = 1;
+  final Int32List _passKindEpochs = Int32List(_passKindCount)
+    ..fillRange(0, _passKindCount, 1);
 
   @internal
   int get cameraPass => _cameraPass;
+
+  Shader? _activeApplyVertexShader;
+
+  /// Vertex shader variant for which `Material.apply` is currently running,
+  /// or `null` outside `_applyMaterial`.
+  @internal
+  Shader? get activeApplyVertexShader => _activeApplyVertexShader;
+
+  void _bumpAllPassKinds() {
+    _pass++;
+    final epoch = ++_nextPassEpoch;
+    for (var k = 0; k < _passKindCount; k++) {
+      _passKindEpochs[k] = epoch;
+    }
+  }
+
+  void _bumpSceneColorUniforms() {
+    final epoch = ++_nextPassEpoch;
+    _passKindEpochs[_passKindSceneColor] = epoch;
+    _passKindEpochs[_passKindPassOptions] = epoch;
+    _passKindEpochs[_passKindSpatial] = epoch;
+    _passKindEpochs[_passKindCustom] = epoch;
+  }
+
+  /// Bumps only `PassOptions`, `SpatialPass`, and custom pass blocks (without
+  /// invalidating camera, light, fog, or stylized pass caches).
+  @internal
+  void bumpPassOptionsUniforms() {
+    final epoch = ++_nextPassEpoch;
+    _passKindEpochs[_passKindPassOptions] = epoch;
+    _passKindEpochs[_passKindSpatial] = epoch;
+    _passKindEpochs[_passKindCustom] = epoch;
+  }
 
   /// Bumps the pass uniform epoch when per-pass state (such as `hdrEnabled`,
   /// `renderDebugMode`, `SceneColor`, or `lightProbeGrid`) changes after
   /// [setCamera] was called.
   void bumpPassUniforms() {
-    _pass++;
+    _bumpAllPassKinds();
   }
 
   /// The uniform blocks filled once per render pass, by block name.
@@ -416,7 +464,7 @@ class RenderContext3D(super.device) extends RenderContext {
 
   /// Set the camera matrices for the next pass.
   void setCamera(Matrix4 viewMatrix, Matrix4 projectionMatrix) {
-    _pass++;
+    _bumpAllPassKinds();
     _cameraPass++;
     if (!_shadows.recording) {
       _viewerEpoch++;
@@ -541,6 +589,16 @@ class RenderContext3D(super.device) extends RenderContext {
         return;
       }
     }
+    final depthNormalPass = _depthNormal.recording;
+    final hasDepthNormalMat = drawMaterial.depthNormalMaterial != null;
+    if (depthNormalPass) {
+      final rs = drawMaterial.renderState;
+      if (rs.translucent ||
+          !rs.depthWrite ||
+          (!hasDepthNormalMat && !drawMaterial.instancesHoldModelMatrices)) {
+        return;
+      }
+    }
     final i = _count;
     if (i == _capacity) {
       _grow();
@@ -561,6 +619,7 @@ class RenderContext3D(super.device) extends RenderContext {
     if (shadowPass) {
       _pipelines[i] = null;
       _vertexShaders[i] = null;
+      _fragmentShaders[i] = null;
       _mirrored[i] = 0;
       _probeSlots[i] = 0;
       _probeWeights[i] = 0;
@@ -570,13 +629,47 @@ class RenderContext3D(super.device) extends RenderContext {
       return;
     }
 
-    final (pipeline, vertShader, fragShader) = _pipelineTripleFor(
-      drawMaterial,
-      surface.layout,
-    );
-    _pipelines[i] = pipeline;
-    _vertexShaders[i] = vertShader;
-    _fragmentShaders[i] = fragShader;
+    if (depthNormalPass) {
+      if (hasDepthNormalMat) {
+        _writeInstanceColorAndData(instances, base, color, instanceData);
+      }
+      _pipelines[i] = null;
+      _vertexShaders[i] = null;
+      _fragmentShaders[i] = null;
+      _mirrored[i] = 0;
+      _probeSlots[i] = 0;
+      _probeWeights[i] = 0;
+      _prepassGroups[i] = 0;
+      final center = surface.aabbCenter;
+      final cx = center.x;
+      final cy = center.y;
+      final cz = center.z;
+      final wx = m[0] * cx + m[4] * cy + m[8] * cz + m[12];
+      final wy = m[1] * cx + m[5] * cy + m[9] * cz + m[13];
+      final wz = m[2] * cx + m[6] * cy + m[10] * cz + m[14];
+      final d = _depthRow;
+      _depths[i] = d[0] * wx + d[1] * wy + d[2] * wz + d[3];
+      RenderProfile.lap(RenderPhase.recording);
+      return;
+    }
+
+    if (_cachedOpaqueCount >= 0 || _oitGrab.hasSortCache) {
+      _cachedOpaqueCount = -1;
+      _oitGrab.resetSortCache();
+    }
+    if (drawMaterial.renderState.translucent) {
+      _hasRecordedTranslucent = true;
+    }
+    if (!_hasRecordedRefractive &&
+        drawMaterial is SpatialMaterial &&
+        drawMaterial.transmission > 1e-4) {
+      _hasRecordedRefractive = true;
+    }
+
+    _resolvePipeline(drawMaterial, surface.layout);
+    _pipelines[i] = _lastPipeDev;
+    _vertexShaders[i] = _lastPipeVert;
+    _fragmentShaders[i] = _lastPipeFrag;
 
     if (mirrored != null) {
       _mirrored[i] = mirrored ? 1 : 0;
@@ -588,24 +681,7 @@ class RenderContext3D(super.device) extends RenderContext {
       _mirrored[i] = determinant < 0 ? 1 : 0;
     }
 
-    instances[base + 16] = color.r;
-    instances[base + 17] = color.g;
-    instances[base + 18] = color.b;
-    instances[base + 19] = color.a;
-    if (instanceData == null) {
-      instances
-        ..[base + 20] = 0
-        ..[base + 21] = 0
-        ..[base + 22] = 0
-        ..[base + 23] = 0;
-    } else {
-      final data = instanceData.storage;
-      instances
-        ..[base + 20] = data[0]
-        ..[base + 21] = data[1]
-        ..[base + 22] = data[2]
-        ..[base + 23] = data[3];
-    }
+    _writeInstanceColorAndData(instances, base, color, instanceData);
 
     final center = surface.aabbCenter;
     final cx = center.x;
@@ -643,6 +719,32 @@ class RenderContext3D(super.device) extends RenderContext {
     RenderProfile.lap(RenderPhase.recording);
   }
 
+  static void _writeInstanceColorAndData(
+    Float32List instances,
+    int base,
+    Color color,
+    Vector4? instanceData,
+  ) {
+    instances[base + 16] = color.r;
+    instances[base + 17] = color.g;
+    instances[base + 18] = color.b;
+    instances[base + 19] = color.a;
+    if (instanceData == null) {
+      instances
+        ..[base + 20] = 0
+        ..[base + 21] = 0
+        ..[base + 22] = 0
+        ..[base + 23] = 0;
+    } else {
+      final data = instanceData.storage;
+      instances
+        ..[base + 20] = data[0]
+        ..[base + 21] = data[1]
+        ..[base + 22] = data[2]
+        ..[base + 23] = data[3];
+    }
+  }
+
   /// Records one instanced draw of [surface] with its material (or
   /// [material]).
   ///
@@ -661,6 +763,8 @@ class RenderContext3D(super.device) extends RenderContext {
     Material? material,
     Vector3? center,
     bool mirrored = false,
+    int? instanceVersion,
+    int? instanceBufferCount,
   }) {
     if (count <= 0) {
       return;
@@ -672,23 +776,38 @@ class RenderContext3D(super.device) extends RenderContext {
       'instances holds fewer than ${instanceOffset + count} instances',
     );
     final drawMaterial = material ?? surface.material;
-    if (_shadows.recording) {
+    final shadowPass = _shadows.recording;
+    if (shadowPass) {
       drawMaterial.wasRecorded = true;
+      if (!drawMaterial.castsShadows ||
+          !drawMaterial.instancesHoldModelMatrices) {
+        return;
+      }
     }
-    if (_shadows.recording &&
-        (!drawMaterial.castsShadows ||
-            !drawMaterial.instancesHoldModelMatrices)) {
-      return;
+    final depthNormalPass = _depthNormal.recording;
+    if (depthNormalPass) {
+      final rs = drawMaterial.renderState;
+      if (rs.translucent ||
+          !rs.depthWrite ||
+          (drawMaterial.depthNormalMaterial == null &&
+              !drawMaterial.instancesHoldModelMatrices)) {
+        return;
+      }
     }
-    final (pipeline, vertShader, fragShader) = _pipelineTripleFor(
-      drawMaterial,
-      surface.layout,
-    );
-    if (!pipeline.instanced) {
-      throw StateError(
-        'drawInstances needs a material whose vertex shader reads the '
-        'instance inputs (the four instanceModel columns)',
-      );
+    DevicePipeline? pipeline;
+    Shader? vertShader;
+    Shader? fragShader;
+    if (!shadowPass && !depthNormalPass) {
+      _resolvePipeline(drawMaterial, surface.layout);
+      pipeline = _lastPipeDev!;
+      vertShader = _lastPipeVert!;
+      fragShader = _lastPipeFrag!;
+      if (!pipeline.instanced) {
+        throw StateError(
+          'drawInstances needs a material whose vertex shader reads the '
+          'instance inputs (the four instanceModel columns)',
+        );
+      }
     }
     final i = _count;
     if (i == _capacity) {
@@ -708,22 +827,54 @@ class RenderContext3D(super.device) extends RenderContext {
     _external[i] = instances;
     _externalCounts[i] = count;
     _externalOffsets[i] = instanceOffset * VertexLayout.instanceStrideInFloats;
+    _externalVersions[i] = instanceVersion ?? -1;
+    _externalCacheSpans[i] = instanceBufferCount ?? 0;
 
-    if (!_shadows.recording &&
-        reflectionProbes.isNotEmpty &&
-        drawMaterial.usesReflectionProbes) {
+    if (shadowPass) {
+      _probeSlots[i] = 0;
+      _probeWeights[i] = 0;
+      _prepassGroups[i] = 0;
+      _depths[i] = 0;
+      RenderProfile.lap(RenderPhase.recording);
+      return;
+    }
+
+    final d = _depthRow;
+    if (depthNormalPass) {
+      _probeSlots[i] = 0;
+      _probeWeights[i] = 0;
+      _prepassGroups[i] = 0;
+      _depths[i] = center == null
+          ? d[3]
+          : d[0] * center.x + d[1] * center.y + d[2] * center.z + d[3];
+      RenderProfile.lap(RenderPhase.recording);
+      return;
+    }
+
+    if (_cachedOpaqueCount >= 0 || _oitGrab.hasSortCache) {
+      _cachedOpaqueCount = -1;
+      _oitGrab.resetSortCache();
+    }
+    if (drawMaterial.renderState.translucent) {
+      _hasRecordedTranslucent = true;
+    }
+    if (!_hasRecordedRefractive &&
+        drawMaterial is SpatialMaterial &&
+        drawMaterial.transmission > 1e-4) {
+      _hasRecordedRefractive = true;
+    }
+
+    if (reflectionProbes.isNotEmpty && drawMaterial.usesReflectionProbes) {
       final at = center ?? _cameraPosition;
       _selectProbeFor(i, at.x, at.y, at.z);
     } else {
       _probeSlots[i] = 0;
       _probeWeights[i] = 0;
     }
-    final d = _depthRow;
     _depths[i] = center == null
         ? d[3]
         : d[0] * center.x + d[1] * center.y + d[2] * center.z + d[3];
     final prepass =
-        !_shadows.recording &&
         drawMaterial.renderState.translucent &&
         drawMaterial.renderState.depthPrepass;
     if (prepass && drawMaterial.depthPrepassGroup != null) {
@@ -749,6 +900,7 @@ class RenderContext3D(super.device) extends RenderContext {
   int _lastPipeMatVer = -1;
   int _lastPipeVertGen = -1;
   int _lastPipeFragGen = -1;
+  int _lastPipePass = -1;
   DevicePipeline? _lastPipeDev;
 
   /// Whether the draws being recorded are those of a shadow map.
@@ -882,40 +1034,29 @@ class RenderContext3D(super.device) extends RenderContext {
   late final _DepthNormalPass _depthNormal = _DepthNormalPass(this);
   late final _OitAndGrabPass _oitGrab = _OitAndGrabPass(this);
 
+  bool _hasRecordedRefractive = false;
+  bool _hasRecordedTranslucent = false;
+  int _cachedOpaqueCount = -1;
+
   /// Whether any currently recorded draw uses a refractive `SpatialMaterial`
   /// (`transmission > 0`).
-  bool get hasRefractiveDraws {
-    for (var i = 0; i < _count; i++) {
-      final m = _materials[i];
-      if (m is SpatialMaterial && m.transmission > 1e-4) {
-        return true;
-      }
-    }
-    return false;
-  }
+  bool get hasRefractiveDraws => _hasRecordedRefractive;
 
   /// Whether any currently recorded draw is translucent.
-  bool get hasTranslucentDraws {
-    for (var i = 0; i < _count; i++) {
-      if (_materials[i]!.renderState.translucent) {
-        return true;
-      }
-    }
-    return false;
-  }
+  bool get hasTranslucentDraws => _hasRecordedTranslucent;
 
   /// Binds [grabTarget] as the active `sceneColorTexture` for upcoming passes
   /// (`null` clears it).
   void setActiveSceneColorTarget(GpuTextureTarget? grabTarget) {
     _oitGrab.setGrabTarget(grabTarget);
-    _pass++;
+    _bumpSceneColorUniforms();
   }
 
   /// Clears any active `sceneColorTexture` binding.
   void clearActiveSceneColorTarget() {
     if (_oitGrab.grabActive) {
       _oitGrab.clearGrab();
-      _pass++;
+      _bumpSceneColorUniforms();
     }
   }
 
@@ -923,21 +1064,7 @@ class RenderContext3D(super.device) extends RenderContext {
   /// pass while keeping all recorded draws in memory for the subsequent
   /// translucent/WBOIT pass.
   void flushOpaquePreview() {
-    final count = _count;
-    var opaqueCount = 0;
-    for (var i = 0; i < count; i++) {
-      final material = _materials[i]!;
-      if (!material.renderState.translucent) {
-        _opaque[opaqueCount++] = i;
-        _groupKeys[i] =
-            _pipelines[i]!.id * 8589934592.0 + material.id * 2.0 + _mirrored[i];
-        _surfaceKeys[i] = _surfaces[i]!.id * 2 + (_joints[i] == null ? 0 : 1);
-        _sortDepths[i] = _depths[i];
-      }
-    }
-    _sortByProbe = _anyProbeDraw;
-    _sort(_opaque, opaqueCount);
-    _sortByProbe = false;
+    final opaqueCount = _prepareOpaqueSorted();
     _boundMaterial = null;
     _bindingEpoch = -1;
     _depthPrepassOverride = false;
@@ -1144,6 +1271,8 @@ class RenderContext3D(super.device) extends RenderContext {
 
   final Int32List _sharedPassEpochs = Int32List(_passKindCount)
     ..fillRange(0, _passKindCount, -1);
+  final Int32List _sharedPassFrames = Int32List(_passKindCount)
+    ..fillRange(0, _passKindCount, -1);
   final Int32List _sharedPassSigs = Int32List(_passKindCount);
   final List<GpuBuffer?> _sharedPassBuffers = List.filled(_passKindCount, null);
   final Int32List _sharedPassOffsets = Int32List(_passKindCount);
@@ -1156,9 +1285,62 @@ class RenderContext3D(super.device) extends RenderContext {
   final Map<UniformBlock, List<UniformBlock>> _spatialPassViews = {};
 
   Float32List _jointPackScratch = Float32List(1024);
+  late Uint8List _jointPackBytes = _jointPackScratch.buffer.asUint8List();
+  int _jointPackDirtyStart = 0;
+  int _jointPackDirtyEnd = 0;
   int _jointCacheFrame = -1;
-  final List<_JointUploadEntry> _jointCacheActive = [];
+  static const int _jointHashTableSize = 512;
+  static const int _jointHashTableMask = _jointHashTableSize - 1;
+  static const int _maxJointCacheEntries = 256;
+  final List<_JointUploadEntry?> _jointHashTable = List.filled(
+    _jointHashTableSize,
+    null,
+  );
+  final Int32List _jointHashUsed = Int32List(_maxJointCacheEntries);
+  int _jointHashCount = 0;
   final List<_JointUploadEntry> _jointCachePool = [];
+
+  int _viewerPass = -1;
+  double _viewerX = 0;
+  double _viewerY = 0;
+  double _viewerZ = 0;
+  double _viewerW = 1;
+  final Matrix4 _inverseViewProj = Matrix4.zero();
+
+  /// Writes the viewer's world-space center of projection (`w = 1`) or
+  /// parallel direction (`w = 0`) for the current camera pass, cached once per
+  /// [_cameraPass].
+  @internal
+  void writeViewerTo(UniformBlock block, int offset) {
+    if (_viewerPass != _cameraPass) {
+      _viewerPass = _cameraPass;
+      final inverse = _inverseViewProj..setFrom(_viewProjectionMatrix);
+      final determinant = inverse.invert();
+      final s = inverse.storage;
+      final x = s[8];
+      final y = s[9];
+      final z = s[10];
+      final w = s[11];
+      final length = math.sqrt(x * x + y * y + z * z);
+      if (determinant == 0 || !(length > 0)) {
+        _viewerX = _cameraPosition.x;
+        _viewerY = _cameraPosition.y;
+        _viewerZ = _cameraPosition.z;
+        _viewerW = 1;
+      } else if (w.abs() > 1e-9 * length) {
+        _viewerX = x / w;
+        _viewerY = y / w;
+        _viewerZ = z / w;
+        _viewerW = 1;
+      } else {
+        _viewerX = -x / length;
+        _viewerY = -y / length;
+        _viewerZ = -z / length;
+        _viewerW = 0;
+      }
+    }
+    block.writeVec4ValuesAt(offset, _viewerX, _viewerY, _viewerZ, _viewerW);
+  }
 
   static void writeCameraUniforms(
     RenderContext3D context,
@@ -1173,6 +1355,23 @@ class RenderContext3D(super.device) extends RenderContext {
   bool _selHasHemisphere = false;
   HemisphereLight? _selHemisphere;
   final List<Light> _selDirectionals = [];
+
+  int _selPointPass = -1;
+  List<Light>? _selPointList;
+  int _selPointLength = -1;
+  int _selPointMask = 0;
+  bool _selPointPrioritize = false;
+  LightGridSettings? _selPointGrid;
+  int _selPointCount = 0;
+  final Int32List _selPointIndices = Int32List(maxPointLights);
+
+  int _selSpotPass = -1;
+  List<Light>? _selSpotList;
+  int _selSpotLength = -1;
+  int _selSpotMask = 0;
+  LightGridSettings? _selSpotGrid;
+  int _selSpotCount = 0;
+  final Int32List _selSpotIndices = Int32List(maxSpotLights);
 
   static void writeAmbientLightUniforms(
     RenderContext3D context,
@@ -1253,11 +1452,13 @@ class RenderContext3D(super.device) extends RenderContext {
     required LightGridSettings? lightGrid,
     required Aabb3? lightGridBounds,
     required bool hdrEnabled,
+    Object? owner,
   }) {
     final fogVer = fog?.version ?? -1;
     final waterVer = waterVolume?.version ?? -1;
     final probeIntensity = lightProbeGrid?.intensity ?? -1.0;
     if (_syncedLightRev == lightsVersion &&
+        identical(_syncedOwner, owner) &&
         identical(this.lights, lights) &&
         identical(this.fog, fog) &&
         _syncedFogVer == fogVer &&
@@ -1273,6 +1474,7 @@ class RenderContext3D(super.device) extends RenderContext {
         this.hdrEnabled == hdrEnabled) {
       return false;
     }
+    _syncedOwner = owner;
     _syncedLightRev = lightsVersion;
     _syncedFogVer = fogVer;
     _syncedWaterVer = waterVer;
@@ -1291,6 +1493,8 @@ class RenderContext3D(super.device) extends RenderContext {
   List<Float32List?> _external = [];
   Int32List _externalCounts = Int32List(0);
   Int32List _externalOffsets = Int32List(0);
+  Int32List _externalVersions = Int32List(0);
+  Int32List _externalCacheSpans = Int32List(0);
   Float32List _instances = Float32List(0);
   Float64List _depths = Float64List(0);
   Float64List _groupKeys = Float64List(0);

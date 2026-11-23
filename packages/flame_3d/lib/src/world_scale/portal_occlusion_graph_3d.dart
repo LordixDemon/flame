@@ -123,14 +123,19 @@ class PortalOcclusionGraph3D() {
   final Float64List _clipA = Float64List(96);
   final Float64List _clipB = Float64List(96);
 
+  late final List<OcclusionPortal3D> _portalsView = UnmodifiableListView(
+    _portals,
+  );
+  late final Set<int> _visibleRoomsView = UnmodifiableSetView(_visibleRooms);
+
   /// Registered rooms by id.
   Iterable<OcclusionRoom3D> get rooms => _rooms.values;
 
   /// Registered portals.
-  List<OcclusionPortal3D> get portals => List.unmodifiable(_portals);
+  List<OcclusionPortal3D> get portals => _portalsView;
 
   /// Room ids marked visible during the most recent [evaluateVisibility] call.
-  Set<int> get visibleRoomIds => Set.unmodifiable(_visibleRooms);
+  Set<int> get visibleRoomIds => _visibleRoomsView;
 
   /// Number of open portal crossings evaluated in the last traversal.
   int get traversedPortalCount => _traversedPortalCount;

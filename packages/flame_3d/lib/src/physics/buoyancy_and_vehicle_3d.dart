@@ -150,138 +150,170 @@ class BuoyancyVolume3D({
     elapsedTime += dt;
     final g = math.max(0.0, gravityMagnitude);
     final volBounds = bounds;
+    final hasWaveFn = waterSurfaceHeight != null;
+    final waterLevel = baseWaterLevel;
+    final bodyList = bodies is List<RigidBody3D> ? bodies : null;
+    final count = bodyList?.length ?? 0;
 
-    for (final body in bodies) {
-      if (body.bodyType != BodyType3D.dynamic || body.inverseMass <= 0.0) {
+    if (bodyList != null) {
+      for (var bIdx = 0; bIdx < count; bIdx++) {
+        _applyToSingleBody(
+          bodyList[bIdx],
+          g,
+          volBounds,
+          hasWaveFn,
+          waterLevel,
+        );
+      }
+    } else {
+      for (final body in bodies) {
+        _applyToSingleBody(body, g, volBounds, hasWaveFn, waterLevel);
+      }
+    }
+  }
+
+  void _applyToSingleBody(
+    RigidBody3D body,
+    double g,
+    Aabb3? volBounds,
+    bool hasWaveFn,
+    double waterLevel,
+  ) {
+    if (body.bodyType != BodyType3D.dynamic || body.inverseMass <= 0.0) {
+      return;
+    }
+    body.refreshCachedWorldAabb();
+    final bodyBox = body.cachedWorldAabb;
+    if (volBounds != null && !aabbOverlaps(volBounds, bodyBox)) {
+      return;
+    }
+    if (!hasWaveFn &&
+        !_customPontoons.containsKey(body) &&
+        defaultPontoons == null &&
+        bodyBox.min.y > waterLevel) {
+      return;
+    }
+
+    final pontoons = _resolvePontoons(body);
+    var totalWeight = 0.0;
+    for (var i = 0; i < pontoons.length; i++) {
+      totalWeight += pontoons[i].volumeWeight;
+    }
+    if (totalWeight <= 1e-12) {
+      return;
+    }
+
+    final totalVolume = math.max(1e-4, body.shape.estimateLocalVolume());
+    final mat = body.bodyWorldMatrix.storage;
+    final com = body.worldCenterOfMass;
+
+    var submergenceSum = 0.0;
+    var avgWaveNx = 0.0;
+    var avgWaveNy = 0.0;
+    var avgWaveNz = 0.0;
+
+    for (var i = 0; i < pontoons.length; i++) {
+      final p = pontoons[i];
+      final lp = p.localPosition;
+      final wx = mat[0] * lp.x + mat[4] * lp.y + mat[8] * lp.z + mat[12];
+      final wy = mat[1] * lp.x + mat[5] * lp.y + mat[9] * lp.z + mat[13];
+      final wz = mat[2] * lp.x + mat[6] * lp.y + mat[10] * lp.z + mat[14];
+
+      if (volBounds != null &&
+          (wx < volBounds.min.x ||
+              wx > volBounds.max.x ||
+              wz < volBounds.min.z ||
+              wz > volBounds.max.z)) {
         continue;
       }
-      if (volBounds != null && !aabbOverlaps(volBounds, body.bodyWorldAabb)) {
+
+      final surfaceY = sampleWaterHeight(wx, wz, elapsedTime);
+      final depth = surfaceY - (wy - p.radius);
+      if (depth <= 0.0) {
         continue;
       }
+      final subFraction = (depth / (2.0 * p.radius)).clamp(0.0, 1.0);
+      submergenceSum += subFraction;
 
-      final pontoons = _resolvePontoons(body);
-      var totalWeight = 0.0;
-      for (var i = 0; i < pontoons.length; i++) {
-        totalWeight += pontoons[i].volumeWeight;
-      }
-      if (totalWeight <= 1e-12) {
-        continue;
-      }
+      sampleWaveNormal(wx, wz, time: elapsedTime, out: _waveNormal);
+      avgWaveNx += _waveNormal.x * subFraction;
+      avgWaveNy += _waveNormal.y * subFraction;
+      avgWaveNz += _waveNormal.z * subFraction;
 
-      final totalVolume = math.max(1e-4, body.shape.estimateLocalVolume());
-      final mat = body.bodyWorldMatrix.storage;
-      final com = body.worldCenterOfMass;
+      final pontoonVol =
+          totalVolume * (p.volumeWeight / totalWeight) * subFraction;
+      // Clamp extreme upward acceleration on ultra-light bodies.
+      final rawBuoyancy = fluidDensity * g * pontoonVol;
+      final maxSafeForce =
+          body.mass * math.max(40.0, g * 6.0) * (p.volumeWeight / totalWeight);
+      final buoyancyMag = math.min(rawBuoyancy, maxSafeForce);
 
-      var submergenceSum = 0.0;
-      var avgWaveNx = 0.0;
-      var avgWaveNy = 0.0;
-      var avgWaveNz = 0.0;
+      // Blend vertical Archimedes lift slightly toward wave normal so passing
+      // swells push and tilt floating hulls realistically.
+      _forceDir.setValues(
+        _waveNormal.x * 0.25,
+        0.75 + _waveNormal.y * 0.25,
+        _waveNormal.z * 0.25,
+      );
+      _forceDir.normalize();
 
-      for (var i = 0; i < pontoons.length; i++) {
-        final p = pontoons[i];
-        final lp = p.localPosition;
-        final wx = mat[0] * lp.x + mat[4] * lp.y + mat[8] * lp.z + mat[12];
-        final wy = mat[1] * lp.x + mat[5] * lp.y + mat[9] * lp.z + mat[13];
-        final wz = mat[2] * lp.x + mat[6] * lp.y + mat[10] * lp.z + mat[14];
+      _worldPt.setValues(wx, wy, wz);
+      final rx = wx - com.x;
+      final ry = wy - com.y;
+      final rz = wz - com.z;
+      final av = body.angularVelocity;
+      final lv = body.linearVelocity;
+      _ptVel.setValues(
+        lv.x + (av.y * rz - av.z * ry),
+        lv.y + (av.z * rx - av.x * rz),
+        lv.z + (av.x * ry - av.y * rx),
+      );
+      _relVel.setValues(
+        _ptVel.x - flowVelocity.x,
+        _ptVel.y - flowVelocity.y,
+        _ptVel.z - flowVelocity.z,
+      );
 
-        if (volBounds != null &&
-            (wx < volBounds.min.x ||
-                wx > volBounds.max.x ||
-                wz < volBounds.min.z ||
-                wz > volBounds.max.z)) {
-          continue;
+      final pontoonMass = body.mass * (p.volumeWeight / totalWeight);
+      final dragCoeff = linearDrag * subFraction * pontoonMass;
+      _force.setValues(
+        _forceDir.x * buoyancyMag - _relVel.x * dragCoeff,
+        _forceDir.y * buoyancyMag - _relVel.y * dragCoeff,
+        _forceDir.z * buoyancyMag - _relVel.z * dragCoeff,
+      );
+      body.applyForce(_force, worldPoint: _worldPt);
+    }
+
+    if (submergenceSum > 1e-5) {
+      final avgSub = (submergenceSum / pontoons.length).clamp(0.0, 1.0);
+      // Rotational hydrodynamic damping + wave-normal alignment torque.
+      final angDamp = angularDrag * avgSub * body.mass * 0.35;
+      _torque.setValues(
+        -body.angularVelocity.x * angDamp,
+        -body.angularVelocity.y * angDamp,
+        -body.angularVelocity.z * angDamp,
+      );
+
+      final nLen = math.sqrt(
+        avgWaveNx * avgWaveNx + avgWaveNy * avgWaveNy + avgWaveNz * avgWaveNz,
+      );
+      if (nLen > 1e-8 && waveTorqueStrength > 0.0) {
+        final wnx = avgWaveNx / nLen;
+        final wny = avgWaveNy / nLen;
+        final wnz = avgWaveNz / nLen;
+        _bodyUp.setValues(mat[4], mat[5], mat[6]);
+        if (_bodyUp.length2 > 1e-12) {
+          _bodyUp.normalize();
+          final cx = _bodyUp.y * wnz - _bodyUp.z * wny;
+          final cy = _bodyUp.z * wnx - _bodyUp.x * wnz;
+          final cz = _bodyUp.x * wny - _bodyUp.y * wnx;
+          final kWave = waveTorqueStrength * avgSub * body.mass;
+          _torque.x += cx * kWave;
+          _torque.y += cy * kWave;
+          _torque.z += cz * kWave;
         }
-
-        final surfaceY = sampleWaterHeight(wx, wz, elapsedTime);
-        final depth = surfaceY - (wy - p.radius);
-        if (depth <= 0.0) {
-          continue;
-        }
-        final subFraction = (depth / (2.0 * p.radius)).clamp(0.0, 1.0);
-        submergenceSum += subFraction;
-
-        sampleWaveNormal(wx, wz, time: elapsedTime, out: _waveNormal);
-        avgWaveNx += _waveNormal.x * subFraction;
-        avgWaveNy += _waveNormal.y * subFraction;
-        avgWaveNz += _waveNormal.z * subFraction;
-
-        final pontoonVol =
-            totalVolume * (p.volumeWeight / totalWeight) * subFraction;
-        // Clamp extreme upward acceleration on ultra-light bodies.
-        final rawBuoyancy = fluidDensity * g * pontoonVol;
-        final maxSafeForce =
-            body.mass *
-            math.max(40.0, g * 6.0) *
-            (p.volumeWeight / totalWeight);
-        final buoyancyMag = math.min(rawBuoyancy, maxSafeForce);
-
-        // Blend vertical Archimedes lift slightly toward wave normal so passing
-        // swells push and tilt floating hulls realistically.
-        _forceDir.setValues(
-          _waveNormal.x * 0.25,
-          0.75 + _waveNormal.y * 0.25,
-          _waveNormal.z * 0.25,
-        );
-        _forceDir.normalize();
-
-        _worldPt.setValues(wx, wy, wz);
-        final rx = wx - com.x;
-        final ry = wy - com.y;
-        final rz = wz - com.z;
-        final av = body.angularVelocity;
-        final lv = body.linearVelocity;
-        _ptVel.setValues(
-          lv.x + (av.y * rz - av.z * ry),
-          lv.y + (av.z * rx - av.x * rz),
-          lv.z + (av.x * ry - av.y * rx),
-        );
-        _relVel.setValues(
-          _ptVel.x - flowVelocity.x,
-          _ptVel.y - flowVelocity.y,
-          _ptVel.z - flowVelocity.z,
-        );
-
-        final pontoonMass = body.mass * (p.volumeWeight / totalWeight);
-        final dragCoeff = linearDrag * subFraction * pontoonMass;
-        _force.setValues(
-          _forceDir.x * buoyancyMag - _relVel.x * dragCoeff,
-          _forceDir.y * buoyancyMag - _relVel.y * dragCoeff,
-          _forceDir.z * buoyancyMag - _relVel.z * dragCoeff,
-        );
-        body.applyForce(_force, worldPoint: _worldPt);
       }
-
-      if (submergenceSum > 1e-5) {
-        final avgSub = (submergenceSum / pontoons.length).clamp(0.0, 1.0);
-        // Rotational hydrodynamic damping + wave-normal alignment torque.
-        final angDamp = angularDrag * avgSub * body.mass * 0.35;
-        _torque.setValues(
-          -body.angularVelocity.x * angDamp,
-          -body.angularVelocity.y * angDamp,
-          -body.angularVelocity.z * angDamp,
-        );
-
-        final nLen = math.sqrt(
-          avgWaveNx * avgWaveNx + avgWaveNy * avgWaveNy + avgWaveNz * avgWaveNz,
-        );
-        if (nLen > 1e-8 && waveTorqueStrength > 0.0) {
-          final wnx = avgWaveNx / nLen;
-          final wny = avgWaveNy / nLen;
-          final wnz = avgWaveNz / nLen;
-          _bodyUp.setValues(mat[4], mat[5], mat[6]);
-          if (_bodyUp.length2 > 1e-12) {
-            _bodyUp.normalize();
-            final cx = _bodyUp.y * wnz - _bodyUp.z * wny;
-            final cy = _bodyUp.z * wnx - _bodyUp.x * wnz;
-            final cz = _bodyUp.x * wny - _bodyUp.y * wnx;
-            final kWave = waveTorqueStrength * avgSub * body.mass;
-            _torque.x += cx * kWave;
-            _torque.y += cy * kWave;
-            _torque.z += cz * kWave;
-          }
-        }
-        body.applyTorque(_torque);
-      }
+      body.applyTorque(_torque);
     }
   }
 
@@ -586,15 +618,71 @@ class RaycastVehicle3D({
     return chassis.linearVelocity.dot(_fwdWorld);
   }
 
+  late final bool Function(RigidBody3D) _wheelBodyFilter = _filterWheelBody;
+  late final (double, Vector3)? Function(RigidBody3D, Ray, double)
+  _wheelBodyNarrowphase = _narrowphaseWheelBody;
+  late final bool Function(Collider3D) _wheelColliderFilter =
+      _filterWheelCollider;
+  late final (double, Vector3)? Function(Collider3D, Ray, double)
+  _wheelColliderNarrowphase = _narrowphaseWheelCollider;
+
+  bool _filterWheelBody(RigidBody3D other) {
+    if (identical(other, chassis) ||
+        identical(other.hostComponent, chassis.hostComponent)) {
+      return false;
+    }
+    return (other.collisionLayer & chassis.collisionMask) != 0;
+  }
+
+  (double, Vector3)? _narrowphaseWheelBody(
+    RigidBody3D other,
+    Ray unitRay,
+    double limit,
+  ) {
+    if (!rayHitsAabb(unitRay, other.cachedWorldAabb, limit)) {
+      return null;
+    }
+    return other.shape.raycast(
+      unitRay,
+      other.bodyWorldMatrix,
+      maxDistance: limit,
+    );
+  }
+
+  bool _filterWheelCollider(Collider3D c) {
+    if (c.isTrigger || identical(c.hostComponent, chassis.hostComponent)) {
+      return false;
+    }
+    return (c.collisionLayer & chassis.collisionMask) != 0;
+  }
+
+  (double, Vector3)? _narrowphaseWheelCollider(
+    Collider3D c,
+    Ray unitRay,
+    double limit,
+  ) {
+    if (!rayHitsAabb(unitRay, c.cachedWorldAabb, limit)) {
+      return null;
+    }
+    return c.shape.raycast(
+      unitRay,
+      c.colliderWorldMatrix,
+      maxDistance: limit,
+    );
+  }
+
   /// Evaluates wheel raycasts and applies suspension, drive, brake, and lateral
   /// anti-slip impulses to [chassis] for timestep [dt].
   ///
   /// [gravityMagnitude] sets the minimum tire load (a share of the chassis
-  /// weight); a [PhysicsWorld3D] passes the length of its gravity.
+  /// weight); a [PhysicsWorld3D] passes the length of its gravity. When
+  /// [bodyBroadphase] is supplied, wheel raycasts query the dynamic BVH
+  /// directly instead of scanning all [bodies].
   void stepVehicle(
     double dt, {
     required Iterable<RigidBody3D> bodies,
     CollisionSystem3D? collisionSystem,
+    DynamicAabbTree3D<RigidBody3D>? bodyBroadphase,
     double gravityMagnitude = 9.81,
   }) {
     if (dt <= 0.0 ||
@@ -607,6 +695,10 @@ class RaycastVehicle3D({
     }
     if (chassis.isSleeping) {
       return;
+    }
+
+    if (collisionSystem != null && bodyBroadphase == null) {
+      collisionSystem.syncBroadphase();
     }
 
     chassis.updateWorldInertia();
@@ -645,6 +737,7 @@ class RaycastVehicle3D({
         maxRayDist,
         bodies: bodies,
         collisionSystem: collisionSystem,
+        bodyBroadphase: bodyBroadphase,
       );
 
       if (hit == null) {
@@ -849,41 +942,71 @@ class RaycastVehicle3D({
     double maxDist, {
     required Iterable<RigidBody3D> bodies,
     CollisionSystem3D? collisionSystem,
+    DynamicAabbTree3D<RigidBody3D>? bodyBroadphase,
   }) {
     var bestDist = maxDist;
     Vector3? bestNormal;
 
-    for (final other in bodies) {
-      if (identical(other, chassis) ||
-          identical(other.hostComponent, chassis.hostComponent)) {
-        continue;
-      }
-      if ((other.collisionLayer & chassis.collisionMask) == 0) {
-        continue;
-      }
-      if (!rayHitsAabb(ray, other.bodyWorldAabb, bestDist)) {
-        continue;
-      }
-      final hit = other.shape.raycast(
+    if (bodyBroadphase != null) {
+      final bHit = bodyBroadphase.raycast(
         ray,
-        other.bodyWorldMatrix,
         maxDistance: bestDist,
+        filter: _wheelBodyFilter,
+        narrowphase: _wheelBodyNarrowphase,
       );
-      if (hit != null && hit.$1 <= bestDist) {
-        bestDist = hit.$1;
-        bestNormal = hit.$2;
+      if (bHit != null && bHit.normal != null && bHit.distance <= bestDist) {
+        bestDist = bHit.distance;
+        bestNormal = bHit.normal;
+      }
+    } else if (bodies is List<RigidBody3D>) {
+      for (var i = 0; i < bodies.length; i++) {
+        final other = bodies[i];
+        if (!_filterWheelBody(other)) {
+          continue;
+        }
+        other.refreshCachedWorldAabb();
+        if (!rayHitsAabb(ray, other.cachedWorldAabb, bestDist)) {
+          continue;
+        }
+        final hit = other.shape.raycast(
+          ray,
+          other.bodyWorldMatrix,
+          maxDistance: bestDist,
+        );
+        if (hit != null && hit.$1 <= bestDist) {
+          bestDist = hit.$1;
+          bestNormal = hit.$2;
+        }
+      }
+    } else {
+      for (final other in bodies) {
+        if (!_filterWheelBody(other)) {
+          continue;
+        }
+        other.refreshCachedWorldAabb();
+        if (!rayHitsAabb(ray, other.cachedWorldAabb, bestDist)) {
+          continue;
+        }
+        final hit = other.shape.raycast(
+          ray,
+          other.bodyWorldMatrix,
+          maxDistance: bestDist,
+        );
+        if (hit != null && hit.$1 <= bestDist) {
+          bestDist = hit.$1;
+          bestNormal = hit.$2;
+        }
       }
     }
 
     if (collisionSystem != null) {
-      final cHit = collisionSystem.raycastColliders(
+      final cHit = collisionSystem.broadphaseTree.raycast(
         ray,
         maxDistance: bestDist,
-        collisionMask: chassis.collisionMask,
-        includeTriggers: false,
-        filter: (c) => !identical(c.hostComponent, chassis.hostComponent),
+        filter: _wheelColliderFilter,
+        narrowphase: _wheelColliderNarrowphase,
       );
-      if (cHit != null && cHit.distance <= bestDist) {
+      if (cHit != null && cHit.normal != null && cHit.distance <= bestDist) {
         bestDist = cHit.distance;
         bestNormal = cHit.normal;
       }

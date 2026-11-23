@@ -206,6 +206,9 @@ class SkyboxComponent3D({
   );
 
   @override
+  bool get usesDefaultFrustumVisibility => runtimeType == SkyboxComponent3D;
+
+  @override
   Aabb3? computeLocalAabb() => _skyBounds;
 
   @override

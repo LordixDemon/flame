@@ -383,12 +383,6 @@ int _reduceTetraClosestTo(
 
   var bestD2 = double.infinity;
   var bestCount = 4;
-  final bestMx = Float64List(3);
-  final bestMy = Float64List(3);
-  final bestMz = Float64List(3);
-  final bestBx = Float64List(3);
-  final bestBy = Float64List(3);
-  final bestBz = Float64List(3);
   var bestOutMx = px;
   var bestOutMy = py;
   var bestOutMz = pz;
@@ -417,16 +411,24 @@ int _reduceTetraClosestTo(
 
     if (signP * signOpp <= 0.0) {
       outsideAny = true;
-      final indices = [i0, i1, i2];
-      for (var s = 0; s < 3; s++) {
-        final src = indices[s];
-        _mx[s] = _tmx[src];
-        _my[s] = _tmy[src];
-        _mz[s] = _tmz[src];
-        _bx[s] = _tbx[src];
-        _by[s] = _tby[src];
-        _bz[s] = _tbz[src];
-      }
+      _mx[0] = _tmx[i0];
+      _my[0] = _tmy[i0];
+      _mz[0] = _tmz[i0];
+      _bx[0] = _tbx[i0];
+      _by[0] = _tby[i0];
+      _bz[0] = _tbz[i0];
+      _mx[1] = _tmx[i1];
+      _my[1] = _tmy[i1];
+      _mz[1] = _tmz[i1];
+      _bx[1] = _tbx[i1];
+      _by[1] = _tby[i1];
+      _bz[1] = _tbz[i1];
+      _mx[2] = _tmx[i2];
+      _my[2] = _tmy[i2];
+      _mz[2] = _tmz[i2];
+      _bx[2] = _tbx[i2];
+      _by[2] = _tby[i2];
+      _bz[2] = _tbz[i2];
       final cnt = _reduceTriangleClosestTo(px, py, pz, outM, outB);
       final dx = outM.x - px;
       final dy = outM.y - py;
@@ -442,12 +444,12 @@ int _reduceTetraClosestTo(
         bestOutBy = outB.y;
         bestOutBz = outB.z;
         for (var s = 0; s < cnt; s++) {
-          bestMx[s] = _mx[s];
-          bestMy[s] = _my[s];
-          bestMz[s] = _mz[s];
-          bestBx[s] = _bx[s];
-          bestBy[s] = _by[s];
-          bestBz[s] = _bz[s];
+          _bestMx[s] = _mx[s];
+          _bestMy[s] = _my[s];
+          _bestMz[s] = _mz[s];
+          _bestBx[s] = _bx[s];
+          _bestBy[s] = _by[s];
+          _bestBz[s] = _bz[s];
         }
       }
     }
@@ -468,12 +470,12 @@ int _reduceTetraClosestTo(
   }
 
   for (var s = 0; s < bestCount; s++) {
-    _mx[s] = bestMx[s];
-    _my[s] = bestMy[s];
-    _mz[s] = bestMz[s];
-    _bx[s] = bestBx[s];
-    _by[s] = bestBy[s];
-    _bz[s] = bestBz[s];
+    _mx[s] = _bestMx[s];
+    _my[s] = _bestMy[s];
+    _mz[s] = _bestMz[s];
+    _bx[s] = _bestBx[s];
+    _by[s] = _bestBy[s];
+    _bz[s] = _bestBz[s];
   }
   outM.setValues(bestOutMx, bestOutMy, bestOutMz);
   outB.setValues(bestOutBx, bestOutBy, bestOutBz);
@@ -521,6 +523,13 @@ final Float64List _tmz = Float64List(4);
 final Float64List _tbx = Float64List(4);
 final Float64List _tby = Float64List(4);
 final Float64List _tbz = Float64List(4);
+
+final Float64List _bestMx = Float64List(3);
+final Float64List _bestMy = Float64List(3);
+final Float64List _bestMz = Float64List(3);
+final Float64List _bestBx = Float64List(3);
+final Float64List _bestBy = Float64List(3);
+final Float64List _bestBz = Float64List(3);
 
 class _SweepResult({
   required final double toi,

@@ -166,6 +166,9 @@ class ModelComponent({
   }
 
   @override
+  bool get usesDefaultFrustumVisibility => runtimeType == ModelComponent;
+
+  @override
   Aabb3? computeLocalAabb() => model.animatedAabb;
 
   final Matrix4 _nodeTransform = Matrix4.identity();

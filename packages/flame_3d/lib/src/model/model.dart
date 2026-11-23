@@ -1,5 +1,6 @@
 import 'dart:collection';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flame_3d/game.dart';
 import 'package:flame_3d/model.dart';
@@ -7,13 +8,22 @@ import 'package:flame_3d/resources.dart';
 
 /// Preallocated per-component pose workspace so [Model.evaluateInto] runs every
 /// frame with zero heap allocations.
-class ModelPoseWorkspace._(this.orderedNodes, this.nodesByIndex) {
+class ModelPoseWorkspace._(
+  this.orderedNodes,
+  this.nodesByIndex,
+  this.orderIndexByNodeIndex,
+  this.parentOrderIndex,
+  this.skinnedNodes,
+) {
   /// Creates a reusable pose workspace sized to [model].
   factory ModelPoseWorkspace.forModel(Model model) {
     final order = model.processingOrder;
     final map = <int, ProcessedNode>{};
+    final orderIndexMap = <int, int>{};
     final ordered = <ProcessedNode>[];
-    for (final node in order) {
+    final skinned = <ProcessedNode>[];
+    for (var i = 0; i < order.length; i++) {
+      final node = order[i];
       final joints = <int, List<Matrix4>>{
         for (final entry in node.orderedJointIndicesPerSurface.entries)
           entry.key: List<Matrix4>.generate(
@@ -28,9 +38,24 @@ class ModelPoseWorkspace._(this.orderedNodes, this.nodesByIndex) {
         jointTransforms: joints,
       );
       map[node.nodeIndex] = processed;
+      orderIndexMap[node.nodeIndex] = i;
       ordered.add(processed);
+      if (joints.isNotEmpty) {
+        skinned.add(processed);
+      }
     }
-    return ModelPoseWorkspace._(List.unmodifiable(ordered), map);
+    final parentOrder = Int32List(order.length);
+    for (var i = 0; i < order.length; i++) {
+      final pNodeIdx = order[i].parentNodeIndex;
+      parentOrder[i] = pNodeIdx == null ? -1 : (orderIndexMap[pNodeIdx] ?? -1);
+    }
+    return ModelPoseWorkspace._(
+      List.unmodifiable(ordered),
+      map,
+      Map.unmodifiable(orderIndexMap),
+      parentOrder,
+      List.unmodifiable(skinned),
+    );
   }
 
   /// Processed nodes in topological dependency order.
@@ -38,6 +63,15 @@ class ModelPoseWorkspace._(this.orderedNodes, this.nodesByIndex) {
 
   /// Processed nodes indexed by `ModelNode.nodeIndex`.
   final Map<int, ProcessedNode> nodesByIndex;
+
+  /// Order indices inside [orderedNodes] keyed by `ModelNode.nodeIndex`.
+  final Map<int, int> orderIndexByNodeIndex;
+
+  /// Topological parent index (`-1` for roots) parallel to [orderedNodes].
+  final Int32List parentOrderIndex;
+
+  /// Subset of [orderedNodes] that carry non-empty skinning joint palettes.
+  final List<ProcessedNode> skinnedNodes;
 
   final Matrix4 _scratchLocal = Matrix4.identity();
 }
@@ -227,7 +261,9 @@ class Model {
   }) {
     final byIndex = workspace.nodesByIndex;
     final scratch = workspace._scratchLocal;
-    for (final processed in workspace.orderedNodes) {
+    final ordered = workspace.orderedNodes;
+    for (var i = 0; i < ordered.length; i++) {
+      final processed = ordered[i];
       processed.node.evaluateNodeInto(
         byIndex,
         animation,
@@ -244,10 +280,10 @@ class Model {
         modifiers[i].apply(this, workspace, worldMatrix, invWorldMatrix, dt);
       }
     }
-    for (final processed in workspace.orderedNodes) {
-      if (processed.jointTransforms.isNotEmpty) {
-        processed.node.updateJointsInPlace(byIndex, processed.jointTransforms);
-      }
+    final skinned = workspace.skinnedNodes;
+    for (var i = 0; i < skinned.length; i++) {
+      final processed = skinned[i];
+      processed.node.updateJointsInPlace(byIndex, processed.jointTransforms);
     }
   }
 

@@ -9,21 +9,33 @@ extension _StylizedUniforms on StylizedMaterial {
       1,
     );
     _unitOrZero(_gustWave, windGustDirection, windGustPhaseScale);
-    _applyWind(vertexShader, space);
-    if (_skinnedInUse) {
-      _applyWind(_skinnedVertexShader, space);
-    }
-    if (_standardInUse) {
-      _applyDepthBias(_standardVertexShader);
-    }
-    if (_texturedInUse) {
-      _applyWind(_texturedVertexShader, space);
-    }
-    if (_texturedSkinnedInUse) {
-      _applyWind(_texturedSkinnedVertexShader, space);
-    }
-    if (_texturedStandardInUse) {
-      _applyDepthBias(_texturedStandardVertexShader);
+    final activeVert = context is RenderContext3D
+        ? context.activeApplyVertexShader
+        : null;
+    if (activeVert != null) {
+      if (identical(activeVert, _standardVertexShader) ||
+          identical(activeVert, _texturedStandardVertexShader)) {
+        _applyDepthBias(activeVert);
+      } else {
+        _applyWind(activeVert, space);
+      }
+    } else {
+      _applyWind(vertexShader, space);
+      if (_skinnedInUse) {
+        _applyWind(_skinnedVertexShader, space);
+      }
+      if (_standardInUse) {
+        _applyDepthBias(_standardVertexShader);
+      }
+      if (_texturedInUse) {
+        _applyWind(_texturedVertexShader, space);
+      }
+      if (_texturedSkinnedInUse) {
+        _applyWind(_texturedSkinnedVertexShader, space);
+      }
+      if (_texturedStandardInUse) {
+        _applyDepthBias(_texturedStandardVertexShader);
+      }
     }
 
     final frag = fragmentShader;

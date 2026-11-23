@@ -160,6 +160,56 @@ final Vector3 _unitWorldDir = Vector3.zero();
 final Vector3 _localOrigin = Vector3.zero();
 final Vector3 _localDir = Vector3.zero();
 
+bool _invertAffineMatrixFast(Matrix4 src, Matrix4 dst) {
+  final s = src.storage;
+  if (s[3] == 0.0 && s[7] == 0.0 && s[11] == 0.0 && s[15] == 1.0) {
+    final c0x = s[0];
+    final c0y = s[1];
+    final c0z = s[2];
+    final c1x = s[4];
+    final c1y = s[5];
+    final c1z = s[6];
+    final c2x = s[8];
+    final c2y = s[9];
+    final c2z = s[10];
+    final l0 = c0x * c0x + c0y * c0y + c0z * c0z;
+    final l1 = c1x * c1x + c1y * c1y + c1z * c1z;
+    final l2 = c2x * c2x + c2y * c2y + c2z * c2z;
+    if ((l0 - 1.0).abs() <= 1e-5 &&
+        (l1 - 1.0).abs() <= 1e-5 &&
+        (l2 - 1.0).abs() <= 1e-5) {
+      final d01 = c0x * c1x + c0y * c1y + c0z * c1z;
+      final d02 = c0x * c2x + c0y * c2y + c0z * c2z;
+      final d12 = c1x * c2x + c1y * c2y + c1z * c2z;
+      if (d01.abs() <= 1e-5 && d02.abs() <= 1e-5 && d12.abs() <= 1e-5) {
+        final tx = s[12];
+        final ty = s[13];
+        final tz = s[14];
+        final o = dst.storage;
+        o[0] = c0x;
+        o[4] = c0y;
+        o[8] = c0z;
+        o[12] = -(c0x * tx + c0y * ty + c0z * tz);
+        o[1] = c1x;
+        o[5] = c1y;
+        o[9] = c1z;
+        o[13] = -(c1x * tx + c1y * ty + c1z * tz);
+        o[2] = c2x;
+        o[6] = c2y;
+        o[10] = c2z;
+        o[14] = -(c2x * tx + c2y * ty + c2z * tz);
+        o[3] = 0.0;
+        o[7] = 0.0;
+        o[11] = 0.0;
+        o[15] = 1.0;
+        return true;
+      }
+    }
+  }
+  dst.setFrom(src);
+  return dst.invert().abs() >= 1e-15;
+}
+
 bool _prepareLocalRay(
   Ray worldRay,
   Matrix4 worldTransform,
@@ -178,9 +228,7 @@ bool _prepareLocalRay(
   final wz = worldRay.direction.z * invLen;
   _unitWorldDir.setValues(wx, wy, wz);
 
-  _invTransform.setFrom(worldTransform);
-  final det = _invTransform.invert();
-  if (det.abs() < 1e-15) {
+  if (!_invertAffineMatrixFast(worldTransform, _invTransform)) {
     return false;
   }
   final m = _invTransform.storage;

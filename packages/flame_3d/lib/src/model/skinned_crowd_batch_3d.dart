@@ -79,6 +79,7 @@ class SkinnedCrowdBatch3D({
     _frameIndices = Int32List(_capacity);
     _modes = Int32List(_capacity);
     _pingPongDirs = Int32List(_capacity);
+    _agentMirrorBits = Uint8List(_capacity);
     poseBanks = _bakeModel(model, bakedFps);
     _classifyMeshNodes();
   }
@@ -114,6 +115,23 @@ class SkinnedCrowdBatch3D({
   late Int32List _frameIndices;
   late Int32List _modes;
   late Int32List _pingPongDirs;
+  late Uint8List _agentMirrorBits;
+
+  late final List<Uint8List> _skinnedPoseMirrorBits;
+  late final Int32List _cachedBucketCount;
+  late final List<Int32List> _bucketStart;
+  late final List<Int32List> _bucketLen;
+  late final List<Int32List> _bucketClipIdx;
+  late final List<Int32List> _bucketFrameIdx;
+  late final List<Uint8List> _bucketMirrored;
+  late final List<Float32List> _bucketCenters;
+
+  int _stateVersion = 1;
+  int _packedStateVersion = -1;
+  int _packedWorldVersion = -1;
+  int _packedLength = -1;
+  int _packedInstanceVersion = 0;
+  int _cachedSkinnedNodeDraws = 0;
 
   final Aabb3 _localAabb = Aabb3();
   bool _boundsDirty = true;
@@ -262,6 +280,58 @@ class SkinnedCrowdBatch3D({
       ..fillRange(0, _totalPoseCount * 2, -1);
     _usedBuckets = Int32List(_totalPoseCount * 2);
     _bucketNext = Int32List(_capacity);
+
+    final skinnedCount = _skinnedMeshSlots.length;
+    final maxBuckets = _totalPoseCount * 2;
+    _skinnedPoseMirrorBits = List<Uint8List>.generate(
+      skinnedCount,
+      (s) {
+        final slot = _skinnedMeshSlots[s];
+        final bits = Uint8List(_totalPoseCount);
+        for (var clipIdx = 0; clipIdx < poseBanks.length; clipIdx++) {
+          final frames = poseBanks[clipIdx].frames;
+          final base = _clipBaseOffsets[clipIdx];
+          for (var frameIdx = 0; frameIdx < frames.length; frameIdx++) {
+            final pose = frames[frameIdx][slot];
+            bits[base + frameIdx] =
+                isMirrored3x3(pose.combinedTransform.storage) ? 1 : 0;
+          }
+        }
+        return bits;
+      },
+      growable: false,
+    );
+    _cachedBucketCount = Int32List(skinnedCount);
+    _bucketStart = List<Int32List>.generate(
+      skinnedCount,
+      (_) => Int32List(maxBuckets),
+      growable: false,
+    );
+    _bucketLen = List<Int32List>.generate(
+      skinnedCount,
+      (_) => Int32List(maxBuckets),
+      growable: false,
+    );
+    _bucketClipIdx = List<Int32List>.generate(
+      skinnedCount,
+      (_) => Int32List(maxBuckets),
+      growable: false,
+    );
+    _bucketFrameIdx = List<Int32List>.generate(
+      skinnedCount,
+      (_) => Int32List(maxBuckets),
+      growable: false,
+    );
+    _bucketMirrored = List<Uint8List>.generate(
+      skinnedCount,
+      (_) => Uint8List(maxBuckets),
+      growable: false,
+    );
+    _bucketCenters = List<Float32List>.generate(
+      skinnedCount,
+      (_) => Float32List(maxBuckets * 3),
+      growable: false,
+    );
   }
 
   int _resolveClipIndex(int? clipIndex, String? clipName) {
@@ -392,6 +462,7 @@ class SkinnedCrowdBatch3D({
         ..[cb + 6] = instanceData.z
         ..[cb + 7] = instanceData.w;
     }
+    _stateVersion++;
     markDrawDirty(shadows: castsShadows);
   }
 
@@ -420,6 +491,7 @@ class SkinnedCrowdBatch3D({
       _frameIndices[index] = _frameIndices[last];
       _modes[index] = _modes[last];
       _pingPongDirs[index] = _pingPongDirs[last];
+      _agentMirrorBits[index] = _agentMirrorBits[last];
     }
     _invalidateBounds();
   }
@@ -533,9 +605,13 @@ class SkinnedCrowdBatch3D({
     }
 
     if (anyFrameChanged) {
+      _stateVersion++;
       markDrawDirty(shadows: castsShadows);
     }
   }
+
+  @override
+  bool get usesDefaultFrustumVisibility => runtimeType == SkinnedCrowdBatch3D;
 
   @override
   Aabb3? computeLocalAabb() {
@@ -564,15 +640,14 @@ class SkinnedCrowdBatch3D({
       return;
     }
 
-    final batchWorld = worldTransformMatrix;
-    final batchIsIdentity = batchWorld.isIdentity();
-    final batchMirrorBit = !batchIsIdentity && isMirrored3x3(batchWorld.storage)
-        ? 1
-        : 0;
+    final worldVer = worldTransformVersion;
+    if (_packedStateVersion != _stateVersion ||
+        _packedWorldVersion != worldVer ||
+        _packedLength != _length) {
+      _rebuildPackedDraws(worldTransformMatrix, worldVer);
+    }
 
-    // 1. Skinned mesh nodes: group agents sharing `(clipIndex, frameIndex)` and
-    //    handedness into contiguous pose buckets and submit 1 instanced draw
-    //    per bucket per surface.
+    var skinnedPoseBuckets = 0;
     for (var s = 0; s < _skinnedMeshSlots.length; s++) {
       final slot = _skinnedMeshSlots[s];
       final samplePose = poseBanks.first.frames.first[slot];
@@ -581,19 +656,96 @@ class SkinnedCrowdBatch3D({
         continue;
       }
       final instBuf = _skinnedInstanceBuffers[s];
+      final bucketCount = _cachedBucketCount[s];
+      final starts = _bucketStart[s];
+      final lens = _bucketLen[s];
+      final clips = _bucketClipIdx[s];
+      final frames = _bucketFrameIdx[s];
+      final mirrored = _bucketMirrored[s];
+      final centers = _bucketCenters[s];
+
+      for (var u = 0; u < bucketCount; u++) {
+        final cOff = u * 3;
+        _bucketCenterScratch.setValues(
+          centers[cOff],
+          centers[cOff + 1],
+          centers[cOff + 2],
+        );
+        final firstPose = poseBanks[clips[u]].frames[frames[u]][slot];
+        final jointMap = firstPose.jointTransforms;
+        final isMirroredBucket = mirrored[u] == 1;
+        final startAgent = starts[u];
+        final count = lens[u];
+        var surfaceIdx = 0;
+        for (final surface in mesh.surfaces) {
+          context.drawInstances(
+            surface,
+            instances: instBuf,
+            count: count,
+            instanceOffset: startAgent,
+            jointTransforms: jointMap[surfaceIdx],
+            center: _bucketCenterScratch,
+            mirrored: isMirroredBucket,
+            instanceVersion: _packedInstanceVersion,
+            instanceBufferCount: _length,
+          );
+          skinnedPoseBuckets++;
+          surfaceIdx++;
+        }
+      }
+    }
+
+    var instancedSubNodeDraws = 0;
+    for (var u = 0; u < _staticMeshSlots.length; u++) {
+      final slot = _staticMeshSlots[u];
+      final samplePose = poseBanks.first.frames.first[slot];
+      final mesh = samplePose.node.mesh;
+      if (mesh == null) {
+        continue;
+      }
+      final instBuf = _staticInstanceBuffers[u];
+      for (final surface in mesh.surfaces) {
+        context.drawInstances(
+          surface,
+          instances: instBuf,
+          count: _length,
+          instanceVersion: _packedInstanceVersion,
+        );
+        instancedSubNodeDraws++;
+      }
+    }
+
+    _lastInstancedSubNodeDraws = instancedSubNodeDraws;
+    _lastSkinnedNodeDraws = _cachedSkinnedNodeDraws;
+    _lastSkinnedPoseBuckets = skinnedPoseBuckets;
+  }
+
+  void _rebuildPackedDraws(Matrix4 batchWorld, int worldVer) {
+    final batchIsIdentity = batchWorld.isIdentity();
+    final batchMirrorBit = !batchIsIdentity && isMirrored3x3(batchWorld.storage)
+        ? 1
+        : 0;
+
+    var skinnedNodeDraws = 0;
+    for (var s = 0; s < _skinnedMeshSlots.length; s++) {
+      final slot = _skinnedMeshSlots[s];
+      final samplePose = poseBanks.first.frames.first[slot];
+      final mesh = samplePose.node.mesh;
+      if (mesh == null) {
+        _cachedBucketCount[s] = 0;
+        continue;
+      }
+      final instBuf = _skinnedInstanceBuffers[s];
+      final poseMirrorBits = _skinnedPoseMirrorBits[s];
 
       var usedBucketCount = 0;
       for (var i = _length - 1; i >= 0; i--) {
         final clipIdx = _clipIndices[i];
         final frameIdx = _frameIndices[i];
-        final pose = poseBanks[clipIdx].frames[frameIdx][slot];
-        final poseMirrorBit = isMirrored3x3(pose.combinedTransform.storage)
-            ? 1
-            : 0;
-        final agentMirrorBit = isMirrored3x3(_transforms, i * 16) ? 1 : 0;
-        final mirrorBit = batchMirrorBit ^ agentMirrorBit ^ poseMirrorBit;
-        final bucketId =
-            ((_clipBaseOffsets[clipIdx] + frameIdx) << 1) | mirrorBit;
+        final poseIdx = _clipBaseOffsets[clipIdx] + frameIdx;
+        final poseMirrorBit = poseMirrorBits[poseIdx];
+        final mirrorBit = batchMirrorBit ^ _agentMirrorBits[i] ^ poseMirrorBit;
+        final bucketId = (poseIdx << 1) | mirrorBit;
 
         final prevHead = _bucketHead[bucketId];
         if (prevHead == -1) {
@@ -603,6 +755,13 @@ class SkinnedCrowdBatch3D({
         _bucketHead[bucketId] = i;
       }
 
+      final starts = _bucketStart[s];
+      final lens = _bucketLen[s];
+      final clips = _bucketClipIdx[s];
+      final frames = _bucketFrameIdx[s];
+      final mirrored = _bucketMirrored[s];
+      final centers = _bucketCenters[s];
+
       var cursor = 0;
       for (var u = 0; u < usedBucketCount; u++) {
         final bucketId = _usedBuckets[u];
@@ -610,8 +769,6 @@ class SkinnedCrowdBatch3D({
         _bucketHead[bucketId] = -1;
 
         final firstAgent = i;
-        final firstPose = poseBanks[_clipIndices[firstAgent]]
-            .frames[_frameIndices[firstAgent]][slot];
         final startAgent = cursor;
         var sumX = 0.0;
         var sumY = 0.0;
@@ -644,44 +801,29 @@ class SkinnedCrowdBatch3D({
             instBuf[outBase + 16 + k] = _colorsAndData[cb + k];
           }
           cursor++;
-          _lastSkinnedNodeDraws++;
+          skinnedNodeDraws++;
           i = _bucketNext[i];
         }
 
         final bucketCount = cursor - startAgent;
         final invCount = 1.0 / bucketCount;
-        _bucketCenterScratch.setValues(
-          sumX * invCount,
-          sumY * invCount,
-          sumZ * invCount,
-        );
-        final isMirroredBucket = (bucketId & 1) == 1;
-        final jointMap = firstPose.jointTransforms;
-        var surfaceIdx = 0;
-        for (final surface in mesh.surfaces) {
-          context.drawInstances(
-            surface,
-            instances: instBuf,
-            count: bucketCount,
-            instanceOffset: startAgent,
-            jointTransforms: jointMap[surfaceIdx],
-            center: _bucketCenterScratch,
-            mirrored: isMirroredBucket,
-          );
-          _lastSkinnedPoseBuckets++;
-          surfaceIdx++;
-        }
+        starts[u] = startAgent;
+        lens[u] = bucketCount;
+        clips[u] = _clipIndices[firstAgent];
+        frames[u] = _frameIndices[firstAgent];
+        mirrored[u] = bucketId & 1;
+        final cOff = u * 3;
+        centers[cOff] = sumX * invCount;
+        centers[cOff + 1] = sumY * invCount;
+        centers[cOff + 2] = sumZ * invCount;
       }
+      _cachedBucketCount[s] = usedBucketCount;
     }
 
-    // 2. Unskinned static sub-nodes: pack all N agents into contiguous
-    //    `Float32List` instance buffers and submit 1 `drawInstances` call per
-    //    surface!
     for (var u = 0; u < _staticMeshSlots.length; u++) {
       final slot = _staticMeshSlots[u];
       final samplePose = poseBanks.first.frames.first[slot];
-      final mesh = samplePose.node.mesh;
-      if (mesh == null) {
+      if (samplePose.node.mesh == null) {
         continue;
       }
       final instBuf = _staticInstanceBuffers[u];
@@ -707,16 +849,13 @@ class SkinnedCrowdBatch3D({
           instBuf[outBase + 16 + k] = _colorsAndData[cb + k];
         }
       }
-
-      for (final surface in mesh.surfaces) {
-        context.drawInstances(
-          surface,
-          instances: instBuf,
-          count: _length,
-        );
-        _lastInstancedSubNodeDraws++;
-      }
     }
+
+    _cachedSkinnedNodeDraws = skinnedNodeDraws;
+    _packedStateVersion = _stateVersion;
+    _packedWorldVersion = worldVer;
+    _packedLength = _length;
+    _packedInstanceVersion++;
   }
 
   @override
@@ -788,6 +927,7 @@ class SkinnedCrowdBatch3D({
     for (var k = 0; k < 16; k++) {
       _transforms[base + k] = s[k];
     }
+    _agentMirrorBits[index] = isMirrored3x3(s) ? 1 : 0;
   }
 
   void _grow(int newCapacity) {
@@ -801,6 +941,8 @@ class SkinnedCrowdBatch3D({
     _frameIndices = Int32List(newCapacity)..setRange(0, _length, _frameIndices);
     _modes = Int32List(newCapacity)..setRange(0, _length, _modes);
     _pingPongDirs = Int32List(newCapacity)..setRange(0, _length, _pingPongDirs);
+    _agentMirrorBits = Uint8List(newCapacity)
+      ..setRange(0, _length, _agentMirrorBits);
     _staticInstanceBuffers = List<Float32List>.generate(
       _staticMeshSlots.length,
       (_) => Float32List(newCapacity * _instanceStride),
@@ -816,6 +958,7 @@ class SkinnedCrowdBatch3D({
   }
 
   void _invalidateBounds() {
+    _stateVersion++;
     _boundsDirty = true;
     markAabbDirty();
     markDrawDirty(shadows: castsShadows);

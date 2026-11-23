@@ -200,33 +200,65 @@ class MsdfFontAtlas3D._({
     );
   }
 
+  late final List<MsdfGlyphMetrics3D> _asciiGlyphs =
+      List<MsdfGlyphMetrics3D>.generate(
+        95,
+        (i) => glyphs[0x20 + i] ?? fallbackGlyph,
+        growable: false,
+      );
+  late final Uint8List _hasKerningLeft = _buildKerningMask(kerningPairs);
+
+  static Uint8List _buildKerningMask(Map<int, double> pairs) {
+    final mask = Uint8List(128);
+    for (final key in pairs.keys) {
+      final left = key >> 16;
+      if (left >= 0 && left < 128) {
+        mask[left] = 1;
+      }
+    }
+    return mask;
+  }
+
   /// Resolves [MsdfGlyphMetrics3D] for [codeUnit] (falling back to
   /// [fallbackGlyph] for unknown symbols).
-  MsdfGlyphMetrics3D metricsFor(int codeUnit) =>
-      glyphs[codeUnit] ?? fallbackGlyph;
+  MsdfGlyphMetrics3D metricsFor(int codeUnit) {
+    if (codeUnit >= 0x20 && codeUnit <= 0x7E) {
+      return _asciiGlyphs[codeUnit - 0x20];
+    }
+    return glyphs[codeUnit] ?? fallbackGlyph;
+  }
 
   /// Returns horizontal kerning adjustment (in ems) between [leftCodeUnit] and
   /// [rightCodeUnit].
-  double kerning(int leftCodeUnit, int rightCodeUnit) =>
-      kerningPairs[(leftCodeUnit << 16) | (rightCodeUnit & 0xFFFF)] ?? 0.0;
+  double kerning(int leftCodeUnit, int rightCodeUnit) {
+    if (leftCodeUnit >= 0 &&
+        leftCodeUnit < 128 &&
+        _hasKerningLeft[leftCodeUnit] == 0) {
+      return 0.0;
+    }
+    return kerningPairs[(leftCodeUnit << 16) | (rightCodeUnit & 0xFFFF)] ?? 0.0;
+  }
 
-  /// Measures the layout width of [text] in world units at [fontSize].
-  double measureLineWidth(
-    String text, {
+  /// Measures the layout width of a single line slice `text[start..end)` in
+  /// world units at [fontSize].
+  double measureLineRangeWidth(
+    String text,
+    int start,
+    int end, {
     double fontSize = 1.0,
     double letterSpacing = 0.0,
   }) {
-    if (text.isEmpty) {
+    if (start >= end) {
       return 0.0;
     }
     var emWidth = 0.0;
-    int? prev;
-    for (var i = 0; i < text.length; i++) {
+    var prev = -1;
+    for (var i = start; i < end; i++) {
       final cu = text.codeUnitAt(i);
       if (cu == 0x0A) {
         break;
       }
-      if (prev != null) {
+      if (prev >= 0) {
         emWidth += kerning(prev, cu) + letterSpacing;
       }
       emWidth += metricsFor(cu).advance;
@@ -234,6 +266,19 @@ class MsdfFontAtlas3D._({
     }
     return emWidth * fontSize;
   }
+
+  /// Measures the layout width of [text] in world units at [fontSize].
+  double measureLineWidth(
+    String text, {
+    double fontSize = 1.0,
+    double letterSpacing = 0.0,
+  }) => measureLineRangeWidth(
+    text,
+    0,
+    text.length,
+    fontSize: fontSize,
+    letterSpacing: letterSpacing,
+  );
 
   /// Bilinearly samples the 3-channel MSDF median distance (`[0..1]`, `>= 0.5`
   /// inside a glyph stroke) at normalized atlas UV `(u, v)`.

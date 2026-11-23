@@ -444,11 +444,19 @@ class BloomPass(final GraphicsDevice _device) {
   void _drawQuad(Shader vert, Shader frag, _BloomShaderCache cache) {
     vert.resource;
     frag.resource;
-    final pipeline = _device.pipelineFor(
-      vert,
-      frag,
-      fullscreenQuadSurface.layout,
-    );
+    var pipeline = cache.pipeline;
+    if (pipeline == null ||
+        !identical(cache.pipelineDevice, _device) ||
+        cache.vertGeneration != vert.generation ||
+        cache.generation != frag.generation) {
+      pipeline = cache.pipeline = _device.pipelineFor(
+        vert,
+        frag,
+        fullscreenQuadSurface.layout,
+      );
+      cache.pipelineDevice = _device;
+      cache.vertGeneration = vert.generation;
+    }
     _device
       ..bindPipeline(pipeline)
       ..setRenderState(fullscreenQuadState)
@@ -474,12 +482,16 @@ class _TargetTex(this.gpuTex, this.tex) {
 
 abstract class _BloomShaderCache() {
   int generation = -1;
+  DevicePipeline? pipeline;
+  GraphicsDevice? pipelineDevice;
+  int vertGeneration = -1;
   late UniformBlock block;
   late List<GpuUniformSlot> samplerSlots;
   late List<int> samplerIndices;
 
   void _initBase(Shader frag, String blockName) {
     generation = frag.generation;
+    pipeline = null;
     block = frag.block(blockName);
     final slots = <GpuUniformSlot>[];
     final indices = <int>[];

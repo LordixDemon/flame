@@ -19,10 +19,11 @@ class ShadowGroup() {
   final DirectionalShadowProjection projection = DirectionalShadowProjection();
 
   final List<World3D> _worlds = [];
+  late final List<World3D> _worldsView = UnmodifiableListView(_worlds);
 
   /// The worlds of the group, in the order they joined it (see
   /// [World3D.shadowGroup]).
-  List<World3D> get worlds => List.unmodifiable(_worlds);
+  List<World3D> get worlds => _worldsView;
 
   /// Combined [World3D.castersVersion] sum across all worlds in this group.
   int get castersVersion {
@@ -200,7 +201,7 @@ class ShadowGroup() {
   /// this frame for the same cameras (or cached via
   /// [ShadowSettings.cacheWhenStatic]) and is still bound, rendered
   /// otherwise. Returns whether the pass receives shadows.
-  bool _renderFor(World3D world, RenderContext3D context, Canvas canvas) {
+  bool _renderFor(World3D world, RenderContext3D context, Canvas? canvas) {
     // A world whose host does not report its camera (one that is not a
     // Scene3DComponent) is drawn with the camera of the pass.
     if (world._groupRound != _round ||
@@ -231,7 +232,7 @@ class ShadowGroup() {
     // With ShadowSettings.cacheStillCasters, the still casters of every
     // world, prepared with the lights of the world that renders the map.
     final lights = world._passLights;
-    final keepsStill = World3D._stillCasterSettings(lights) != null;
+    final stillSettings = World3D._stillCasterSettings(lights);
     var groupStillHash = 0;
     for (final member in _worlds) {
       if (!identical(member._contextOrNull, context)) {
@@ -242,8 +243,8 @@ class ShadowGroup() {
         member,
         member._shadowKeyVersion,
       );
-      if (keepsStill) {
-        member._prepareStillCasters(member, lights);
+      if (stillSettings != null) {
+        member._shadowCasters.prepare(stillSettings.stillCasterFrames);
         groupStillHash = Object.hash(
           groupStillHash,
           member,
@@ -267,7 +268,7 @@ class ShadowGroup() {
       projection: projection,
       sceneBounds: any ? _bounds : null,
       castersKey: key,
-      stillCastersKey: keepsStill
+      stillCastersKey: stillSettings != null
           ? World3D._shadowCasterKey(this, groupStillHash, lights)
           : null,
       fitViewProjections: _viewProjections,
@@ -296,7 +297,7 @@ class ShadowGroup() {
 
   /// Records the casters of [world], then of the other worlds of the group
   /// rendered through [context].
-  void _recordAll(World3D world, RenderContext3D context, Canvas canvas) {
+  void _recordAll(World3D world, RenderContext3D context, Canvas? canvas) {
     world._recordCasters(canvas);
     for (final member in _worlds) {
       if (identical(member, world) ||

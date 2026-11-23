@@ -607,6 +607,9 @@ class ParticleSystem3D({
   static double _uniformScale(Float32List m) => uniformScale3x3(m);
 
   @override
+  bool get usesDefaultFrustumVisibility => runtimeType == ParticleSystem3D;
+
+  @override
   Aabb3? computeLocalAabb() {
     if (particles.length == 0 || !_hasRawBounds) {
       return null;

@@ -134,39 +134,53 @@ class CompoundShape3D(List<CompoundChildShape3D> children) extends Shape3D {
 
   @override
   void computeWorldAabb(Matrix4 worldTransform, Aabb3 out) {
-    final childMat = Matrix4.identity();
-    final childBox = Aabb3();
-    for (var i = 0; i < children.length; i++) {
-      final c = children[i];
-      childMat
-        ..setFrom(worldTransform)
-        ..multiply(c.localTransform);
-      c.shape.computeWorldAabb(childMat, childBox);
-      if (i == 0) {
-        out.min.setFrom(childBox.min);
-        out.max.setFrom(childBox.max);
-      } else {
-        out.hull(childBox);
+    final mIdx = _matDepth++;
+    final aIdx = _aabbDepth++;
+    final childMat = _borrowMat(mIdx);
+    final childBox = _borrowAabb(aIdx);
+    try {
+      for (var i = 0; i < children.length; i++) {
+        final c = children[i];
+        childMat
+          ..setFrom(worldTransform)
+          ..multiply(c.localTransform);
+        c.shape.computeWorldAabb(childMat, childBox);
+        if (i == 0) {
+          out.min.setFrom(childBox.min);
+          out.max.setFrom(childBox.max);
+        } else {
+          out.hull(childBox);
+        }
       }
+    } finally {
+      _aabbDepth = aIdx;
+      _matDepth = mIdx;
     }
   }
 
   @override
   void supportPoint(Vector3 worldDir, Matrix4 worldTransform, Vector3 out) {
-    final childMat = Matrix4.identity();
-    final cand = Vector3.zero();
+    final mIdx = _matDepth++;
+    final vIdx = _vecDepth++;
+    final childMat = _borrowMat(mIdx);
+    final cand = _borrowVec(vIdx);
     var bestDot = double.negativeInfinity;
-    for (var i = 0; i < children.length; i++) {
-      final c = children[i];
-      childMat
-        ..setFrom(worldTransform)
-        ..multiply(c.localTransform);
-      c.shape.supportPoint(worldDir, childMat, cand);
-      final d = cand.dot(worldDir);
-      if (d > bestDot) {
-        bestDot = d;
-        out.setFrom(cand);
+    try {
+      for (var i = 0; i < children.length; i++) {
+        final c = children[i];
+        childMat
+          ..setFrom(worldTransform)
+          ..multiply(c.localTransform);
+        c.shape.supportPoint(worldDir, childMat, cand);
+        final d = cand.dot(worldDir);
+        if (d > bestDot) {
+          bestDot = d;
+          out.setFrom(cand);
+        }
       }
+    } finally {
+      _vecDepth = vIdx;
+      _matDepth = mIdx;
     }
   }
 
@@ -179,21 +193,57 @@ class CompoundShape3D(List<CompoundChildShape3D> children) extends Shape3D {
     if (!(maxDistance >= 0.0)) {
       return null;
     }
-    final childMat = Matrix4.identity();
+    final mIdx = _matDepth++;
+    final childMat = _borrowMat(mIdx);
     var limit = maxDistance;
     (double, Vector3)? best;
-    for (var i = 0; i < children.length; i++) {
-      final c = children[i];
-      childMat
-        ..setFrom(worldTransform)
-        ..multiply(c.localTransform);
-      final hit = c.shape.raycast(worldRay, childMat, maxDistance: limit);
-      if (hit != null && hit.$1 <= limit) {
-        limit = hit.$1;
-        best = hit;
+    try {
+      for (var i = 0; i < children.length; i++) {
+        final c = children[i];
+        childMat
+          ..setFrom(worldTransform)
+          ..multiply(c.localTransform);
+        final hit = c.shape.raycast(worldRay, childMat, maxDistance: limit);
+        if (hit != null && hit.$1 <= limit) {
+          limit = hit.$1;
+          best = hit;
+        }
       }
+    } finally {
+      _matDepth = mIdx;
     }
     return best;
+  }
+
+  static final List<Matrix4> _matStack = [
+    Matrix4.identity(),
+    Matrix4.identity(),
+  ];
+  static final List<Aabb3> _aabbStack = [Aabb3(), Aabb3()];
+  static final List<Vector3> _vecStack = [Vector3.zero(), Vector3.zero()];
+  static int _matDepth = 0;
+  static int _aabbDepth = 0;
+  static int _vecDepth = 0;
+
+  static Matrix4 _borrowMat(int depth) {
+    while (_matStack.length <= depth) {
+      _matStack.add(Matrix4.identity());
+    }
+    return _matStack[depth];
+  }
+
+  static Aabb3 _borrowAabb(int depth) {
+    while (_aabbStack.length <= depth) {
+      _aabbStack.add(Aabb3());
+    }
+    return _aabbStack[depth];
+  }
+
+  static Vector3 _borrowVec(int depth) {
+    while (_vecStack.length <= depth) {
+      _vecStack.add(Vector3.zero());
+    }
+    return _vecStack[depth];
   }
 
   /// Computes the exact `3x3` symmetric inertia tensor using the

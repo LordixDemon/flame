@@ -576,6 +576,13 @@ class ConvexHullShape3D({
     return 3;
   }
 
+  static final Float64List _tetraTx = Float64List(4);
+  static final Float64List _tetraTy = Float64List(4);
+  static final Float64List _tetraTz = Float64List(4);
+  static final Float64List _tetraBestX = Float64List(3);
+  static final Float64List _tetraBestY = Float64List(3);
+  static final Float64List _tetraBestZ = Float64List(3);
+
   static int _closestOnTetraSimplex(
     double px,
     double py,
@@ -590,18 +597,23 @@ class ConvexHullShape3D({
       (0, 3, 1, 2),
       (1, 3, 2, 0),
     ];
-    final tx = Float64List.fromList(_sx);
-    final ty = Float64List.fromList(_sy);
-    final tz = Float64List.fromList(_sz);
+    final tx = _tetraTx;
+    final ty = _tetraTy;
+    final tz = _tetraTz;
+    for (var k = 0; k < 4; k++) {
+      tx[k] = _sx[k];
+      ty[k] = _sy[k];
+      tz[k] = _sz[k];
+    }
 
     var bestDist2 = double.infinity;
     var bestCount = 4;
     var bestX = px;
     var bestY = py;
     var bestZ = pz;
-    final bestVertsX = Float64List(3);
-    final bestVertsY = Float64List(3);
-    final bestVertsZ = Float64List(3);
+    final bestVertsX = _tetraBestX;
+    final bestVertsY = _tetraBestY;
+    final bestVertsZ = _tetraBestZ;
     var outsideAny = false;
 
     for (final (i0, i1, i2, opp) in faces) {

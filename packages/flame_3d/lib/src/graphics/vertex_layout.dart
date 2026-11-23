@@ -146,7 +146,13 @@ class VertexLayout(List<VertexAttribute> attributes) {
 
   /// The attribute named [name], or `null` when the layout has none.
   VertexAttribute? attribute(String name) {
-    return attributes.firstWhereOrNull((a) => a.name == name);
+    for (var i = 0; i < attributes.length; i++) {
+      final a = attributes[i];
+      if (a.name == name) {
+        return a;
+      }
+    }
+    return null;
   }
 
   static List<int> _computeOffsets(List<VertexAttribute> attributes) {
@@ -160,14 +166,17 @@ class VertexLayout(List<VertexAttribute> attributes) {
   }
 
   static const _equality = ListEquality<VertexAttribute>();
+  late final int _hashCode = _equality.hash(attributes);
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is VertexLayout && _equality.equals(other.attributes, attributes);
+      other is VertexLayout &&
+          other._hashCode == _hashCode &&
+          _equality.equals(other.attributes, attributes);
 
   @override
-  int get hashCode => _equality.hash(attributes);
+  int get hashCode => _hashCode;
 
   @override
   String toString() => 'VertexLayout($attributes)';

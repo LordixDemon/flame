@@ -37,16 +37,26 @@ enum TextAlign3D() {
 }
 
 class _TextEntry3D({
-  required final String text,
+  required var String text,
   required final Vector3 position,
-  required final double fontSize,
-  required final Color color,
-  required final TextBillboardMode3D mode,
-  required final Quaternion? rotation,
-  required final TextAlign3D align,
-  required final double letterSpacing,
-  required final double lineHeight,
-});
+  required var double fontSize,
+  required var Color color,
+  required var TextBillboardMode3D mode,
+  required var TextAlign3D align,
+  required var double letterSpacing,
+  required var double lineHeight,
+  var Quaternion? rotation,
+}) {
+  int quadStart = 0;
+  int quadCount = 0;
+  double minX = 0.0;
+  double minY = 0.0;
+  double minZ = 0.0;
+  double maxX = 0.0;
+  double maxY = 0.0;
+  double maxZ = 0.0;
+  bool hasBounds = false;
+}
 
 /// Batched 3D world-space text renderer with a signed-distance glyph atlas.
 ///
@@ -99,9 +109,12 @@ class MsdfTextBatch3D({
 
   final List<_TextEntry3D> _entries = [];
   bool _geometryDirty = false;
+  bool _aabbDirty = false;
   int _glyphQuadCount = 0;
   final Aabb3 _localAabb = Aabb3();
   bool _hasBounds = false;
+  final Vector3 _rightScratch = Vector3.zero();
+  final Vector3 _upScratch = Vector3.zero();
 
   /// Number of text strings currently queued in this batch.
   int get textCount => _entries.length;
@@ -125,6 +138,7 @@ class MsdfTextBatch3D({
     _glyphQuadCount = 0;
     _hasBounds = false;
     _geometryDirty = false;
+    _aabbDirty = false;
     markAabbDirty();
     worldOrNull?.markSceneDirty(shadows: false);
   }
@@ -156,6 +170,7 @@ class MsdfTextBatch3D({
       ),
     );
     _geometryDirty = true;
+    _aabbDirty = true;
     markAabbDirty();
     worldOrNull?.markSceneDirty(shadows: false);
     return idx;
@@ -176,26 +191,56 @@ class MsdfTextBatch3D({
     double? lineHeight,
   }) {
     RangeError.checkValidIndex(index, this, 'index', _entries.length);
-    final prev = _entries[index];
-    _entries[index] = _TextEntry3D(
-      text: text,
-      position: position?.clone() ?? prev.position,
-      fontSize: fontSize ?? prev.fontSize,
-      color: color ?? prev.color,
-      mode: mode ?? prev.mode,
-      rotation: rotation?.clone() ?? prev.rotation,
-      align: align ?? prev.align,
-      letterSpacing: letterSpacing ?? prev.letterSpacing,
-      lineHeight: lineHeight ?? prev.lineHeight,
-    );
-    _geometryDirty = true;
+    final entry = _entries[index]..text = text;
+    if (position != null) {
+      entry.position.setFrom(position);
+    }
+    if (fontSize != null) {
+      entry.fontSize = math.max(1e-4, fontSize);
+    }
+    if (color != null) {
+      entry.color = color;
+    }
+    if (mode != null) {
+      entry.mode = mode;
+    }
+    if (rotation != null) {
+      final existing = entry.rotation;
+      if (existing != null) {
+        existing.setFrom(rotation);
+      } else {
+        entry.rotation = rotation.clone();
+      }
+    }
+    if (align != null) {
+      entry.align = align;
+    }
+    if (letterSpacing != null) {
+      entry.letterSpacing = letterSpacing;
+    }
+    if (lineHeight != null) {
+      entry.lineHeight = lineHeight;
+    }
+
+    if (!_geometryDirty && _countVisibleGlyphs(text) == entry.quadCount) {
+      _emitEntryGlyphs(entry, inPlace: true);
+    } else {
+      _geometryDirty = true;
+    }
+    _aabbDirty = true;
     markAabbDirty();
     worldOrNull?.markSceneDirty(shadows: false);
   }
 
   @override
+  bool get usesDefaultFrustumVisibility => runtimeType == MsdfTextBatch3D;
+
+  @override
   Aabb3? computeLocalAabb() {
     _ensureRebuilt();
+    if (_aabbDirty) {
+      _recomputeAabbFromEntries();
+    }
     return _hasBounds ? _localAabb : null;
   }
 
@@ -207,8 +252,23 @@ class MsdfTextBatch3D({
     _ensureRebuilt();
     _billboardMaterial.alphaCutoff = math.max(alphaCutoff, 1 / 255);
     if (!_billboardBatch.isEmpty) {
-      _billboardBatch.drawTransformed(context, worldTransformMatrix);
+      _billboardBatch.drawTransformed(
+        context,
+        worldTransformMatrix,
+        transformVersion: worldTransformVersion,
+      );
     }
+  }
+
+  static int _countVisibleGlyphs(String text) {
+    var count = 0;
+    for (var i = 0; i < text.length; i++) {
+      final cu = text.codeUnitAt(i);
+      if (cu != 0x0A && cu != 0x20 && cu != 0x09) {
+        count++;
+      }
+    }
+    return count;
   }
 
   void _ensureRebuilt() {
@@ -219,72 +279,111 @@ class MsdfTextBatch3D({
     _billboardBatch.clear();
     _glyphQuadCount = 0;
 
+    for (var eIdx = 0; eIdx < _entries.length; eIdx++) {
+      final entry = _entries[eIdx];
+      entry.quadStart = _glyphQuadCount;
+      _emitEntryGlyphs(entry, inPlace: false);
+      _glyphQuadCount += entry.quadCount;
+    }
+
+    _recomputeAabbFromEntries();
+  }
+
+  void _recomputeAabbFromEntries() {
+    _aabbDirty = false;
     var minX = double.infinity;
     var minY = double.infinity;
     var minZ = double.infinity;
     var maxX = double.negativeInfinity;
     var maxY = double.negativeInfinity;
     var maxZ = double.negativeInfinity;
-
-    void expandBounds(double x, double y, double z, double r) {
-      if (x - r < minX) {
-        minX = x - r;
-      }
-      if (y - r < minY) {
-        minY = y - r;
-      }
-      if (z - r < minZ) {
-        minZ = z - r;
-      }
-      if (x + r > maxX) {
-        maxX = x + r;
-      }
-      if (y + r > maxY) {
-        maxY = y + r;
-      }
-      if (z + r > maxZ) {
-        maxZ = z + r;
-      }
-    }
-
-    final rightVec = Vector3.zero();
-    final upVec = Vector3.zero();
-
-    for (var eIdx = 0; eIdx < _entries.length; eIdx++) {
-      final entry = _entries[eIdx];
-      if (entry.text.isEmpty) {
+    var any = false;
+    for (var i = 0; i < _entries.length; i++) {
+      final e = _entries[i];
+      if (!e.hasBounds) {
         continue;
       }
-      final lines = entry.text.split('\n');
-      final size = entry.fontSize;
-
-      // The plane of fixed text, and the roll and tilt that a rotation adds
-      // to camera-facing text.
-      final rot = entry.rotation;
-      var rollRad = 0.0;
-      var tiltRad = 0.0;
-      rightVec.setValues(1.0, 0.0, 0.0);
-      upVec.setValues(0.0, 1.0, 0.0);
-      if (rot != null) {
-        rotateVectorByQuat(rot, rightVec, rightVec);
-        rotateVectorByQuat(rot, upVec, upVec);
-        rollRad = math.atan2(rightVec.y, rightVec.x);
-        tiltRad = math.asin((-upVec.z).clamp(-1.0, 1.0));
+      any = true;
+      if (e.minX < minX) {
+        minX = e.minX;
       }
-      final fixed = entry.mode == TextBillboardMode3D.fixed;
-      final orientation = switch (entry.mode) {
-        TextBillboardMode3D.spherical => BillboardOrientation3D.spherical,
-        TextBillboardMode3D.cylindrical => BillboardOrientation3D.cylindrical,
-        TextBillboardMode3D.fixed => BillboardOrientation3D.fixed,
-      };
+      if (e.minY < minY) {
+        minY = e.minY;
+      }
+      if (e.minZ < minZ) {
+        minZ = e.minZ;
+      }
+      if (e.maxX > maxX) {
+        maxX = e.maxX;
+      }
+      if (e.maxY > maxY) {
+        maxY = e.maxY;
+      }
+      if (e.maxZ > maxZ) {
+        maxZ = e.maxZ;
+      }
+    }
+    if (any) {
+      _localAabb
+        ..min.setValues(minX, minY, minZ)
+        ..max.setValues(maxX, maxY, maxZ);
+      _hasBounds = true;
+    } else {
+      _hasBounds = false;
+    }
+  }
 
-      for (var lineIdx = 0; lineIdx < lines.length; lineIdx++) {
-        final line = lines[lineIdx];
-        if (line.isEmpty) {
-          continue;
-        }
-        final lineW = atlas.measureLineWidth(
-          line,
+  void _emitEntryGlyphs(_TextEntry3D entry, {required bool inPlace}) {
+    final text = entry.text;
+    if (text.isEmpty) {
+      entry
+        ..quadCount = 0
+        ..hasBounds = false;
+      return;
+    }
+
+    final size = entry.fontSize;
+    final rot = entry.rotation;
+    var rollRad = 0.0;
+    var tiltRad = 0.0;
+    final rightVec = _rightScratch..setValues(1.0, 0.0, 0.0);
+    final upVec = _upScratch..setValues(0.0, 1.0, 0.0);
+    if (rot != null) {
+      rotateVectorByQuat(rot, rightVec, rightVec);
+      rotateVectorByQuat(rot, upVec, upVec);
+      rollRad = math.atan2(rightVec.y, rightVec.x);
+      tiltRad = math.asin((-upVec.z).clamp(-1.0, 1.0));
+    }
+    final fixed = entry.mode == TextBillboardMode3D.fixed;
+    final orientation = switch (entry.mode) {
+      TextBillboardMode3D.spherical => BillboardOrientation3D.spherical,
+      TextBillboardMode3D.cylindrical => BillboardOrientation3D.cylindrical,
+      TextBillboardMode3D.fixed => BillboardOrientation3D.fixed,
+    };
+
+    var minX = double.infinity;
+    var minY = double.infinity;
+    var minZ = double.infinity;
+    var maxX = double.negativeInfinity;
+    var maxY = double.negativeInfinity;
+    var maxZ = double.negativeInfinity;
+    var quads = 0;
+
+    final p = entry.position;
+    final px = p.x;
+    final py = p.y;
+    final pz = p.z;
+
+    var lineStart = 0;
+    var lineIdx = 0;
+    while (lineStart <= text.length) {
+      final nl = text.indexOf('\n', lineStart);
+      final lineEnd = nl < 0 ? text.length : nl;
+      if (lineEnd > lineStart) {
+        final lineW = atlas.measureLineRangeWidth(
+          text,
+          lineStart,
+          lineEnd,
           fontSize: size,
           letterSpacing: entry.letterSpacing,
         );
@@ -295,10 +394,10 @@ class MsdfTextBatch3D({
         };
         final cursorY = -lineIdx * entry.lineHeight * size;
 
-        int? prevCu;
-        for (var cIdx = 0; cIdx < line.length; cIdx++) {
-          final cu = line.codeUnitAt(cIdx);
-          if (prevCu != null) {
+        var prevCu = -1;
+        for (var cIdx = lineStart; cIdx < lineEnd; cIdx++) {
+          final cu = text.codeUnitAt(cIdx);
+          if (prevCu >= 0) {
             cursorX += (atlas.kerning(prevCu, cu) + entry.letterSpacing) * size;
           }
           final m = atlas.metricsFor(cu);
@@ -319,40 +418,82 @@ class MsdfTextBatch3D({
             final anchorY = -localOffsetY / gh;
             final rx = (anchorX.abs() + 0.5) * gw;
             final ry = (anchorY.abs() + 0.5) * gh;
-            final p = entry.position;
-            expandBounds(p.x, p.y, p.z, math.sqrt(rx * rx + ry * ry));
+            final r = math.sqrt(rx * rx + ry * ry);
+            if (px - r < minX) {
+              minX = px - r;
+            }
+            if (py - r < minY) {
+              minY = py - r;
+            }
+            if (pz - r < minZ) {
+              minZ = pz - r;
+            }
+            if (px + r > maxX) {
+              maxX = px + r;
+            }
+            if (py + r > maxY) {
+              maxY = py + r;
+            }
+            if (pz + r > maxZ) {
+              maxZ = pz + r;
+            }
 
-            _billboardBatch.addBillboard(
-              position: p,
-              width: gw,
-              height: gh,
-              orientation: orientation,
-              upAxis: fixed ? upVec : null,
-              rightAxis: fixed ? rightVec : null,
-              anchorY: anchorY,
-              anchorX: anchorX,
-              tiltRadians: fixed ? 0.0 : tiltRad,
-              rollRadians: fixed ? 0.0 : rollRad,
-              uvRect: m.uvRect,
-              color: entry.color,
-              unlit: 1.0,
-            );
-            _glyphQuadCount++;
+            if (inPlace) {
+              _billboardBatch.setBillboard(
+                entry.quadStart + quads,
+                position: p,
+                width: gw,
+                height: gh,
+                orientation: orientation,
+                upAxis: fixed ? upVec : null,
+                rightAxis: fixed ? rightVec : null,
+                anchorY: anchorY,
+                anchorX: anchorX,
+                tiltRadians: fixed ? 0.0 : tiltRad,
+                rollRadians: fixed ? 0.0 : rollRad,
+                uvRect: m.uvRect,
+                color: entry.color,
+                unlit: 1.0,
+              );
+            } else {
+              _billboardBatch.addBillboard(
+                position: p,
+                width: gw,
+                height: gh,
+                orientation: orientation,
+                upAxis: fixed ? upVec : null,
+                rightAxis: fixed ? rightVec : null,
+                anchorY: anchorY,
+                anchorX: anchorX,
+                tiltRadians: fixed ? 0.0 : tiltRad,
+                rollRadians: fixed ? 0.0 : rollRad,
+                uvRect: m.uvRect,
+                color: entry.color,
+                unlit: 1.0,
+              );
+            }
+            quads++;
           }
 
           cursorX += adv;
           prevCu = cu;
         }
       }
+      if (nl < 0) {
+        break;
+      }
+      lineStart = nl + 1;
+      lineIdx++;
     }
 
-    if (minX.isFinite) {
-      _localAabb
-        ..min.setValues(minX, minY, minZ)
-        ..max.setValues(maxX, maxY, maxZ);
-      _hasBounds = true;
-    } else {
-      _hasBounds = false;
-    }
+    entry
+      ..quadCount = quads
+      ..minX = minX
+      ..minY = minY
+      ..minZ = minZ
+      ..maxX = maxX
+      ..maxY = maxY
+      ..maxZ = maxZ
+      ..hasBounds = quads > 0;
   }
 }

@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/src/model/animation_state.dart';
 import 'package:flame_3d/src/model/model.dart';
+import 'package:flame_3d/src/model/procedural_rigging_3d.dart';
 
 /// Ground plane along which [RootMotionExtractor3D] locks horizontal root
 /// translation and measures yaw rotation.
@@ -311,27 +312,12 @@ class RootMotionExtractor3D({
     rm[14] += shiftZ;
 
     // Propagate translation shift to every descendant of `rootIdx`.
-    for (final processed in workspace.orderedNodes) {
-      if (_isDescendant(model, processed.node.nodeIndex, rootIdx)) {
-        final m = processed.combinedTransform.storage;
-        m[12] += shiftX;
-        m[13] += shiftY;
-        m[14] += shiftZ;
-      }
-    }
-  }
-
-  static bool _isDescendant(Model model, int nodeIdx, int ancestorIdx) {
-    if (nodeIdx == ancestorIdx) {
-      return false;
-    }
-    var cur = model.nodes[nodeIdx]?.parentNodeIndex;
-    while (cur != null) {
-      if (cur == ancestorIdx) {
-        return true;
-      }
-      cur = model.nodes[cur]?.parentNodeIndex;
-    }
-    return false;
+    BoneModifier3D.propagateTranslationToDescendants(
+      workspace,
+      rootIdx,
+      shiftX,
+      shiftY,
+      shiftZ,
+    );
   }
 }

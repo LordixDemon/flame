@@ -80,12 +80,7 @@ class World3D({
   // so its changes are counted globally and added here, as are the changes of
   // the lights this world borrows and the losses and recoveries of the GPU
   // device (what was cached before is gone).
-  int get _sceneVersion =>
-      _ownSceneVersion +
-      Material.castsShadowsRevision +
-      GpuBackend.renderEpoch +
-      (_lightsFrom?._lightsVersion ?? 0) +
-      _valuesVersion;
+  int get _sceneVersion => componentsVersion + _valuesVersion;
 
   // The versions of the values this world draws with, which report their
   // own changes: its settings, and the materials of its last render (see
@@ -117,7 +112,11 @@ class World3D({
   /// post-processing settings): what a spatial index of the components is
   /// built for.
   @internal
-  int get componentsVersion => _sceneVersion - _valuesVersion;
+  int get componentsVersion =>
+      _ownSceneVersion +
+      Material.castsShadowsRevision +
+      GpuBackend.renderEpoch +
+      (_lightsFrom?._lightsVersion ?? 0);
 
   int get _castersVersion =>
       _ownCastersVersion +
@@ -604,9 +603,7 @@ class World3D({
   @internal
   void prepareOcclusionCuller(RenderContext3D ctx) {
     final culler = _occlusionCuller;
-    if (culler == null ||
-        ctx.isShadowPass ||
-        (culler.boxes.isEmpty && culler.quads.isEmpty)) {
+    if (culler == null || ctx.isShadowPass || !culler.hasOccluders) {
       return;
     }
     final frame = ctx.device.frame;
@@ -624,9 +621,11 @@ class World3D({
     culler.rasterizeOccluders(ctx.viewProjection);
   }
 
+  late final List<ReflectionProbeVolume3D> _reflectionProbesView =
+      UnmodifiableListView(_reflectionProbes);
+
   /// Mounted local box-projected `ReflectionProbeVolume3D` components.
-  List<ReflectionProbeVolume3D> get reflectionProbes =>
-      List.unmodifiable(_reflectionProbes);
+  List<ReflectionProbeVolume3D> get reflectionProbes => _reflectionProbesView;
 
   /// The [Scene3DHost] this world renders with.
   Scene3DHost get host => _host ??= _findHost();
@@ -638,6 +637,62 @@ class World3D({
   /// Whether this world is being rendered.
   bool get isRendering => _rendering;
   bool _rendering = false;
+
+  /// Whether [World3D] is actively traversing its component tree via
+  /// [renderScene] or [renderFromCamera].
+  @internal
+  bool get isTraversingTree => _traversingTree;
+  bool _traversingTree = false;
+
+  List<Component3D>? _rootComponents3D;
+  int _nonComponent3DRootCount = 0;
+  bool _rootHasPrioritizedChild = false;
+
+  bool _allRootChildrenComponent3D() {
+    if (isMounted) {
+      return _nonComponent3DRootCount == 0;
+    }
+    for (final child in children) {
+      if (child is! Component3D) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  PictureRecorder? _fallbackRecorder;
+  Canvas? _fallbackCanvas;
+
+  /// Lazily creates a fallback offscreen [Canvas] only if a non-[Component3D]
+  /// or `debugMode` component is encountered during no-canvas rendering.
+  @internal
+  Canvas fallbackDummyCanvas() =>
+      _fallbackCanvas ??= Canvas(_fallbackRecorder = PictureRecorder());
+
+  /// Disposes any lazily allocated fallback [PictureRecorder].
+  @internal
+  void disposeFallbackDummyCanvas() {
+    final recorder = _fallbackRecorder;
+    if (recorder != null) {
+      _fallbackRecorder = null;
+      _fallbackCanvas = null;
+      recorder.endRecording().dispose();
+    }
+  }
+
+  @override
+  void onMount() {
+    _rootComponents3D?.clear();
+    _nonComponent3DRootCount = 0;
+    _rootHasPrioritizedChild = false;
+    super.onMount();
+  }
+
+  @override
+  void rebalanceChildren() {
+    _rootHasPrioritizedChild = true;
+    super.rebalanceChildren();
+  }
 
   /// The fraction of the device pixels the world is rendered at.
   double get renderScale => _renderScale;
@@ -673,6 +728,26 @@ class World3D({
   @override
   void onChildrenChanged(flame.Component child, flame.ChildrenChangeType type) {
     super.onChildrenChanged(child, type);
+    if (child is Component3D) {
+      switch (type) {
+        case flame.ChildrenChangeType.added:
+          (_rootComponents3D ??= <Component3D>[]).add(child);
+          if (child.priority != 0) {
+            _rootHasPrioritizedChild = true;
+          }
+        case flame.ChildrenChangeType.removed:
+          _rootComponents3D?.remove(child);
+      }
+    } else {
+      switch (type) {
+        case flame.ChildrenChangeType.added:
+          _nonComponent3DRootCount++;
+        case flame.ChildrenChangeType.removed:
+          if (_nonComponent3DRootCount > 0) {
+            _nonComponent3DRootCount--;
+          }
+      }
+    }
     final isVolumeOrLight =
         child is LightComponent || child is ReflectionProbeVolume3D;
     // The casters tell the change tracking themselves when they are mounted
@@ -742,6 +817,7 @@ class World3D({
     _cachedGame = null;
     _visibleObjects.clear();
     _hasVisibleCache = false;
+    disposeFallbackDummyCanvas();
   }
 
   Game? _cachedGame;
@@ -828,6 +904,17 @@ class World3D({
     }
   }
 
+  /// Internal no-[Canvas] variant of [renderShadows], allocating a dummy
+  /// [PictureRecorder] lazily only if a non-[Component3D] child is met.
+  @internal
+  bool renderShadowsNoCanvas({RenderContext3D? overrideContext}) {
+    try {
+      return _renderShadows(null, overrideContext);
+    } finally {
+      _shadowCasters.advance();
+    }
+  }
+
   /// Record the depth and view-space normal buffer for this frame.
   bool renderDepthNormals(
     Canvas canvas,
@@ -866,7 +953,7 @@ class World3D({
         );
       }
     }
-    return (owner, castersVersion);
+    return Object.hash(owner, castersVersion);
   }
 
   static final Vector3 _keyDir = Vector3.zero();
@@ -886,11 +973,20 @@ class World3D({
     return true;
   }
 
+  bool? _pipelineHdrOverride;
+
+  /// Effective HDR setting of this world's scene render target when rendering
+  /// with [device].
+  @internal
+  bool effectiveHdrEnabled(GraphicsDevice device) =>
+      _hdrEnabled && needsPostCompositePass(device);
+
   /// Syncs world lighting, HDR, debug mode, `LightProbeGrid3D`, and
   /// `ReflectionProbeVolume3D` state onto [ctx].
   @internal
-  void syncContextOptions(RenderContext3D ctx) {
+  void syncContextOptions(RenderContext3D ctx, {bool? hdrEnabled}) {
     final lights = _passLights;
+    final resolvedHdr = hdrEnabled ?? _pipelineHdrOverride ?? false;
     final bounds = _lightGrid == null || hasUnboundedComponents
         ? null
         : sceneBounds;
@@ -905,7 +1001,8 @@ class World3D({
       prioritizeNearestLights: _prioritizeNearestLights,
       lightGrid: _lightGrid,
       lightGridBounds: bounds,
-      hdrEnabled: false,
+      hdrEnabled: resolvedHdr,
+      owner: this,
     )) {
       return;
     }
@@ -913,9 +1010,7 @@ class World3D({
       ..setWorldLights(lights, lightsVersion)
       ..fog = _fog
       ..waterVolume = _waterVolume
-      // Only the passes into the HDR scene target encode for it, see
-      // `executeWorldRenderPipeline`.
-      ..hdrEnabled = false
+      ..hdrEnabled = resolvedHdr
       ..renderDebugMode = _renderDebugMode3D
       ..lightProbeGrid = _lightProbeGrid
       ..reflectionProbes = _reflectionProbes
@@ -926,33 +1021,13 @@ class World3D({
   }
 
   /// Records the draws of every component of this world into [context].
-  void renderScene(Canvas canvas, {RenderContext3D? overrideContext}) {
-    final ctx = overrideContext ?? context;
-    syncContextOptions(ctx);
-    prepareOcclusionCuller(ctx);
-    final reuseVisible =
-        _hasVisibleCache &&
-        identical(ctx, _visibleCtx) &&
-        ctx.cameraMask == _visibleCameraMask &&
-        sceneVersion == _visibleSceneVersion &&
-        sameMatrix16(ctx.viewProjection.storage, _visibleVp);
-    _hasVisibleCache = false;
-    _rendering = true;
-    try {
-      if (reuseVisible) {
-        final visible = _visibleObjects;
-        for (var i = 0; i < visible.length; i++) {
-          visible[i].draw(ctx);
-        }
-      } else {
-        for (final child in children) {
-          child.renderTree(canvas);
-        }
-      }
-    } finally {
-      _rendering = false;
-    }
-  }
+  void renderScene(Canvas canvas, {RenderContext3D? overrideContext}) =>
+      _renderSceneImpl(canvas, overrideContext: overrideContext);
+
+  /// Internal no-[Canvas] variant of [renderScene].
+  @internal
+  void renderSceneNoCanvas({RenderContext3D? overrideContext}) =>
+      _renderSceneImpl(null, overrideContext: overrideContext);
 
   /// Whether this world requires rendering into an intermediate texture target
   /// followed by `BloomPass` / post-process / HDR / debug composition.
@@ -1198,16 +1273,16 @@ class World3D({
     final scale = host.pixelRatio * _renderScale;
     final renderSize = Size(size.x * scale, size.y * scale);
 
+    final device = host.device;
     final context = host.context
       ..cameraMask = camera.cameraMask
       ..setCamera(camera.viewMatrix, camera.projectionMatrix);
-    syncContextOptions(context);
+    syncContextOptions(context, hdrEnabled: effectiveHdrEnabled(device));
     renderShadows(canvas);
     final wPx = math.max(1, renderSize.width.round());
     final hPx = math.max(1, renderSize.height.round());
     renderDepthNormals(canvas, wPx, hPx);
 
-    final device = host.device;
     final image = executeWorldRenderPipeline(
       device: device,
       renderContext: context,
@@ -1216,11 +1291,21 @@ class World3D({
       msaaSampleCount: host.msaaSampleCount,
       clearValue: device.clearValue,
       recordDraws: () {
-        _rendering = true;
-        try {
-          super.renderFromCamera(canvas);
-        } finally {
-          _rendering = false;
+        if (runtimeType == World3D &&
+            !debugMode &&
+            !spatialIndexEnabled &&
+            decorator.isLastDecorator) {
+          _renderSceneImpl(canvas, overrideContext: context);
+        } else {
+          _hasVisibleCache = false;
+          _rendering = true;
+          _traversingTree = _allRootChildrenComponent3D();
+          try {
+            super.renderFromCamera(canvas);
+          } finally {
+            _traversingTree = false;
+            _rendering = false;
+          }
         }
       },
     );

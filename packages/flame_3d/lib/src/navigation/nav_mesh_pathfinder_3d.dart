@@ -787,8 +787,13 @@ extension _NavMeshPathfinder3D on NavMesh3D {
       return;
     }
 
+    final upX = upAxis.x;
+    final upY = upAxis.y;
+    final upZ = upAxis.z;
     var bestDev = 1e-3;
-    Vector3? splitPoint;
+    var bestX = 0.0;
+    var bestY = 0.0;
+    var bestZ = 0.0;
     var splitPortal = -1;
 
     final aUp = wpA.dot(upAxis);
@@ -815,21 +820,22 @@ extension _NavMeshPathfinder3D on NavMesh3D {
         continue;
       }
 
-      final crossPt = Vector3(
-        l.x + (r.x - l.x) * s,
-        l.y + (r.y - l.y) * s,
-        l.z + (r.z - l.z) * s,
-      );
+      final cx = l.x + (r.x - l.x) * s;
+      final cy = l.y + (r.y - l.y) * s;
+      final cz = l.z + (r.z - l.z) * s;
       final chordUp = aUp + (bUp - aUp) * t;
-      final dev = (crossPt.dot(upAxis) - chordUp).abs();
+      final dev = (cx * upX + cy * upY + cz * upZ - chordUp).abs();
       if (dev > bestDev) {
         bestDev = dev;
-        splitPoint = crossPt;
+        bestX = cx;
+        bestY = cy;
+        bestZ = cz;
         splitPortal = p;
       }
     }
 
-    if (splitPoint != null && splitPortal > pStart && splitPortal < pEnd) {
+    if (splitPortal > pStart && splitPortal < pEnd) {
+      final splitPoint = Vector3(bestX, bestY, bestZ);
       _drapeSegmentAcrossPortals(
         wpA,
         splitPoint,

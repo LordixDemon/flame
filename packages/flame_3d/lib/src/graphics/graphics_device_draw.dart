@@ -1,5 +1,16 @@
 part of 'graphics_device.dart';
 
+class _InstanceUploadCache() {
+  GpuBuffer? gpuBuffer;
+  GpuBuffer? arenaBuffer;
+  int arenaOffset = 0;
+  int frame = -1;
+  int deviceGeneration = -1;
+  int version = -1;
+  int spanStartFloat = -1;
+  int spanFloats = -1;
+}
+
 extension _GraphicsDeviceDraw on GraphicsDevice {
   /// Starts recording a pass into [target], or into nothing while the
   /// device is not ready.
@@ -15,6 +26,9 @@ extension _GraphicsDeviceDraw on GraphicsDevice {
   }
 
   void _clearPassBindings() {
+    _boundInstBuffer = null;
+    _boundInstOffset = -1;
+    _boundInstLength = -1;
     if (_boundUniformCount > 0) {
       _boundUniformSlots.fillRange(0, _boundUniformCount, null);
       _boundUniformBuffers.fillRange(0, _boundUniformCount, null);
@@ -25,6 +39,27 @@ extension _GraphicsDeviceDraw on GraphicsDevice {
       _boundTexHandles.fillRange(0, _boundTexCount, null);
       _boundTexCount = 0;
     }
+  }
+
+  void _bindInstanceSlice(
+    GpuBuffer buffer,
+    int offsetInBytes,
+    int lengthInBytes,
+  ) {
+    if (identical(_boundInstBuffer, buffer) &&
+        _boundInstOffset == offsetInBytes &&
+        _boundInstLength == lengthInBytes) {
+      return;
+    }
+    _boundInstBuffer = buffer;
+    _boundInstOffset = offsetInBytes;
+    _boundInstLength = lengthInBytes;
+    _pass.bindVertexBuffer(
+      buffer,
+      offsetInBytes: offsetInBytes,
+      lengthInBytes: lengthInBytes,
+      slot: 1,
+    );
   }
 
   void _startPass(GpuRenderPass renderPass, WindingOrder frontFace) {
@@ -114,10 +149,30 @@ extension _GraphicsDeviceDraw on GraphicsDevice {
     );
   }
 
-  _TransientBlock _uploadUniform(Uint8List data) {
-    final length = data.length;
+  _TransientBlock _uploadUniform(Uint8List data) =>
+      _uploadUniformRange(data, data.length);
+
+  _TransientBlock _uploadUniformRange(Uint8List data, int length) {
     final block = _arena.allocate(length, backend.uniformAlignment);
     block.staging.setRange(block.lastOffset, block.lastOffset + length, data);
+    stats
+      ..uniformUploads += 1
+      ..uploadedBytes += length;
+    return block;
+  }
+
+  _TransientBlock _uploadUniformByteData(ByteData data) {
+    final length = data.lengthInBytes;
+    final block = _arena.allocate(length, backend.uniformAlignment);
+    final base = block.lastOffset;
+    final dst = block.byteData;
+    final aligned = length & ~3;
+    for (var i = 0; i < aligned; i += 4) {
+      dst.setUint32(base + i, data.getUint32(i, Endian.host), Endian.host);
+    }
+    for (var i = aligned; i < length; i++) {
+      dst.setUint8(base + i, data.getUint8(i));
+    }
     stats
       ..uniformUploads += 1
       ..uploadedBytes += length;

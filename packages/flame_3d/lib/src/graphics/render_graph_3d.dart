@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'dart:ui' show Color;
 
 import 'package:flame_3d/graphics.dart';
@@ -122,7 +123,34 @@ class CompiledRenderGraph3D({
   required final int physicalTargetCount,
   required final Map<int, int> resourceToPhysicalSlot,
   required final List<RenderGraphTextureDesc3D> physicalSlotDescriptors,
-});
+}) {
+  late final Int32List _resourceIds;
+  late final Int32List _resourceSlots;
+  bool _resourceArraysBuilt = false;
+
+  void _ensureResourceArrays() {
+    if (_resourceArraysBuilt) {
+      return;
+    }
+    _resourceArraysBuilt = true;
+    final len = resourceToPhysicalSlot.length;
+    final ids = _resourceIds = Int32List(len);
+    final slots = _resourceSlots = Int32List(len);
+    var i = 0;
+    for (final entry in resourceToPhysicalSlot.entries) {
+      ids[i] = entry.key;
+      slots[i] = entry.value;
+      i++;
+    }
+  }
+}
+
+class _RenderGraphPoolEntry(this.desc) {
+  final RenderGraphTextureDesc3D desc;
+  final List<GpuTextureTarget> targets = [];
+  int used = 0;
+  int lastUsed = 0;
+}
 
 /// Declarative frame-graph / render-graph DAG scheduler with topological pass
 /// ordering, backward-reachability dead-pass culling, and greedy lifetime
@@ -136,15 +164,13 @@ class RenderGraph3D() {
   // Reusable pool of physical texture targets across `execute()` calls, keyed
   // by physical slot descriptor so aliased non-overlapping resources genuinely
   // share the exact same GPU memory allocation.
-  final Map<RenderGraphTextureDesc3D, List<GpuTextureTarget>> _targetPool = {};
-  final Map<RenderGraphTextureDesc3D, int> _targetLastUsed = {};
+  final List<_RenderGraphPoolEntry> _pool = [];
   int _executions = 0;
 
   CompiledRenderGraph3D? _cachedPlan;
   int _compileCount = 0;
 
   // Scratch collections reused across `execute()` calls.
-  final Map<RenderGraphTextureDesc3D, int> _usedPerDesc = {};
   final List<GpuTextureTarget> _slotTargets = [];
   final Map<int, GpuTextureTarget> _resolvedTargets = {};
   RenderGraphPassContext3D? _reusableContext;
@@ -438,24 +464,16 @@ class RenderGraph3D() {
     );
   }
 
-  void _releaseUnusedTargets(Map<RenderGraphTextureDesc3D, int> used) {
-    final execution = ++_executions;
-    _targetPool.removeWhere((desc, targets) {
-      final count = used[desc];
-      if (count != null) {
-        _targetLastUsed[desc] = execution;
-        if (count < targets.length) {
-          targets.removeRange(count, targets.length);
-        }
-        return false;
+  _RenderGraphPoolEntry _poolEntryFor(RenderGraphTextureDesc3D desc) {
+    for (var i = 0; i < _pool.length; i++) {
+      final entry = _pool[i];
+      if (entry.desc == desc) {
+        return entry;
       }
-      final lastUsed = _targetLastUsed[desc] ?? execution;
-      if (execution - lastUsed < targetRetainExecutions) {
-        return false;
-      }
-      _targetLastUsed.remove(desc);
-      return true;
-    });
+    }
+    final created = _RenderGraphPoolEntry(desc);
+    _pool.add(created);
+    return created;
   }
 
   /// Compiles and executes all live passes on [device] and [renderContext],
@@ -470,11 +488,18 @@ class RenderGraph3D() {
       return plan;
     }
 
-    final usedPerDesc = _usedPerDesc..clear();
+    final execution = ++_executions;
+    for (var i = 0; i < _pool.length; i++) {
+      _pool[i].used = 0;
+    }
     final slotTargets = _slotTargets..clear();
-    for (final desc in plan.physicalSlotDescriptors) {
-      final list = _targetPool.putIfAbsent(desc, () => <GpuTextureTarget>[]);
-      final idx = usedPerDesc[desc] ?? 0;
+    final descs = plan.physicalSlotDescriptors;
+    for (var i = 0; i < descs.length; i++) {
+      final desc = descs[i];
+      final entry = _poolEntryFor(desc);
+      final idx = entry.used++;
+      entry.lastUsed = execution;
+      final list = entry.targets;
       if (idx < list.length) {
         slotTargets.add(list[idx]);
       } else {
@@ -487,15 +512,27 @@ class RenderGraph3D() {
         list.add(created);
         slotTargets.add(created);
       }
-      usedPerDesc[desc] = idx + 1;
     }
-    _releaseUnusedTargets(usedPerDesc);
+    for (var i = _pool.length - 1; i >= 0; i--) {
+      final entry = _pool[i];
+      if (entry.used > 0) {
+        if (entry.used < entry.targets.length) {
+          entry.targets.removeRange(entry.used, entry.targets.length);
+        }
+      } else if (execution - entry.lastUsed >= targetRetainExecutions) {
+        _pool.removeAt(i);
+      }
+    }
 
-    final resolved = _resolvedTargets
-      ..clear()
-      ..addAll(_importedTargets);
-    for (final MapEntry(:key, :value) in plan.resourceToPhysicalSlot.entries) {
-      resolved[key] = slotTargets[value];
+    plan._ensureResourceArrays();
+    final resolved = _resolvedTargets..clear();
+    if (_importedTargets.isNotEmpty) {
+      resolved.addAll(_importedTargets);
+    }
+    final resIds = plan._resourceIds;
+    final resSlots = plan._resourceSlots;
+    for (var i = 0; i < resIds.length; i++) {
+      resolved[resIds[i]] = slotTargets[resSlots[i]];
     }
 
     final ctx = _reusableContext;

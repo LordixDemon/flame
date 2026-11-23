@@ -198,23 +198,21 @@ abstract final class NavMeshBuilder3D._() {
 
     for (var t = 0; t < validTriCount; t++) {
       final o = t * 9;
-      final v0 = Vector3(worldTris[o], worldTris[o + 1], worldTris[o + 2]);
-      final v1 = Vector3(
-        worldTris[o + 3],
-        worldTris[o + 4],
-        worldTris[o + 5],
-      );
-      final v2 = Vector3(
-        worldTris[o + 6],
-        worldTris[o + 7],
-        worldTris[o + 8],
-      );
+      final x0 = worldTris[o];
+      final y0 = worldTris[o + 1];
+      final z0 = worldTris[o + 2];
+      final x1 = worldTris[o + 3];
+      final y1 = worldTris[o + 4];
+      final z1 = worldTris[o + 5];
+      final x2 = worldTris[o + 6];
+      final y2 = worldTris[o + 7];
+      final z2 = worldTris[o + 8];
       final walkable = triWalkable[t] != 0;
 
-      final tMinX = math.min(v0.x, math.min(v1.x, v2.x));
-      final tMaxX = math.max(v0.x, math.max(v1.x, v2.x));
-      final tMinZ = math.min(v0.z, math.min(v1.z, v2.z));
-      final tMaxZ = math.max(v0.z, math.max(v1.z, v2.z));
+      final tMinX = math.min(x0, math.min(x1, x2));
+      final tMaxX = math.max(x0, math.max(x1, x2));
+      final tMinZ = math.min(z0, math.min(z1, z2));
+      final tMaxZ = math.max(z0, math.max(z1, z2));
 
       final c0 = ((tMinX - minX) * invCs).floor().clamp(0, cols - 1);
       final c1 = ((tMaxX - minX) * invCs).floor().clamp(0, cols - 1);
@@ -228,19 +226,25 @@ abstract final class NavMeshBuilder3D._() {
           final xLo = minX + c * cs;
           final xHi = xLo + cs;
 
-          final yRange = _clipTriangleColumnYRange(
-            v0,
-            v1,
-            v2,
+          if (!_clipTriangleColumnYRange(
+            x0,
+            y0,
+            z0,
+            x1,
+            y1,
+            z1,
+            x2,
+            y2,
+            z2,
             xLo,
             xHi,
             zLo,
             zHi,
-          );
-          if (yRange == null) {
+          )) {
             continue;
           }
-          final (sMinY, sMaxY) = yRange;
+          final sMinY = _clipMinY;
+          final sMaxY = _clipMaxY;
           final sMin = math.max(0, ((sMinY - minY) * invCh).floor());
           final sMax = math.max(sMin, ((sMaxY - minY) * invCh).floor());
 
@@ -595,37 +599,59 @@ abstract final class NavMeshBuilder3D._() {
     );
   }
 
-  static (double minY, double maxY)? _clipTriangleColumnYRange(
-    Vector3 v0,
-    Vector3 v1,
-    Vector3 v2,
+  static final Float64List _clipA = Float64List(24);
+  static final Float64List _clipB = Float64List(24);
+  static double _clipMinY = 0.0;
+  static double _clipMaxY = 0.0;
+
+  static bool _clipTriangleColumnYRange(
+    double x0,
+    double y0,
+    double z0,
+    double x1,
+    double y1,
+    double z1,
+    double x2,
+    double y2,
+    double z2,
     double xLo,
     double xHi,
     double zLo,
     double zHi,
   ) {
-    var poly = <Vector3>[v0, v1, v2];
-    poly = _clipSlabXZ(poly, useX: true, bound: xLo, isMin: true);
-    if (poly.isEmpty) {
-      return null;
+    final a = _clipA;
+    final b = _clipB;
+    a[0] = x0;
+    a[1] = y0;
+    a[2] = z0;
+    a[3] = x1;
+    a[4] = y1;
+    a[5] = z1;
+    a[6] = x2;
+    a[7] = y2;
+    a[8] = z2;
+
+    var count = _clipSlabXZ(a, b, 3, useX: true, bound: xLo, isMin: true);
+    if (count == 0) {
+      return false;
     }
-    poly = _clipSlabXZ(poly, useX: true, bound: xHi, isMin: false);
-    if (poly.isEmpty) {
-      return null;
+    count = _clipSlabXZ(b, a, count, useX: true, bound: xHi, isMin: false);
+    if (count == 0) {
+      return false;
     }
-    poly = _clipSlabXZ(poly, useX: false, bound: zLo, isMin: true);
-    if (poly.isEmpty) {
-      return null;
+    count = _clipSlabXZ(a, b, count, useX: false, bound: zLo, isMin: true);
+    if (count == 0) {
+      return false;
     }
-    poly = _clipSlabXZ(poly, useX: false, bound: zHi, isMin: false);
-    if (poly.isEmpty) {
-      return null;
+    count = _clipSlabXZ(b, a, count, useX: false, bound: zHi, isMin: false);
+    if (count == 0) {
+      return false;
     }
 
     var lo = double.infinity;
     var hi = double.negativeInfinity;
-    for (var i = 0; i < poly.length; i++) {
-      final y = poly[i].y;
+    for (var i = 0; i < count; i++) {
+      final y = a[i * 3 + 1];
       if (y < lo) {
         lo = y;
       }
@@ -633,53 +659,60 @@ abstract final class NavMeshBuilder3D._() {
         hi = y;
       }
     }
-    return lo.isFinite ? (lo, hi) : null;
+    if (!lo.isFinite) {
+      return false;
+    }
+    _clipMinY = lo;
+    _clipMaxY = hi;
+    return true;
   }
 
-  static List<Vector3> _clipSlabXZ(
-    List<Vector3> poly, {
+  static int _clipSlabXZ(
+    Float64List src,
+    Float64List dst,
+    int n, {
     required bool useX,
     required double bound,
     required bool isMin,
   }) {
-    final out = <Vector3>[];
-    final n = poly.length;
     if (n == 0) {
-      return out;
+      return 0;
     }
-    double coord(Vector3 p) => useX ? p.x : p.z;
-    bool inside(double val) =>
-        isMin ? val >= bound - 1e-7 : val <= bound + 1e-7;
-
-    var prev = poly[n - 1];
-    var prevVal = coord(prev);
-    var prevIn = inside(prevVal);
+    var outCount = 0;
+    final coordOffset = useX ? 0 : 2;
+    var prevOff = (n - 1) * 3;
+    var prevVal = src[prevOff + coordOffset];
+    var prevIn = isMin ? prevVal >= bound - 1e-7 : prevVal <= bound + 1e-7;
 
     for (var i = 0; i < n; i++) {
-      final curr = poly[i];
-      final currVal = coord(curr);
-      final currIn = inside(currVal);
+      final currOff = i * 3;
+      final currVal = src[currOff + coordOffset];
+      final currIn = isMin ? currVal >= bound - 1e-7 : currVal <= bound + 1e-7;
       if (prevIn != currIn) {
         final denom = currVal - prevVal;
         final t = denom.abs() > 1e-12
             ? ((bound - prevVal) / denom).clamp(0.0, 1.0)
             : 0.5;
-        out.add(
-          Vector3(
-            prev.x + (curr.x - prev.x) * t,
-            prev.y + (curr.y - prev.y) * t,
-            prev.z + (curr.z - prev.z) * t,
-          ),
-        );
+        final outOff = outCount * 3;
+        dst[outOff] = src[prevOff] + (src[currOff] - src[prevOff]) * t;
+        dst[outOff + 1] =
+            src[prevOff + 1] + (src[currOff + 1] - src[prevOff + 1]) * t;
+        dst[outOff + 2] =
+            src[prevOff + 2] + (src[currOff + 2] - src[prevOff + 2]) * t;
+        outCount++;
       }
       if (currIn) {
-        out.add(curr);
+        final outOff = outCount * 3;
+        dst[outOff] = src[currOff];
+        dst[outOff + 1] = src[currOff + 1];
+        dst[outOff + 2] = src[currOff + 2];
+        outCount++;
       }
-      prev = curr;
+      prevOff = currOff;
       prevVal = currVal;
       prevIn = currIn;
     }
-    return out;
+    return outCount;
   }
 
   static Vector3 _triUpNormal(Vector3 a, Vector3 b, Vector3 c) {

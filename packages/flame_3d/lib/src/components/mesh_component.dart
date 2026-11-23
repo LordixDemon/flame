@@ -89,6 +89,9 @@ class MeshComponent({
   Map<int, List<Matrix4>>? _jointTransforms = jointTransforms;
 
   @override
+  bool get usesDefaultFrustumVisibility => runtimeType == MeshComponent;
+
+  @override
   Aabb3? computeLocalAabb() => mesh.aabb;
 
   @override

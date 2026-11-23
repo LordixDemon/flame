@@ -62,18 +62,22 @@ class GraphicsDevice({
 
   late final _TransientArena _arena = _TransientArena(backend);
 
-  // Render target pool: keyed by (width, height, MSAA sample count), each
-  // bucket holds targets and its usage counters for this frame.
-  final _pool = <(int, int, int), _PoolBucket>{};
-  final List<(int, int, int)> _evictPoolKeys = [];
+  // Render target pool buckets, matched directly to avoid Record boxing.
+  final List<_PoolBucket> _poolBuckets = [];
 
   /// The number of frames a render target size that is no longer used stays
   /// pooled, so that a scene whose size changes back and forth, or that skips
   /// a few frames, keeps its targets instead of creating new ones.
   static const int targetRetainFrames = 30;
 
-  // Pipelines, keyed by vertex shader, fragment shader and surface layout.
-  final _pipelines = <(GpuShader, GpuShader, VertexLayout), DevicePipeline>{};
+  // Pipelines, keyed by vertex shader -> fragment shader -> surface layout.
+  final Map<GpuShader, Map<GpuShader, Map<VertexLayout, DevicePipeline>>>
+  _pipelines = Map.identity();
+  int _pipelineCount = 0;
+  GpuShader? _lastPipeVert;
+  GpuShader? _lastPipeFrag;
+  VertexLayout? _lastPipeLayout;
+  DevicePipeline? _lastPipeResult;
 
   // What is currently bound to the render pass.
   GpuPipeline? _pipeline;
@@ -90,6 +94,11 @@ class GraphicsDevice({
 
   // Per-pass/pipeline descriptor deduplication (reset in `_startPass`,
   // `clearBindings`, and when switching pipelines).
+  GpuBuffer? _boundInstBuffer;
+  int _boundInstOffset = -1;
+  int _boundInstLength = -1;
+  final Expando<_InstanceUploadCache> _instanceCache = Expando();
+
   final List<GpuUniformSlot?> _boundUniformSlots = List.filled(
     16,
     null,
@@ -154,8 +163,8 @@ class GraphicsDevice({
   void begin() {
     _frame++;
     stats.reset();
-    for (final bucket in _pool.values) {
-      bucket.used = 0;
+    for (var i = 0; i < _poolBuckets.length; i++) {
+      _poolBuckets[i].used = 0;
     }
     _gpuFrame = backend.beginFrame();
   }
@@ -232,20 +241,20 @@ class GraphicsDevice({
   }
 
   /// Number of compiled [DevicePipeline] instances cached on this device.
-  int get cachedPipelineCount => _pipelines.length;
+  int get cachedPipelineCount => _pipelineCount;
 
   /// Estimated GPU render-target memory (color + depth attachments, in bytes)
   /// currently pooled by this device.
   int get estimatedTargetVramBytes {
     var total = 0;
-    for (final entry in _pool.entries) {
-      final (w, h, samples) = entry.key;
+    for (var i = 0; i < _poolBuckets.length; i++) {
+      final b = _poolBuckets[i];
       // Triple-buffered color + depth-stencil estimate.
-      final perTarget = w * h * 4 * (3 + samples);
-      total += perTarget * entry.value.targets.length;
+      final perTarget = b.width * b.height * 4 * (3 + b.msaaSampleCount);
+      total += perTarget * b.targets.length;
     }
-    for (final entry in _textureTargets.values) {
-      total += entry.estimatedBytes;
+    for (var i = 0; i < _textureTargetList.length; i++) {
+      total += _textureTargetList[i].estimatedBytes;
     }
     return total;
   }
@@ -303,43 +312,55 @@ class GraphicsDevice({
     Object? role,
     int msaaSampleCount = 1,
   }) {
-    final key = (width, height, format, clearValue, role, msaaSampleCount);
-    var entry = _textureTargets[key];
-    if (entry == null) {
-      final target = backend.createTextureTarget(
-        width: width,
-        height: height,
-        format: format,
-        clearValue: clearValue,
-        msaaSampleCount: msaaSampleCount,
-      );
-      final estimatedBytes =
-          width *
-          height *
-          (format.bytesPerBlock *
-                  (msaaSampleCount > 1 ? 1 + msaaSampleCount : 1) +
-              4 * msaaSampleCount);
-      entry = _textureTargets[key] = _TextureTargetEntry(
+    for (var i = 0; i < _textureTargetList.length; i++) {
+      final entry = _textureTargetList[i];
+      if (entry.width == width &&
+          entry.height == height &&
+          entry.format == format &&
+          entry.msaaSampleCount == msaaSampleCount &&
+          entry.clearValue == clearValue &&
+          (identical(entry.role, role) || entry.role == role)) {
+        entry.lastUsedFrame = _frame;
+        return entry.target;
+      }
+    }
+    final target = backend.createTextureTarget(
+      width: width,
+      height: height,
+      format: format,
+      clearValue: clearValue,
+      msaaSampleCount: msaaSampleCount,
+    );
+    final estimatedBytes =
+        width *
+        height *
+        (format.bytesPerBlock *
+                (msaaSampleCount > 1 ? 1 + msaaSampleCount : 1) +
+            4 * msaaSampleCount);
+    _textureTargetList.add(
+      _TextureTargetEntry(
+        width,
+        height,
+        format,
+        clearValue,
+        role,
+        msaaSampleCount,
         target,
         _frame,
         estimatedBytes,
-      );
-    } else {
-      entry.lastUsedFrame = _frame;
-    }
-    return entry.target;
+      ),
+    );
+    return target;
   }
 
-  final _textureTargets =
-      <(int, int, GpuPixelFormat, Color, Object?, int), _TextureTargetEntry>{};
-  final List<(int, int, GpuPixelFormat, Color, Object?, int)>
-  _evictTextureKeys = [];
+  final List<_TextureTargetEntry> _textureTargetList = [];
 
   /// Marks [target] as used in the current frame so [targetRetainFrames] does
   /// not evict a cached texture target (such as a static shadow map).
   @internal
   void touchTextureTarget(GpuTextureTarget target) {
-    for (final entry in _textureTargets.values) {
+    for (var i = 0; i < _textureTargetList.length; i++) {
+      final entry = _textureTargetList[i];
       if (identical(entry.target, target)) {
         entry.lastUsedFrame = _frame;
         return;
@@ -404,18 +425,34 @@ class GraphicsDevice({
   );
   final List<GpuTextureTarget?> _copySources = List.filled(2, null);
   final List<Texture> _copyTextures = List.filled(2, Texture.standard);
+  DevicePipeline? _copyPipeline;
+  int _copyVertGen = -1;
+  int _copyFragGen = -1;
+  GpuUniformSlot? _copySourceSlot;
 
   /// Draws [texture] over the viewport of the open pass, without testing or
   /// writing depth: texel for texel when it has the size of the viewport and
   /// is sampled with the nearest texel. One draw call of two triangles.
   @internal
   void drawTextureCopy(Texture texture) {
-    _copyFragment.setTexture('sourceTexture', texture);
-    bindPipeline(
-      pipelineFor(_copyVertex, _copyFragment, fullscreenQuadSurface.layout),
-    );
+    _copyVertex.resource;
+    _copyFragment.resource;
+    var pipeline = _copyPipeline;
+    if (pipeline == null ||
+        _copyVertGen != _copyVertex.generation ||
+        _copyFragGen != _copyFragment.generation) {
+      pipeline = _copyPipeline = pipelineFor(
+        _copyVertex,
+        _copyFragment,
+        fullscreenQuadSurface.layout,
+      );
+      _copyVertGen = _copyVertex.generation;
+      _copyFragGen = _copyFragment.generation;
+      _copySourceSlot = _copyFragment.slot('sourceTexture');
+    }
+    bindPipeline(pipeline);
     setRenderState(fullscreenQuadState);
-    bindTexture(_copyFragment.slot('sourceTexture'), texture);
+    bindTexture(_copySourceSlot!, texture);
     bindSurface(fullscreenQuadSurface);
     drawSurface(fullscreenQuadSurface);
   }
@@ -449,13 +486,35 @@ class GraphicsDevice({
   ) {
     final vertex = vertexShader.resource;
     final fragment = fragmentShader.resource;
-    return _pipelines[(vertex, fragment, layout)] ??= DevicePipeline._create(
+    final last = _lastPipeResult;
+    if (last != null &&
+        identical(vertex, _lastPipeVert) &&
+        identical(fragment, _lastPipeFrag) &&
+        (identical(layout, _lastPipeLayout) || _lastPipeLayout == layout)) {
+      return last;
+    }
+    var fragMap = _pipelines[vertex];
+    if (fragMap == null) {
+      fragMap = Map.identity();
+      _pipelines[vertex] = fragMap;
+    }
+    var layoutMap = fragMap[fragment];
+    if (layoutMap == null) {
+      layoutMap = {};
+      fragMap[fragment] = layoutMap;
+    }
+    final pipeline = layoutMap[layout] ??= DevicePipeline._create(
       backend,
       vertex,
       fragment,
       layout,
-      _pipelines.length,
+      _pipelineCount++,
     );
+    _lastPipeVert = vertex;
+    _lastPipeFrag = fragment;
+    _lastPipeLayout = layout;
+    _lastPipeResult = pipeline;
+    return pipeline;
   }
 
   /// Bind [pipeline].
@@ -630,31 +689,122 @@ class GraphicsDevice({
 
   /// Upload [count] instances from [instances] starting at [startFloat] floats
   /// and bind them as the instance buffer.
+  ///
+  /// When [version] is non-null and [instances] preserves its contents as long
+  /// as [version] is unchanged, consecutive frames promote the buffer (or the
+  /// first [cacheSpanCount] instances starting at float `0` when
+  /// [cacheSpanCount] is set) to a retained [GpuBuffer], avoiding per-frame
+  /// re-uploads.
   void bindInstances(
     Float32List instances,
     int count, {
     int startFloat = 0,
+    int? version,
+    int? cacheSpanCount,
   }) {
-    if (_suspended) {
+    if (_suspended || count <= 0) {
       return;
     }
-    final floats = count * VertexLayout.instanceStrideInFloats;
-    final block = _arena.allocate(floats * 4, _instanceAlignment);
+    const stride = VertexLayout.instanceStrideInFloats;
+    final floats = count * stride;
+    final bytes = floats * 4;
+    if (version == null) {
+      final block = _arena.allocate(bytes, _instanceAlignment);
+      final offset = block.lastOffset;
+      block.floats.setRange(
+        offset ~/ 4,
+        offset ~/ 4 + floats,
+        instances,
+        startFloat,
+      );
+      stats.uploadedBytes += bytes;
+      RenderProfile.lap(RenderPhase.upload);
+      _bindInstanceSlice(block.buffer, offset, bytes);
+      RenderProfile.lap(RenderPhase.binding);
+      return;
+    }
+
+    var entry = _instanceCache[instances];
+    if (entry == null) {
+      entry = _InstanceUploadCache();
+      _instanceCache[instances] = entry;
+    }
+    final spanCount = cacheSpanCount ?? count;
+    final spanStartFloat = cacheSpanCount != null ? 0 : startFloat;
+    final spanFloats = spanCount * stride;
+    final spanBytes = spanFloats * 4;
+    final subOffsetBytes = (startFloat - spanStartFloat) * 4;
+    final gen = GpuBackend.deviceGeneration;
+
+    final gpuBuf = entry.gpuBuffer;
+    if (gpuBuf != null &&
+        entry.deviceGeneration == gen &&
+        entry.version == version &&
+        entry.spanStartFloat == spanStartFloat &&
+        entry.spanFloats == spanFloats) {
+      _bindInstanceSlice(gpuBuf, subOffsetBytes, bytes);
+      RenderProfile.lap(RenderPhase.binding);
+      return;
+    }
+
+    final arenaBuf = entry.arenaBuffer;
+    if (arenaBuf != null &&
+        entry.frame == _frame &&
+        entry.deviceGeneration == gen &&
+        entry.version == version &&
+        entry.spanStartFloat == spanStartFloat &&
+        entry.spanFloats == spanFloats) {
+      _bindInstanceSlice(arenaBuf, entry.arenaOffset + subOffsetBytes, bytes);
+      RenderProfile.lap(RenderPhase.binding);
+      return;
+    }
+
+    if (entry.frame >= 0 &&
+        entry.frame != _frame &&
+        entry.deviceGeneration == gen &&
+        entry.version == version &&
+        entry.spanStartFloat == spanStartFloat &&
+        entry.spanFloats == spanFloats) {
+      final persistent = backend.createBuffer(
+        storageMode: GpuStorageMode.hostVisible,
+        sizeInBytes: spanBytes,
+      );
+      persistent.write(
+        instances.buffer.asByteData(
+          instances.offsetInBytes + spanStartFloat * 4,
+          spanBytes,
+        ),
+      );
+      entry
+        ..gpuBuffer = persistent
+        ..arenaBuffer = null;
+      stats.uploadedBytes += spanBytes;
+      RenderProfile.lap(RenderPhase.upload);
+      _bindInstanceSlice(persistent, subOffsetBytes, bytes);
+      RenderProfile.lap(RenderPhase.binding);
+      return;
+    }
+
+    final block = _arena.allocate(spanBytes, _instanceAlignment);
     final offset = block.lastOffset;
     block.floats.setRange(
       offset ~/ 4,
-      offset ~/ 4 + floats,
+      offset ~/ 4 + spanFloats,
       instances,
-      startFloat,
+      spanStartFloat,
     );
-    stats.uploadedBytes += floats * 4;
+    entry
+      ..gpuBuffer = null
+      ..arenaBuffer = block.buffer
+      ..arenaOffset = offset
+      ..frame = _frame
+      ..deviceGeneration = gen
+      ..version = version
+      ..spanStartFloat = spanStartFloat
+      ..spanFloats = spanFloats;
+    stats.uploadedBytes += spanBytes;
     RenderProfile.lap(RenderPhase.upload);
-    _pass.bindVertexBuffer(
-      block.buffer,
-      offsetInBytes: offset,
-      lengthInBytes: floats * 4,
-      slot: 1,
-    );
+    _bindInstanceSlice(block.buffer, offset + subOffsetBytes, bytes);
     RenderProfile.lap(RenderPhase.binding);
   }
 
@@ -683,12 +833,7 @@ class GraphicsDevice({
     }
     stats.uploadedBytes += floats * 4;
     RenderProfile.lap(RenderPhase.gather);
-    _pass.bindVertexBuffer(
-      block.buffer,
-      offsetInBytes: offset,
-      lengthInBytes: floats * 4,
-      slot: 1,
-    );
+    _bindInstanceSlice(block.buffer, offset, floats * 4);
     RenderProfile.lap(RenderPhase.binding);
   }
 
@@ -721,15 +866,32 @@ class GraphicsDevice({
     if (_suspended) {
       return;
     }
-    final block = _uploadUniform(
-      data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
-    );
+    final block = _uploadUniformByteData(data);
     _bindUniformResolved(
       slot,
       block.buffer,
       block.lastOffset,
       data.lengthInBytes,
     );
+  }
+
+  int _lastUploadedOffset = 0;
+
+  /// Buffer byte offset of the last slice uploaded via [uploadUniformRange].
+  @internal
+  int get lastUploadedOffset => _lastUploadedOffset;
+
+  /// Uploads the first [length] bytes of [data] into this frame's transient
+  /// arena without creating view objects or Record wrappers; the slice offset
+  /// is stored in [lastUploadedOffset].
+  @internal
+  GpuBuffer? uploadUniformRange(Uint8List data, int length) {
+    if (_suspended) {
+      return null;
+    }
+    final block = _uploadUniformRange(data, length);
+    _lastUploadedOffset = block.lastOffset;
+    return block.buffer;
   }
 
   /// Uploads [data] into this frame's transient arena without binding a slot,

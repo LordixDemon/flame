@@ -159,11 +159,16 @@ abstract final class ShapeCast3D._() {
     ShapeCastHit3D? best;
     var maxToi = 1.0;
 
-    // 1. Test against CollisionSystem3D colliders.
+    // 1. Test against CollisionSystem3D colliders via dynamic BVH broadphase.
     if (collisionSystem != null) {
-      final colliders = collisionSystem.collectColliders(_colliderScratch);
-      for (var i = 0; i < colliders.length; i++) {
-        final c = colliders[i];
+      collisionSystem.syncBroadphase();
+      _colliderScratch.clear();
+      collisionSystem.broadphaseTree.queryAabb(
+        _sweptAabb,
+        out: _colliderScratch,
+      );
+      for (var i = 0; i < _colliderScratch.length; i++) {
+        final c = _colliderScratch[i];
         if (!includeTriggers && c.isTrigger) {
           continue;
         }
@@ -174,8 +179,7 @@ abstract final class ShapeCast3D._() {
         if (filter != null && (!filter(c) || !filter(host))) {
           continue;
         }
-        final box = c.colliderWorldAabb;
-        if (!aabbOverlaps(_sweptAabb, box)) {
+        if (!aabbOverlaps(_sweptAabb, c.cachedWorldAabb)) {
           continue;
         }
         final hit = _sweepShapeAgainstCollider(

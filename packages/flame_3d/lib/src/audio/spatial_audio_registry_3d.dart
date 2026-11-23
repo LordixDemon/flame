@@ -31,6 +31,22 @@ class SpatialAudioRegistry3D._() {
   /// Mounted zones, in mount order.
   final List<AudioZone3D> zones = [];
 
+  /// Monotonic counter bumped whenever [zones] changes.
+  int zonesVersion = 0;
+
+  /// Registers [zone] and bumps [zonesVersion].
+  void addZone(AudioZone3D zone) {
+    zones.add(zone);
+    zonesVersion++;
+  }
+
+  /// Unregisters [zone] and bumps [zonesVersion].
+  void removeZone(AudioZone3D zone) {
+    if (zones.remove(zone)) {
+      zonesVersion++;
+    }
+  }
+
   /// Mounted mixers, told when an emitter leaves the world.
   final List<SpatialAudioMixer3D> mixers = [];
 

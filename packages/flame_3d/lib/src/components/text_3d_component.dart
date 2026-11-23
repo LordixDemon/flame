@@ -140,6 +140,7 @@ class Text3DComponent({
   /// `World3D.sceneVersion`, so that a retained `Scene3DComponent` renders it
   /// again.
   void _changed() {
+    _visualVersion++;
     markAabbDirty();
     worldOrNull?.markSceneDirty(shadows: false);
   }
@@ -161,7 +162,17 @@ class Text3DComponent({
   double _aspect = 2.0;
   double get worldWidth => worldHeight * _aspect;
 
+  final ui.Paint _bgPaint = ui.Paint();
+  final ui.Paint _borderPaint = ui.Paint()
+    ..style = ui.PaintingStyle.stroke
+    ..strokeWidth = 2.0;
+  final Aabb3 _localAabb = Aabb3();
+  int _visualVersion = 0;
+  int _syncedVisualVersion = -1;
+  int _syncedWorldVersion = -1;
+
   void _rebuildTexture() {
+    _visualVersion++;
     final painter = TextPainter(
       text: TextSpan(text: _text, style: _style),
       textDirection: ui.TextDirection.ltr,
@@ -185,16 +196,10 @@ class Text3DComponent({
       ui.Radius.circular(_cornerRadius),
     );
     if (_backgroundColor case final background?) {
-      canvas.drawRRect(rrect, ui.Paint()..color = background);
+      canvas.drawRRect(rrect, _bgPaint..color = background);
     }
     if (_borderColor case final border?) {
-      canvas.drawRRect(
-        rrect,
-        ui.Paint()
-          ..color = border
-          ..style = ui.PaintingStyle.stroke
-          ..strokeWidth = 2.0,
-      );
+      canvas.drawRRect(rrect, _borderPaint..color = border);
     }
     painter.paint(canvas, ui.Offset(_padding.left, _padding.top));
     painter.dispose();
@@ -277,10 +282,15 @@ class Text3DComponent({
   }
 
   @override
+  bool get usesDefaultFrustumVisibility => runtimeType == Text3DComponent;
+
+  @override
   Aabb3? computeLocalAabb() {
     final hw = worldWidth * 0.5;
     final hh = worldHeight * 0.5;
-    return Aabb3.minMax(Vector3(-hw, -hh, -hw), Vector3(hw, hh, hw));
+    return _localAabb
+      ..min.setValues(-hw, -hh, -hw)
+      ..max.setValues(hw, hh, hw);
   }
 
   final Vector3 _worldPos = Vector3.zero();
@@ -290,18 +300,37 @@ class Text3DComponent({
     if (context.isShadowPass) {
       return;
     }
-    final m = worldTransformMatrix.storage;
-    _worldPos.setValues(m[12], m[13], m[14]);
-    _batch.clear();
-    _batch.addBillboard(
-      position: _worldPos,
-      width: worldWidth,
-      height: worldHeight,
-      orientation: orientation,
-      upAxis: _upAxis,
-      anchorY: 0.0,
-      unlit: 1.0,
-    );
+    final worldVer = worldTransformVersion;
+    if (_batch.isEmpty ||
+        _syncedWorldVersion != worldVer ||
+        _syncedVisualVersion != _visualVersion) {
+      final m = worldTransformMatrix.storage;
+      _worldPos.setValues(m[12], m[13], m[14]);
+      if (_batch.isEmpty) {
+        _batch.addBillboard(
+          position: _worldPos,
+          width: worldWidth,
+          height: worldHeight,
+          orientation: orientation,
+          upAxis: _upAxis,
+          anchorY: 0.0,
+          unlit: 1.0,
+        );
+      } else {
+        _batch.setBillboard(
+          0,
+          position: _worldPos,
+          width: worldWidth,
+          height: worldHeight,
+          orientation: orientation,
+          upAxis: _upAxis,
+          anchorY: 0.0,
+          unlit: 1.0,
+        );
+      }
+      _syncedWorldVersion = worldVer;
+      _syncedVisualVersion = _visualVersion;
+    }
     _batch.draw(context);
   }
 }

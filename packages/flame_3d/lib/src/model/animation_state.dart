@@ -117,6 +117,50 @@ class AnimationState() {
   final Int32List _active2DIndices = Int32List(4);
   final Float64List _active2DWeights = Float64List(4);
 
+  BlendSpace1D? _cached1DSpace;
+  double _cached1DParam = double.nan;
+  int _cached1DIndexA = 0;
+  int _cached1DIndexB = 0;
+  double _cached1DT = 0.0;
+
+  BlendSpace2D? _cached2DSpace;
+  double _cached2DX = double.nan;
+  double _cached2DY = double.nan;
+  int _cached2DCount = 0;
+
+  void _ensure1DBracket(BlendSpace1D space) {
+    final p = blendParameter1D;
+    if (identical(_cached1DSpace, space) && _cached1DParam == p) {
+      return;
+    }
+    final b = space.resolveBracket(p);
+    _cached1DSpace = space;
+    _cached1DParam = p;
+    _cached1DIndexA = b.indexA;
+    _cached1DIndexB = b.indexB;
+    _cached1DT = b.t;
+  }
+
+  int _ensure2DWeights(BlendSpace2D space) {
+    final px = _blendParam2D.x;
+    final py = _blendParam2D.y;
+    if (identical(_cached2DSpace, space) &&
+        _cached2DX == px &&
+        _cached2DY == py) {
+      return _cached2DCount;
+    }
+    final count = space.evaluateWeights(
+      _blendParam2D,
+      _active2DIndices,
+      _active2DWeights,
+    );
+    _cached2DSpace = space;
+    _cached2DX = px;
+    _cached2DY = py;
+    _cached2DCount = count;
+    return count;
+  }
+
   /// Registers [listener] to be notified whenever an [AnimationEvent3D] fires
   /// on this state (or any active [layers]).
   void addEventListener(AnimationEventCallback3D listener) {
@@ -168,8 +212,8 @@ class AnimationState() {
       for (var i = 0; i < s1.samples.length; i++) {
         _sampleClocks[i] = p * s1.samples[i].animation.lastTime;
       }
-      final bracket = s1.resolveBracket(blendParameter1D);
-      final domIdx = bracket.t < 0.5 ? bracket.indexA : bracket.indexB;
+      _ensure1DBracket(s1);
+      final domIdx = _cached1DT < 0.5 ? _cached1DIndexA : _cached1DIndexB;
       clock = p * s1.samples[domIdx].animation.lastTime;
       _atInitialStart = p == 0.0;
     } else if (_blendSpace2D case final s2?) {

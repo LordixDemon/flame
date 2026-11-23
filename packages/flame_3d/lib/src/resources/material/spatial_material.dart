@@ -429,6 +429,11 @@ class SpatialMaterial({
   int _emiTexIdx = -1;
   int _envTexIdx = -1;
   int _lmTexIdx = -1;
+  UniformBlock? _cachedMatBlock;
+  _SpatialMaterialOffsets? _cachedMatOff;
+
+  @override
+  bool get hasPassStableFragmentShader => runtimeType == SpatialMaterial;
 
   @override
   bool get cachesApply => runtimeType == SpatialMaterial;
@@ -533,6 +538,67 @@ class SpatialMaterial({
       _emiTexIdx = frag.samplerIndexOf('emissiveTexture');
       _envTexIdx = frag.samplerIndexOf('environmentTexture');
       _lmTexIdx = frag.samplerIndexOf('lightmapTexture');
+      final matIdx = frag.blockIndexOf('Material');
+      if (matIdx >= 0) {
+        final blk = frag.blockAt(matIdx);
+        _cachedMatBlock = blk;
+        _cachedMatOff =
+            (blk.cachedWriterOffsets as _SpatialMaterialOffsets?) ??
+            (blk.cachedWriterOffsets = _SpatialMaterialOffsets(blk));
+      } else {
+        _cachedMatBlock = null;
+        _cachedMatOff = null;
+      }
+    }
+
+    final matBlock = _cachedMatBlock;
+    if (matBlock == null) {
+      if (_albedoTexIdx >= 0) {
+        frag.setTextureAt(_albedoTexIdx, albedoTexture);
+      }
+      if (_normalTexIdx >= 0) {
+        frag.setTextureAt(_normalTexIdx, normTex ?? Texture.standard);
+      }
+      if (_ormTexIdx >= 0) {
+        frag.setTextureAt(_ormTexIdx, ormTex ?? Texture.standard);
+      }
+      if (_occTexIdx >= 0) {
+        frag.setTextureAt(_occTexIdx, occTex ?? Texture.standard);
+      }
+      if (_emiTexIdx >= 0) {
+        frag.setTextureAt(_emiTexIdx, emiTex ?? Texture.standard);
+      }
+      if (_envTexIdx >= 0) {
+        frag.setTextureAt(_envTexIdx, envTex ?? Texture.standard);
+      }
+      return;
+    }
+
+    final off = _cachedMatOff!;
+    final simple = usesSimpleShader;
+    // If only the reflection probe weight changed since the last apply, update
+    // just the two weight-dependent scalar floats in place.
+    if (_appliedVersion == version &&
+        identical(_appliedFrag, frag) &&
+        _appliedFragGen == frag.generation &&
+        identical(_appliedEnvProbe, _environmentProbe) &&
+        (_environmentProbe?.intensity ?? -1.0) == _appliedEnvProbeIntensity &&
+        identical(_appliedVolume, volume) &&
+        (volume == null || _appliedVolumeBoxProj == volume.boxProjection) &&
+        (simple || envTex == null || envTex.hasResource == _appliedEnvHadRes)) {
+      if (off._flags >= 0) {
+        matBlock.writeFloatAt(
+          off._flags + 3,
+          envTex != null ? environmentIntensity * volumeWeight : 0.0,
+        );
+      }
+      if (off._shCoeffs >= 0 && probe != null && probe.intensity > 0) {
+        matBlock.writeFloatAt(
+          off._shCoeffs + 3,
+          probe.intensity * volumeWeight / math.pi,
+        );
+      }
+      return;
     }
 
     if (_albedoTexIdx >= 0) {
@@ -553,15 +619,6 @@ class SpatialMaterial({
     if (_envTexIdx >= 0) {
       frag.setTextureAt(_envTexIdx, envTex ?? Texture.standard);
     }
-
-    final matIdx = frag.blockIndexOf('Material');
-    if (matIdx < 0) {
-      return;
-    }
-    final matBlock = frag.blockAt(matIdx);
-    final off =
-        (matBlock.cachedWriterOffsets as _SpatialMaterialOffsets?) ??
-        (matBlock.cachedWriterOffsets = _SpatialMaterialOffsets(matBlock));
 
     if (off._albedoColor >= 0) {
       matBlock.writeColorAt(off._albedoColor, albedoColor);

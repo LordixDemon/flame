@@ -89,11 +89,15 @@ class _FlutterGpuBuffer(
       return raw;
     }
     _generation = base.GpuBackend.deviceGeneration;
-    _views.clear();
     _view0 = null;
     _view1 = null;
     _viewOffset0 = -1;
     _viewOffset1 = -1;
+    final cacheViews = _cacheViews;
+    if (cacheViews != null) {
+      cacheViews.fillRange(0, _cacheSize, null);
+      _cacheOffsets!.fillRange(0, _cacheSize, -1);
+    }
     return _raw = _create();
   }
 
@@ -104,14 +108,20 @@ class _FlutterGpuBuffer(
 
   // `flutter_gpu` takes buffer ranges as `BufferView` objects. Static geometry
   // buffers hit the two-entry fast path (vertex + index slice) without
-  // touching the hash map; transient buffers reuse offsets in `_views`.
+  // allocating; transient buffers hit the direct-mapped `(offset, length)`
+  // cache without unbounded growth or full-map clears.
   gpu.BufferView? _view0;
   int _viewOffset0 = -1;
   int _viewLength0 = 0;
   gpu.BufferView? _view1;
   int _viewOffset1 = -1;
   int _viewLength1 = 0;
-  final Map<int, gpu.BufferView> _views = {};
+
+  static const int _cacheSize = 1024;
+  static const int _cacheMask = _cacheSize - 1;
+  List<gpu.BufferView?>? _cacheViews;
+  Int32List? _cacheOffsets;
+  Int32List? _cacheLengths;
 
   gpu.BufferView view(int offsetInBytes, int lengthInBytes) {
     final buffer = raw;
@@ -125,16 +135,32 @@ class _FlutterGpuBuffer(
         _view1 != null) {
       return _view1!;
     }
-    var view = _views[offsetInBytes];
-    if (view == null || view.lengthInBytes != lengthInBytes) {
-      if (_views.length >= _maxViews) {
-        _views.clear();
-      }
-      view = _views[offsetInBytes] = gpu.BufferView(
+    var views = _cacheViews;
+    late Int32List offsets;
+    late Int32List lengths;
+    if (views == null) {
+      views = _cacheViews = List<gpu.BufferView?>.filled(_cacheSize, null);
+      offsets = _cacheOffsets = Int32List(_cacheSize)
+        ..fillRange(0, _cacheSize, -1);
+      lengths = _cacheLengths = Int32List(_cacheSize);
+    } else {
+      offsets = _cacheOffsets!;
+      lengths = _cacheLengths!;
+    }
+    final slot =
+        (((offsetInBytes >> 4) * 2654435761) ^ (lengthInBytes >> 2)) &
+        _cacheMask;
+    var view = views[slot];
+    if (view == null ||
+        offsets[slot] != offsetInBytes ||
+        lengths[slot] != lengthInBytes) {
+      view = views[slot] = gpu.BufferView(
         buffer,
         offsetInBytes: offsetInBytes,
         lengthInBytes: lengthInBytes,
       );
+      offsets[slot] = offsetInBytes;
+      lengths[slot] = lengthInBytes;
     }
     if (_view0 == null) {
       _view0 = view;
@@ -147,8 +173,6 @@ class _FlutterGpuBuffer(
     }
     return view;
   }
-
-  static const _maxViews = 4096;
 }
 
 class _FlutterGpuShaderLibrary(

@@ -1,6 +1,5 @@
 part of 'render_context_3d.dart';
 
-final Int32List _topLightIndices = Int32List(RenderContext3D.maxPointLights);
 final Float64List _topLightScores = Float64List(RenderContext3D.maxPointLights);
 const int _pickAll = 0;
 const int _pickFixed = 1;
@@ -25,7 +24,7 @@ extension _RenderContext3DUniforms on RenderContext3D {
     required bool active,
     required bool atlasActive,
   }) {
-    _pass++;
+    _bumpAllPassKinds();
     _cameraPass++;
     _shadows
       ..active = active
@@ -220,25 +219,6 @@ void _writeSpatialPass(RenderContext3D context, UniformBlock block) {
   );
 }
 
-bool _floatsEqual(
-  Float32List snapshot,
-  Float32List scratch,
-  int base,
-  int count,
-) {
-  if (count > 0 &&
-      (snapshot[0] != scratch[base] ||
-          snapshot[count - 1] != scratch[base + count - 1])) {
-    return false;
-  }
-  for (var i = 0; i < count; i++) {
-    if (snapshot[i] != scratch[base + i]) {
-      return false;
-    }
-  }
-  return true;
-}
-
 void _writeCameraUniforms(
   RenderContext3D context,
   UniformBlock block,
@@ -311,6 +291,54 @@ double _lightPriorityScore(
   return intensity / (1.0 + nx * nx + ny * ny);
 }
 
+int _ensurePointLightSelection(RenderContext3D context) {
+  final list = context.lights;
+  if (context._selPointPass == context._pass &&
+      identical(context._selPointList, list) &&
+      context._selPointLength == list.length &&
+      context._selPointMask == context.cameraMask &&
+      context._selPointPrioritize == context.prioritizeNearestLights &&
+      identical(context._selPointGrid, context.lightGrid)) {
+    return context._selPointCount;
+  }
+  context._selPointPass = context._pass;
+  context._selPointList = list;
+  context._selPointLength = list.length;
+  context._selPointMask = context.cameraMask;
+  context._selPointPrioritize = context.prioritizeNearestLights;
+  context._selPointGrid = context.lightGrid;
+  context._planLightGrid();
+  final out = context._selPointIndices;
+  final int count;
+  if (!context._gridPoints) {
+    count = _pickPointLights(
+      context,
+      out,
+      0,
+      RenderContext3D.maxPointLights,
+      _pickAll,
+    );
+  } else {
+    final fixed = _pickPointLights(
+      context,
+      out,
+      0,
+      RenderContext3D.maxPointLights,
+      _pickFixed,
+    );
+    count =
+        fixed +
+        _pickPointLights(
+          context,
+          out,
+          fixed,
+          RenderContext3D.maxPointLights - fixed,
+          _pickBinnable,
+        );
+  }
+  return context._selPointCount = count;
+}
+
 /// Fills [out] with the indices in [RenderContext3D.lights] of point lights
 /// in [RenderContext3D.lightsBlock] order (filtered by `lightMask` and
 /// [RenderContext3D.prioritizeNearestLights] up to
@@ -321,31 +349,12 @@ double _lightPriorityScore(
 ///
 /// The shadow pass matches its lights to the block with it.
 int _selectPointLights(RenderContext3D context, Int32List out) {
-  context._planLightGrid();
-  if (!context._gridPoints) {
-    return _pickPointLights(
-      context,
-      out,
-      0,
-      RenderContext3D.maxPointLights,
-      _pickAll,
-    );
+  final n = _ensurePointLightSelection(context);
+  final src = context._selPointIndices;
+  for (var i = 0; i < n; i++) {
+    out[i] = src[i];
   }
-  final fixed = _pickPointLights(
-    context,
-    out,
-    0,
-    RenderContext3D.maxPointLights,
-    _pickFixed,
-  );
-  return fixed +
-      _pickPointLights(
-        context,
-        out,
-        fixed,
-        RenderContext3D.maxPointLights - fixed,
-        _pickBinnable,
-      );
+  return n;
 }
 
 @pragma('vm:prefer-inline')
@@ -362,22 +371,17 @@ int _pickPointLights(
   int capacity,
   int pick,
 ) {
-  final lights = context.lights;
-  var totalPointLights = 0;
-  for (var i = 0; i < lights.length; i++) {
-    if ((lights[i].lightMask & context.cameraMask) != 0 &&
-        lights[i].source is PointLight &&
-        _picks(lights[i], pick)) {
-      totalPointLights++;
-    }
+  if (capacity <= 0) {
+    return 0;
   }
-
+  final lights = context.lights;
+  final mask = context.cameraMask;
   var count = 0;
-  if (!context.prioritizeNearestLights || totalPointLights <= capacity) {
+  if (!context.prioritizeNearestLights) {
     var slots = 0;
     for (var i = 0; i < lights.length && slots < capacity; i++) {
       final light = lights[i];
-      if ((light.lightMask & context.cameraMask) == 0) {
+      if ((light.lightMask & mask) == 0) {
         continue;
       }
       final source = light.source;
@@ -396,15 +400,47 @@ int _pickPointLights(
     }
     return count;
   }
+
+  var totalMatching = 0;
+  var prioritized = false;
   for (var i = 0; i < lights.length; i++) {
     final light = lights[i];
-    if ((light.lightMask & context.cameraMask) == 0) {
+    if ((light.lightMask & mask) == 0) {
       continue;
     }
     final source = light.source;
-    if (source is! PointLight ||
-        source.intensity <= 0 ||
-        !_picks(light, pick)) {
+    if (source is! PointLight || !_picks(light, pick)) {
+      continue;
+    }
+    if (!prioritized) {
+      totalMatching++;
+      if (totalMatching <= capacity) {
+        if (source.intensity != 0) {
+          out[offset + count++] = i;
+        }
+        continue;
+      }
+      prioritized = true;
+      final collected = count;
+      count = 0;
+      for (var j = 0; j < collected; j++) {
+        final idx = out[offset + j];
+        final l = lights[idx];
+        final s = l.source as PointLight;
+        if (s.intensity <= 0) {
+          continue;
+        }
+        count = _insertByScore(
+          out,
+          count,
+          capacity,
+          idx,
+          _lightPriorityScore(context, l.position, s.intensity),
+          offset: offset,
+        );
+      }
+    }
+    if (source.intensity <= 0) {
       continue;
     }
     count = _insertByScore(
@@ -419,6 +455,52 @@ int _pickPointLights(
   return count;
 }
 
+int _ensureSpotLightSelection(RenderContext3D context) {
+  final list = context.lights;
+  if (context._selSpotPass == context._pass &&
+      identical(context._selSpotList, list) &&
+      context._selSpotLength == list.length &&
+      context._selSpotMask == context.cameraMask &&
+      identical(context._selSpotGrid, context.lightGrid)) {
+    return context._selSpotCount;
+  }
+  context._selSpotPass = context._pass;
+  context._selSpotList = list;
+  context._selSpotLength = list.length;
+  context._selSpotMask = context.cameraMask;
+  context._selSpotGrid = context.lightGrid;
+  context._planLightGrid();
+  final out = context._selSpotIndices;
+  final int count;
+  if (!context._gridSpots) {
+    count = _pickSpotLights(
+      context,
+      out,
+      0,
+      RenderContext3D.maxSpotLights,
+      _pickAll,
+    );
+  } else {
+    final fixed = _pickSpotLights(
+      context,
+      out,
+      0,
+      RenderContext3D.maxSpotLights,
+      _pickFixed,
+    );
+    count =
+        fixed +
+        _pickSpotLights(
+          context,
+          out,
+          fixed,
+          RenderContext3D.maxSpotLights - fixed,
+          _pickBinnable,
+        );
+  }
+  return context._selSpotCount = count;
+}
+
 /// Fills [out] with the indices in [RenderContext3D.lights] of spot lights
 /// in [RenderContext3D.spotLightsBlock] order up to
 /// [RenderContext3D.maxSpotLights].
@@ -428,31 +510,12 @@ int _pickPointLights(
 ///
 /// The shadow pass matches its lights to the block with it.
 int _selectSpotLights(RenderContext3D context, Int32List out) {
-  context._planLightGrid();
-  if (!context._gridSpots) {
-    return _pickSpotLights(
-      context,
-      out,
-      0,
-      RenderContext3D.maxSpotLights,
-      _pickAll,
-    );
+  final n = _ensureSpotLightSelection(context);
+  final src = context._selSpotIndices;
+  for (var i = 0; i < n; i++) {
+    out[i] = src[i];
   }
-  final fixed = _pickSpotLights(
-    context,
-    out,
-    0,
-    RenderContext3D.maxSpotLights,
-    _pickFixed,
-  );
-  return fixed +
-      _pickSpotLights(
-        context,
-        out,
-        fixed,
-        RenderContext3D.maxSpotLights - fixed,
-        _pickBinnable,
-      );
+  return n;
 }
 
 /// Writes into [out] from [offset] the indices of at most [capacity] spot
@@ -465,39 +528,49 @@ int _pickSpotLights(
   int capacity,
   int pick,
 ) {
+  if (capacity <= 0) {
+    return 0;
+  }
   final lights = context.lights;
-  var totalSpot = 0;
-  for (var i = 0; i < lights.length; i++) {
-    if ((lights[i].lightMask & context.cameraMask) != 0 &&
-        lights[i].source is SpotLight &&
-        _picks(lights[i], pick)) {
-      totalSpot++;
-    }
-  }
-
+  final mask = context.cameraMask;
   var count = 0;
-  if (totalSpot <= capacity) {
-    for (var i = 0; i < lights.length && count < capacity; i++) {
-      if ((lights[i].lightMask & context.cameraMask) == 0) {
-        continue;
-      }
-      final source = lights[i].source;
-      if (source is SpotLight &&
-          source.intensity > 0 &&
-          _picks(lights[i], pick)) {
-        out[offset + count++] = i;
-      }
-    }
-    return count;
-  }
+  var totalMatching = 0;
+  var prioritized = false;
   for (var i = 0; i < lights.length; i++) {
-    if ((lights[i].lightMask & context.cameraMask) == 0) {
+    final light = lights[i];
+    if ((light.lightMask & mask) == 0) {
       continue;
     }
-    final source = lights[i].source;
-    if (source is! SpotLight ||
-        source.intensity <= 0 ||
-        !_picks(lights[i], pick)) {
+    final source = light.source;
+    if (source is! SpotLight || !_picks(light, pick)) {
+      continue;
+    }
+    if (!prioritized) {
+      totalMatching++;
+      if (totalMatching <= capacity) {
+        if (source.intensity > 0) {
+          out[offset + count++] = i;
+        }
+        continue;
+      }
+      prioritized = true;
+      final collected = count;
+      count = 0;
+      for (var j = 0; j < collected; j++) {
+        final idx = out[offset + j];
+        final l = lights[idx];
+        final s = l.source as SpotLight;
+        count = _insertByScore(
+          out,
+          count,
+          capacity,
+          idx,
+          _lightPriorityScore(context, l.position, s.intensity),
+          offset: offset,
+        );
+      }
+    }
+    if (source.intensity <= 0) {
       continue;
     }
     count = _insertByScore(
@@ -505,7 +578,7 @@ int _pickSpotLights(
       count,
       capacity,
       i,
-      _lightPriorityScore(context, lights[i].position, source.intensity),
+      _lightPriorityScore(context, light.position, source.intensity),
       offset: offset,
     );
   }
@@ -615,10 +688,11 @@ void _writeLightsUniforms(RenderContext3D context, UniformBlock block) {
       (block.cachedWriterOffsets as _LightsOffsets?) ??
       (block.cachedWriterOffsets = _LightsOffsets(block));
   final lights = context.lights;
-  final count = _selectPointLights(context, _topLightIndices);
+  final count = _ensurePointLightSelection(context);
+  final indices = context._selPointIndices;
   final dataLen = block.data.length;
   for (var k = 0; k < count; k++) {
-    final light = lights[_topLightIndices[k]];
+    final light = lights[indices[k]];
     final source = light.source as PointLight;
     final range = source.range;
     final p = light.position;
@@ -651,12 +725,13 @@ void _writeSpotLightsUniforms(
       (block.cachedWriterOffsets as _SpotLightsOffsets?) ??
       (block.cachedWriterOffsets = _SpotLightsOffsets(block));
   final lights = context.lights;
-  final count = _selectSpotLights(context, _topLightIndices);
+  final count = _ensureSpotLightSelection(context);
+  final indices = context._selSpotIndices;
   final dataLen = block.data.length;
 
   final dir = _scratchDirection;
   for (var k = 0; k < count; k++) {
-    final light = lights[_topLightIndices[k]];
+    final light = lights[indices[k]];
     final source = light.source as SpotLight;
     light.direction(dir);
     final outer = source.outerConeAngle.clamp(0.001, math.pi * 0.999);

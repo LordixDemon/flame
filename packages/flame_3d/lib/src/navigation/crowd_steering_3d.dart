@@ -147,11 +147,16 @@ class CrowdSteering3D({
 
       final p = a.position;
       final v = a.velocity;
+      final vu = v.x * bux + v.y * buy + v.z * buz;
+      final vv = v.x * bvx + v.y * bvy + v.z * bvz;
       _posU[i] = p.x * bux + p.y * buy + p.z * buz;
       _posV[i] = p.x * bvx + p.y * bvy + p.z * bvz;
       _posUp[i] = p.x * ux + p.y * uy + p.z * uz;
-      _velU[i] = v.x * bux + v.y * buy + v.z * buz;
-      _velV[i] = v.x * bvx + v.y * bvy + v.z * bvz;
+      _velU[i] = vu;
+      _velV[i] = vv;
+      _agentRadius[i] = a.radius;
+      _agentMaxSpeed[i] = a.maxSpeed;
+      _agentMoving[i] = (vu * vu + vv * vv > 1e-4 || !a.hasReachedGoal) ? 1 : 0;
 
       if (a.radius > maxRadius) {
         maxRadius = a.radius;
@@ -428,9 +433,15 @@ class CrowdSteering3D({
     final refSpeed = prefSpeed > 1e-4 ? prefSpeed : myMaxSpeed;
 
     // Collect relevant neighbors within agent i's RVO horizon ONCE outside
-    // the 52-sample loop so inner collision checks never touch distant agents.
+    // the 52-sample loop so inner collision checks never touch distant agents
+    // or dereference `CrowdAgent3D`.
     var neighborCount = 0;
-    final neighbors = _rvoNeighbors;
+    final nbRelU = _nbRelU;
+    final nbRelV = _nbRelV;
+    final nbVelU = _nbVelU;
+    final nbVelV = _nbVelV;
+    final nbCombR2 = _nbCombR2;
+    final nbMoving = _nbMoving;
     final searchR =
         myRadius +
         maxOtherRadius +
@@ -463,14 +474,19 @@ class CrowdSteering3D({
                 _agentCellU[j] == cu &&
                 _agentCellV[j] == cv &&
                 (_posUp[j] - myPosUp).abs() <= 1.5) {
-              final other = agents[j];
               final relU = _posU[j] - myPosU;
               final relV = _posV[j] - myPosV;
-              final combinedR = myRadius + other.radius + safetyMargin;
+              final combinedR = myRadius + _agentRadius[j] + safetyMargin;
               final maxD =
-                  combinedR + (myMaxSpeed + other.maxSpeed) * myHorizon;
+                  combinedR + (myMaxSpeed + _agentMaxSpeed[j]) * myHorizon;
               if (relU * relU + relV * relV <= maxD * maxD) {
-                neighbors[neighborCount++] = j;
+                nbRelU[neighborCount] = relU;
+                nbRelV[neighborCount] = relV;
+                nbVelU[neighborCount] = _velU[j];
+                nbVelV[neighborCount] = _velV[j];
+                nbCombR2[neighborCount] = combinedR * combinedR;
+                nbMoving[neighborCount] = _agentMoving[j];
+                neighborCount++;
               }
             }
             j = _gridNext[j];
@@ -485,13 +501,18 @@ class CrowdSteering3D({
         if ((_posUp[j] - myPosUp).abs() > 1.5) {
           continue;
         }
-        final other = agents[j];
         final relU = _posU[j] - myPosU;
         final relV = _posV[j] - myPosV;
-        final combinedR = myRadius + other.radius + safetyMargin;
-        final maxD = combinedR + (myMaxSpeed + other.maxSpeed) * myHorizon;
+        final combinedR = myRadius + _agentRadius[j] + safetyMargin;
+        final maxD = combinedR + (myMaxSpeed + _agentMaxSpeed[j]) * myHorizon;
         if (relU * relU + relV * relV <= maxD * maxD) {
-          neighbors[neighborCount++] = j;
+          nbRelU[neighborCount] = relU;
+          nbRelV[neighborCount] = relV;
+          nbVelU[neighborCount] = _velU[j];
+          nbVelV[neighborCount] = _velV[j];
+          nbCombR2[neighborCount] = combinedR * combinedR;
+          nbMoving[neighborCount] = _agentMoving[j];
+          neighborCount++;
         }
       }
     }
@@ -499,12 +520,10 @@ class CrowdSteering3D({
     var bestU = prefU;
     var bestV = prefV;
     var bestPenalty = double.infinity;
+    final sepScale = me.separationWeight * myMaxSpeed * myHorizon;
+    final leftBias = 0.03 * myMaxSpeed;
 
     // Candidate angles (in radians) and speed scales around `baseAngle`.
-    // In `(basisU, basisV)` with `basisV = up x basisU`, rotating by `-angle`
-    // turns to the agent's **right**! A tiny right-side preference (`+0.02` on
-    // left turns) breaks exact head-on symmetry deterministically so both
-    // opposing agents pass smoothly on their respective right sides!
     for (var si = 0; si < _speedScales.length; si++) {
       final speedScale = _speedScales[si];
       final spd = speedScale == 0.0 ? 0.0 : refSpeed * speedScale;
@@ -523,24 +542,17 @@ class CrowdSteering3D({
         var penalty = math.sqrt(du * du + dv * dv);
         // Right-hand rule tie-breaker (`offset < 0` is right turn in `(U, V)`).
         if (offset > 1e-4) {
-          penalty += 0.03 * myMaxSpeed;
+          penalty += leftBias;
+        }
+        if (penalty >= bestPenalty) {
+          continue;
         }
 
         var minTtc = double.infinity;
         for (var k = 0; k < neighborCount; k++) {
-          final j = neighbors[k];
-          final other = agents[j];
-          final relPosU = _posU[j] - myPosU;
-          final relPosV = _posV[j] - myPosV;
-          final combinedR = myRadius + other.radius + safetyMargin;
-          final otherVelU = _velU[j];
-          final otherVelV = _velV[j];
-
-          // Reciprocal Velocity Obstacle (`2 * v_cand - v_me - v_other`), or
-          // full VO if the other agent is stationary.
-          final otherMoving =
-              otherVelU * otherVelU + otherVelV * otherVelV > 1e-4 ||
-              !other.hasReachedGoal;
+          final otherVelU = nbVelU[k];
+          final otherVelV = nbVelV[k];
+          final otherMoving = nbMoving[k] != 0;
           final rvoVx = otherMoving
               ? (2.0 * cu - myVelU - otherVelU)
               : (cu - otherVelU);
@@ -548,23 +560,23 @@ class CrowdSteering3D({
               ? (2.0 * cv - myVelV - otherVelV)
               : (cv - otherVelV);
 
-          final ttc = _timeToCollision2D(
-            relPosU,
-            relPosV,
+          final ttc = _timeToCollision2DSq(
+            nbRelU[k],
+            nbRelV[k],
             rvoVx,
             rvoVy,
-            combinedR,
+            nbCombR2[k],
           );
           if (ttc < minTtc) {
             minTtc = ttc;
+            if (minTtc <= 0.02) {
+              break;
+            }
           }
         }
 
         if (minTtc < myHorizon) {
-          penalty +=
-              me.separationWeight *
-              myMaxSpeed *
-              (myHorizon / math.max(0.02, minTtc));
+          penalty += sepScale / math.max(0.02, minTtc);
         }
 
         if (penalty < bestPenalty) {
@@ -578,16 +590,16 @@ class CrowdSteering3D({
     outUV.setValues(bestU, bestV);
   }
 
-  static double _timeToCollision2D(
+  static double _timeToCollision2DSq(
     double px,
     double py,
     double vx,
     double vy,
-    double r,
+    double r2,
   ) {
     // Ray `0 + t * v` intersecting disk centered at `p` of radius `r`:
     // `||t * v - p||^2 = r^2`.
-    final c = px * px + py * py - r * r;
+    final c = px * px + py * py - r2;
     if (c <= 0.0) {
       // Already inside combined margin: strongly penalize moving closer
       // (`v . p > 0`), allow separating (`v . p < 0`).
@@ -623,7 +635,15 @@ class CrowdSteering3D({
   Float64List _prefU = Float64List(0);
   Float64List _prefV = Float64List(0);
   Float64List _prefUp = Float64List(0);
-  Int32List _rvoNeighbors = Int32List(0);
+  Float64List _agentRadius = Float64List(0);
+  Float64List _agentMaxSpeed = Float64List(0);
+  Uint8List _agentMoving = Uint8List(0);
+  Float64List _nbRelU = Float64List(0);
+  Float64List _nbRelV = Float64List(0);
+  Float64List _nbVelU = Float64List(0);
+  Float64List _nbVelV = Float64List(0);
+  Float64List _nbCombR2 = Float64List(0);
+  Uint8List _nbMoving = Uint8List(0);
   Int32List _agentCellU = Int32List(0);
   Int32List _agentCellV = Int32List(0);
   Int32List _gridNext = Int32List(0);
@@ -644,7 +664,15 @@ class CrowdSteering3D({
       _prefU = Float64List(cap);
       _prefV = Float64List(cap);
       _prefUp = Float64List(cap);
-      _rvoNeighbors = Int32List(cap);
+      _agentRadius = Float64List(cap);
+      _agentMaxSpeed = Float64List(cap);
+      _agentMoving = Uint8List(cap);
+      _nbRelU = Float64List(cap);
+      _nbRelV = Float64List(cap);
+      _nbVelU = Float64List(cap);
+      _nbVelV = Float64List(cap);
+      _nbCombR2 = Float64List(cap);
+      _nbMoving = Uint8List(cap);
       _agentCellU = Int32List(cap);
       _agentCellV = Int32List(cap);
       _gridNext = Int32List(cap);

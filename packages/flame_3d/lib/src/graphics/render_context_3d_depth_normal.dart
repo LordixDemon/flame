@@ -94,12 +94,11 @@ class _DepthNormalPass(final RenderContext3D _context) {
     final context = _context;
     final count = context._count;
     final order = context._opaque;
+    final ownOrder = context._translucent;
     final groupKeys = context._groupKeys;
     final surfaceKeys = context._surfaceKeys;
     final sortDepths = context._sortDepths;
     var opaqueCount = 0;
-    // Draws whose material has a depthNormalMaterial, from the end of
-    // `order` backwards.
     var ownCount = 0;
 
     VertexLayout? lastLayout;
@@ -109,14 +108,18 @@ class _DepthNormalPass(final RenderContext3D _context) {
       if (mat.renderState.translucent || !mat.renderState.depthWrite) {
         continue;
       }
-      if (mat.depthNormalMaterial != null) {
-        order[count - 1 - ownCount++] = i;
+      final surface = context._surfaces[i]!;
+      final depthNormalMat = mat.depthNormalMaterial;
+      if (depthNormalMat != null) {
+        groupKeys[i] = depthNormalMat.id.toDouble();
+        surfaceKeys[i] = surface.id * 2 + (context._joints[i] == null ? 0 : 1);
+        sortDepths[i] = context._depths[i];
+        ownOrder[ownCount++] = i;
         continue;
       }
       if (!mat.instancesHoldModelMatrices) {
         continue;
       }
-      final surface = context._surfaces[i]!;
       final layout = surface.layout;
       if (!identical(layout, lastLayout)) {
         lastLayout = layout;
@@ -133,6 +136,7 @@ class _DepthNormalPass(final RenderContext3D _context) {
       order[opaqueCount++] = i;
     }
 
+    context._sortByProbe = false;
     context._sort(order, opaqueCount);
     context._boundMaterial = null;
     context._bindingEpoch = -1;
@@ -150,36 +154,17 @@ class _DepthNormalPass(final RenderContext3D _context) {
       start = end;
     }
     if (ownCount > 0) {
-      final ownStart = count - ownCount;
-      if (ownCount > 1) {
-        for (var i = ownStart + 1; i < count; i++) {
-          final key = order[i];
-          final keyMat = context._materials[key]!.depthNormalMaterial!.id;
-          final keySurf = context._surfaces[key]!.id;
-          var j = i - 1;
-          while (j >= ownStart) {
-            final cur = order[j];
-            final curMat = context._materials[cur]!.depthNormalMaterial!.id;
-            final curSurf = context._surfaces[cur]!.id;
-            if (curMat < keyMat || (curMat == keyMat && curSurf <= keySurf)) {
-              break;
-            }
-            order[j + 1] = cur;
-            j--;
-          }
-          order[j + 1] = key;
-        }
-      }
-      var ownCursor = ownStart;
-      while (ownCursor < count) {
-        final first = order[ownCursor];
+      context._sort(ownOrder, ownCount);
+      var ownCursor = 0;
+      while (ownCursor < ownCount) {
+        final first = ownOrder[ownCursor];
         var ownEnd = ownCursor + 1;
         if (context._joints[first] == null &&
             context._external[first] == null) {
           final firstMat = context._materials[first]!.depthNormalMaterial!;
           final firstSurf = context._surfaces[first]!;
-          while (ownEnd < count) {
-            final other = order[ownEnd];
+          while (ownEnd < ownCount) {
+            final other = ownOrder[ownEnd];
             if (context._joints[other] != null ||
                 context._external[other] != null ||
                 !identical(
@@ -192,7 +177,7 @@ class _DepthNormalPass(final RenderContext3D _context) {
             ownEnd++;
           }
         }
-        _submitOwnBatch(order, ownCursor, ownEnd - ownCursor);
+        _submitOwnBatch(ownOrder, ownCursor, ownEnd - ownCursor);
         ownCursor = ownEnd;
       }
     }
@@ -239,15 +224,16 @@ class _DepthNormalPass(final RenderContext3D _context) {
     final draw = order[position];
     final material = context._materials[draw]!.depthNormalMaterial!;
     final surface = context._surfaces[draw]!;
-    final pipeline = context._pipelineFor(material, surface.layout);
+    context._resolvePipeline(material, surface.layout);
+    final pipeline = context._lastPipeDev!;
     if (!pipeline.instanced) {
       throw StateError(
         'A depthNormalMaterial needs a vertex shader that reads the instance '
         'inputs (the four instanceModel columns)',
       );
     }
-    final vertexShader = material.vertexShaderFor(surface.layout);
-    final fragmentShader = material.fragmentShaderFor(context, surface.layout);
+    final vertexShader = context._lastPipeVert!;
+    final fragmentShader = context._lastPipeFrag!;
     final joints = context._joints[draw];
     device.bindPipeline(pipeline);
     context

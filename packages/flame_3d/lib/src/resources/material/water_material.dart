@@ -523,6 +523,9 @@ class WaterMaterial({
   }
 
   @override
+  bool get hasPassStableFragmentShader => runtimeType == WaterMaterial;
+
+  @override
   bool get cachesApply => runtimeType == WaterMaterial;
 
   @override
@@ -577,9 +580,16 @@ class WaterMaterial({
         _foamSourceOrigin,
       );
     }
-    _applyVertex(vertexShader, foamBoundCount);
-    if (_maskedInUse) {
-      _applyVertex(_maskedVertexShader, foamBoundCount);
+    final activeVert = context is RenderContext3D
+        ? context.activeApplyVertexShader
+        : null;
+    if (activeVert != null) {
+      _applyVertex(activeVert, foamBoundCount);
+    } else {
+      _applyVertex(vertexShader, foamBoundCount);
+      if (_maskedInUse) {
+        _applyVertex(_maskedVertexShader, foamBoundCount);
+      }
     }
 
     // The members of the options are written through the block, which

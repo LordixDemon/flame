@@ -237,6 +237,9 @@ class DecalBatch3D({
   }
 
   @override
+  bool get usesDefaultFrustumVisibility => runtimeType == DecalBatch3D;
+
+  @override
   Aabb3? computeLocalAabb() {
     if (_length == 0) {
       return null;

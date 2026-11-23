@@ -49,7 +49,10 @@ class _RagdollLimb({
 }) {
   final Vector3 prevBodyPos = Vector3.zero();
   final Quaternion prevBodyRot = Quaternion.identity();
+  final Matrix4 delta = Matrix4.identity();
   bool hasPrev = false;
+  bool hasAnyDescendants = false;
+  bool hasNonLimbDescendants = false;
 }
 
 /// Articulated skeletal ragdoll controller bridging a [ModelComponent] and a
@@ -77,6 +80,9 @@ class RagdollController3D({
   final List<_RagdollLimb> _limbs = [];
   final Map<int, _RagdollLimb> _limbByNode = {};
   final List<Joint3D> _joints = [];
+  ModelPoseWorkspace? _cachedWorkspace;
+  List<_RagdollLimb?> _limbByOrderIndex = const [];
+  List<_RagdollLimb?> _propagatedLimb = const [];
 
   RagdollMode3D _mode = RagdollMode3D.kinematicFollow;
   double _recoveryElapsed = 0.0;
@@ -382,12 +388,38 @@ class RagdollController3D({
     ModelPoseWorkspace workspace,
     Matrix4 invWorldMatrix,
   ) {
+    final ordered = workspace.orderedNodes;
+    final len = ordered.length;
+    if (!identical(_cachedWorkspace, workspace)) {
+      _cachedWorkspace = workspace;
+      _limbByOrderIndex = List<_RagdollLimb?>.generate(
+        len,
+        (i) => _limbByNode[ordered[i].node.nodeIndex],
+        growable: false,
+      );
+      _propagatedLimb = List<_RagdollLimb?>.filled(len, null);
+    }
+
+    final parentOrder = workspace.parentOrderIndex;
+    final limbByOrder = _limbByOrderIndex;
+    final propagated = _propagatedLimb;
     final w = weight.clamp(0.0, 1.0);
-    for (var i = 0; i < _limbs.length; i++) {
-      final limb = _limbs[i];
-      final idx = limb.config.nodeIndex;
-      final processed = workspace.nodesByIndex[idx];
-      if (processed == null) {
+    final fullWeight = w >= 1.0 - 1e-6;
+
+    for (var i = 0; i < len; i++) {
+      final p = parentOrder[i];
+      final parentLimb = p >= 0 ? propagated[p] : null;
+      final limb = limbByOrder[i];
+
+      if (limb == null) {
+        propagated[i] = parentLimb;
+        if (parentLimb != null) {
+          final cm = ordered[i].combinedTransform;
+          _boneWorld
+            ..setFrom(parentLimb.delta)
+            ..multiply(cm);
+          cm.setFrom(_boneWorld);
+        }
         continue;
       }
 
@@ -416,11 +448,23 @@ class RagdollController3D({
         ..setFrom(invWorldMatrix)
         ..multiply(_boneWorld);
 
-      final cm = processed.combinedTransform;
-      _oldCombined.setFrom(cm);
-      if (w >= 1.0 - 1e-6) {
+      final cm = ordered[i].combinedTransform;
+      final needDelta = fullWeight
+          ? limb.hasNonLimbDescendants
+          : limb.hasAnyDescendants;
+      if (needDelta) {
+        _oldCombined.setFrom(cm);
+      }
+
+      if (fullWeight) {
         cm.setFrom(_localMat);
       } else {
+        if (parentLimb != null) {
+          _boneWorld
+            ..setFrom(parentLimb.delta)
+            ..multiply(cm);
+          cm.setFrom(_boneWorld);
+        }
         cm.decompose(_animLocalT, _animLocalR, _animLocalS);
         _localMat.decompose(_scratchPos, _scratchRot, _scratchScale);
         _blendT.setValues(
@@ -437,13 +481,15 @@ class RagdollController3D({
         cm.setFromTranslationRotationScale(_blendT, _blendR, _animLocalS);
       }
 
-      BoneModifier3D.propagateDeltaToDescendants(
-        model,
-        workspace,
-        idx,
-        _oldCombined,
-        cm,
-      );
+      if (needDelta) {
+        _invParent.copyInverse(_oldCombined);
+        limb.delta
+          ..setFrom(cm)
+          ..multiply(_invParent);
+        propagated[i] = limb;
+      } else {
+        propagated[i] = null;
+      }
     }
   }
 
@@ -546,6 +592,25 @@ class RagdollController3D({
       );
       _limbs.add(limb);
       _limbByNode[cfg.nodeIndex] = limb;
+    }
+
+    for (final node in model.processingOrder) {
+      final isLimb = _limbByNode.containsKey(node.nodeIndex);
+      var pIdx = node.parentNodeIndex;
+      var markedNearestNonLimb = false;
+      while (pIdx != null) {
+        final parentLimb = _limbByNode[pIdx];
+        if (parentLimb != null) {
+          parentLimb.hasAnyDescendants = true;
+          if (!isLimb && !markedNearestNonLimb) {
+            parentLimb.hasNonLimbDescendants = true;
+            markedNearestNonLimb = true;
+          } else if (isLimb) {
+            markedNearestNonLimb = true;
+          }
+        }
+        pIdx = model.nodes[pIdx]?.parentNodeIndex;
+      }
     }
 
     // Connect each limb to its nearest ragdoll ancestor limb via HingeJoint3D

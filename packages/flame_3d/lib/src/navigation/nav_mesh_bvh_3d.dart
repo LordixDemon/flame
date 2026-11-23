@@ -13,8 +13,7 @@ double _triArea2Up(Vector3 a, Vector3 b, Vector3 c, Vector3 up) {
   return cx * up.x + cy * up.y + cz * up.z;
 }
 
-/// Exact 3D Triangle-vs-AABB intersection via 6-plane Sutherland-Hodgman
-/// clipping.
+/// Zero-allocation exact 3D Triangle-vs-AABB intersection via 13-axis SAT.
 bool _triangleIntersectsAabb(
   Vector3 v0,
   Vector3 v1,
@@ -32,74 +31,151 @@ bool _triangleIntersectsAabb(
     return false;
   }
 
-  var poly = <Vector3>[v0, v1, v2];
-  poly = _clipAxis(poly, 0, min.x, isMin: true);
-  if (poly.isEmpty) {
+  final cx = 0.5 * (min.x + max.x);
+  final cy = 0.5 * (min.y + max.y);
+  final cz = 0.5 * (min.z + max.z);
+  final hx = 0.5 * (max.x - min.x) + 1e-6;
+  final hy = 0.5 * (max.y - min.y) + 1e-6;
+  final hz = 0.5 * (max.z - min.z) + 1e-6;
+
+  final p0x = v0.x - cx;
+  final p0y = v0.y - cy;
+  final p0z = v0.z - cz;
+  final p1x = v1.x - cx;
+  final p1y = v1.y - cy;
+  final p1z = v1.z - cz;
+  final p2x = v2.x - cx;
+  final p2y = v2.y - cy;
+  final p2z = v2.z - cz;
+
+  final e0x = p1x - p0x;
+  final e0y = p1y - p0y;
+  final e0z = p1z - p0z;
+  final e1x = p2x - p1x;
+  final e1y = p2y - p1y;
+  final e1z = p2z - p1z;
+  final e2x = p0x - p2x;
+  final e2y = p0y - p2y;
+  final e2z = p0z - p2z;
+
+  if (!_satEdgeBox(
+        e0x,
+        e0y,
+        e0z,
+        p0x,
+        p0y,
+        p0z,
+        p1x,
+        p1y,
+        p1z,
+        p2x,
+        p2y,
+        p2z,
+        hx,
+        hy,
+        hz,
+      ) ||
+      !_satEdgeBox(
+        e1x,
+        e1y,
+        e1z,
+        p0x,
+        p0y,
+        p0z,
+        p1x,
+        p1y,
+        p1z,
+        p2x,
+        p2y,
+        p2z,
+        hx,
+        hy,
+        hz,
+      ) ||
+      !_satEdgeBox(
+        e2x,
+        e2y,
+        e2z,
+        p0x,
+        p0y,
+        p0z,
+        p1x,
+        p1y,
+        p1z,
+        p2x,
+        p2y,
+        p2z,
+        hx,
+        hy,
+        hz,
+      )) {
     return false;
   }
-  poly = _clipAxis(poly, 0, max.x, isMin: false);
-  if (poly.isEmpty) {
-    return false;
-  }
-  poly = _clipAxis(poly, 1, min.y, isMin: true);
-  if (poly.isEmpty) {
-    return false;
-  }
-  poly = _clipAxis(poly, 1, max.y, isMin: false);
-  if (poly.isEmpty) {
-    return false;
-  }
-  poly = _clipAxis(poly, 2, min.z, isMin: true);
-  if (poly.isEmpty) {
-    return false;
-  }
-  poly = _clipAxis(poly, 2, max.z, isMin: false);
-  return poly.isNotEmpty;
+
+  final f2x = p2x - p0x;
+  final f2y = p2y - p0y;
+  final f2z = p2z - p0z;
+  final nx = e0y * f2z - e0z * f2y;
+  final ny = e0z * f2x - e0x * f2z;
+  final nz = e0x * f2y - e0y * f2x;
+  final r = nx.abs() * hx + ny.abs() * hy + nz.abs() * hz;
+  final d = nx * p0x + ny * p0y + nz * p0z;
+  return d.abs() <= r;
 }
 
-List<Vector3> _clipAxis(
-  List<Vector3> poly,
-  int axis,
-  double bound, {
-  required bool isMin,
-}) {
-  final out = <Vector3>[];
-  final n = poly.length;
-  if (n == 0) {
-    return out;
-  }
-  double coord(Vector3 v) => axis == 0 ? v.x : (axis == 1 ? v.y : v.z);
-  bool inside(double val) => isMin ? val >= bound - 1e-6 : val <= bound + 1e-6;
+@pragma('vm:prefer-inline')
+bool _satEdgeBox(
+  double ex,
+  double ey,
+  double ez,
+  double p0x,
+  double p0y,
+  double p0z,
+  double p1x,
+  double p1y,
+  double p1z,
+  double p2x,
+  double p2y,
+  double p2z,
+  double hx,
+  double hy,
+  double hz,
+) {
+  final ax = ex.abs();
+  final ay = ey.abs();
+  final az = ez.abs();
 
-  var prev = poly[n - 1];
-  var prevVal = coord(prev);
-  var prevIn = inside(prevVal);
-
-  for (var i = 0; i < n; i++) {
-    final curr = poly[i];
-    final currVal = coord(curr);
-    final currIn = inside(currVal);
-    if (prevIn != currIn) {
-      final denom = currVal - prevVal;
-      final t = denom.abs() > 1e-12
-          ? ((bound - prevVal) / denom).clamp(0.0, 1.0)
-          : 0.5;
-      out.add(
-        Vector3(
-          prev.x + (curr.x - prev.x) * t,
-          prev.y + (curr.y - prev.y) * t,
-          prev.z + (curr.z - prev.z) * t,
-        ),
-      );
-    }
-    if (currIn) {
-      out.add(curr);
-    }
-    prev = curr;
-    prevVal = currVal;
-    prevIn = currIn;
+  // X x e = (0, -ez, ey)
+  var q0 = -ez * p0y + ey * p0z;
+  var q1 = -ez * p1y + ey * p1z;
+  var q2 = -ez * p2y + ey * p2z;
+  var r = az * hy + ay * hz;
+  if (math.min(q0, math.min(q1, q2)) > r ||
+      math.max(q0, math.max(q1, q2)) < -r) {
+    return false;
   }
-  return out;
+
+  // Y x e = (ez, 0, -ex)
+  q0 = ez * p0x - ex * p0z;
+  q1 = ez * p1x - ex * p1z;
+  q2 = ez * p2x - ex * p2z;
+  r = az * hx + ax * hz;
+  if (math.min(q0, math.min(q1, q2)) > r ||
+      math.max(q0, math.max(q1, q2)) < -r) {
+    return false;
+  }
+
+  // Z x e = (-ey, ex, 0)
+  q0 = -ey * p0x + ex * p0y;
+  q1 = -ey * p1x + ex * p1y;
+  q2 = -ey * p2x + ex * p2y;
+  r = ay * hx + ax * hy;
+  if (math.min(q0, math.min(q1, q2)) > r ||
+      math.max(q0, math.max(q1, q2)) < -r) {
+    return false;
+  }
+
+  return true;
 }
 
 class _NavPolyBvh._({

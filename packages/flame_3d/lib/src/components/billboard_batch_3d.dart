@@ -54,11 +54,15 @@ class BillboardBatch3D({
   late Float32List _instances;
   final Aabb3 _localAabb = Aabb3();
   bool _boundsDirty = true;
+  int _localVersion = 1;
+  int _anisotropyWorldVer = -1;
 
   // The instances placed in world space by the transform they were last
   // drawn with, rebuilt when the instances or the transform change.
   Float32List? _worldInstances;
   bool _worldInstancesDirty = true;
+  int _worldInstancesTransformVer = -1;
+  int _worldVersion = 1;
   final Float64List _worldInstancesTransform = Float64List(16);
 
   int get length => _length;
@@ -71,6 +75,7 @@ class BillboardBatch3D({
     _length = 0;
     _boundsDirty = true;
     _worldInstancesDirty = true;
+    _localVersion++;
     markAabbDirty();
     worldOrNull?.markSceneDirty(shadows: false);
   }
@@ -132,6 +137,7 @@ class BillboardBatch3D({
     );
     _boundsDirty = true;
     _worldInstancesDirty = true;
+    _localVersion++;
     markAabbDirty();
     worldOrNull?.markSceneDirty(shadows: false);
     return idx;
@@ -177,6 +183,7 @@ class BillboardBatch3D({
     );
     _boundsDirty = true;
     _worldInstancesDirty = true;
+    _localVersion++;
     markAabbDirty();
     worldOrNull?.markSceneDirty(shadows: false);
   }
@@ -244,6 +251,9 @@ class BillboardBatch3D({
   double _boundsAnisotropy = 1;
 
   @override
+  bool get usesDefaultFrustumVisibility => runtimeType == BillboardBatch3D;
+
+  @override
   Aabb3? computeLocalAabb() {
     if (_length == 0) {
       return null;
@@ -251,17 +261,22 @@ class BillboardBatch3D({
     // Sizes are scaled by the largest axis scale of the transform, while the
     // local box shrinks along the smallest: grow it by their ratio so that
     // it still holds the billboards.
-    final m = worldTransformMatrix.storage;
-    double axis(int c) => math.sqrt(
-      m[c] * m[c] + m[c + 1] * m[c + 1] + m[c + 2] * m[c + 2],
-    );
-    final largest = math.max(axis(0), math.max(axis(4), axis(8)));
-    final smallest = math.min(axis(0), math.min(axis(4), axis(8)));
-    final anisotropy = smallest > 1e-12 ? largest / smallest : 1.0;
-    if (anisotropy != _boundsAnisotropy) {
-      _boundsAnisotropy = anisotropy;
-      _boundsDirty = true;
+    final worldVer = worldTransformVersion;
+    if (worldVer != _anisotropyWorldVer) {
+      _anisotropyWorldVer = worldVer;
+      final m = worldTransformMatrix.storage;
+      final ax = math.sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
+      final ay = math.sqrt(m[4] * m[4] + m[5] * m[5] + m[6] * m[6]);
+      final az = math.sqrt(m[8] * m[8] + m[9] * m[9] + m[10] * m[10]);
+      final largest = math.max(ax, math.max(ay, az));
+      final smallest = math.min(ax, math.min(ay, az));
+      final anisotropy = smallest > 1e-12 ? largest / smallest : 1.0;
+      if (anisotropy != _boundsAnisotropy) {
+        _boundsAnisotropy = anisotropy;
+        _boundsDirty = true;
+      }
     }
+    final anisotropy = _boundsAnisotropy;
     if (_boundsDirty) {
       _boundsDirty = false;
       var minX = double.infinity;
@@ -310,14 +325,22 @@ class BillboardBatch3D({
 
   @override
   void draw(covariant RenderContext3D context) {
-    drawTransformed(context, worldTransformMatrix);
+    drawTransformed(
+      context,
+      worldTransformMatrix,
+      transformVersion: worldTransformVersion,
+    );
   }
 
   /// Records the draw of this batch with its billboards placed by
   /// [transform] instead of [worldTransformMatrix], for a component that
   /// draws a batch it does not mount.
   @internal
-  void drawTransformed(RenderContext3D context, Matrix4 transform) {
+  void drawTransformed(
+    RenderContext3D context,
+    Matrix4 transform, {
+    int? transformVersion,
+  }) {
     if (_length == 0 || context.isShadowPass) {
       return;
     }
@@ -327,27 +350,40 @@ class BillboardBatch3D({
       ..add(box.max)
       ..scale(0.5);
     transform.transform3(_sortCenter);
+    final isId = transform.isIdentity();
     context.drawInstances(
       _unitQuad,
-      instances: transform.isIdentity() ? _instances : _placed(transform),
+      instances: isId
+          ? _instances
+          : _placed(transform, transformVersion: transformVersion),
       count: _length,
       material: material,
       center: _sortCenter,
+      instanceVersion: isId ? _localVersion : _worldVersion,
     );
   }
 
   /// The instances placed in world space by [transform]: centers
   /// transformed, up axes rotated, sizes scaled by the largest axis scale.
-  Float32List _placed(Matrix4 transform) {
+  Float32List _placed(Matrix4 transform, {int? transformVersion}) {
+    var out = _worldInstances;
+    if (transformVersion != null &&
+        !_worldInstancesDirty &&
+        _worldInstancesTransformVer == transformVersion &&
+        out != null &&
+        out.length >= _length * _stride) {
+      return out;
+    }
     final m = transform.storage;
     final cached = _worldInstancesTransform;
-    var same = !_worldInstancesDirty;
-    for (var i = 0; same && i < 16; i++) {
-      same = cached[i] == m[i];
-    }
-    var out = _worldInstances;
-    if (same && out != null && out.length >= _length * _stride) {
-      return out;
+    if (transformVersion == null) {
+      var same = !_worldInstancesDirty;
+      for (var i = 0; same && i < 16; i++) {
+        same = cached[i] == m[i];
+      }
+      if (same && out != null && out.length >= _length * _stride) {
+        return out;
+      }
     }
     if (out == null || out.length < _instances.length) {
       out = _worldInstances = Float32List(_instances.length);
@@ -356,6 +392,8 @@ class BillboardBatch3D({
       cached[i] = m[i];
     }
     _worldInstancesDirty = false;
+    _worldInstancesTransformVer = transformVersion ?? -1;
+    _worldVersion++;
     final scale = transform.getMaxScaleOnAxis();
     final src = _instances;
     out.setRange(0, _length * _stride, src);

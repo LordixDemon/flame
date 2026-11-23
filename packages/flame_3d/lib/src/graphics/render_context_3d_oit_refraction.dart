@@ -35,6 +35,12 @@ class _OitAndGrabPass(final RenderContext3D _context) {
   // The textures of the targets last composited, rebuilt when they change.
   final List<GpuTextureTarget?> _compositeTargets = List.filled(3, null);
   final List<Texture> _compositeTextures = List.filled(3, Texture.standard);
+  DevicePipeline? _compPipeline;
+  int _compVertGen = -1;
+  int _compFragGen = -1;
+  GpuUniformSlot? _opaqueSlot;
+  GpuUniformSlot? _accumSlot;
+  GpuUniformSlot? _revealSlot;
 
   static final Map<RenderState, RenderState> _accumulationStates = {};
   static final Map<RenderState, RenderState> _revealageStates = {};
@@ -89,23 +95,45 @@ class _OitAndGrabPass(final RenderContext3D _context) {
     grabActive = false;
   }
 
+  int _opaqueDepthSortedCount = -1;
+  int _wboitSortedCount = -1;
+
+  bool get hasSortCache =>
+      _opaqueDepthSortedCount >= 0 || _wboitSortedCount >= 0;
+
+  void resetOpaqueDepthCache() {
+    _opaqueDepthSortedCount = -1;
+  }
+
+  void resetSortCache() {
+    _opaqueDepthSortedCount = -1;
+    _wboitSortedCount = -1;
+  }
+
   /// Draws the opaque draws that write depth into the open pass, depth only,
   /// so that they hide the translucent fragments behind them.
   void _drawOpaqueDepth() {
     final context = _context;
-    final count = context._count;
-    var opaqueCount = 0;
-    for (var i = 0; i < count; i++) {
-      final mat = context._materials[i]!;
-      if (!mat.renderState.translucent && mat.renderState.depthWrite) {
-        context._opaque[opaqueCount++] = i;
-        context._groupKeys[i] = context._pipelines[i]!.id.toDouble();
-        context._surfaceKeys[i] =
-            context._surfaces[i]!.id * 2 + (context._joints[i] == null ? 0 : 1);
-        context._sortDepths[i] = context._depths[i];
+    var opaqueCount = _opaqueDepthSortedCount;
+    if (opaqueCount < 0) {
+      context._cachedOpaqueCount = -1;
+      final count = context._count;
+      opaqueCount = 0;
+      for (var i = 0; i < count; i++) {
+        final mat = context._materials[i]!;
+        if (!mat.renderState.translucent && mat.renderState.depthWrite) {
+          context._opaque[opaqueCount++] = i;
+          context._groupKeys[i] = context._pipelines[i]!.id.toDouble();
+          context._surfaceKeys[i] =
+              context._surfaces[i]!.id * 2 +
+              (context._joints[i] == null ? 0 : 1);
+          context._sortDepths[i] = context._depths[i];
+        }
       }
+      context._sortByProbe = false;
+      context._sort(context._opaque, opaqueCount);
+      _opaqueDepthSortedCount = opaqueCount;
     }
-    context._sort(context._opaque, opaqueCount);
     context._boundMaterial = null;
     context._bindingEpoch = -1;
     context._depthPrepassOverride = true;
@@ -129,21 +157,27 @@ class _OitAndGrabPass(final RenderContext3D _context) {
     // The draws are summed (or multiplied), so their order does not matter:
     // they are grouped to batch as opaque draws are.
     final order = context._translucent;
-    var oitCount = 0;
-    for (var i = 0; i < count; i++) {
-      final material = context._materials[i]!;
-      if (accumulates(material.renderState)) {
-        order[oitCount++] = i;
-        context._groupKeys[i] =
-            context._pipelines[i]!.id * 8589934592.0 +
-            material.id * 2.0 +
-            context._mirrored[i];
-        context._surfaceKeys[i] =
-            context._surfaces[i]!.id * 2 + (context._joints[i] == null ? 0 : 1);
-        context._sortDepths[i] = context._depths[i];
+    var oitCount = _wboitSortedCount;
+    if (oitCount < 0) {
+      oitCount = 0;
+      for (var i = 0; i < count; i++) {
+        final material = context._materials[i]!;
+        if (accumulates(material.renderState)) {
+          order[oitCount++] = i;
+          context._groupKeys[i] =
+              context._pipelines[i]!.id * 8589934592.0 +
+              material.id * 2.0 +
+              context._mirrored[i];
+          context._surfaceKeys[i] =
+              context._surfaces[i]!.id * 2 +
+              (context._joints[i] == null ? 0 : 1);
+          context._sortDepths[i] = context._depths[i];
+        }
       }
+      context._sortByProbe = false;
+      context._sort(order, oitCount);
+      _wboitSortedCount = oitCount;
     }
-    context._sort(order, oitCount);
     context._boundMaterial = null;
     context._bindingEpoch = -1;
     context._oitPass = revealPass ? revealagePass : accumulationPass;
@@ -201,6 +235,7 @@ class _OitAndGrabPass(final RenderContext3D _context) {
     final count = context._count;
 
     final order = context._translucent;
+    _wboitSortedCount = -1;
     var sortedCount = 0;
     for (var i = 0; i < count; i++) {
       final state = context._materials[i]!.renderState;
@@ -216,28 +251,34 @@ class _OitAndGrabPass(final RenderContext3D _context) {
     final accumTex = _textureOf(1, accumTarget);
     final revealTex = _textureOf(2, revealTarget);
     _compVert.resource;
-    _compFrag
-      ..resource
-      ..setTexture('opaqueTexture', opaqueTex)
-      ..setTexture('accumTexture', accumTex)
-      ..setTexture('revealTexture', revealTex);
-
-    final pipeline = device.pipelineFor(
-      _compVert,
-      _compFrag,
-      fullscreenQuadSurface.layout,
-    );
+    _compFrag.resource;
+    var pipeline = _compPipeline;
+    if (pipeline == null ||
+        _compVertGen != _compVert.generation ||
+        _compFragGen != _compFrag.generation) {
+      pipeline = _compPipeline = device.pipelineFor(
+        _compVert,
+        _compFrag,
+        fullscreenQuadSurface.layout,
+      );
+      _compVertGen = _compVert.generation;
+      _compFragGen = _compFrag.generation;
+      _opaqueSlot = _compFrag.slot('opaqueTexture');
+      _accumSlot = _compFrag.slot('accumTexture');
+      _revealSlot = _compFrag.slot('revealTexture');
+    }
     device
       ..bindPipeline(pipeline)
       ..setRenderState(_compositeState)
-      ..bindTexture(_compFrag.slot('opaqueTexture'), opaqueTex)
-      ..bindTexture(_compFrag.slot('accumTexture'), accumTex)
-      ..bindTexture(_compFrag.slot('revealTexture'), revealTex)
+      ..bindTexture(_opaqueSlot!, opaqueTex)
+      ..bindTexture(_accumSlot!, accumTex)
+      ..bindTexture(_revealSlot!, revealTex)
       ..bindSurface(fullscreenQuadSurface)
       ..drawSurface(fullscreenQuadSurface);
 
     if (sortedCount > 0) {
       _drawOpaqueDepth();
+      context._sortByProbe = false;
       context._sort(order, sortedCount);
       context._boundMaterial = null;
       context._bindingEpoch = -1;

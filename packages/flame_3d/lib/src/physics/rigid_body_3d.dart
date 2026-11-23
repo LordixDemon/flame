@@ -204,9 +204,20 @@ class RigidBody3D({
   double sleepTimer = 0.0;
 
   /// Scratch index used by `PhysicsWorld3D` while grouping bodies into
-  /// sleeping islands (`-1` outside of that pass).
+  /// sleeping islands or deduplicating broadphase pair queries (`-1` outside).
   @internal
   int solverIndex = -1;
+
+  /// Partners connected to this body via joints with
+  /// `collideConnected == false` for `O(1)` broadphase pair rejection.
+  @internal
+  List<RigidBody3D>? nonCollidingJointPartners;
+
+  double _inertiaQx = double.nan;
+  double _inertiaQy = 0.0;
+  double _inertiaQz = 0.0;
+  double _inertiaQw = 0.0;
+  bool _inertiaDirty = true;
 
   double _inverseMass = 0.0;
   final Vector3 _localInvInertia = Vector3.zero();
@@ -376,7 +387,11 @@ class RigidBody3D({
   /// [bodyRotation] with zero heap allocations.
   void updateWorldInertia() {
     if (_bodyType != BodyType3D.dynamic || _inverseMass <= 0.0) {
-      worldInvInertia.setZero();
+      if (_inertiaDirty) {
+        worldInvInertia.setZero();
+        _inertiaDirty = false;
+        _inertiaQx = double.nan;
+      }
       return;
     }
     final q = bodyRotation;
@@ -384,6 +399,18 @@ class RigidBody3D({
     final y = q.y;
     final z = q.z;
     final w = q.w;
+    if (!_inertiaDirty &&
+        x == _inertiaQx &&
+        y == _inertiaQy &&
+        z == _inertiaQz &&
+        w == _inertiaQw) {
+      return;
+    }
+    _inertiaQx = x;
+    _inertiaQy = y;
+    _inertiaQz = z;
+    _inertiaQw = w;
+    _inertiaDirty = false;
     final x2 = x + x;
     final y2 = y + y;
     final z2 = z + z;
@@ -488,8 +515,12 @@ class RigidBody3D({
   /// Wakes this body from sleep.
   void wakeUp() {
     if (_bodyType == BodyType3D.dynamic) {
+      final wasSleeping = isSleeping;
       isSleeping = false;
       sleepTimer = 0.0;
+      if (wasSleeping) {
+        updateWorldInertia();
+      }
     }
   }
 
@@ -649,9 +680,12 @@ class RigidBody3D({
       _localInvInertiaTensor.setZero();
       _hasOffDiagonalInertia = false;
       worldInvInertia.setZero();
+      _inertiaDirty = false;
+      _inertiaQx = double.nan;
       return;
     }
     _inverseMass = 1.0 / _mass;
+    _inertiaDirty = true;
 
     // Shapes with products of inertia (compounds, asymmetric hulls) keep the
     // full tensor.

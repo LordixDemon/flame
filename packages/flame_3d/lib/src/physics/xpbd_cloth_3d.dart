@@ -286,6 +286,11 @@ class XpbdCloth3D({
   final Vector3 _localColA = Vector3.zero();
   final Vector3 _localColB = Vector3.zero();
 
+  Float32List _localSpheres = Float32List(16);
+  int _localSphereCount = 0;
+  Float32List _localCapsules = Float32List(28);
+  int _localCapsuleCount = 0;
+
   /// Underlying GPU-ready [Surface] updated in place each simulation step.
   Surface get surface => _surface;
 
@@ -342,6 +347,9 @@ class XpbdCloth3D({
   }
 
   @override
+  bool get usesDefaultFrustumVisibility => runtimeType == XpbdCloth3D;
+
+  @override
   Aabb3? computeLocalAabb() => _localAabb;
 
   @override
@@ -371,6 +379,7 @@ class XpbdCloth3D({
     _transformDir(_invWorld.storage, gravity, _localGrav);
     _transformDir(_invWorld.storage, windVelocity, _localWind);
     final hasWind = windDragCoefficient > 0.0 && _localWind.length2 > 1e-8;
+    _prepareLocalColliders();
 
     for (var sub = 0; sub < substeps; sub++) {
       // 1. Optional aerodynamic wind force normal to each cloth triangle.
@@ -496,16 +505,54 @@ class XpbdCloth3D({
     _syncSurfaceBuffer();
   }
 
-  void _solveColliderPushOut(int particleCount) {
+  void _prepareLocalColliders() {
     final invM = _invWorld.storage;
+    var sCount = 0;
+    var cCount = 0;
+
+    void pushSphere(double x, double y, double z, double minR) {
+      final needed = (sCount + 1) * 4;
+      if (_localSpheres.length < needed) {
+        _localSpheres = Float32List(_localSpheres.length * 2)
+          ..setRange(0, sCount * 4, _localSpheres);
+      }
+      final o = sCount * 4;
+      _localSpheres[o] = x;
+      _localSpheres[o + 1] = y;
+      _localSpheres[o + 2] = z;
+      _localSpheres[o + 3] = minR;
+      sCount++;
+    }
+
+    void pushCapsule(
+      double ax,
+      double ay,
+      double az,
+      double bx,
+      double by,
+      double bz,
+      double minR,
+    ) {
+      final needed = (cCount + 1) * 7;
+      if (_localCapsules.length < needed) {
+        _localCapsules = Float32List(_localCapsules.length * 2)
+          ..setRange(0, cCount * 7, _localCapsules);
+      }
+      final o = cCount * 7;
+      _localCapsules[o] = ax;
+      _localCapsules[o + 1] = ay;
+      _localCapsules[o + 2] = az;
+      _localCapsules[o + 3] = bx;
+      _localCapsules[o + 4] = by;
+      _localCapsules[o + 5] = bz;
+      _localCapsules[o + 6] = minR;
+      cCount++;
+    }
 
     for (var s = 0; s < sphereColliders.length; s++) {
       final sph = sphereColliders[s];
       _transformPt(invM, sph.center, _localColA);
-      _pushOutSphere(
-        _pos,
-        _invMass,
-        particleCount,
+      pushSphere(
         _localColA.x,
         _localColA.y,
         _localColA.z,
@@ -517,12 +564,13 @@ class XpbdCloth3D({
       final cap = capsuleColliders[c];
       _transformPt(invM, cap.pointA, _localColA);
       _transformPt(invM, cap.pointB, _localColB);
-      _pushOutCapsule(
-        _pos,
-        _invMass,
-        particleCount,
-        _localColA,
-        _localColB,
+      pushCapsule(
+        _localColA.x,
+        _localColA.y,
+        _localColA.z,
+        _localColB.x,
+        _localColB.y,
+        _localColB.z,
         cap.radius + particleThickness,
       );
     }
@@ -534,10 +582,7 @@ class XpbdCloth3D({
       if (shape is SphereShape3D) {
         _localColB.setValues(cm.storage[12], cm.storage[13], cm.storage[14]);
         _transformPt(invM, _localColB, _localColA);
-        _pushOutSphere(
-          _pos,
-          _invMass,
-          particleCount,
+        pushSphere(
           _localColA.x,
           _localColA.y,
           _localColA.z,
@@ -547,15 +592,50 @@ class XpbdCloth3D({
         final r = shape.worldSpine(cm, _worldSegA, _worldSegB);
         _transformPt(invM, _worldSegA, _localColA);
         _transformPt(invM, _worldSegB, _localColB);
-        _pushOutCapsule(
-          _pos,
-          _invMass,
-          particleCount,
-          _localColA,
-          _localColB,
+        pushCapsule(
+          _localColA.x,
+          _localColA.y,
+          _localColA.z,
+          _localColB.x,
+          _localColB.y,
+          _localColB.z,
           r + particleThickness,
         );
       }
+    }
+
+    _localSphereCount = sCount;
+    _localCapsuleCount = cCount;
+  }
+
+  void _solveColliderPushOut(int particleCount) {
+    for (var s = 0; s < _localSphereCount; s++) {
+      final o = s * 4;
+      _pushOutSphere(
+        _pos,
+        _invMass,
+        particleCount,
+        _localSpheres[o],
+        _localSpheres[o + 1],
+        _localSpheres[o + 2],
+        _localSpheres[o + 3],
+      );
+    }
+
+    for (var c = 0; c < _localCapsuleCount; c++) {
+      final o = c * 7;
+      _pushOutCapsule(
+        _pos,
+        _invMass,
+        particleCount,
+        _localCapsules[o],
+        _localCapsules[o + 1],
+        _localCapsules[o + 2],
+        _localCapsules[o + 3],
+        _localCapsules[o + 4],
+        _localCapsules[o + 5],
+        _localCapsules[o + 6],
+      );
     }
   }
 

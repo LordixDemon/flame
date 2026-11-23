@@ -90,6 +90,13 @@ class XpbdRope3D({
 
     // Build tubular cylinder mesh (`(segmentCount + 1) x (radial + 1)`).
     final cols = radialSegments + 1;
+    _ringCos = Float32List(cols);
+    _ringSin = Float32List(cols);
+    for (var j = 0; j < cols; j++) {
+      final phi = (j / radialSegments) * math.pi * 2.0;
+      _ringCos[j] = math.cos(phi);
+      _ringSin[j] = math.sin(phi);
+    }
     final vertCount = pCount * cols;
     final layout = VertexLayout.standard;
     final stride = layout.strideInFloats;
@@ -183,6 +190,13 @@ class XpbdRope3D({
   late final int _nrmAttrOffset;
   late final int _vertexStride;
   late final Surface _surface;
+  late final Float32List _ringCos;
+  late final Float32List _ringSin;
+
+  Float32List _localSpheres = Float32List(16);
+  int _localSphereCount = 0;
+  Float32List _localCapsules = Float32List(28);
+  int _localCapsuleCount = 0;
 
   final Aabb3 _localAabb = Aabb3();
   final Matrix4 _invWorld = Matrix4.identity();
@@ -228,6 +242,9 @@ class XpbdRope3D({
   }
 
   @override
+  bool get usesDefaultFrustumVisibility => runtimeType == XpbdRope3D;
+
+  @override
   Aabb3? computeLocalAabb() => _localAabb;
 
   @override
@@ -255,6 +272,7 @@ class XpbdRope3D({
       _invWorld.setIdentity();
     }
     _transformDir(_invWorld.storage, gravity, _localGrav);
+    _prepareLocalColliders();
 
     final body = attachedBody;
     final attachIdx = attachAtEnd ? pCount - 1 : 0;
@@ -343,30 +361,31 @@ class XpbdRope3D({
           }
         }
 
-        for (var s = 0; s < sphereColliders.length; s++) {
-          final sph = sphereColliders[s];
-          _transformPt(_invWorld.storage, sph.center, _localColA);
+        for (var s = 0; s < _localSphereCount; s++) {
+          final o = s * 4;
           _pushOutSphere(
             _pos,
             _invMass,
             pCount,
-            _localColA.x,
-            _localColA.y,
-            _localColA.z,
-            sph.radius + radius,
+            _localSpheres[o],
+            _localSpheres[o + 1],
+            _localSpheres[o + 2],
+            _localSpheres[o + 3],
           );
         }
-        for (var c = 0; c < capsuleColliders.length; c++) {
-          final cap = capsuleColliders[c];
-          _transformPt(_invWorld.storage, cap.pointA, _localColA);
-          _transformPt(_invWorld.storage, cap.pointB, _localColB);
+        for (var c = 0; c < _localCapsuleCount; c++) {
+          final o = c * 7;
           _pushOutCapsule(
             _pos,
             _invMass,
             pCount,
-            _localColA,
-            _localColB,
-            cap.radius + radius,
+            _localCapsules[o],
+            _localCapsules[o + 1],
+            _localCapsules[o + 2],
+            _localCapsules[o + 3],
+            _localCapsules[o + 4],
+            _localCapsules[o + 5],
+            _localCapsules[o + 6],
           );
         }
       }
@@ -375,6 +394,49 @@ class XpbdRope3D({
     }
 
     _syncTubeSurface();
+  }
+
+  void _prepareLocalColliders() {
+    final invM = _invWorld.storage;
+    var sCount = 0;
+    for (var s = 0; s < sphereColliders.length; s++) {
+      final needed = (sCount + 1) * 4;
+      if (_localSpheres.length < needed) {
+        _localSpheres = Float32List(_localSpheres.length * 2)
+          ..setRange(0, sCount * 4, _localSpheres);
+      }
+      final sph = sphereColliders[s];
+      _transformPt(invM, sph.center, _localColA);
+      final o = sCount * 4;
+      _localSpheres[o] = _localColA.x;
+      _localSpheres[o + 1] = _localColA.y;
+      _localSpheres[o + 2] = _localColA.z;
+      _localSpheres[o + 3] = sph.radius + radius;
+      sCount++;
+    }
+    _localSphereCount = sCount;
+
+    var cCount = 0;
+    for (var c = 0; c < capsuleColliders.length; c++) {
+      final needed = (cCount + 1) * 7;
+      if (_localCapsules.length < needed) {
+        _localCapsules = Float32List(_localCapsules.length * 2)
+          ..setRange(0, cCount * 7, _localCapsules);
+      }
+      final cap = capsuleColliders[c];
+      _transformPt(invM, cap.pointA, _localColA);
+      _transformPt(invM, cap.pointB, _localColB);
+      final o = cCount * 7;
+      _localCapsules[o] = _localColA.x;
+      _localCapsules[o + 1] = _localColA.y;
+      _localCapsules[o + 2] = _localColA.z;
+      _localCapsules[o + 3] = _localColB.x;
+      _localCapsules[o + 4] = _localColB.y;
+      _localCapsules[o + 5] = _localColB.z;
+      _localCapsules[o + 6] = cap.radius + radius;
+      cCount++;
+    }
+    _localCapsuleCount = cCount;
   }
 
   void _evalBodyAnchorLocal(
@@ -469,9 +531,8 @@ class XpbdRope3D({
       }
 
       for (var j = 0; j < cols; j++) {
-        final phi = (j / radialSegments) * math.pi * 2.0;
-        final cosP = math.cos(phi);
-        final sinP = math.sin(phi);
+        final cosP = _ringCos[j];
+        final sinP = _ringSin[j];
 
         final nx = _normalFrame.x * cosP + _binormal.x * sinP;
         final ny = _normalFrame.y * cosP + _binormal.y * sinP;
@@ -567,13 +628,17 @@ void _pushOutCapsule(
   Float32List pos,
   Float32List invMass,
   int count,
-  Vector3 a,
-  Vector3 b,
+  double ax,
+  double ay,
+  double az,
+  double bx,
+  double by,
+  double bz,
   double minR,
 ) {
-  final abx = b.x - a.x;
-  final aby = b.y - a.y;
-  final abz = b.z - a.z;
+  final abx = bx - ax;
+  final aby = by - ay;
+  final abz = bz - az;
   final abLen2 = abx * abx + aby * aby + abz * abz;
   final r2 = minR * minR;
 
@@ -586,12 +651,12 @@ void _pushOutCapsule(
     final py = pos[o + 1];
     final pz = pos[o + 2];
     final t = abLen2 > 1e-14
-        ? (((px - a.x) * abx + (py - a.y) * aby + (pz - a.z) * abz) / abLen2)
+        ? (((px - ax) * abx + (py - ay) * aby + (pz - az) * abz) / abLen2)
               .clamp(0.0, 1.0)
         : 0.0;
-    final cx = a.x + abx * t;
-    final cy = a.y + aby * t;
-    final cz = a.z + abz * t;
+    final cx = ax + abx * t;
+    final cy = ay + aby * t;
+    final cz = az + abz * t;
     final dx = px - cx;
     final dy = py - cy;
     final dz = pz - cz;

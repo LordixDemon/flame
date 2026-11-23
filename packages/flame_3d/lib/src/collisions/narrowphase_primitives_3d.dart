@@ -4,6 +4,8 @@ final Vector3 _boxNormalScratch = Vector3.zero();
 final Vector3 _boxNormalNegScratch = Vector3.zero();
 final _ObbFrame _obbA = _ObbFrame();
 final _ObbFrame _obbB = _ObbFrame();
+int _satBestAxisCode = -1;
+double _satMinPen = 0.0;
 
 void _sphereCapsuleInto(
   SphereShape3D a,
@@ -91,11 +93,11 @@ void _boxBoxInto(
   Matrix4 transformB,
   MutableManifoldBuffer3D out,
 ) {
-  final sat = _solveBoxBoxSat(a, transformA, b, transformB);
-  if (sat == null) {
+  if (!_solveBoxBoxSat(a, transformA, b, transformB)) {
     return;
   }
-  final (bestAxisCode, minPen) = sat;
+  final bestAxisCode = _satBestAxisCode;
+  final minPen = _satMinPen;
   final nx = _boxNormalScratch.x;
   final ny = _boxNormalScratch.y;
   final nz = _boxNormalScratch.z;
@@ -156,7 +158,7 @@ void _boxBoxInto(
   );
 }
 
-(int, double)? _solveBoxBoxSat(
+bool _solveBoxBoxSat(
   BoxShape3D a,
   Matrix4 transformA,
   BoxShape3D b,
@@ -216,7 +218,7 @@ void _boxBoxInto(
       !testAxis(_obbB.u0x, _obbB.u0y, _obbB.u0z, 3, 1.05, 2e-4) ||
       !testAxis(_obbB.u1x, _obbB.u1y, _obbB.u1z, 4, 1.05, 2e-4) ||
       !testAxis(_obbB.u2x, _obbB.u2y, _obbB.u2z, 5, 1.05, 2e-4)) {
-    return null;
+    return false;
   }
 
   for (var i = 0; i < 3; i++) {
@@ -231,13 +233,13 @@ void _boxBoxInto(
       final cy = aUz * bUx - aUx * bUz;
       final cz = aUx * bUy - aUy * bUx;
       if (!testAxis(cx, cy, cz, 6 + i * 3 + j, 1.05, 2e-4)) {
-        return null;
+        return false;
       }
     }
   }
 
   if (bestAxisCode < 0 || !minPen.isFinite) {
-    return null;
+    return false;
   }
 
   if (tx * _boxNormalScratch.x +
@@ -246,7 +248,9 @@ void _boxBoxInto(
       0.0) {
     _boxNormalScratch.negate();
   }
-  return (bestAxisCode, minPen);
+  _satBestAxisCode = bestAxisCode;
+  _satMinPen = minPen;
+  return true;
 }
 
 /// Exact analytical Sphere-Sphere narrowphase.
@@ -380,11 +384,11 @@ CollisionManifold3D? _npBoxBox(
   BoxShape3D b,
   Matrix4 transformB,
 ) {
-  final sat = _solveBoxBoxSat(a, transformA, b, transformB);
-  if (sat == null) {
+  if (!_solveBoxBoxSat(a, transformA, b, transformB)) {
     return null;
   }
-  final (bestAxisCode, minPen) = sat;
+  final bestAxisCode = _satBestAxisCode;
+  final minPen = _satMinPen;
   final nx = _boxNormalScratch.x;
   final ny = _boxNormalScratch.y;
   final nz = _boxNormalScratch.z;
@@ -841,6 +845,8 @@ class _ObbFrame() {
   double axisZ(int i) => i == 0 ? u0z : (i == 1 ? u1z : u2z);
   double extent(int i) => i == 0 ? ex : (i == 1 ? ey : ez);
 
+  static final Float64List _edgeS = Float64List(3);
+
   void supportEdge(
     int edgeAxis,
     double dx,
@@ -849,7 +855,7 @@ class _ObbFrame() {
     Vector3 out0,
     Vector3 out1,
   ) {
-    final s = Float64List(3);
+    final s = _edgeS;
     for (var k = 0; k < 3; k++) {
       if (k == edgeAxis) {
         s[k] = 0.0;

@@ -9,7 +9,6 @@ import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/extensions/clip_space.dart';
 import 'package:flame_3d/src/world_scale/chunked_terrain_3d.dart';
-import 'package:meta/meta.dart';
 
 /// Spherical agent/player/creature volume that pushes nearby [FoliageSystem3D]
 /// blades outward and flattens them smoothly.
@@ -39,17 +38,86 @@ typedef FoliageDensityCallback3D = double Function(
   Vector3 normal,
 );
 
-@immutable
-class const _FoliageCellKey(
-  final int cx,
-  final int cz,
-) {
-  @override
-  bool operator ==(Object other) =>
-      other is _FoliageCellKey && other.cx == cx && other.cz == cz;
+class _FoliageDrawCache() {
+  bool valid = false;
+  int stateVer = -1;
+  int worldVer = -1;
+  double camX = 0;
+  double camY = 0;
+  double camZ = 0;
+  double maxDist = -1;
+  double fadeStart = -1;
+  double windStrength = -1;
+  double windFreq = -1;
+  double maxBend = -1;
+  double windDirX = 0;
+  double windDirY = 0;
+  final Float32List vp = Float32List(16);
+  int visibleCellCount = 0;
+  int visibleInstanceCount = 0;
+  int bufferVersion = 0;
 
-  @override
-  int get hashCode => Object.hash(cx, cz);
+  bool matches(
+    int stateVer,
+    int worldVer,
+    Vector3 camPos,
+    double maxDist,
+    double fadeStart,
+    double windStrength,
+    double windFreq,
+    double maxBend,
+    Vector2 windDir,
+    Float32List currentVp,
+  ) =>
+      valid &&
+      this.stateVer == stateVer &&
+      this.worldVer == worldVer &&
+      camX == camPos.x &&
+      camY == camPos.y &&
+      camZ == camPos.z &&
+      this.maxDist == maxDist &&
+      this.fadeStart == fadeStart &&
+      this.windStrength == windStrength &&
+      this.windFreq == windFreq &&
+      this.maxBend == maxBend &&
+      windDirX == windDir.x &&
+      windDirY == windDir.y &&
+      sameMatrix16(currentVp, vp);
+
+  void store(
+    int stateVer,
+    int worldVer,
+    Vector3 camPos,
+    double maxDist,
+    double fadeStart,
+    double windStrength,
+    double windFreq,
+    double maxBend,
+    Vector2 windDir,
+    Float32List currentVp,
+    int cellCount,
+    int instanceCount,
+  ) {
+    valid = true;
+    this.stateVer = stateVer;
+    this.worldVer = worldVer;
+    camX = camPos.x;
+    camY = camPos.y;
+    camZ = camPos.z;
+    this.maxDist = maxDist;
+    this.fadeStart = fadeStart;
+    this.windStrength = windStrength;
+    this.windFreq = windFreq;
+    this.maxBend = maxBend;
+    windDirX = windDir.x;
+    windDirY = windDir.y;
+    for (var k = 0; k < 16; k++) {
+      vp[k] = currentVp[k];
+    }
+    visibleCellCount = cellCount;
+    visibleInstanceCount = instanceCount;
+    bufferVersion++;
+  }
 }
 
 /// High-density GPU-instanced vegetation scatter [Object3D] (`capacity` up to
@@ -173,6 +241,7 @@ class FoliageSystem3D({
   late final Float32List _instanceBuffer = Float32List(
     capacity * VertexLayout.instanceStrideInFloats,
   );
+  Float32List? _shadowInstanceBuffer;
 
   int _bladeCount = 0;
   double _windTime = 0;
@@ -180,22 +249,10 @@ class FoliageSystem3D({
   int _stateVersion = 0;
   bool _anyCellBent = false;
 
-  // Draw-cache snapshot to share packed instances across multi-pass renders
-  // (depth-normal prepass + main scene) with matching viewer/frustum.
-  bool _drawCacheValid = false;
-  int _drawCacheStateVer = -1;
-  int _drawCacheWorldVer = -1;
-  double _drawCacheCamX = 0;
-  double _drawCacheCamY = 0;
-  double _drawCacheCamZ = 0;
-  double _drawCacheMaxDist = -1;
-  double _drawCacheFadeStart = -1;
-  double _drawCacheWindStrength = -1;
-  double _drawCacheWindFreq = -1;
-  double _drawCacheMaxBend = -1;
-  double _drawCacheWindDirX = 0;
-  double _drawCacheWindDirY = 0;
-  final Float32List _drawCacheVp = Float32List(16);
+  // Separate draw-cache snapshots for main and shadow passes so shadow passes
+  // never thrash the main camera cache (and vice versa).
+  final _FoliageDrawCache _mainCache = _FoliageDrawCache();
+  final _FoliageDrawCache _shadowCache = _FoliageDrawCache();
 
   // Active interactor scratch buffers reused across `_updateInteractors`.
   Float64List _activeIx = Float64List(0);
@@ -249,7 +306,8 @@ class FoliageSystem3D({
     _cellsDirty = true;
     _anyCellBent = false;
     _stateVersion++;
-    _drawCacheValid = false;
+    _mainCache.valid = false;
+    _shadowCache.valid = false;
     markAabbDirty();
     markDrawDirty(shadows: castsShadows);
   }
@@ -263,26 +321,58 @@ class FoliageSystem3D({
     Color color = const Color(0xFF569E3E),
     double? windPhase,
     double? densityRank,
+  }) => _addBladeRaw(
+    position.x,
+    position.y,
+    position.z,
+    yaw,
+    bladeScale?.x ?? 1.0,
+    bladeScale?.y ?? 1.0,
+    bladeScale?.z ?? 1.0,
+    color.r,
+    color.g,
+    color.b,
+    color.a,
+    windPhase,
+    densityRank,
+    notify: true,
+  );
+
+  int _addBladeRaw(
+    double px,
+    double py,
+    double pz,
+    double yaw,
+    double sx,
+    double sy,
+    double sz,
+    double r,
+    double g,
+    double b,
+    double a,
+    double? windPhase,
+    double? densityRank, {
+    required bool notify,
   }) {
     if (_bladeCount >= capacity) {
       return -1;
     }
     final i = _bladeCount++;
-    _posX[i] = position.x;
-    _posY[i] = position.y;
-    _posZ[i] = position.z;
+    _posX[i] = px;
+    _posY[i] = py;
+    _posZ[i] = pz;
     _yaw[i] = yaw;
     _cosYaw[i] = math.cos(yaw);
     _sinYaw[i] = math.sin(yaw);
-    _scaleX[i] = bladeScale?.x ?? 1.0;
-    _scaleY[i] = bladeScale?.y ?? 1.0;
-    _scaleZ[i] = bladeScale?.z ?? 1.0;
-    _colorR[i] = color.r;
-    _colorG[i] = color.g;
-    _colorB[i] = color.b;
-    _colorA[i] = color.a;
-    final hash = _hashFloat01(i * 747796405 + 2891336453);
-    final resolvedPhase = windPhase ?? (hash * math.pi * 2.0);
+    _scaleX[i] = sx;
+    _scaleY[i] = sy;
+    _scaleZ[i] = sz;
+    _colorR[i] = r;
+    _colorG[i] = g;
+    _colorB[i] = b;
+    _colorA[i] = a;
+    final resolvedPhase =
+        windPhase ?? (_hashFloat01(i * 747796405 + 2891336453) * math.pi * 2.0);
     _windPhase[i] = resolvedPhase;
     _cosPhase[i] = math.cos(resolvedPhase);
     _sinPhase[i] = math.sin(resolvedPhase);
@@ -292,9 +382,11 @@ class FoliageSystem3D({
     _bendZ[i] = 0;
     _crush[i] = 0;
     _cellsDirty = true;
-    _stateVersion++;
-    markAabbDirty();
-    markDrawDirty(shadows: castsShadows);
+    if (notify) {
+      _stateVersion++;
+      markAabbDirty();
+      markDrawDirty(shadows: castsShadows);
+    }
     return i;
   }
 
@@ -398,6 +490,10 @@ class FoliageSystem3D({
     }
 
     _ensureSpatialCells();
+    if (placed > 0) {
+      _stateVersion++;
+    }
+    markAabbDirty();
     markDrawDirty(shadows: castsShadows);
     return placed;
   }
@@ -453,15 +549,20 @@ class FoliageSystem3D({
     required Vector3 cameraPosition,
     Frustum? frustum,
   }) {
-    _drawCacheValid = false;
-    return _packVisibleInstances(
+    _mainCache.valid = false;
+    _shadowCache.valid = false;
+    final count = _packVisibleInstances(
       cameraPosition: cameraPosition,
       frustum: frustum,
+      outBuffer: _instanceBuffer,
     );
+    _mainCache.bufferVersion++;
+    return count;
   }
 
   int _packVisibleInstances({
     required Vector3 cameraPosition,
+    required Float32List outBuffer,
     Frustum? frustum,
   }) {
     _lastVisibleCellCount = 0;
@@ -504,15 +605,20 @@ class FoliageSystem3D({
     final maxDist = maxDrawDistance;
     final maxDistSq = maxDist * maxDist;
     final fadeStart = maxDist * fadeStartFraction;
+    final fadeStartSq64 = fadeStart * fadeStart * 0.64;
     final fadeSpan = math.max(1e-4, maxDist - fadeStart);
 
     final wStorage = worldMat.storage;
     final windDirX = windDirection.x;
     final windDirZ = windDirection.y;
     final windAmp = windStrength;
+    final hasWind = windAmp != 0.0;
+    final windDirLen = hasWind
+        ? math.sqrt(windDirX * windDirX + windDirZ * windDirZ)
+        : 0.0;
     final windOmega = _windTime * windFrequency;
-    final cosW = math.cos(windOmega);
-    final sinW = math.sin(windOmega);
+    final cosW = hasWind ? math.cos(windOmega) : 1.0;
+    final sinW = hasWind ? math.sin(windOmega) : 0.0;
 
     var outInstances = 0;
     const stride = VertexLayout.instanceStrideInFloats;
@@ -552,6 +658,7 @@ class FoliageSystem3D({
       }
 
       _lastVisibleCellCount++;
+      final cellBent = _cellHasBend[cell] != 0;
       final start = _cellOffsets[cell];
       final end = start + _cellCounts[cell];
 
@@ -572,7 +679,7 @@ class FoliageSystem3D({
         // Per-blade deterministic cutoff distance produces continuous density
         // thinning AND smooth zero-pop scale-down to 0 right at cutoff!
         var distScale = 1.0;
-        if (distSq > fadeStart * fadeStart * 0.64) {
+        if (distSq > fadeStartSq64) {
           final dist = math.sqrt(distSq);
           final bladeCutoff = fadeStart + _densityRank[i] * fadeSpan;
           if (dist >= bladeCutoff) {
@@ -590,19 +697,52 @@ class FoliageSystem3D({
           continue;
         }
 
-        final crush = _crush[i];
+        final crush = cellBent ? _crush[i] : 0.0;
         final sx = _scaleX[i] * distScale;
-        final sy = _scaleY[i] * distScale * (1.0 - 0.65 * crush);
+        final sy = cellBent
+            ? _scaleY[i] * distScale * (1.0 - 0.65 * crush)
+            : _scaleY[i] * distScale;
         final sz = _scaleZ[i] * distScale;
 
         final cy = _cosYaw[i];
         final syaw = _sinYaw[i];
 
-        final phase = _windPhase[i];
-        final sinTotal = sinW * _cosPhase[i] + cosW * _sinPhase[i];
-        final sway = windAmp * sinTotal * (1.0 - 0.5 * crush);
-        final tiltX = _bendX[i] + windDirX * sway;
-        final tiltZ = _bendZ[i] + windDirZ * sway;
+        final double tiltX;
+        final double tiltZ;
+        final double m11;
+        final double tiltMag;
+        if (!cellBent && !hasWind) {
+          tiltX = 0.0;
+          tiltZ = 0.0;
+          m11 = sy;
+          tiltMag = 0.0;
+        } else if (!cellBent) {
+          final sinTotal = sinW * _cosPhase[i] + cosW * _sinPhase[i];
+          final sway = windAmp * sinTotal;
+          tiltX = windDirX * sway;
+          tiltZ = windDirZ * sway;
+          tiltMag = sway.abs() * windDirLen;
+          final tiltSq = tiltMag * tiltMag;
+          m11 = tiltSq == 0.0 ? sy : sy / math.sqrt(1.0 + tiltSq);
+        } else {
+          final double sway;
+          if (hasWind) {
+            final sinTotal = sinW * _cosPhase[i] + cosW * _sinPhase[i];
+            sway = windAmp * sinTotal * (1.0 - 0.5 * crush);
+          } else {
+            sway = 0.0;
+          }
+          tiltX = _bendX[i] + windDirX * sway;
+          tiltZ = _bendZ[i] + windDirZ * sway;
+          final tiltSq = tiltX * tiltX + tiltZ * tiltZ;
+          if (tiltSq == 0.0) {
+            m11 = sy;
+            tiltMag = 0.0;
+          } else {
+            m11 = sy / math.sqrt(1.0 + tiltSq);
+            tiltMag = math.sqrt(tiltSq);
+          }
+        }
 
         // Local columns: X and Z rotated by `yaw`, Y tilted outward by trample
         // + wind while anchoring `y = 0` in the ground!
@@ -611,7 +751,6 @@ class FoliageSystem3D({
         final m02 = -syaw * sx;
 
         final m10 = tiltX * sy;
-        final m11 = sy / math.sqrt(1.0 + tiltX * tiltX + tiltZ * tiltZ);
         final m12 = tiltZ * sy;
 
         final m20 = syaw * sz;
@@ -620,7 +759,7 @@ class FoliageSystem3D({
 
         final base = outInstances * stride;
         if (isIdentity) {
-          _instanceBuffer
+          outBuffer
             ..[base] = m00
             ..[base + 1] = m01
             ..[base + 2] = m02
@@ -652,20 +791,20 @@ class FoliageSystem3D({
             px,
             py,
             pz,
-            _instanceBuffer,
+            outBuffer,
             base,
           );
         }
 
-        _instanceBuffer
+        outBuffer
           ..[base + 16] = _colorR[i]
           ..[base + 17] = _colorG[i]
           ..[base + 18] = _colorB[i]
           ..[base + 19] = _colorA[i]
-          ..[base + 20] = phase
+          ..[base + 20] = _windPhase[i]
           ..[base + 21] = windAmp
           ..[base + 22] = crush
-          ..[base + 23] = math.sqrt(tiltX * tiltX + tiltZ * tiltZ);
+          ..[base + 23] = tiltMag;
         outInstances++;
       }
     }
@@ -673,6 +812,9 @@ class FoliageSystem3D({
     _lastVisibleInstanceCount = outInstances;
     return outInstances;
   }
+
+  @override
+  bool get usesDefaultFrustumVisibility => runtimeType == FoliageSystem3D;
 
   @override
   Aabb3? computeLocalAabb() {
@@ -698,27 +840,33 @@ class FoliageSystem3D({
     if (_bladeCount == 0) {
       return;
     }
+    final isShadow = context.isShadowPass;
+    final cache = isShadow ? _shadowCache : _mainCache;
+    final outBuffer = isShadow
+        ? (_shadowInstanceBuffer ??= Float32List(
+            capacity * VertexLayout.instanceStrideInFloats,
+          ))
+        : _instanceBuffer;
     final camPos = context.viewerPosition;
     final vp = context.viewProjection.storage;
     final worldVer = worldTransformVersion;
-    final hitCache =
-        _drawCacheValid &&
-        _drawCacheStateVer == _stateVersion &&
-        _drawCacheWorldVer == worldVer &&
-        _drawCacheCamX == camPos.x &&
-        _drawCacheCamY == camPos.y &&
-        _drawCacheCamZ == camPos.z &&
-        _drawCacheMaxDist == maxDrawDistance &&
-        _drawCacheFadeStart == fadeStartFraction &&
-        _drawCacheWindStrength == windStrength &&
-        _drawCacheWindFreq == windFrequency &&
-        _drawCacheMaxBend == maxBendAngle &&
-        _drawCacheWindDirX == windDirection.x &&
-        _drawCacheWindDirY == windDirection.y &&
-        sameMatrix16(vp, _drawCacheVp);
+    final hitCache = cache.matches(
+      _stateVersion,
+      worldVer,
+      camPos,
+      maxDrawDistance,
+      fadeStartFraction,
+      windStrength,
+      windFrequency,
+      maxBendAngle,
+      windDirection,
+      vp,
+    );
     final int count;
     if (hitCache) {
-      count = _lastVisibleInstanceCount;
+      count = cache.visibleInstanceCount;
+      _lastVisibleInstanceCount = count;
+      _lastVisibleCellCount = cache.visibleCellCount;
     } else {
       // Distance thinning follows the viewer, also in shadow passes (where the
       // camera is the light's view, centered on the world origin): the blades
@@ -726,23 +874,22 @@ class FoliageSystem3D({
       count = _packVisibleInstances(
         cameraPosition: camPos,
         frustum: context.frustum,
+        outBuffer: outBuffer,
       );
-      _drawCacheValid = true;
-      _drawCacheStateVer = _stateVersion;
-      _drawCacheWorldVer = worldVer;
-      _drawCacheCamX = camPos.x;
-      _drawCacheCamY = camPos.y;
-      _drawCacheCamZ = camPos.z;
-      _drawCacheMaxDist = maxDrawDistance;
-      _drawCacheFadeStart = fadeStartFraction;
-      _drawCacheWindStrength = windStrength;
-      _drawCacheWindFreq = windFrequency;
-      _drawCacheMaxBend = maxBendAngle;
-      _drawCacheWindDirX = windDirection.x;
-      _drawCacheWindDirY = windDirection.y;
-      for (var k = 0; k < 16; k++) {
-        _drawCacheVp[k] = vp[k];
-      }
+      cache.store(
+        _stateVersion,
+        worldVer,
+        camPos,
+        maxDrawDistance,
+        fadeStartFraction,
+        windStrength,
+        windFrequency,
+        maxBendAngle,
+        windDirection,
+        vp,
+        _lastVisibleCellCount,
+        count,
+      );
     }
     if (count <= 0) {
       return;
@@ -750,9 +897,10 @@ class FoliageSystem3D({
     for (final surface in mesh.surfaces) {
       context.drawInstances(
         surface,
-        instances: _instanceBuffer,
+        instances: outBuffer,
         count: count,
         material: material,
+        instanceVersion: cache.bufferVersion,
       );
     }
   }
@@ -961,16 +1109,55 @@ class FoliageSystem3D({
       return;
     }
 
-    final buckets = <_FoliageCellKey, List<int>>{};
+    final bladeNext = Int32List(n);
+    const cellBias = 0x2000000;
+    const cellStride = 0x4000000;
+    final cellIndexByKey = <int, int>{};
+    Map<(int, int), int>? overflowCells;
+    final cellHeads = <int>[];
+    final cellTails = <int>[];
+    final cellCountsList = <int>[];
+
     for (var i = 0; i < n; i++) {
-      final key = _FoliageCellKey(
-        (_posX[i] / cellSize).floor(),
-        (_posZ[i] / cellSize).floor(),
-      );
-      buckets.putIfAbsent(key, () => <int>[]).add(i);
+      final cx = (_posX[i] / cellSize).floor();
+      final cz = (_posZ[i] / cellSize).floor();
+      int? cellIdx;
+      final inRange =
+          cx >= -cellBias && cx < cellBias && cz >= -cellBias && cz < cellBias;
+      if (inRange) {
+        final packed = (cx + cellBias) * cellStride + (cz + cellBias);
+        cellIdx = cellIndexByKey[packed];
+        if (cellIdx == null) {
+          cellIdx = cellHeads.length;
+          cellIndexByKey[packed] = cellIdx;
+          cellHeads.add(i);
+          cellTails.add(i);
+          cellCountsList.add(1);
+          bladeNext[i] = -1;
+          continue;
+        }
+      } else {
+        final overflow = overflowCells ??= <(int, int), int>{};
+        final rec = (cx, cz);
+        cellIdx = overflow[rec];
+        if (cellIdx == null) {
+          cellIdx = cellHeads.length;
+          overflow[rec] = cellIdx;
+          cellHeads.add(i);
+          cellTails.add(i);
+          cellCountsList.add(1);
+          bladeNext[i] = -1;
+          continue;
+        }
+      }
+      final tail = cellTails[cellIdx];
+      bladeNext[tail] = i;
+      bladeNext[i] = -1;
+      cellTails[cellIdx] = i;
+      cellCountsList[cellIdx]++;
     }
 
-    final cCount = buckets.length;
+    final cCount = cellHeads.length;
     _cellCount = cCount;
     _cellOffsets = Int32List(cCount);
     _cellCounts = Int32List(cCount);
@@ -993,10 +1180,9 @@ class FoliageSystem3D({
     var globalMaxZ = double.negativeInfinity;
 
     var cursor = 0;
-    var cellIdx = 0;
-    for (final list in buckets.values) {
+    for (var cellIdx = 0; cellIdx < cCount; cellIdx++) {
       _cellOffsets[cellIdx] = cursor;
-      _cellCounts[cellIdx] = list.length;
+      _cellCounts[cellIdx] = cellCountsList[cellIdx];
 
       var minX = double.infinity;
       var minY = double.infinity;
@@ -1006,8 +1192,8 @@ class FoliageSystem3D({
       var maxZ = double.negativeInfinity;
       var hasBent = false;
 
-      for (var j = 0; j < list.length; j++) {
-        final i = list[j];
+      var i = cellHeads[cellIdx];
+      while (i != -1) {
         _cellBladeIndices[cursor++] = i;
         // Wind and trampling shear the blade: its tip moves sideways by up
         // to their sum times its height.
@@ -1021,9 +1207,10 @@ class FoliageSystem3D({
         maxY = math.max(maxY, topY);
         minZ = math.min(minZ, _posZ[i] - padXZ);
         maxZ = math.max(maxZ, _posZ[i] + padXZ);
-        if (_crush[i] > 1e-4 || _bendX[i].abs() > 1e-4) {
+        if (_crush[i] != 0.0 || _bendX[i] != 0.0 || _bendZ[i] != 0.0) {
           hasBent = true;
         }
+        i = bladeNext[i];
       }
 
       final cb = cellIdx * 6;
@@ -1042,7 +1229,6 @@ class FoliageSystem3D({
       globalMaxX = math.max(globalMaxX, maxX);
       globalMaxY = math.max(globalMaxY, maxY);
       globalMaxZ = math.max(globalMaxZ, maxZ);
-      cellIdx++;
     }
 
     _localAabb
@@ -1084,20 +1270,22 @@ class FoliageSystem3D({
     final s = minScale + (maxScale - minScale) * next01();
     final heightVar = s * (0.85 + 0.3 * next01());
     final mixT = next01();
-    final col = Color.from(
-      alpha: 1,
-      red: baseColor.r + (variationColor.r - baseColor.r) * mixT,
-      green: baseColor.g + (variationColor.g - baseColor.g) * mixT,
-      blue: baseColor.b + (variationColor.b - baseColor.b) * mixT,
-    );
 
-    return addBlade(
-          position: Vector3(x, y, z),
-          yaw: yaw,
-          bladeScale: Vector3(s, heightVar, s),
-          color: col,
-          windPhase: next01() * math.pi * 2.0,
-          densityRank: next01(),
+    return _addBladeRaw(
+          x,
+          y,
+          z,
+          yaw,
+          s,
+          heightVar,
+          s,
+          baseColor.r + (variationColor.r - baseColor.r) * mixT,
+          baseColor.g + (variationColor.g - baseColor.g) * mixT,
+          baseColor.b + (variationColor.b - baseColor.b) * mixT,
+          1.0,
+          next01() * math.pi * 2.0,
+          next01(),
+          notify: false,
         ) >=
         0;
   }

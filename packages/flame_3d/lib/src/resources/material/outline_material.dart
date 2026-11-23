@@ -120,13 +120,22 @@ class OutlineMaterial({
       screenSpace ? 1.0 : 0.0,
       aspect,
     );
-    vertexShader
-      ..setColor('Outline.color', color)
-      ..setVector4('Outline.params', _params);
-    if (_skinnedInUse) {
-      _skinnedVertexShader
+    final activeVert = context is RenderContext3D
+        ? context.activeApplyVertexShader
+        : null;
+    if (activeVert != null) {
+      activeVert
         ..setColor('Outline.color', color)
         ..setVector4('Outline.params', _params);
+    } else {
+      vertexShader
+        ..setColor('Outline.color', color)
+        ..setVector4('Outline.params', _params);
+      if (_skinnedInUse) {
+        _skinnedVertexShader
+          ..setColor('Outline.color', color)
+          ..setVector4('Outline.params', _params);
+      }
     }
   }
 }

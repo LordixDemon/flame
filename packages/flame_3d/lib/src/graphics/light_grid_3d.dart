@@ -5,6 +5,7 @@ import 'dart:ui' show PixelFormat;
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:meta/meta.dart';
 
 /// {@template light_grid_stats}
 /// What the light grid of the last camera pass of a `RenderContext3D` held,
@@ -720,10 +721,15 @@ class LightGrid3D() {
       final r2 = r * r;
       // The cone of a spot light, against the sphere around a cell.
       final cellRadius = cell * 0.8660254037844386;
+      final sphereRadius = cellRadius + _margin(cell, x, y, z);
       final ax = -_light[o + 8];
       final ay = -_light[o + 9];
       final az = -_light[o + 10];
-      final outer = _light[o + 14];
+      final outerEps = _light[o + 14] + 1e-3;
+      final sinA = math.sin(outerEps);
+      final cosA = math.cos(outerEps);
+      final cosA2 = cosA * cosA;
+      final sinA2 = sinA * sinA;
       for (var cz = cz0; cz <= cz1; cz++) {
         final bz0 = oz + cz * cell;
         final dz = z < bz0 ? bz0 - z : (z > bz0 + cell ? z - bz0 - cell : 0.0);
@@ -741,18 +747,22 @@ class LightGrid3D() {
               continue;
             }
             if (isSpot &&
-                !_coneReaches(
+                !_coneReachesFast(
                   x,
                   y,
                   z,
                   ax,
                   ay,
                   az,
-                  outer,
+                  outerEps,
+                  sinA,
+                  cosA,
+                  cosA2,
+                  sinA2,
                   bx0 + cell * 0.5,
                   by0 + cell * 0.5,
                   bz0 + cell * 0.5,
-                  cellRadius + _margin(cell, x, y, z),
+                  sphereRadius,
                 )) {
               continue;
             }
@@ -773,8 +783,9 @@ class LightGrid3D() {
 
     // The texels: the headers, then each cell's point and spot lights.
     if (_cellCounts.length < cells) {
-      _cellCounts = Int32List(cells);
-      _cellStarts = Int32List(cells);
+      final cap = _nextPow2(cells);
+      _cellCounts = Int32List(cap);
+      _cellStarts = Int32List(cap);
     }
     final pointCap = settings.maxPointLightsPerCell;
     final spotCap = settings.maxSpotLightsPerCell;
@@ -882,9 +893,48 @@ class LightGrid3D() {
     return next;
   }
 
-  // Whether the cone of half-angle [outer] along the unit axis (ax, ay, az)
-  // from (x, y, z) reaches the sphere of [radius] around (cx, cy, cz).
-  static bool _coneReaches(
+  // Algebraic cone-sphere test equivalent to `outer + asin(r/d) + 1e-3`,
+  // avoiding per-cell `sqrt`, `asin`, and `cos`.
+  @pragma('vm:prefer-inline')
+  static bool _coneReachesFast(
+    double x,
+    double y,
+    double z,
+    double ax,
+    double ay,
+    double az,
+    double outerEps,
+    double sinA,
+    double cosA,
+    double cosA2,
+    double sinA2,
+    double cx,
+    double cy,
+    double cz,
+    double radius,
+  ) {
+    final vx = cx - x;
+    final vy = cy - y;
+    final vz = cz - z;
+    final d2 = vx * vx + vy * vy + vz * vz;
+    final r2 = radius * radius;
+    if (d2 <= r2 || outerEps >= math.pi) {
+      return true;
+    }
+    final axisDot = vx * ax + vy * ay + vz * az;
+    final rhs = axisDot + radius * sinA;
+    if (cosA >= 0) {
+      return rhs >= 0 && rhs * rhs >= cosA2 * (d2 - r2);
+    }
+    if (r2 >= d2 * sinA2 || rhs >= 0) {
+      return true;
+    }
+    return rhs * rhs <= cosA2 * (d2 - r2);
+  }
+
+  /// Test hook exposing [_coneReachesFast] for equivalence tests.
+  @visibleForTesting
+  static bool coneReachesForTest(
     double x,
     double y,
     double z,
@@ -897,18 +947,34 @@ class LightGrid3D() {
     double cz,
     double radius,
   ) {
-    final vx = cx - x;
-    final vy = cy - y;
-    final vz = cz - z;
-    final distance = math.sqrt(vx * vx + vy * vy + vz * vz);
-    if (distance <= radius) {
-      return true;
+    final outerEps = outer + 1e-3;
+    final sinA = math.sin(outerEps);
+    final cosA = math.cos(outerEps);
+    return _coneReachesFast(
+      x,
+      y,
+      z,
+      ax,
+      ay,
+      az,
+      outerEps,
+      sinA,
+      cosA,
+      cosA * cosA,
+      sinA * sinA,
+      cx,
+      cy,
+      cz,
+      radius,
+    );
+  }
+
+  static int _nextPow2(int n) {
+    var cap = 64;
+    while (cap < n) {
+      cap *= 2;
     }
-    final spread = outer + math.asin(radius / distance) + 1e-3;
-    if (spread >= math.pi) {
-      return true;
-    }
-    return (vx * ax + vy * ay + vz * az) >= distance * math.cos(spread);
+    return cap;
   }
 
   void _addPointPair(int cell, int light) {
@@ -946,7 +1012,7 @@ class LightGrid3D() {
 
   Int32List _countSpotPairs(int cells) {
     if (_spotCounts.length < cells) {
-      _spotCounts = Int32List(cells);
+      _spotCounts = Int32List(_nextPow2(cells));
     }
     final counts = _spotCounts..fillRange(0, cells, 0);
     for (var i = 0; i < _spotPairs; i++) {

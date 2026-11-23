@@ -5,6 +5,9 @@ import 'package:flame_3d/graphics.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:meta/meta.dart';
 
+GpuBackend? _preferAsyncBackend;
+int _preferAsyncGeneration = -1;
+
 /// Rasterizes [picture] at [width] by [height] pixels into a GPU texture
 /// that shares the image's pixels, for [owner], and hands it to [onTexture].
 ///
@@ -45,29 +48,39 @@ bool rasterizePictureTexture(
       'the web, for instance) cannot, so $owner cannot be shown.',
     );
   }
-  final image = picture.toImageSync(width, height);
-  final GpuTexture? texture;
-  try {
-    texture = backend.createTextureFromImage(image);
-  } finally {
-    image.dispose();
-  }
-  if (texture != null) {
-    picture.dispose();
-    onTexture(texture);
-    return true;
+  final generation = GpuBackend.deviceGeneration;
+  final skipSync =
+      identical(_preferAsyncBackend, backend) &&
+      _preferAsyncGeneration == generation;
+  if (!skipSync) {
+    final image = picture.toImageSync(width, height);
+    final GpuTexture? texture;
+    try {
+      texture = backend.createTextureFromImage(image);
+    } finally {
+      image.dispose();
+    }
+    if (texture != null) {
+      picture.dispose();
+      onTexture(texture);
+      return true;
+    }
   }
   unawaited(
     picture
         .toImage(width, height)
         .then((image) {
           try {
-            final texture = GpuBackend.instance.createTextureFromImage(image);
+            final currentBackend = GpuBackend.instance;
+            final texture = currentBackend.createTextureFromImage(image);
             if (texture == null) {
               debugPrint(
                 'flame_3d: $owner could not use its rasterized picture as a '
                 'texture.',
               );
+            } else {
+              _preferAsyncBackend = currentBackend;
+              _preferAsyncGeneration = GpuBackend.deviceGeneration;
             }
             onTexture(texture);
           } finally {

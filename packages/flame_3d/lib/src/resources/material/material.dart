@@ -326,6 +326,12 @@ abstract class Material({
   /// even when [instancesHoldModelMatrices] is `false`.
   Material? get depthNormalMaterial => null;
 
+  /// Whether [fragmentShaderFor] returns the same shader for every draw of a
+  /// single pass (`RenderContext3D._pass`), letting `_resolvePipeline` skip the
+  /// virtual lookup on a cache hit within the same pass.
+  @internal
+  bool get hasPassStableFragmentShader => false;
+
   /// Whether repeated draws of this material with identical tracked inputs can
   /// reuse previously written shader uniform blocks and samplers instead of
   /// calling [apply] again.

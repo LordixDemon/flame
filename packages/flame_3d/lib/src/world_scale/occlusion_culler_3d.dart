@@ -1,3 +1,4 @@
+import 'dart:collection' show UnmodifiableListView, UnmodifiableSetView;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -162,6 +163,7 @@ class OcclusionCuller3D({
   final Float64List _boxScreen = Float64List(24);
   final Int32List _hullOrder = Int32List(8);
   final Int32List _hull = Int32List(17);
+  final Float64List _rowPlaneBase = Float64List(6);
 
   int _testedCount = 0;
   int _occludedCount = 0;
@@ -177,11 +179,17 @@ class OcclusionCuller3D({
   /// Number of occluder primitives rasterized in the current frame.
   int get rasterizedOccluderCount => _rasterizedOccluderCount;
 
+  /// Whether at least one box or quad occluder is registered.
+  bool get hasOccluders => _boxes.isNotEmpty || _quads.isNotEmpty;
+
+  late final List<OccluderBox3D> _boxesView = UnmodifiableListView(_boxes);
+  late final List<OccluderQuad3D> _quadsView = UnmodifiableListView(_quads);
+
   /// Registered box occluders.
-  List<OccluderBox3D> get boxes => List.unmodifiable(_boxes);
+  List<OccluderBox3D> get boxes => _boxesView;
 
   /// Registered quad occluders.
-  List<OccluderQuad3D> get quads => List.unmodifiable(_quads);
+  List<OccluderQuad3D> get quads => _quadsView;
 
   /// Registers a box occluder.
   void addBox(OccluderBox3D box) {
@@ -214,7 +222,10 @@ class OcclusionCuller3D({
   /// for [viewProjection], and builds [depthMip0], [depthMip1], and
   /// [depthMip2].
   void rasterizeOccluders(Matrix4 viewProjection) {
-    clearDepth();
+    _subDepth.fillRange(0, _subDepth.length, 1.0);
+    _testedCount = 0;
+    _occludedCount = 0;
+    _rasterizedOccluderCount = 0;
     for (var i = 0; i < _boxes.length; i++) {
       _rasterizeBoxInternal(_boxes[i], viewProjection);
       _rasterizedOccluderCount++;
@@ -379,17 +390,18 @@ class OcclusionCuller3D({
     final m2x1 = px1 >> 2;
     final m2y0 = py0 >> 2;
     final m2y1 = py1 >> 2;
-    var maxM2 = 0.0;
+    var occludedM2 = true;
+    mip2Loop:
     for (var y = m2y0; y <= m2y1; y++) {
       final row = y * mip2Width;
       for (var x = m2x0; x <= m2x1; x++) {
-        final d = depthMip2[row + x];
-        if (d > maxM2) {
-          maxM2 = d;
+        if (minZ <= depthMip2[row + x] + depthBias) {
+          occludedM2 = false;
+          break mip2Loop;
         }
       }
     }
-    if (minZ > maxM2 + depthBias) {
+    if (occludedM2) {
       _occludedCount++;
       return false;
     }
@@ -398,38 +410,31 @@ class OcclusionCuller3D({
     final m1x1 = px1 >> 1;
     final m1y0 = py0 >> 1;
     final m1y1 = py1 >> 1;
-    var maxM1 = 0.0;
+    var occludedM1 = true;
+    mip1Loop:
     for (var y = m1y0; y <= m1y1; y++) {
       final row = y * mip1Width;
       for (var x = m1x0; x <= m1x1; x++) {
-        final d = depthMip1[row + x];
-        if (d > maxM1) {
-          maxM1 = d;
+        if (minZ <= depthMip1[row + x] + depthBias) {
+          occludedM1 = false;
+          break mip1Loop;
         }
       }
     }
-    if (minZ > maxM1 + depthBias) {
+    if (occludedM1) {
       _occludedCount++;
       return false;
     }
 
-    var maxM0 = 0.0;
     for (var y = py0; y <= py1; y++) {
       final row = y * width;
       for (var x = px0; x <= px1; x++) {
-        final d = depthMip0[row + x];
-        if (d > maxM0) {
-          maxM0 = d;
-          if (minZ <= maxM0 + depthBias) {
-            return true;
-          }
+        if (minZ <= depthMip0[row + x] + depthBias) {
+          return true;
         }
       }
     }
 
-    if (minZ <= maxM0 + depthBias) {
-      return true;
-    }
     _occludedCount++;
     return false;
   }

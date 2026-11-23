@@ -26,10 +26,7 @@ extension _RenderContext3DDraw on RenderContext3D {
     return depth;
   }
 
-  DevicePipeline _pipelineFor(Material material, VertexLayout layout) =>
-      _pipelineTripleFor(material, layout).$1;
-
-  (DevicePipeline, Shader, Shader) _pipelineTripleFor(
+  void _resolvePipeline(
     Material material,
     VertexLayout layout,
   ) {
@@ -40,8 +37,12 @@ extension _RenderContext3DDraw on RenderContext3D {
         _lastPipeDev != null &&
         _lastPipeVertGen == _lastPipeVert!.generation &&
         _lastPipeFragGen == _lastPipeFrag!.generation &&
-        identical(material.fragmentShaderFor(this, layout), _lastPipeFrag)) {
-      return (_lastPipeDev!, _lastPipeVert!, _lastPipeFrag!);
+        ((material.hasPassStableFragmentShader && _lastPipePass == _pass) ||
+            identical(
+              material.fragmentShaderFor(this, layout),
+              _lastPipeFrag,
+            ))) {
+      return;
     }
 
     final vertexShader = material.vertexShaderFor(layout);
@@ -79,8 +80,8 @@ extension _RenderContext3DDraw on RenderContext3D {
     _lastPipeFrag = fragmentShader;
     _lastPipeVertGen = vertexShader.generation;
     _lastPipeFragGen = fragmentShader.generation;
+    _lastPipePass = _pass;
     _lastPipeDev = pipeline;
-    return (pipeline, vertexShader, fragmentShader);
   }
 
   void _ensureProbeBoxes() {
@@ -150,11 +151,43 @@ extension _RenderContext3DDraw on RenderContext3D {
         bestPriority = priority;
       }
     }
-    _probeSlots[i] = best + 1;
-    _probeWeights[i] = best < 0 ? 0.0 : bestWeight;
+    var quantized = 0.0;
     if (best >= 0) {
+      if (bestWeight >= 1.0 - 1e-6) {
+        quantized = 1.0;
+      } else {
+        final q = (bestWeight * 64.0).round();
+        quantized = (q > 0 ? q : 1) / 64.0;
+      }
       _anyProbeDraw = true;
     }
+    _probeSlots[i] = best + 1;
+    _probeWeights[i] = quantized;
+  }
+
+  int _prepareOpaqueSorted() {
+    var opaqueCount = _cachedOpaqueCount;
+    if (opaqueCount >= 0) {
+      return opaqueCount;
+    }
+    final count = _count;
+    opaqueCount = 0;
+    for (var i = 0; i < count; i++) {
+      final material = _materials[i]!;
+      if (!material.renderState.translucent) {
+        _opaque[opaqueCount++] = i;
+        _groupKeys[i] =
+            _pipelines[i]!.id * 8589934592.0 + material.id * 2.0 + _mirrored[i];
+        _surfaceKeys[i] = _surfaces[i]!.id * 2 + (_joints[i] == null ? 0 : 1);
+        _sortDepths[i] = _depths[i];
+      }
+    }
+    _sortByProbe = _anyProbeDraw;
+    _sort(_opaque, opaqueCount);
+    _sortByProbe = false;
+    _cachedOpaqueCount = opaqueCount;
+    _oitGrab.resetOpaqueDepthCache();
+    return opaqueCount;
   }
 
   /// Sorts the draws recorded since the last flush and submits them to the
@@ -166,30 +199,53 @@ extension _RenderContext3DDraw on RenderContext3D {
       return;
     }
     final count = _count;
-    var opaqueCount = 0;
-    var translucentCount = 0;
     final groupKeys = _groupKeys;
     final surfaceKeys = _surfaceKeys;
     final sortDepths = _sortDepths;
-    for (var i = 0; i < count; i++) {
-      final material = _materials[i]!;
-      if (material.renderState.translucent) {
-        _translucent[translucentCount++] = i;
-        groupKeys[i] = material.translucentOrder.toDouble();
-        surfaceKeys[i] = 0;
-        sortDepths[i] = -_depths[i];
-      } else {
-        _opaque[opaqueCount++] = i;
-        groupKeys[i] =
-            _pipelines[i]!.id * 8589934592.0 + material.id * 2.0 + _mirrored[i];
-        surfaceKeys[i] = _surfaces[i]!.id * 2 + (_joints[i] == null ? 0 : 1);
-        sortDepths[i] = _depths[i];
+    final int opaqueCount;
+    var translucentCount = 0;
+    if (_cachedOpaqueCount >= 0) {
+      opaqueCount = _cachedOpaqueCount;
+      if (_hasRecordedTranslucent) {
+        for (var i = 0; i < count; i++) {
+          final material = _materials[i]!;
+          if (material.renderState.translucent) {
+            _translucent[translucentCount++] = i;
+            groupKeys[i] = material.translucentOrder.toDouble();
+            surfaceKeys[i] = 0;
+            sortDepths[i] = -_depths[i];
+          }
+        }
+        _sortByProbe = false;
+        _sort(_translucent, translucentCount);
+      }
+    } else {
+      var oCount = 0;
+      for (var i = 0; i < count; i++) {
+        final material = _materials[i]!;
+        if (material.renderState.translucent) {
+          _translucent[translucentCount++] = i;
+          groupKeys[i] = material.translucentOrder.toDouble();
+          surfaceKeys[i] = 0;
+          sortDepths[i] = -_depths[i];
+        } else {
+          _opaque[oCount++] = i;
+          groupKeys[i] =
+              _pipelines[i]!.id * 8589934592.0 +
+              material.id * 2.0 +
+              _mirrored[i];
+          surfaceKeys[i] = _surfaces[i]!.id * 2 + (_joints[i] == null ? 0 : 1);
+          sortDepths[i] = _depths[i];
+        }
+      }
+      opaqueCount = oCount;
+      _sortByProbe = _anyProbeDraw;
+      _sort(_opaque, opaqueCount);
+      _sortByProbe = false;
+      if (translucentCount > 1) {
+        _sort(_translucent, translucentCount);
       }
     }
-    _sortByProbe = _anyProbeDraw;
-    _sort(_opaque, opaqueCount);
-    _sortByProbe = false;
-    _sort(_translucent, translucentCount);
     RenderProfile.lap(RenderPhase.sort);
 
     _boundMaterial = null;
@@ -214,6 +270,10 @@ extension _RenderContext3DDraw on RenderContext3D {
 
   void _releaseDraws(int count) {
     _anyProbeDraw = false;
+    _hasRecordedRefractive = false;
+    _hasRecordedTranslucent = false;
+    _cachedOpaqueCount = -1;
+    _oitGrab.resetSortCache();
     _surfaces.fillRange(0, count, null);
     _materials.fillRange(0, count, null);
     _pipelines.fillRange(0, count, null);
@@ -285,11 +345,15 @@ extension _RenderContext3DDraw on RenderContext3D {
     final external = _external[first];
     if (external != null) {
       final instanceCount = _externalCounts[first];
+      final ver = _externalVersions[first];
+      final span = _externalCacheSpans[first];
       device
         ..bindInstances(
           external,
           instanceCount,
           startFloat: _externalOffsets[first],
+          version: ver >= 0 ? ver : null,
+          cacheSpanCount: span > 0 ? span : null,
         )
         ..drawSurface(surface, instanceCount: instanceCount);
       return;
@@ -378,12 +442,16 @@ extension _RenderContext3DDraw on RenderContext3D {
       }
       _bindJoints(vertexShader, joints);
       final instanceCount = _externalCounts[first];
+      final ver = _externalVersions[first];
+      final span = _externalCacheSpans[first];
       device
         ..bindSurface(surface)
         ..bindInstances(
           external,
           instanceCount,
           startFloat: _externalOffsets[first],
+          version: ver >= 0 ? ver : null,
+          cacheSpanCount: span > 0 ? span : null,
         )
         ..drawSurface(surface, instanceCount: instanceCount);
       RenderProfile.lap(RenderPhase.draw);
@@ -445,6 +513,10 @@ extension _RenderContext3DDraw on RenderContext3D {
       ..setRange(0, _externalCounts.length, _externalCounts);
     _externalOffsets = Int32List(capacity)
       ..setRange(0, _externalOffsets.length, _externalOffsets);
+    _externalVersions = Int32List(capacity)
+      ..setRange(0, _externalVersions.length, _externalVersions);
+    _externalCacheSpans = Int32List(capacity)
+      ..setRange(0, _externalCacheSpans.length, _externalCacheSpans);
     _instances = Float32List(capacity * VertexLayout.instanceStrideInFloats)
       ..setRange(0, _instances.length, _instances);
     _depths = Float64List(capacity)..setRange(0, _depths.length, _depths);

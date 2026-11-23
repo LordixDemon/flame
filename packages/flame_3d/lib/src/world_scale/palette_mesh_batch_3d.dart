@@ -336,6 +336,9 @@ class PaletteMeshBatch3D({
   }
 
   @override
+  bool get usesDefaultFrustumVisibility => runtimeType == PaletteMeshBatch3D;
+
+  @override
   Aabb3? computeLocalAabb() {
     if (_visiblePartCount == 0) {
       return null;

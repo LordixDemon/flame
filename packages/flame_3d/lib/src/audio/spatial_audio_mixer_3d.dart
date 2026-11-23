@@ -98,13 +98,13 @@ class AudioZone3D({
   void onMount() {
     super.onMount();
     if (worldOrNull case final world?) {
-      SpatialAudioRegistry3D.of(world).zones.add(this);
+      SpatialAudioRegistry3D.of(world).addZone(this);
     }
   }
 
   @override
   void onRemove() {
-    SpatialAudioRegistry3D.maybeOf(worldOrNull)?.zones.remove(this);
+    SpatialAudioRegistry3D.maybeOf(worldOrNull)?.removeZone(this);
     super.onRemove();
   }
 
@@ -113,6 +113,8 @@ class AudioZone3D({
 
   final Matrix4 _invWorld = Matrix4.identity();
   final Vector3 _localPt = Vector3.zero();
+  int _invWorldVer = -1;
+  bool _invWorldValid = false;
 
   /// Computes spatial influence weight in `[0, 1]` at [worldPoint] (`1.0`
   /// inside the inner volume, tapering to `0.0` across [fadeDistance]).
@@ -123,8 +125,14 @@ class AudioZone3D({
     final box = halfExtents;
     double signedDistOutside;
     if (box != null) {
-      _invWorld.setFrom(worldTransformMatrix);
-      if (_invWorld.invert().abs() < 1e-15) {
+      final worldMat = worldTransformMatrix;
+      final worldVer = worldTransformVersion;
+      if (worldVer != _invWorldVer) {
+        _invWorldVer = worldVer;
+        _invWorld.setFrom(worldMat);
+        _invWorldValid = _invWorld.invert().abs() >= 1e-15;
+      }
+      if (!_invWorldValid) {
         return 0.0;
       }
       _localPt.setFrom(worldPoint);
@@ -138,8 +146,19 @@ class AudioZone3D({
       final dx = worldPoint.x - s[12];
       final dy = worldPoint.y - s[13];
       final dz = worldPoint.z - s[14];
-      final dist = math.sqrt(dx * dx + dy * dy + dz * dz);
-      signedDistOutside = math.max(0.0, dist - radius);
+      final distSq = dx * dx + dy * dy + dz * dz;
+      final r = radius;
+      if (distSq <= r * r) {
+        return 1.0;
+      }
+      if (fadeDistance <= 1e-6) {
+        return 0.0;
+      }
+      final maxR = r + fadeDistance;
+      if (distSq >= maxR * maxR) {
+        return 0.0;
+      }
+      signedDistOutside = math.sqrt(distSq) - r;
     }
 
     if (signedDistOutside <= 0.0) {
@@ -264,6 +283,8 @@ class SpatialAudioMixer3D({
   int _virtualVoiceCount = 0;
   late ReverbPreset3D _currentReverb;
   World3D? _world;
+  bool _zonesDirty = true;
+  int _seenRegistryZonesVer = -2;
 
   final Vector3 _emitterWorldPos = Vector3.zero();
   final List<_EvaluatedEmitterEntry> _entryPool = [];
@@ -335,12 +356,15 @@ class SpatialAudioMixer3D({
   void registerZone(AudioZone3D zone) {
     if (!_registeredZones.contains(zone)) {
       _registeredZones.add(zone);
+      _zonesDirty = true;
     }
   }
 
   /// Unregisters an [AudioZone3D] reverb volume.
   void unregisterZone(AudioZone3D zone) {
-    _registeredZones.remove(zone);
+    if (_registeredZones.remove(zone)) {
+      _zonesDirty = true;
+    }
   }
 
   @override
@@ -356,6 +380,8 @@ class SpatialAudioMixer3D({
     if (_world case final world?) {
       SpatialAudioRegistry3D.of(world).mixers.add(this);
     }
+    _zonesDirty = true;
+    _seenRegistryZonesVer = -2;
   }
 
   @override
@@ -369,28 +395,37 @@ class SpatialAudioMixer3D({
     final earPos = activeListener.earPosition; // syncs the listener once
 
     // 1. Evaluate & smoothly crossfade AudioZone3D reverb presets at `earPos`.
-    _allZones
-      ..clear()
-      ..addAll(_registeredZones);
-    if (registry != null) {
-      for (final zone in registry.zones) {
-        if (!_registeredZones.contains(zone)) {
-          _allZones.add(zone);
+    final regZonesVer = registry?.zonesVersion ?? -1;
+    if (_zonesDirty || regZonesVer != _seenRegistryZonesVer) {
+      _zonesDirty = false;
+      _seenRegistryZonesVer = regZonesVer;
+      _allZones
+        ..clear()
+        ..addAll(_registeredZones);
+      if (registry != null) {
+        final rz = registry.zones;
+        for (var i = 0; i < rz.length; i++) {
+          final zone = rz[i];
+          if (!_registeredZones.contains(zone)) {
+            _allZones.add(zone);
+          }
         }
       }
     }
     final targetReverb = _evaluateTargetReverb(earPos);
-    final alpha = dt > 0.0 && reverbCrossfadeSpeed > 0.0
-        ? (1.0 - math.exp(-reverbCrossfadeSpeed * dt)).clamp(0.0, 1.0)
-        : 1.0;
     final previousReverb = _currentReverb;
-    final nextReverb = ReverbPreset3D.lerp(previousReverb, targetReverb, alpha);
-    if (nextReverb.wetMix != previousReverb.wetMix ||
-        nextReverb.decaySeconds != previousReverb.decaySeconds ||
-        nextReverb.preDelayMs != previousReverb.preDelayMs ||
-        nextReverb.name != previousReverb.name) {
-      _currentReverb = nextReverb;
-      onReverbChanged?.call(nextReverb);
+    if (!identical(previousReverb, targetReverb) &&
+        !_sameReverb(previousReverb, targetReverb)) {
+      final alpha = dt > 0.0 && reverbCrossfadeSpeed > 0.0
+          ? (1.0 - math.exp(-reverbCrossfadeSpeed * dt)).clamp(0.0, 1.0)
+          : 1.0;
+      final nextReverb = alpha >= 1.0
+          ? targetReverb
+          : ReverbPreset3D.lerp(previousReverb, targetReverb, alpha);
+      if (!_sameReverb(nextReverb, previousReverb)) {
+        _currentReverb = nextReverb;
+        onReverbChanged?.call(nextReverb);
+      }
     }
 
     // 2. Evaluate mix, pluggable occlusion, playback cursor, and audibility
@@ -422,7 +457,9 @@ class SpatialAudioMixer3D({
 
     // 3. Rank audible candidates descending by `priorityScore` and pick top
     // `maxRealVoices`.
-    _candidates.sort(_byScoreDescending);
+    if (_candidates.length > 1) {
+      _candidates.sort(_byScoreDescending);
+    }
     final realWinners = _winners..clear();
     final limit = math.min(maxRealVoices, _candidates.length);
     for (var i = 0; i < limit; i++) {
@@ -490,21 +527,14 @@ class SpatialAudioMixer3D({
     final baseMix = em.evaluateMixSynced(
       activeListener,
       world: em.worldOrNull ?? _world,
+      skipOcclusionBelowVolume: em.onMixChanged == null
+          ? virtualThresholdVolume
+          : 0.0,
     );
     em
       ..enableOcclusion = savedOcc
       ..markMixedByMixer();
     em.onMixChanged?.call(baseMix);
-
-    final m = em.worldTransformMatrix.storage;
-    _emitterWorldPos.setValues(m[12], m[13], m[14]);
-
-    final double occ;
-    if (query != null) {
-      occ = query(earPos, _emitterWorldPos).clamp(0.0, 1.0);
-    } else {
-      occ = baseMix.occluded ? 1.0 : 0.0;
-    }
 
     // Advance `playbackPosition` continuously whether virtual or real!
     if (dt > 0.0) {
@@ -525,6 +555,22 @@ class SpatialAudioMixer3D({
       } else {
         em.playbackPosition = nextPos;
       }
+    }
+
+    // Inaudible sources never compete for real voices, so skip occlusion
+    // raycasts and `AudioVoiceParams3D` allocation while tracking playback.
+    if (baseMix.volume < virtualThresholdVolume) {
+      _lastVoiceParams.remove(em);
+      return true;
+    }
+
+    final double occ;
+    if (query != null) {
+      final m = em.worldTransformMatrix.storage;
+      _emitterWorldPos.setValues(m[12], m[13], m[14]);
+      occ = query(earPos, _emitterWorldPos).clamp(0.0, 1.0);
+    } else {
+      occ = baseMix.occluded ? 1.0 : 0.0;
     }
 
     final gainMult = query != null
@@ -593,22 +639,45 @@ class SpatialAudioMixer3D({
   }
 
   ReverbPreset3D _evaluateTargetReverb(Vector3 earPos) {
-    if (_allZones.isEmpty) {
+    final len = _allZones.length;
+    if (len == 0) {
       return defaultReverb;
     }
-    // Sort zones ascending by priority so higher-priority inner zones override
-    // lower-priority outer zones proportionally to their weight `[0..1]`.
-    _allZones.sort(_byAudioPriority);
+    if (len > 1) {
+      var sorted = true;
+      var prevPrio = _allZones[0].audioPriority;
+      for (var i = 1; i < len; i++) {
+        final prio = _allZones[i].audioPriority;
+        if (prio < prevPrio) {
+          sorted = false;
+          break;
+        }
+        prevPrio = prio;
+      }
+      if (!sorted) {
+        // Sort zones ascending by priority so higher-priority inner zones
+        // override lower-priority outer zones proportionally to their weight.
+        _allZones.sort(_byAudioPriority);
+      }
+    }
     var accum = defaultReverb;
-    for (var i = 0; i < _allZones.length; i++) {
+    for (var i = 0; i < len; i++) {
       final z = _allZones[i];
       final w = z.weightAt(earPos);
-      if (w > 0.0) {
+      if (w >= 1.0 - 1e-9) {
+        accum = z.preset;
+      } else if (w > 0.0 && !_sameReverb(accum, z.preset)) {
         accum = ReverbPreset3D.lerp(accum, z.preset, w);
       }
     }
     return accum;
   }
+
+  static bool _sameReverb(ReverbPreset3D a, ReverbPreset3D b) =>
+      a.wetMix == b.wetMix &&
+      a.decaySeconds == b.decaySeconds &&
+      a.preDelayMs == b.preDelayMs &&
+      a.name == b.name;
 
   static int _byAudioPriority(AudioZone3D a, AudioZone3D b) {
     return a.audioPriority.compareTo(b.audioPriority);

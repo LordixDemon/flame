@@ -1,6 +1,6 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
-import 'dart:ui' show Canvas, Color, PictureRecorder, PixelFormat;
+import 'dart:ui' show Color, PixelFormat;
 
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/game.dart';
@@ -143,8 +143,6 @@ class RenderTexture3D({
 
     _ensureTarget(resolvedDevice);
     final target = _target!;
-    final recorder = PictureRecorder();
-    final dummyCanvas = Canvas(recorder);
 
     _savedView.setFrom(resolvedContext.view);
     _savedProjection.setFrom(resolvedContext.projection);
@@ -157,13 +155,13 @@ class RenderTexture3D({
           ..cameraMask = cameraMask
           ..setCamera(view, projection);
         if (renderShadows) {
-          world.renderShadows(dummyCanvas, overrideContext: resolvedContext);
+          world.renderShadowsNoCanvas(overrideContext: resolvedContext);
         }
         resolvedDevice.beginTexturePass(
           target,
           frontFace: resolvedContext.frontFace,
         );
-        world.renderScene(dummyCanvas, overrideContext: resolvedContext);
+        world.renderSceneNoCanvas(overrideContext: resolvedContext);
         resolvedContext.flush();
         resolvedDevice.endTexturePass();
       });
@@ -174,7 +172,7 @@ class RenderTexture3D({
       resolvedContext
         ..cameraMask = savedMask
         ..setCamera(_savedView, _savedProjection);
-      recorder.endRecording().dispose();
+      world.disposeFallbackDummyCanvas();
       if (closeFrame) {
         resolvedDevice.end();
       } else if (closeEmbedded) {

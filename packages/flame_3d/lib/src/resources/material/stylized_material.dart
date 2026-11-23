@@ -1009,6 +1009,9 @@ class StylizedMaterial({
   }
 
   @override
+  bool get hasPassStableFragmentShader => runtimeType == StylizedMaterial;
+
+  @override
   bool get cachesApply => runtimeType == StylizedMaterial;
 
   @override

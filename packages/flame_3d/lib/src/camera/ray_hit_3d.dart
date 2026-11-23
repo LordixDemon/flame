@@ -56,22 +56,29 @@ class RayHit3D({
     double maxDistance = double.infinity,
     CullMode? cullMode,
   }) {
+    if (!(maxDistance > 0) || mesh.surfaces.isEmpty) {
+      return null;
+    }
+    if (!_prepareLocalRay(modelMatrix, worldRay)) {
+      return null;
+    }
     RayHit3D? best;
     var limit = maxDistance;
     var i = 0;
     for (final surface in mesh.surfaces) {
-      final hit = intersectSurface(
-        owner: owner,
-        surface: surface,
-        surfaceIndex: i,
-        modelMatrix: modelMatrix,
-        worldRay: worldRay,
-        maxDistance: limit,
-        cullMode: cullMode ?? surface.material.renderState.cullMode,
-      );
-      if (hit != null && hit.distance < limit) {
-        limit = hit.distance;
-        best = hit;
+      if (surface.indexCount >= 3) {
+        final hit = _intersectPreparedSurface(
+          owner: owner,
+          surface: surface,
+          surfaceIndex: i,
+          worldRay: worldRay,
+          maxDistance: limit,
+          cullMode: cullMode ?? surface.material.renderState.cullMode,
+        );
+        if (hit != null && hit.distance < limit) {
+          limit = hit.distance;
+          best = hit;
+        }
       }
       i++;
     }
@@ -91,13 +98,74 @@ class RayHit3D({
     if (surface.indexCount < 3 || !(maxDistance > 0)) {
       return null;
     }
-    final inv = _inverse..setFrom(modelMatrix);
-    final det = inv.invert();
-    if (det.abs() < 1e-15) {
+    if (!_prepareLocalRay(modelMatrix, worldRay)) {
       return null;
     }
+    return _intersectPreparedSurface(
+      owner: owner,
+      surface: surface,
+      surfaceIndex: surfaceIndex,
+      worldRay: worldRay,
+      maxDistance: maxDistance,
+      cullMode: cullMode,
+    );
+  }
 
-    final m = inv.storage;
+  static bool _prepareLocalRay(Matrix4 modelMatrix, Ray worldRay) {
+    final s = modelMatrix.storage;
+    var invertedRigid = false;
+    if (s[3] == 0.0 && s[7] == 0.0 && s[11] == 0.0 && s[15] == 1.0) {
+      final c0x = s[0];
+      final c0y = s[1];
+      final c0z = s[2];
+      final c1x = s[4];
+      final c1y = s[5];
+      final c1z = s[6];
+      final c2x = s[8];
+      final c2y = s[9];
+      final c2z = s[10];
+      final l0 = c0x * c0x + c0y * c0y + c0z * c0z;
+      final l1 = c1x * c1x + c1y * c1y + c1z * c1z;
+      final l2 = c2x * c2x + c2y * c2y + c2z * c2z;
+      if ((l0 - 1.0).abs() <= 1e-5 &&
+          (l1 - 1.0).abs() <= 1e-5 &&
+          (l2 - 1.0).abs() <= 1e-5) {
+        final d01 = c0x * c1x + c0y * c1y + c0z * c1z;
+        final d02 = c0x * c2x + c0y * c2y + c0z * c2z;
+        final d12 = c1x * c2x + c1y * c2y + c1z * c2z;
+        if (d01.abs() <= 1e-5 && d02.abs() <= 1e-5 && d12.abs() <= 1e-5) {
+          final tx = s[12];
+          final ty = s[13];
+          final tz = s[14];
+          final o = _inverse.storage;
+          o[0] = c0x;
+          o[4] = c0y;
+          o[8] = c0z;
+          o[12] = -(c0x * tx + c0y * ty + c0z * tz);
+          o[1] = c1x;
+          o[5] = c1y;
+          o[9] = c1z;
+          o[13] = -(c1x * tx + c1y * ty + c1z * tz);
+          o[2] = c2x;
+          o[6] = c2y;
+          o[10] = c2z;
+          o[14] = -(c2x * tx + c2y * ty + c2z * tz);
+          o[3] = 0.0;
+          o[7] = 0.0;
+          o[11] = 0.0;
+          o[15] = 1.0;
+          invertedRigid = true;
+        }
+      }
+    }
+    if (!invertedRigid) {
+      _inverse.setFrom(modelMatrix);
+      if (_inverse.invert().abs() < 1e-15) {
+        return false;
+      }
+    }
+
+    final m = _inverse.storage;
     final ox = worldRay.origin.x;
     final oy = worldRay.origin.y;
     final oz = worldRay.origin.z;
@@ -117,7 +185,17 @@ class RayHit3D({
       m[1] * dx + m[5] * dy + m[9] * dz,
       m[2] * dx + m[6] * dy + m[10] * dz,
     );
+    return true;
+  }
 
+  static RayHit3D? _intersectPreparedSurface({
+    required Object3D owner,
+    required Surface surface,
+    required int surfaceIndex,
+    required Ray worldRay,
+    required double maxDistance,
+    required CullMode cullMode,
+  }) {
     // `RenderContext3D` flips the GPU winding order when `det < 0`, so outward
     // CCW faces in local space remain front faces in world space, and
     // `(M^-1)^T * localNormal` already preserves outward orientation.
@@ -130,9 +208,16 @@ class RayHit3D({
       return null;
     }
 
+    final ox = worldRay.origin.x;
+    final oy = worldRay.origin.y;
+    final oz = worldRay.origin.z;
+    final dx = worldRay.direction.x;
+    final dy = worldRay.direction.y;
+    final dz = worldRay.direction.z;
     final t = localHit.distance;
     final worldPoint = Vector3(ox + dx * t, oy + dy * t, oz + dz * t);
 
+    final m = _inverse.storage;
     final lnx = localHit.normal.x;
     final lny = localHit.normal.y;
     final lnz = localHit.normal.z;

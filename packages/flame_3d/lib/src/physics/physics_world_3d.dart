@@ -171,6 +171,10 @@ class PhysicsWorld3D({
   void addJoint(Joint3D joint) {
     if (!_joints.contains(joint)) {
       _joints.add(joint);
+      if (!joint.collideConnected) {
+        (joint.bodyA.nonCollidingJointPartners ??= []).add(joint.bodyB);
+        (joint.bodyB.nonCollidingJointPartners ??= []).add(joint.bodyA);
+      }
       joint.bodyA.wakeUp();
       joint.bodyB.wakeUp();
     }
@@ -178,7 +182,10 @@ class PhysicsWorld3D({
 
   /// Unregisters [joint].
   void removeJoint(Joint3D joint) {
-    _joints.remove(joint);
+    if (_joints.remove(joint) && !joint.collideConnected) {
+      joint.bodyA.nonCollidingJointPartners?.remove(joint.bodyB);
+      joint.bodyB.nonCollidingJointPartners?.remove(joint.bodyA);
+    }
     joint.bodyA.wakeUp();
     joint.bodyB.wakeUp();
   }
@@ -445,7 +452,6 @@ class PhysicsWorld3D({
     // 1. Symplectic Euler force & torque integration + implicit Padé damping.
     for (var i = 0; i < _activeBodies.length; i++) {
       final b = _activeBodies[i];
-      b.updateWorldInertia();
       if (b.bodyType != BodyType3D.dynamic) {
         b.clearAccumulators();
         continue;
@@ -454,6 +460,7 @@ class PhysicsWorld3D({
         b.clearAccumulators();
         continue;
       }
+      b.updateWorldInertia();
 
       final invM = b.inverseMass;
       final f = b.accumulatedForce;
@@ -478,22 +485,26 @@ class PhysicsWorld3D({
       b.clearAccumulators();
     }
 
-    // Apply registered RaycastVehicle3D suspension, drive, and anti-slip.
+    // 2. Sync broadphase trees before vehicle raycasts and narrowphase.
     final colSys = _resolveCollisionSystem();
+    _syncBroadphaseTree();
+    _syncColliders(colSys);
+
+    // Apply registered RaycastVehicle3D suspension, drive, and anti-slip.
     if (_vehicles.isNotEmpty) {
+      final gMag = gravity.length;
       for (var i = 0; i < _vehicles.length; i++) {
         _vehicles[i].stepVehicle(
           dt,
           bodies: _activeBodies,
           collisionSystem: colSys,
-          gravityMagnitude: gravity.length,
+          bodyBroadphase: broadphaseTree,
+          gravityMagnitude: gMag,
         );
       }
     }
 
-    // 2. Sync broadphase trees & build narrowphase contact constraints.
-    _syncBroadphaseTree();
-    _syncColliders(colSys);
+    // Build narrowphase contact constraints.
     _buildContactConstraints(colSys);
 
     // 3. Prepare joints & warm-start resting contacts.

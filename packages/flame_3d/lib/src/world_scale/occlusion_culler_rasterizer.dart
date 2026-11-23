@@ -93,6 +93,11 @@ extension _OcclusionCullerRasterizer on OcclusionCuller3D {
   bool _rasterizeBoxSilhouette(Float32List vp) {
     final halfW = _subWidth * 0.5;
     final halfH = _subHeight * 0.5;
+    var minX = double.infinity;
+    var maxX = double.negativeInfinity;
+    var minY = double.infinity;
+    var maxY = double.negativeInfinity;
+    var minZ = double.infinity;
     for (var i = 0; i < 8; i++) {
       final o = i * 3;
       final wx = _boxCorners[o];
@@ -106,33 +111,58 @@ extension _OcclusionCullerRasterizer on OcclusionCuller3D {
         return false;
       }
       final invW = 1.0 / cw;
+      final sx = (cx * invW + 1.0) * halfW;
+      final sy = (cy * invW + 1.0) * halfH;
+      final sz = cz * invW;
+      if (sx < minX) {
+        minX = sx;
+      }
+      if (sx > maxX) {
+        maxX = sx;
+      }
+      if (sy < minY) {
+        minY = sy;
+      }
+      if (sy > maxY) {
+        maxY = sy;
+      }
+      if (sz < minZ) {
+        minZ = sz;
+      }
       _boxScreen
-        ..[o] = (cx * invW + 1.0) * halfW
-        ..[o + 1] = (cy * invW + 1.0) * halfH
-        ..[o + 2] = cz * invW;
+        ..[o] = sx
+        ..[o + 1] = sy
+        ..[o + 2] = sz;
+    }
+    if (maxX <= 0.0 ||
+        minX >= _subWidth ||
+        maxY <= 0.0 ||
+        minY >= _subHeight ||
+        minZ > 1.0) {
+      return true;
     }
 
     var planeCount = 0;
     for (var f = 0; f < 6; f++) {
       final fb = f * 4;
-      final i0 = _boxFaceQuads[fb] * 3;
-      final i1 = _boxFaceQuads[fb + 1] * 3;
-      final i2 = _boxFaceQuads[fb + 2] * 3;
-      final i3 = _boxFaceQuads[fb + 3] * 3;
+      final v0 = _boxFaceQuads[fb];
+      final v1 = _boxFaceQuads[fb + 1];
+      final v2 = _boxFaceQuads[fb + 2];
+      final v3 = _boxFaceQuads[fb + 3];
+      final i0 = v0 * 3;
+      final i1 = v1 * 3;
+      final i2 = v2 * 3;
+      final i3 = v3 * 3;
       // Faces are counter-clockwise seen from outside: a positive area faces
       // the camera. Edge-on faces cannot be where a ray enters the box.
-      final area =
-          _triangleArea2(_boxScreen, i0, i1, i2) +
-          _triangleArea2(_boxScreen, i0, i2, i3);
-      if (area <= 1e-6) {
+      final a0 = _triangleArea2(_boxScreen, i0, i1, i2);
+      final a1 = _triangleArea2(_boxScreen, i0, i2, i3);
+      if (a0 + a1 <= 1e-6) {
         continue;
       }
-      final firstLarger =
-          _triangleArea2(_boxScreen, i0, i1, i2).abs() >=
-          _triangleArea2(_boxScreen, i0, i2, i3).abs();
-      final added = firstLarger
-          ? _addPlane(_boxScreen, 3, i0 ~/ 3, i1 ~/ 3, i2 ~/ 3, planeCount)
-          : _addPlane(_boxScreen, 3, i0 ~/ 3, i2 ~/ 3, i3 ~/ 3, planeCount);
+      final added = a0.abs() >= a1.abs()
+          ? _addPlane(_boxScreen, 3, v0, v1, v2, planeCount)
+          : _addPlane(_boxScreen, 3, v0, v2, v3, planeCount);
       if (added) {
         planeCount++;
       }
@@ -283,35 +313,90 @@ extension _OcclusionCullerRasterizer on OcclusionCuller3D {
 
     for (var sy = sy0; sy <= sy1; sy++) {
       final py = sy + 0.5;
+      var spanX0 = sx0;
+      var spanX1 = sx1;
+      var rowSkip = false;
+      for (var e = 0; e < count; e++) {
+        final o = e * 3;
+        final a = _edges[o];
+        final rowC = _edges[o + 1] * py + _edges[o + 2];
+        if (a > 1e-12) {
+          final bound = (-rowC / a - 0.5).floor();
+          if (bound > spanX0) {
+            spanX0 = bound;
+          }
+        } else if (a < -1e-12) {
+          final bound = (-rowC / a - 0.5).ceil();
+          if (bound < spanX1) {
+            spanX1 = bound;
+          }
+        } else if (rowC < 0.0) {
+          rowSkip = true;
+          break;
+        }
+      }
+      if (rowSkip || spanX0 > spanX1) {
+        continue;
+      }
+      while (spanX0 <= spanX1 && !_insideAllEdges(spanX0 + 0.5, py, count)) {
+        spanX0++;
+      }
+      while (spanX1 >= spanX0 && !_insideAllEdges(spanX1 + 0.5, py, count)) {
+        spanX1--;
+      }
+      if (spanX0 > spanX1) {
+        continue;
+      }
+
       final row = sy * _subWidth;
-      for (var sx = sx0; sx <= sx1; sx++) {
-        final px = sx + 0.5;
-        var inside = true;
-        for (var e = 0; e < count; e++) {
-          final o = e * 3;
-          if (_edges[o] * px + _edges[o + 1] * py + _edges[o + 2] < 0) {
-            inside = false;
-            break;
+      if (planeCount == 1) {
+        final pa = _planes[0];
+        final base = _planes[1] * py + _planes[2];
+        for (var sx = spanX0; sx <= spanX1; sx++) {
+          var z = pa * (sx + 0.5) + base;
+          if (z < 0.0) {
+            z = 0.0;
+          } else if (z > 1.0) {
+            z = 1.0;
+          }
+          final idx = row + sx;
+          if (z < _subDepth[idx]) {
+            _subDepth[idx] = z;
           }
         }
-        if (!inside) {
-          continue;
-        }
-        var depth = double.negativeInfinity;
+      } else {
+        final rowPlaneBase = _rowPlaneBase;
         for (var p = 0; p < planeCount; p++) {
           final o = p * 3;
-          final d = _planes[o] * px + _planes[o + 1] * py + _planes[o + 2];
-          if (d > depth) {
-            depth = d;
-          }
+          rowPlaneBase[p] = _planes[o + 1] * py + _planes[o + 2];
         }
-        final z = depth.clamp(0.0, 1.0);
-        final idx = row + sx;
-        if (z < _subDepth[idx]) {
-          _subDepth[idx] = z;
+        for (var sx = spanX0; sx <= spanX1; sx++) {
+          final px = sx + 0.5;
+          var depth = double.negativeInfinity;
+          for (var p = 0; p < planeCount; p++) {
+            final d = _planes[p * 3] * px + rowPlaneBase[p];
+            if (d > depth) {
+              depth = d;
+            }
+          }
+          final z = depth < 0.0 ? 0.0 : (depth > 1.0 ? 1.0 : depth);
+          final idx = row + sx;
+          if (z < _subDepth[idx]) {
+            _subDepth[idx] = z;
+          }
         }
       }
     }
+  }
+
+  bool _insideAllEdges(double px, double py, int count) {
+    for (var e = 0; e < count; e++) {
+      final o = e * 3;
+      if (_edges[o] * px + _edges[o + 1] * py + _edges[o + 2] < 0) {
+        return false;
+      }
+    }
+    return true;
   }
 
   void _rasterizeWorldQuad(
@@ -390,17 +475,17 @@ extension _OcclusionCullerRasterizer on OcclusionCuller3D {
       }
     }
 
-    // The quad is planar: its depth plane through the largest fan triangle.
-    var best = -1;
-    var bestArea = 0.0;
+    var planeCount = 0;
+    var bestFaceArea = 0.0;
     for (var k = 1; k + 1 < countZ; k++) {
       final t = _triangleArea2(_polyB, 0, k * 4, (k + 1) * 4).abs();
-      if (t > bestArea) {
-        bestArea = t;
-        best = k;
+      if (t > bestFaceArea) {
+        bestFaceArea = t;
+        planeCount = k;
       }
     }
-    if (best < 0 || !_addPlane(_polyB, 4, 0, best, best + 1, 0)) {
+    if (planeCount < 1 ||
+        !_addPlane(_polyB, 4, 0, planeCount, planeCount + 1, 0)) {
       return;
     }
     _rasterizeConvexPolygon(countZ, orientation, 1);

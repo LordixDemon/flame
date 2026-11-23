@@ -3,11 +3,13 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' show Canvas;
 
-import 'package:flame/components.dart' show Component, HasWorldRef;
+import 'package:flame/components.dart'
+    show ChildrenChangeType, Component, HasWorldRef;
 import 'package:flame/extensions.dart' show Matrix4Extension;
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/game.dart';
+import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:meta/meta.dart';
 
@@ -57,8 +59,6 @@ abstract class Component3D({
 
   /// {@macro component_3d}
   this : super(children: children) {
-    this.children.register<Component3D>();
-    _childComponents = this.children.query<Component3D>();
     if (tags3D != null) {
       for (final tag in tags3D) {
         addTag3D(tag);
@@ -67,7 +67,40 @@ abstract class Component3D({
     transform.addListener(_onTransformChanged);
   }
 
-  late final Iterable<Component3D> _childComponents;
+  List<Component3D>? _childComponents3D;
+  int _non3DChildCount = 0;
+  bool _hasPrioritizedChild = false;
+
+  @override
+  void onChildrenChanged(Component child, ChildrenChangeType type) {
+    super.onChildrenChanged(child, type);
+    if (child is Component3D) {
+      switch (type) {
+        case ChildrenChangeType.added:
+          (_childComponents3D ??= <Component3D>[]).add(child);
+          if (child.priority != 0) {
+            _hasPrioritizedChild = true;
+          }
+        case ChildrenChangeType.removed:
+          _childComponents3D?.remove(child);
+      }
+    } else {
+      switch (type) {
+        case ChildrenChangeType.added:
+          _non3DChildCount++;
+        case ChildrenChangeType.removed:
+          if (_non3DChildCount > 0) {
+            _non3DChildCount--;
+          }
+      }
+    }
+  }
+
+  @override
+  void rebalanceChildren() {
+    _hasPrioritizedChild = true;
+    super.rebalanceChildren();
+  }
 
   bool _visible = visible;
 
@@ -106,8 +139,17 @@ abstract class Component3D({
     if (self is Object3D) {
       casters.shown(self);
     }
-    for (final child in _childComponents) {
-      child._noteShadowSubtreeShown(casters);
+    final list = _childComponents3D;
+    if (list != null && list.isNotEmpty) {
+      for (var i = 0; i < list.length; i++) {
+        list[i]._noteShadowSubtreeShown(casters);
+      }
+    } else if (!isMounted && hasChildren) {
+      for (final child in children) {
+        if (child is Component3D) {
+          child._noteShadowSubtreeShown(casters);
+        }
+      }
     }
   }
 
@@ -116,8 +158,17 @@ abstract class Component3D({
     if (self is Object3D) {
       casters.changed(self);
     }
-    for (final child in _childComponents) {
-      child._noteShadowSubtreeHidden(casters);
+    final list = _childComponents3D;
+    if (list != null && list.isNotEmpty) {
+      for (var i = 0; i < list.length; i++) {
+        list[i]._noteShadowSubtreeHidden(casters);
+      }
+    } else if (!isMounted && hasChildren) {
+      for (final child in children) {
+        if (child is Component3D) {
+          child._noteShadowSubtreeHidden(casters);
+        }
+      }
     }
   }
 
@@ -375,12 +426,17 @@ abstract class Component3D({
   @override
   void onMount() {
     super.onMount();
+    _childComponents3D?.clear();
+    _non3DChildCount = 0;
+    _hasPrioritizedChild = false;
     _cachedWorld = null;
-    for (final ancestor in ancestors()) {
-      if (ancestor is World3D) {
-        _cachedWorld = ancestor;
+    var cursor = parent;
+    while (cursor != null) {
+      if (cursor is World3D) {
+        _cachedWorld = cursor;
         break;
       }
+      cursor = cursor.parent;
     }
     _markWorldTransformDirty();
     if (parent case final Component3D parent) {
@@ -422,12 +478,28 @@ abstract class Component3D({
       initialized = true;
     }
 
-    for (final child in _childComponents) {
-      if (initialized) {
-        _cachedAabb.hull(child.aabb);
-      } else {
-        _cachedAabb.setFrom(child.aabb);
-        initialized = true;
+    final list = _childComponents3D;
+    if (list != null && list.isNotEmpty) {
+      for (var i = 0; i < list.length; i++) {
+        final childAabb = list[i].aabb;
+        if (initialized) {
+          _cachedAabb.hull(childAabb);
+        } else {
+          _cachedAabb.setFrom(childAabb);
+          initialized = true;
+        }
+      }
+    } else if (!isMounted && hasChildren) {
+      for (final child in children) {
+        if (child is Component3D) {
+          final childAabb = child.aabb;
+          if (initialized) {
+            _cachedAabb.hull(childAabb);
+          } else {
+            _cachedAabb.setFrom(childAabb);
+            initialized = true;
+          }
+        }
       }
     }
 
@@ -479,6 +551,40 @@ abstract class Component3D({
       }
     }
     super.renderTree(canvas);
+  }
+
+  /// Fast 3D traversal entry point bypassing Flame's per-child virtual
+  /// `renderChild` / `PictureRecorder` overhead for pure 3D subtrees.
+  @internal
+  void renderTree3D(World3D world, RenderContext3D context, Canvas? canvas) {
+    if (!_visible) {
+      return;
+    }
+    if (cameraMask != 0xFFFFFFFF && (cameraMask & context.cameraMask) == 0) {
+      return;
+    }
+    if (debugMode || _non3DChildCount > 0 || (!isMounted && hasChildren)) {
+      super.renderTree(canvas ?? world.fallbackDummyCanvas());
+      return;
+    }
+    if (_hasPrioritizedChild) {
+      if (hasChildren) {
+        for (final child in children) {
+          if (child is Component3D) {
+            child.renderTree3D(world, context, canvas);
+          } else {
+            child.renderTree(canvas ?? world.fallbackDummyCanvas());
+          }
+        }
+      }
+      return;
+    }
+    final list = _childComponents3D;
+    if (list != null) {
+      for (var i = 0; i < list.length; i++) {
+        list[i].renderTree3D(world, context, canvas);
+      }
+    }
   }
 
   /// Creates a shallow copy of this component's own subtype and
@@ -590,7 +696,7 @@ abstract class Component3D({
         copy.addTag3D(tag);
       }
     }
-    if (includeChildren) {
+    if (includeChildren && hasChildren) {
       for (final child in children) {
         if (child is Component3D) {
           copy.add(child.clone());
@@ -622,8 +728,17 @@ abstract class Component3D({
       casters?.changed(self);
       _cachedWorld?.spatialIndex3D.onObjectMoved(self);
     }
-    for (final child in _childComponents) {
-      child._markWorldTransformDirty(casters);
+    final list = _childComponents3D;
+    if (list != null && list.isNotEmpty) {
+      for (var i = 0; i < list.length; i++) {
+        list[i]._markWorldTransformDirty(casters);
+      }
+    } else if (!isMounted && hasChildren) {
+      for (final child in children) {
+        if (child is Component3D) {
+          child._markWorldTransformDirty(casters);
+        }
+      }
     }
   }
 
@@ -647,8 +762,16 @@ abstract class Component3D({
   /// are rendered from the light). A moving collider, sound, or light
   /// without shadows leaves a cached static shadow map alone.
   bool _moveCanMoveShadows() {
-    if (_childComponents.isNotEmpty) {
+    final list = _childComponents3D;
+    if (list != null && list.isNotEmpty) {
       return true;
+    }
+    if (!isMounted && hasChildren) {
+      for (final child in children) {
+        if (child is Component3D) {
+          return true;
+        }
+      }
     }
     final self = this;
     if (self is Object3D) {

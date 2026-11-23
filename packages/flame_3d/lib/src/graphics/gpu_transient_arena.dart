@@ -4,6 +4,7 @@ part of 'graphics_device.dart';
 class _TransientBlock(final GpuBuffer buffer, final int capacity) {
   late final Uint8List staging = Uint8List(capacity);
   late final Float32List floats = staging.buffer.asFloat32List();
+  late final ByteData byteData = staging.buffer.asByteData();
 
   int used = 0;
   int flushed = 0;

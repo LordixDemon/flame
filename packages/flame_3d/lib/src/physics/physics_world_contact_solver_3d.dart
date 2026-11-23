@@ -6,8 +6,20 @@ extension _PhysicsWorldContactSolver3D on PhysicsWorld3D {
     final wakeVelThresh2 =
         (sleepLinearThreshold * 2.0) * (sleepLinearThreshold * 2.0);
 
+    // Track which bodies already initiated their broadphase query:
+    // 0 = initially inactive (may become active if woken), 1 = active pending,
+    // 2 = already queried (skip in reverse checks to test each pair once).
+    for (var i = 0; i < _activeBodies.length; i++) {
+      final b = _activeBodies[i];
+      b.solverIndex = PhysicsWorld3D._isInactive(b) ? 0 : 1;
+    }
+
     for (var i = 0; i < _activeBodies.length; i++) {
       final bodyA = _activeBodies[i];
+      if (PhysicsWorld3D._isInactive(bodyA)) {
+        continue;
+      }
+      bodyA.solverIndex = 2;
       _queryBody = bodyA;
       _pairCandidates.clear();
       broadphaseTree.queryAabbCallback(bodyA.cachedWorldAabb, _onBodyCandidate);
@@ -17,19 +29,23 @@ extension _PhysicsWorldContactSolver3D on PhysicsWorld3D {
 
       for (var j = 0; j < _pairCandidates.length; j++) {
         final bodyB = _pairCandidates[j];
+        final first = bodyA.deterministicId < bodyB.deterministicId
+            ? bodyA
+            : bodyB;
+        final second = identical(first, bodyA) ? bodyB : bodyA;
         _manifoldBuffer.clear();
         Narrowphase3D.testAllInto(
-          bodyA.shape,
-          bodyA.bodyWorldMatrix,
-          bodyB.shape,
-          bodyB.bodyWorldMatrix,
+          first.shape,
+          first.bodyWorldMatrix,
+          second.shape,
+          second.bodyWorldMatrix,
           _manifoldBuffer,
         );
         if (_manifoldBuffer.isEmpty) {
           continue;
         }
-        _wakeOnContactBuffer(bodyA, bodyB, _manifoldBuffer, wakeVelThresh2);
-        _addPairConstraintsFromBuffer(bodyA, bodyB, _manifoldBuffer);
+        _wakeOnContactBuffer(first, second, _manifoldBuffer, wakeVelThresh2);
+        _addPairConstraintsFromBuffer(first, second, _manifoldBuffer);
       }
 
       // Static colliders hold up awake dynamic bodies.
@@ -64,6 +80,9 @@ extension _PhysicsWorldContactSolver3D on PhysicsWorld3D {
           );
         }
       }
+    }
+    for (var i = 0; i < _activeBodies.length; i++) {
+      _activeBodies[i].solverIndex = -1;
     }
     _queryBody = null;
     _sweepStalePairs();

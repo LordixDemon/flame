@@ -1,20 +1,32 @@
 part of 'volume_decal_batch_3d.dart';
 
 extension _VolumeDecalClipper on VolumeDecalBatch3D {
-  void _emitTerrainTri(
+  void _emitTerrainTriFlat(
     ProjectedDecalBox3D decal,
     _DecalBoxFrame boxFrame,
-    (double, double, double, double, double, double) a,
-    (double, double, double, double, double, double) b,
-    (double, double, double, double, double, double) c, {
+    Float64List bufA,
+    int oa,
+    Float64List bufB,
+    int ob,
+    Float64List bufC,
+    int oc, {
     required bool selfIsIdentity,
   }) {
-    final e1x = b.$1 - a.$1;
-    final e1y = b.$2 - a.$2;
-    final e1z = b.$3 - a.$3;
-    final e2x = c.$1 - a.$1;
-    final e2y = c.$2 - a.$2;
-    final e2z = c.$3 - a.$3;
+    final ax = bufA[oa];
+    final ay = bufA[oa + 1];
+    final az = bufA[oa + 2];
+    final bx = bufB[ob];
+    final by = bufB[ob + 1];
+    final bz = bufB[ob + 2];
+    final cx = bufC[oc];
+    final cy = bufC[oc + 1];
+    final cz = bufC[oc + 2];
+    final e1x = bx - ax;
+    final e1y = by - ay;
+    final e1z = bz - az;
+    final e2x = cx - ax;
+    final e2y = cy - ay;
+    final e2z = cz - az;
     var fnx = e1y * e2z - e1z * e2y;
     var fny = e1z * e2x - e1x * e2z;
     var fnz = e1x * e2y - e1y * e2x;
@@ -29,24 +41,24 @@ extension _VolumeDecalClipper on VolumeDecalBatch3D {
     _clipAndEmitWorldTriangle(
       decal,
       boxFrame,
-      a.$1,
-      a.$2,
-      a.$3,
-      a.$4,
-      a.$5,
-      a.$6,
-      b.$1,
-      b.$2,
-      b.$3,
-      b.$4,
-      b.$5,
-      b.$6,
-      c.$1,
-      c.$2,
-      c.$3,
-      c.$4,
-      c.$5,
-      c.$6,
+      ax,
+      ay,
+      az,
+      bufA[oa + 3],
+      bufA[oa + 4],
+      bufA[oa + 5],
+      bx,
+      by,
+      bz,
+      bufB[ob + 3],
+      bufB[ob + 4],
+      bufB[ob + 5],
+      cx,
+      cy,
+      cz,
+      bufC[oc + 3],
+      bufC[oc + 4],
+      bufC[oc + 5],
       fnx,
       fny,
       fnz,
@@ -172,29 +184,28 @@ extension _VolumeDecalClipper on VolumeDecalBatch3D {
         ? r5
         : r8;
 
-    return _DecalBoxFrame(
-      cx: cx,
-      cy: cy,
-      cz: cz,
-      hx: hx,
-      hy: hy,
-      hz: hz,
-      invHx: 1.0 / hx,
-      invHy: 1.0 / hy,
-      invHz: 1.0 / hz,
-      r00: r0,
-      r01: r3,
-      r02: r6,
-      r10: r1,
-      r11: r4,
-      r12: r7,
-      r20: r2,
-      r21: r5,
-      r22: r8,
-      receiveNx: receiveNx,
-      receiveNy: receiveNy,
-      receiveNz: receiveNz,
-    );
+    return _boxFrame
+      ..cx = cx
+      ..cy = cy
+      ..cz = cz
+      ..hx = hx
+      ..hy = hy
+      ..hz = hz
+      ..invHx = 1.0 / hx
+      ..invHy = 1.0 / hy
+      ..invHz = 1.0 / hz
+      ..r00 = r0
+      ..r01 = r3
+      ..r02 = r6
+      ..r10 = r1
+      ..r11 = r4
+      ..r12 = r7
+      ..r20 = r2
+      ..r21 = r5
+      ..r22 = r8
+      ..receiveNx = receiveNx
+      ..receiveNy = receiveNy
+      ..receiveNz = receiveNz;
   }
 
   void _clipAndEmitWorldTriangle(
@@ -478,7 +489,7 @@ int _clipAxis(
   return outCount;
 }
 
-(double, double, double) _transformNormal(
+void _transformNormalInto(
   double c00,
   double c01,
   double c02,
@@ -495,37 +506,44 @@ int _clipAxis(
   double fallbackX,
   double fallbackY,
   double fallbackZ,
+  Float64List out,
+  int offset,
 ) {
   final wnx = (c00 * nx + c10 * ny + c20 * nz) * sgn;
   final wny = (c01 * nx + c11 * ny + c21 * nz) * sgn;
   final wnz = (c02 * nx + c12 * ny + c22 * nz) * sgn;
   final len = math.sqrt(wnx * wnx + wny * wny + wnz * wnz);
   if (len > 1e-12) {
-    return (wnx / len, wny / len, wnz / len);
+    out[offset] = wnx / len;
+    out[offset + 1] = wny / len;
+    out[offset + 2] = wnz / len;
+  } else {
+    out[offset] = fallbackX;
+    out[offset + 1] = fallbackY;
+    out[offset + 2] = fallbackZ;
   }
-  return (fallbackX, fallbackY, fallbackZ);
 }
 
-class _DecalBoxFrame({
-  required final double cx,
-  required final double cy,
-  required final double cz,
-  required final double hx,
-  required final double hy,
-  required final double hz,
-  required final double invHx,
-  required final double invHy,
-  required final double invHz,
-  required final double r00,
-  required final double r01,
-  required final double r02,
-  required final double r10,
-  required final double r11,
-  required final double r12,
-  required final double r20,
-  required final double r21,
-  required final double r22,
-  required final double receiveNx,
-  required final double receiveNy,
-  required final double receiveNz,
-});
+class _DecalBoxFrame() {
+  double cx = 0;
+  double cy = 0;
+  double cz = 0;
+  double hx = 1;
+  double hy = 1;
+  double hz = 1;
+  double invHx = 1;
+  double invHy = 1;
+  double invHz = 1;
+  double r00 = 1;
+  double r01 = 0;
+  double r02 = 0;
+  double r10 = 0;
+  double r11 = 1;
+  double r12 = 0;
+  double r20 = 0;
+  double r21 = 0;
+  double r22 = 1;
+  double receiveNx = 0;
+  double receiveNy = 1;
+  double receiveNz = 0;
+}

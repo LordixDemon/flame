@@ -244,7 +244,10 @@ extension _Scene3DRenderPipeline on Scene3DComponent {
     context
       ..cameraMask = cameraMask
       ..setCamera(_viewMatrix, _projectionMatrix);
-    world.syncContextOptions(context);
+    world.syncContextOptions(
+      context,
+      hdrEnabled: world.effectiveHdrEnabled(device),
+    );
     RenderProfile.lap(RenderPhase.setup);
     world
       ..renderShadows(canvas)

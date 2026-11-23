@@ -171,6 +171,10 @@ class VolumeDecalBatch3D({
   // `(bx, by, bz, wnx, wny, wnz)`.
   final Float64List _polyA = Float64List(32 * 6);
   final Float64List _polyB = Float64List(32 * 6);
+  final Float64List _triNormals = Float64List(9);
+  final _DecalBoxFrame _boxFrame = _DecalBoxFrame();
+  Float64List _terrainRowA = Float64List(0);
+  Float64List _terrainRowB = Float64List(0);
   final List<int> _candidateTriangles = <int>[];
 
   final Matrix4 _invTarget = Matrix4.identity();
@@ -364,22 +368,13 @@ class VolumeDecalBatch3D({
           fny /= fnLen;
           fnz /= fnLen;
 
-          double n0x;
-          double n0y;
-          double n0z;
-          double n1x;
-          double n1y;
-          double n1z;
-          double n2x;
-          double n2y;
-          double n2z;
-
+          final norms = _triNormals;
           if (nrmOffset != null) {
             final sgn = flip ? -1.0 : 1.0;
             final no0 = idx0 * stride + nrmOffset;
             final no1 = idx1 * stride + nrmOffset;
             final no2 = idx2 * stride + nrmOffset;
-            (n0x, n0y, n0z) = _transformNormal(
+            _transformNormalInto(
               c00,
               c01,
               c02,
@@ -396,8 +391,10 @@ class VolumeDecalBatch3D({
               fnx,
               fny,
               fnz,
+              norms,
+              0,
             );
-            (n1x, n1y, n1z) = _transformNormal(
+            _transformNormalInto(
               c00,
               c01,
               c02,
@@ -414,8 +411,10 @@ class VolumeDecalBatch3D({
               fnx,
               fny,
               fnz,
+              norms,
+              3,
             );
-            (n2x, n2y, n2z) = _transformNormal(
+            _transformNormalInto(
               c00,
               c01,
               c02,
@@ -432,11 +431,20 @@ class VolumeDecalBatch3D({
               fnx,
               fny,
               fnz,
+              norms,
+              6,
             );
           } else {
-            n0x = n1x = n2x = fnx;
-            n0y = n1y = n2y = fny;
-            n0z = n1z = n2z = fnz;
+            norms
+              ..[0] = fnx
+              ..[1] = fny
+              ..[2] = fnz
+              ..[3] = fnx
+              ..[4] = fny
+              ..[5] = fnz
+              ..[6] = fnx
+              ..[7] = fny
+              ..[8] = fnz;
           }
 
           _clipAndEmitWorldTriangle(
@@ -445,21 +453,21 @@ class VolumeDecalBatch3D({
             w0x,
             w0y,
             w0z,
-            n0x,
-            n0y,
-            n0z,
+            norms[0],
+            norms[1],
+            norms[2],
             w1x,
             w1y,
             w1z,
-            n1x,
-            n1y,
-            n1z,
+            norms[3],
+            norms[4],
+            norms[5],
             w2x,
             w2y,
             w2z,
-            n2x,
-            n2y,
-            n2z,
+            norms[6],
+            norms[7],
+            norms[8],
             fnx,
             fny,
             fnz,
@@ -513,33 +521,6 @@ class VolumeDecalBatch3D({
     final halfD = terrain.worldDepth * 0.5;
     final cellW = terrain.worldWidth / (cols - 1);
     final cellD = terrain.worldDepth / (rows - 1);
-    final nScratch = Vector3.zero();
-
-    (double, double, double, double, double, double) terrainVertex(
-      int c,
-      int r,
-    ) {
-      final lx = -halfW + c * cellW;
-      final lz = -halfD + r * cellD;
-      final ly = terrain.heights[r * cols + c];
-      terrain.sampleNormal(lx, lz, out: nScratch);
-      if (terrainIsIdentity) {
-        return (lx, ly, lz, nScratch.x, nScratch.y, nScratch.z);
-      }
-      final wx = tm[0] * lx + tm[4] * ly + tm[8] * lz + tm[12];
-      final wy = tm[1] * lx + tm[5] * ly + tm[9] * lz + tm[13];
-      final wz = tm[2] * lx + tm[6] * ly + tm[10] * lz + tm[14];
-      var wnx = im[0] * nScratch.x + im[1] * nScratch.y + im[2] * nScratch.z;
-      var wny = im[4] * nScratch.x + im[5] * nScratch.y + im[6] * nScratch.z;
-      var wnz = im[8] * nScratch.x + im[9] * nScratch.y + im[10] * nScratch.z;
-      final len = math.sqrt(wnx * wnx + wny * wny + wnz * wnz);
-      if (len > 1e-12) {
-        wnx /= len;
-        wny /= len;
-        wnz /= len;
-      }
-      return (wx, wy, wz, wnx, wny, wnz);
-    }
 
     for (var dIdx = 0; dIdx < decals.length; dIdx++) {
       final decal = decals[dIdx];
@@ -567,38 +548,158 @@ class VolumeDecalBatch3D({
         0,
         rows - 1,
       );
+      if (c1 <= c0 || r1 <= r0) {
+        continue;
+      }
+
+      final needed = (c1 - c0 + 1) * 6;
+      if (_terrainRowA.length < needed) {
+        _terrainRowA = Float64List(needed);
+        _terrainRowB = Float64List(needed);
+      }
+      var rowPrev = _terrainRowA;
+      var rowCurr = _terrainRowB;
+      _fillTerrainRow(
+        terrain,
+        r0,
+        c0,
+        c1,
+        halfW,
+        halfD,
+        cellW,
+        cellD,
+        terrainIsIdentity,
+        tm,
+        im,
+        rowPrev,
+      );
 
       for (var r = r0; r < r1; r++) {
+        _fillTerrainRow(
+          terrain,
+          r + 1,
+          c0,
+          c1,
+          halfW,
+          halfD,
+          cellW,
+          cellD,
+          terrainIsIdentity,
+          tm,
+          im,
+          rowCurr,
+        );
         for (var c = c0; c < c1; c++) {
-          final v00 = terrainVertex(c, r);
-          final v10 = terrainVertex(c + 1, r);
-          final v11 = terrainVertex(c + 1, r + 1);
-          final v01 = terrainVertex(c, r + 1);
+          final o0 = (c - c0) * 6;
+          final o1 = o0 + 6;
 
           // Triangle 1: (v00, v01, v11) CCW +Y
-          _emitTerrainTri(
+          _emitTerrainTriFlat(
             decal,
             boxFrame,
-            v00,
-            v01,
-            v11,
+            rowPrev,
+            o0,
+            rowCurr,
+            o0,
+            rowCurr,
+            o1,
             selfIsIdentity: selfIsIdentity,
           );
           // Triangle 2: (v00, v11, v10) CCW +Y
-          _emitTerrainTri(
+          _emitTerrainTriFlat(
             decal,
             boxFrame,
-            v00,
-            v11,
-            v10,
+            rowPrev,
+            o0,
+            rowCurr,
+            o1,
+            rowPrev,
+            o1,
             selfIsIdentity: selfIsIdentity,
           );
         }
+        final swap = rowPrev;
+        rowPrev = rowCurr;
+        rowCurr = swap;
       }
     }
 
     _finalizeMergedSurface();
   }
+
+  static void _fillTerrainRow(
+    ChunkedTerrain3D terrain,
+    int r,
+    int c0,
+    int c1,
+    double halfW,
+    double halfD,
+    double cellW,
+    double cellD,
+    bool terrainIsIdentity,
+    Float32List tm,
+    Float32List im,
+    Float64List out,
+  ) {
+    final heights = terrain.heights;
+    final cols = terrain.gridColumns;
+    final rowOff = r * cols;
+    final lz = -halfD + r * cellD;
+    final inv2W = 1.0 / cellW;
+    final inv2D = 1.0 / cellD;
+    final epsZLo = lz - cellD * 0.5;
+    final epsZHi = lz + cellD * 0.5;
+
+    for (var c = c0; c <= c1; c++) {
+      final lx = -halfW + c * cellW;
+      final ly = heights[rowOff + c];
+      // Match `terrain.sampleNormal(lx, lz)` exactly via central differences
+      // at `+- 0.5 * cellW / cellD`.
+      final dhdx =
+          (terrain.sampleHeight(lx + cellW * 0.5, lz) -
+              terrain.sampleHeight(lx - cellW * 0.5, lz)) *
+          inv2W;
+      final dhdz =
+          (terrain.sampleHeight(lx, epsZHi) -
+              terrain.sampleHeight(lx, epsZLo)) *
+          inv2D;
+      final invN = 1.0 / math.sqrt(dhdx * dhdx + dhdz * dhdz + 1.0);
+      final lnx = -dhdx * invN;
+      final lny = invN;
+      final lnz = -dhdz * invN;
+
+      final o = (c - c0) * 6;
+      if (terrainIsIdentity) {
+        out
+          ..[o] = lx
+          ..[o + 1] = ly
+          ..[o + 2] = lz
+          ..[o + 3] = lnx
+          ..[o + 4] = lny
+          ..[o + 5] = lnz;
+      } else {
+        var wnx = im[0] * lnx + im[1] * lny + im[2] * lnz;
+        var wny = im[4] * lnx + im[5] * lny + im[6] * lnz;
+        var wnz = im[8] * lnx + im[9] * lny + im[10] * lnz;
+        final len = math.sqrt(wnx * wnx + wny * wny + wnz * wnz);
+        if (len > 1e-12) {
+          wnx /= len;
+          wny /= len;
+          wnz /= len;
+        }
+        out
+          ..[o] = tm[0] * lx + tm[4] * ly + tm[8] * lz + tm[12]
+          ..[o + 1] = tm[1] * lx + tm[5] * ly + tm[9] * lz + tm[13]
+          ..[o + 2] = tm[2] * lx + tm[6] * ly + tm[10] * lz + tm[14]
+          ..[o + 3] = wnx
+          ..[o + 4] = wny
+          ..[o + 5] = wnz;
+      }
+    }
+  }
+
+  @override
+  bool get usesDefaultFrustumVisibility => runtimeType == VolumeDecalBatch3D;
 
   @override
   Aabb3? computeLocalAabb() {

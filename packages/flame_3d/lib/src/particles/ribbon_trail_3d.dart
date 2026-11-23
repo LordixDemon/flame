@@ -277,6 +277,9 @@ class StrokeBatch3D({
   }
 
   @override
+  bool get usesDefaultFrustumVisibility => runtimeType == StrokeBatch3D;
+
+  @override
   Aabb3? computeLocalAabb() => _hasBounds ? _bounds : null;
 
   @override
@@ -529,6 +532,9 @@ class RibbonTrail3D({
     _batch.endStroke();
     markAabbDirty();
   }
+
+  @override
+  bool get usesDefaultFrustumVisibility => runtimeType == RibbonTrail3D;
 
   @override
   Aabb3? computeLocalAabb() {

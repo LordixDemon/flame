@@ -146,6 +146,9 @@ class LodMeshComponent({
   int get lastSelectedLevel => _lastSelectedLevel;
 
   @override
+  bool get usesDefaultFrustumVisibility => runtimeType == LodMeshComponent;
+
+  @override
   Aabb3? computeLocalAabb() {
     final box = Aabb3.copy(levels.first.mesh.aabb);
     for (var i = 1; i < levels.length; i++) {

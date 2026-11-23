@@ -67,6 +67,9 @@ class UnlitMaterial({
   int _albedoColorOff = UniformBlock.missingOffset;
 
   @override
+  bool get hasPassStableFragmentShader => runtimeType == UnlitMaterial;
+
+  @override
   bool get cachesApply => runtimeType == UnlitMaterial;
 
   @override

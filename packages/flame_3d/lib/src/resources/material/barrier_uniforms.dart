@@ -433,28 +433,11 @@ extension _BarrierUniforms on BarrierMaterial {
   /// direction that the clip-space depth axis `(0, 0, 1, 0)` comes from, so
   /// they hold for oblique and mirroring projections too, such as the affine
   /// ones of `Scene3DComponent`.
-  void _writeViewerTo(RenderContext3D context, UniformBlock block, int offset) {
-    final inverse = _inverse..setFrom(context.viewProjection);
-    final determinant = inverse.invert();
-    final s = inverse.storage;
-    var x = s[8];
-    var y = s[9];
-    var z = s[10];
-    final w = s[11];
-    final length = math.sqrt(x * x + y * y + z * z);
-    if (determinant == 0 || !(length > 0)) {
-      final eye = context.cameraPosition;
-      block.writeVec4ValuesAt(offset, eye.x, eye.y, eye.z, 1);
-    } else if (w.abs() > 1e-9 * length) {
-      block.writeVec4ValuesAt(offset, x / w, y / w, z / w, 1);
-    } else {
-      // Depth grows along (x, y, z): the viewer is the other way.
-      x = -x / length;
-      y = -y / length;
-      z = -z / length;
-      block.writeVec4ValuesAt(offset, x, y, z, 0);
-    }
-  }
+  void _writeViewerTo(
+    RenderContext3D context,
+    UniformBlock block,
+    int offset,
+  ) => context.writeViewerTo(block, offset);
 }
 
 double _hash(double n) {

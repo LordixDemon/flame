@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/model.dart';
@@ -23,6 +24,147 @@ abstract class BoneModifier3D() {
     double dt,
   );
 
+  /// Builds `T(ox, oy, oz) * R(deltaRot) * T(-ox, -oy, -oz)` into [out]
+  /// without computing a 4x4 matrix inverse.
+  @internal
+  static void buildPivotRotationDelta(
+    double ox,
+    double oy,
+    double oz,
+    Quaternion deltaRot,
+    Matrix4 out,
+  ) {
+    out.setFromTranslationRotation(_zero, deltaRot);
+    final m = out.storage;
+    m[12] = ox - (m[0] * ox + m[4] * oy + m[8] * oz);
+    m[13] = oy - (m[1] * ox + m[5] * oy + m[9] * oz);
+    m[14] = oz - (m[2] * ox + m[6] * oy + m[10] * oz);
+  }
+
+  /// Applies model-space [delta] to every strict descendant of
+  /// [modifiedNodeIndex] in topological order using a reusable stamp array.
+  @internal
+  static void propagateDeltaMatrixToDescendants(
+    ModelPoseWorkspace workspace,
+    int modifiedNodeIndex,
+    Matrix4 delta,
+  ) {
+    final startIdx = workspace.orderIndexByNodeIndex[modifiedNodeIndex];
+    if (startIdx == null) {
+      return;
+    }
+    final ordered = workspace.orderedNodes;
+    final parentOrder = workspace.parentOrderIndex;
+    final len = ordered.length;
+    final epoch = _nextStamp(len);
+    _affectedStamp[startIdx] = epoch;
+    for (var i = startIdx + 1; i < len; i++) {
+      final p = parentOrder[i];
+      if (p >= 0 && _affectedStamp[p] == epoch) {
+        _affectedStamp[i] = epoch;
+        final ct = ordered[i].combinedTransform;
+        _temp
+          ..setFrom(delta)
+          ..multiply(ct);
+        ct.setFrom(_temp);
+      }
+    }
+  }
+
+  /// Rotates [combined] around its translation pivot by [deltaRot] and
+  /// propagates the resulting delta to all strict descendants without
+  /// `copyInverse` or hash-set allocations.
+  @internal
+  static void rotateAndPropagateToDescendants(
+    ModelPoseWorkspace workspace,
+    int modifiedNodeIndex,
+    Matrix4 combined,
+    Quaternion deltaRot,
+  ) {
+    final m = combined.storage;
+    final ox = m[12];
+    final oy = m[13];
+    final oz = m[14];
+    buildPivotRotationDelta(ox, oy, oz, deltaRot, _delta);
+    rotateCombinedAroundOrigin(combined, deltaRot);
+    propagateDeltaMatrixToDescendants(workspace, modifiedNodeIndex, _delta);
+  }
+
+  /// Translates every strict descendant of [modifiedNodeIndex] by
+  /// `(dx, dy, dz)` in model space without matrix multiplications.
+  @internal
+  static void propagateTranslationToDescendants(
+    ModelPoseWorkspace workspace,
+    int modifiedNodeIndex,
+    double dx,
+    double dy,
+    double dz,
+  ) {
+    final startIdx = workspace.orderIndexByNodeIndex[modifiedNodeIndex];
+    if (startIdx == null) {
+      return;
+    }
+    final ordered = workspace.orderedNodes;
+    final parentOrder = workspace.parentOrderIndex;
+    final len = ordered.length;
+    final epoch = _nextStamp(len);
+    _affectedStamp[startIdx] = epoch;
+    for (var i = startIdx + 1; i < len; i++) {
+      final p = parentOrder[i];
+      if (p >= 0 && _affectedStamp[p] == epoch) {
+        _affectedStamp[i] = epoch;
+        final s = ordered[i].combinedTransform.storage;
+        s[12] += dx;
+        s[13] += dy;
+        s[14] += dz;
+      }
+    }
+  }
+
+  /// Applies cumulative chain deltas [chainDeltas] anchored at
+  /// [chainOrderIndices] across the entire subtree in a single topological
+  /// pass.
+  @internal
+  static void applyChainDeltas(
+    ModelPoseWorkspace workspace,
+    Int32List chainOrderIndices,
+    List<Matrix4> chainDeltas,
+  ) {
+    final chainCount = chainOrderIndices.length;
+    if (chainCount == 0) {
+      return;
+    }
+    final ordered = workspace.orderedNodes;
+    final parentOrder = workspace.parentOrderIndex;
+    final len = ordered.length;
+    final epoch = _nextStamp(len);
+    for (var k = 0; k < chainCount; k++) {
+      final ord = chainOrderIndices[k];
+      _affectedStamp[ord] = epoch;
+      _affectedSlot[ord] = k;
+    }
+    final start = chainOrderIndices[0];
+    for (var i = start; i < len; i++) {
+      final int slot;
+      if (_affectedStamp[i] == epoch) {
+        slot = _affectedSlot[i];
+      } else {
+        final p = parentOrder[i];
+        if (p < 0 || _affectedStamp[p] != epoch) {
+          continue;
+        }
+        slot = _affectedSlot[p];
+        _affectedStamp[i] = epoch;
+        _affectedSlot[i] = slot;
+      }
+      final ct = ordered[i].combinedTransform;
+      _temp
+        ..setFrom(chainDeltas[slot])
+        ..multiply(ct);
+      ct.setFrom(_temp);
+    }
+  }
+
   /// Applies model-space delta matrix `delta = nextCombined * inv(oldCombined)`
   /// to every descendant of [modifiedNodeIndex] in topological order.
   static void propagateDeltaToDescendants(
@@ -36,19 +178,7 @@ abstract class BoneModifier3D() {
     _delta
       ..setFrom(nextCombined)
       ..multiply(_invOld);
-
-    final affected = _affected..clear();
-    affected.add(modifiedNodeIndex);
-    for (final processed in workspace.orderedNodes) {
-      final pIdx = processed.node.parentNodeIndex;
-      if (pIdx != null && affected.contains(pIdx)) {
-        affected.add(processed.node.nodeIndex);
-        _temp
-          ..setFrom(_delta)
-          ..multiply(processed.combinedTransform);
-        processed.combinedTransform.setFrom(_temp);
-      }
-    }
+    propagateDeltaMatrixToDescendants(workspace, modifiedNodeIndex, _delta);
   }
 
   /// Rotates [combined] around its translation pivot `(m[12], m[13], m[14])` by
@@ -194,24 +324,56 @@ abstract class BoneModifier3D() {
       ..setFrom(_ikNewMid)
       ..sub(_ikPRoot)
       ..normalize();
-    _ikOldRootM.setFrom(rm);
     swingRotationInto(
       _ikOldUpper,
       _ikNewUpper,
       _ikQRoot,
       blendWeight: w,
     );
-    rotateCombinedAroundOrigin(rm, _ikQRoot);
-    propagateDeltaToDescendants(
-      model,
-      workspace,
-      rootIndex,
-      _ikOldRootM,
-      rm,
+    buildPivotRotationDelta(
+      _ikPRoot.x,
+      _ikPRoot.y,
+      _ikPRoot.z,
+      _ikQRoot,
+      _ikDeltaRoot,
     );
+    rotateCombinedAroundOrigin(rm, _ikQRoot);
 
-    _ikPMid.setValues(mm.storage[12], mm.storage[13], mm.storage[14]);
-    _ikPTip.setValues(tm.storage[12], tm.storage[13], tm.storage[14]);
+    final rootOrder = workspace.orderIndexByNodeIndex[rootIndex];
+    final midOrder = workspace.orderIndexByNodeIndex[midIndex];
+    final tipOrder = workspace.orderIndexByNodeIndex[tipIndex];
+    if (rootOrder == null || midOrder == null) {
+      propagateDeltaMatrixToDescendants(workspace, rootIndex, _ikDeltaRoot);
+      return;
+    }
+    final parentOrder = workspace.parentOrderIndex;
+    var midDescendsFromRoot = false;
+    var curP = parentOrder[midOrder];
+    while (curP >= 0) {
+      if (curP == rootOrder) {
+        midDescendsFromRoot = true;
+        break;
+      }
+      curP = parentOrder[curP];
+    }
+    if (midDescendsFromRoot) {
+      _ikDeltaRoot.transform3(_ikPMid);
+    }
+    var tipDescendsFromRoot = false;
+    if (tipOrder != null) {
+      curP = parentOrder[tipOrder];
+      while (curP >= 0) {
+        if (curP == rootOrder) {
+          tipDescendsFromRoot = true;
+          break;
+        }
+        curP = parentOrder[curP];
+      }
+    }
+    if (tipDescendsFromRoot) {
+      _ikDeltaRoot.transform3(_ikPTip);
+    }
+
     _ikGoalTip
       ..setFrom(_ikPRoot)
       ..addScaled(_ikDirTarget, clampedDist);
@@ -223,31 +385,104 @@ abstract class BoneModifier3D() {
       ..setFrom(_ikGoalTip)
       ..sub(_ikPMid);
     if (_ikCurLower.length2 < 1e-10 || _ikNewLower.length2 < 1e-10) {
+      propagateDeltaMatrixToDescendants(workspace, rootIndex, _ikDeltaRoot);
       return;
     }
     _ikCurLower.normalize();
     _ikNewLower.normalize();
 
-    _ikOldMidM.setFrom(mm);
     swingRotationInto(
       _ikCurLower,
       _ikNewLower,
       _ikQMid,
       blendWeight: w,
     );
-    rotateCombinedAroundOrigin(mm, _ikQMid);
-    propagateDeltaToDescendants(
-      model,
-      workspace,
-      midIndex,
-      _ikOldMidM,
-      mm,
+    buildPivotRotationDelta(
+      _ikPMid.x,
+      _ikPMid.y,
+      _ikPMid.z,
+      _ikQMid,
+      _ikDeltaMid,
     );
+    _ikDeltaMidTotal
+      ..setFrom(_ikDeltaMid)
+      ..multiply(_ikDeltaRoot);
+
+    final ordered = workspace.orderedNodes;
+    final len = ordered.length;
+    final epoch = _nextStamp(len);
+    _affectedStamp[rootOrder] = epoch;
+    _affectedSlot[rootOrder] = 0;
+
+    final start = math.min(rootOrder, midOrder);
+    for (var i = start; i < len; i++) {
+      if (i == rootOrder) {
+        continue;
+      }
+      if (i == midOrder) {
+        final p = parentOrder[i];
+        if (p >= 0 && _affectedStamp[p] == epoch) {
+          final pSlot = _affectedSlot[p];
+          final pDelta = pSlot == 0
+              ? _ikDeltaRoot
+              : (pSlot == 1 ? _ikDeltaMidTotal : _ikDeltaMid);
+          _temp
+            ..setFrom(pDelta)
+            ..multiply(mm);
+          mm.setFrom(_temp);
+          rotateCombinedAroundOrigin(mm, _ikQMid);
+          _affectedStamp[i] = epoch;
+          _affectedSlot[i] = 1;
+        } else {
+          rotateCombinedAroundOrigin(mm, _ikQMid);
+          _affectedStamp[i] = epoch;
+          _affectedSlot[i] = 2;
+        }
+        continue;
+      }
+      final p = parentOrder[i];
+      if (p >= 0 && _affectedStamp[p] == epoch) {
+        final slot = _affectedSlot[p];
+        _affectedStamp[i] = epoch;
+        _affectedSlot[i] = slot;
+        final delta = slot == 0
+            ? _ikDeltaRoot
+            : (slot == 1 ? _ikDeltaMidTotal : _ikDeltaMid);
+        final ct = ordered[i].combinedTransform;
+        _temp
+          ..setFrom(delta)
+          ..multiply(ct);
+        ct.setFrom(_temp);
+      }
+    }
+  }
+
+  static int _nextStamp(int nodeCount) {
+    if (_affectedStamp.length < nodeCount) {
+      var cap = math.max(64, _affectedStamp.length);
+      while (cap < nodeCount) {
+        cap *= 2;
+      }
+      _affectedStamp = Int32List(cap);
+      _affectedSlot = Int32List(cap);
+    }
+    var epoch = ++_stampEpoch;
+    if (epoch >= 0x3FFFFFFF) {
+      _affectedStamp.fillRange(0, _affectedStamp.length, 0);
+      _stampEpoch = 1;
+      epoch = 1;
+    }
+    return epoch;
   }
 
   static final Matrix4 _invOld = Matrix4.identity();
   static final Matrix4 _delta = Matrix4.identity();
-  static final Set<int> _affected = {};
+  static Int32List _affectedStamp = Int32List(0);
+  static Int32List _affectedSlot = Int32List(0);
+  static int _stampEpoch = 0;
+  static final Matrix4 _ikDeltaRoot = Matrix4.identity();
+  static final Matrix4 _ikDeltaMid = Matrix4.identity();
+  static final Matrix4 _ikDeltaMidTotal = Matrix4.identity();
   static final Vector3 _zero = Vector3.zero();
   static final Vector3 _unitX = Vector3(1, 0, 0);
   static final Vector3 _unitY = Vector3(0, 1, 0);
@@ -269,8 +504,6 @@ abstract class BoneModifier3D() {
   static final Vector3 _ikGoalTip = Vector3.zero();
   static final Quaternion _ikQRoot = Quaternion.identity();
   static final Quaternion _ikQMid = Quaternion.identity();
-  static final Matrix4 _ikOldRootM = Matrix4.identity();
-  static final Matrix4 _ikOldMidM = Matrix4.identity();
 }
 
 /// Smoothly rotates a bone (such as a head, turret, or eye) so its local
@@ -299,7 +532,6 @@ class LookAtConstraint3D({
   final Vector3 _curForward = Vector3.zero();
   final Vector3 _desired = Vector3.zero();
   final Quaternion _deltaQ = Quaternion.identity();
-  final Matrix4 _oldCombined = Matrix4.identity();
 
   @override
   void apply(
@@ -322,7 +554,6 @@ class LookAtConstraint3D({
     }
 
     final m = processed.combinedTransform;
-    _oldCombined.setFrom(m);
     _origin.setValues(m.storage[12], m.storage[13], m.storage[14]);
 
     _targetModel.setFrom(targetWorld);
@@ -351,14 +582,7 @@ class LookAtConstraint3D({
       maxAngle: maxAngle,
       blendWeight: weight,
     );
-    BoneModifier3D.rotateCombinedAroundOrigin(m, _deltaQ);
-    BoneModifier3D.propagateDeltaToDescendants(
-      model,
-      workspace,
-      idx,
-      _oldCombined,
-      m,
-    );
+    BoneModifier3D.rotateAndPropagateToDescendants(workspace, idx, m, _deltaQ);
   }
 }
 
@@ -397,7 +621,6 @@ class SpringBone3D({
   final Vector3 _fromDir = Vector3.zero();
   final Vector3 _toDir = Vector3.zero();
   final Quaternion _deltaQ = Quaternion.identity();
-  final Matrix4 _oldCombined = Matrix4.identity();
 
   /// Resets the spring tip to rest on the next evaluation.
   void reset() {
@@ -429,7 +652,6 @@ class SpringBone3D({
     }
 
     final m = processed.combinedTransform;
-    _oldCombined.setFrom(m);
     _pivotModel.setValues(m.storage[12], m.storage[13], m.storage[14]);
     _restTipModel.setFrom(localTipOffset);
     m.transform3(_restTipModel);
@@ -516,14 +738,7 @@ class SpringBone3D({
       maxAngle: maxAngle,
       blendWeight: weight,
     );
-    BoneModifier3D.rotateCombinedAroundOrigin(m, _deltaQ);
-    BoneModifier3D.propagateDeltaToDescendants(
-      model,
-      workspace,
-      idx,
-      _oldCombined,
-      m,
-    );
+    BoneModifier3D.rotateAndPropagateToDescendants(workspace, idx, m, _deltaQ);
   }
 }
 

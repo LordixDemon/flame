@@ -276,6 +276,21 @@ class SpatialAudioEmitter3D({
   bool _hasPrevPos = false;
   int _updateCount = 0;
   int _mixedAtUpdate = -1000;
+  SpatialAudioListener3D? _activeOccListener;
+  late final bool Function(Object3D) _occlusionFilterCallback =
+      _checkOcclusionCandidate;
+
+  bool _checkOcclusionCandidate(Object3D obj) {
+    final activeListener = _activeOccListener!;
+    if (_isSelfOrAncestor(obj, this) ||
+        _isSelfOrAncestor(obj, activeListener) ||
+        (activeListener.target != null &&
+            _isSelfOrAncestor(obj, activeListener.target!))) {
+      return false;
+    }
+    final filter = occlusionFilter;
+    return filter == null || filter(obj);
+  }
 
   @override
   void onMount() {
@@ -344,6 +359,7 @@ class SpatialAudioEmitter3D({
   SpatialMix3D evaluateMixSynced(
     SpatialAudioListener3D activeListener, {
     World3D? world,
+    double skipOcclusionBelowVolume = 0.0,
   }) {
     final earPos = activeListener._earPos;
     final m = worldTransformMatrix.storage;
@@ -400,9 +416,14 @@ class SpatialAudioEmitter3D({
     }
 
     // 4. Optional raycast wall occlusion via `World3D.raycast`.
+    final unoccludedVol = baseVolume * distGain * coneGain;
     var occluded = false;
     final resolvedWorld = world ?? _enclosingWorld();
-    if (enableOcclusion && resolvedWorld != null && dist > 2e-3) {
+    if (enableOcclusion &&
+        resolvedWorld != null &&
+        dist > 2e-3 &&
+        (skipOcclusionBelowVolume <= 0.0 ||
+            unoccludedVol >= skipOcclusionBelowVolume)) {
       final invDist = 1.0 / dist;
       _toEar.setValues(-dx * invDist, -dy * invDist, -dz * invDist);
       _occlusionRay.origin.setValues(
@@ -412,20 +433,17 @@ class SpatialAudioEmitter3D({
       );
       _occlusionRay.direction.setFrom(_toEar);
 
-      final hit = resolvedWorld.raycast(
-        _occlusionRay,
-        maxDistance: dist - 2e-3,
-        filter: (obj) {
-          if (_isSelfOrAncestor(obj, this) ||
-              _isSelfOrAncestor(obj, activeListener) ||
-              (activeListener.target != null &&
-                  _isSelfOrAncestor(obj, activeListener.target!))) {
-            return false;
-          }
-          return occlusionFilter == null || occlusionFilter!(obj);
-        },
-      );
-      occluded = hit != null;
+      _activeOccListener = activeListener;
+      try {
+        final hit = resolvedWorld.raycast(
+          _occlusionRay,
+          maxDistance: dist - 2e-3,
+          filter: _occlusionFilterCallback,
+        );
+        occluded = hit != null;
+      } finally {
+        _activeOccListener = null;
+      }
     }
 
     // 5. Acoustic 3D Doppler pitch shift.
@@ -453,9 +471,12 @@ class SpatialAudioEmitter3D({
     }
 
     final occMult = occluded ? occlusionGain : 1.0;
-    final volume = (baseVolume * distGain * coneGain * occMult)
+    final volume = (unoccludedVol * occMult)
         .clamp(0.0, math.max(1.0, baseVolume))
         .toDouble();
+    if (volume == 0.0 && pan == 0.0 && pitch == 1.0 && !occluded) {
+      return _lastMix = SpatialMix3D.silent;
+    }
 
     return _lastMix = SpatialMix3D(
       volume: volume,

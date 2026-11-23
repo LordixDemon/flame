@@ -111,7 +111,6 @@ class FootPlacementIk3D({
   final Vector3 _poleWorld = Vector3.zero();
   final Vector3 _kneeWorld = Vector3.zero();
   final Quaternion _footQ = Quaternion.identity();
-  final Matrix4 _oldMat = Matrix4.identity();
 
   @override
   void apply(
@@ -195,8 +194,10 @@ class FootPlacementIk3D({
     // 2. Shift pelvis vertically in world space and propagate to leg subtrees.
     if (_hipsOffsetY.abs() > 1e-6) {
       final hm = hipsNode.combinedTransform;
-      _oldMat.setFrom(hm);
-      _pelvisWorld.setValues(hm.storage[12], hm.storage[13], hm.storage[14]);
+      final oldX = hm.storage[12];
+      final oldY = hm.storage[13];
+      final oldZ = hm.storage[14];
+      _pelvisWorld.setValues(oldX, oldY, oldZ);
       worldMatrix.transform3(_pelvisWorld);
       _pelvisWorld.y += _hipsOffsetY;
       _pelvisModelNext.setFrom(_pelvisWorld);
@@ -204,12 +205,12 @@ class FootPlacementIk3D({
       hm.storage[12] = _pelvisModelNext.x;
       hm.storage[13] = _pelvisModelNext.y;
       hm.storage[14] = _pelvisModelNext.z;
-      BoneModifier3D.propagateDeltaToDescendants(
-        model,
+      BoneModifier3D.propagateTranslationToDescendants(
         workspace,
         hipsNodeIndex,
-        _oldMat,
-        hm,
+        _pelvisModelNext.x - oldX,
+        _pelvisModelNext.y - oldY,
+        _pelvisModelNext.z - oldZ,
       );
     }
 
@@ -298,7 +299,6 @@ class FootPlacementIk3D({
       _upModel.normalize();
       _normalModel.normalize();
       final fm = footNode.combinedTransform;
-      _oldMat.setFrom(fm);
       BoneModifier3D.swingRotationInto(
         _upModel,
         _normalModel,
@@ -306,13 +306,11 @@ class FootPlacementIk3D({
         maxAngle: maxFootTiltRad,
         blendWeight: blendWeight,
       );
-      BoneModifier3D.rotateCombinedAroundOrigin(fm, _footQ);
-      BoneModifier3D.propagateDeltaToDescendants(
-        model,
+      BoneModifier3D.rotateAndPropagateToDescendants(
         workspace,
         leg.$3,
-        _oldMat,
         fm,
+        _footQ,
       );
     }
   }

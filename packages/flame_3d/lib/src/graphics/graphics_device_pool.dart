@@ -3,12 +3,22 @@ part of 'graphics_device.dart';
 extension _GraphicsDevicePool on GraphicsDevice {
   /// Acquire a render target from the pool, creating one if needed.
   GpuRenderTarget _acquireRenderTarget(Size size, int msaaSampleCount) {
-    final key = (
-      _pixels(size.width),
-      _pixels(size.height),
-      msaaSampleCount,
-    );
-    final bucket = _pool[key] ??= _PoolBucket(_frame);
+    final width = _pixels(size.width);
+    final height = _pixels(size.height);
+    _PoolBucket? bucket;
+    for (var i = 0; i < _poolBuckets.length; i++) {
+      final b = _poolBuckets[i];
+      if (b.width == width &&
+          b.height == height &&
+          b.msaaSampleCount == msaaSampleCount) {
+        bucket = b;
+        break;
+      }
+    }
+    if (bucket == null) {
+      bucket = _PoolBucket(width, height, msaaSampleCount, _frame);
+      _poolBuckets.add(bucket);
+    }
     final index = bucket.used;
     final targets = bucket.targets;
     if (index < targets.length) {
@@ -17,10 +27,10 @@ extension _GraphicsDevicePool on GraphicsDevice {
     }
 
     final target = backend.createRenderTarget(
-      width: key.$1,
-      height: key.$2,
+      width: width,
+      height: height,
       clearValue: clearValue,
-      msaaSampleCount: key.$3,
+      msaaSampleCount: msaaSampleCount,
     );
 
     targets.add(target);
@@ -29,38 +39,26 @@ extension _GraphicsDevicePool on GraphicsDevice {
   }
 
   void _evictUnusedTargets() {
-    if (_pool.isNotEmpty) {
-      _evictPoolKeys.clear();
-      for (final entry in _pool.entries) {
-        final bucket = entry.value;
-        final used = bucket.used;
-        if (used == 0) {
-          if (_frame - bucket.lastUsedFrame >=
-              GraphicsDevice.targetRetainFrames) {
-            _evictPoolKeys.add(entry.key);
-          }
-        } else {
-          bucket.lastUsedFrame = _frame;
-          final targets = bucket.targets;
-          if (used < targets.length) {
-            targets.removeRange(used, targets.length);
-          }
+    for (var i = _poolBuckets.length - 1; i >= 0; i--) {
+      final bucket = _poolBuckets[i];
+      final used = bucket.used;
+      if (used == 0) {
+        if (_frame - bucket.lastUsedFrame >=
+            GraphicsDevice.targetRetainFrames) {
+          _poolBuckets.removeAt(i);
         }
-      }
-      for (var i = 0; i < _evictPoolKeys.length; i++) {
-        _pool.remove(_evictPoolKeys[i]);
+      } else {
+        bucket.lastUsedFrame = _frame;
+        final targets = bucket.targets;
+        if (used < targets.length) {
+          targets.removeRange(used, targets.length);
+        }
       }
     }
-    if (_textureTargets.isNotEmpty) {
-      _evictTextureKeys.clear();
-      for (final entry in _textureTargets.entries) {
-        if (_frame - entry.value.lastUsedFrame >=
-            GraphicsDevice.targetRetainFrames) {
-          _evictTextureKeys.add(entry.key);
-        }
-      }
-      for (var i = 0; i < _evictTextureKeys.length; i++) {
-        _textureTargets.remove(_evictTextureKeys[i]);
+    for (var i = _textureTargetList.length - 1; i >= 0; i--) {
+      if (_frame - _textureTargetList[i].lastUsedFrame >=
+          GraphicsDevice.targetRetainFrames) {
+        _textureTargetList.removeAt(i);
       }
     }
   }
@@ -71,13 +69,27 @@ int _pixels(double size) {
   return pixels < 1 ? 1 : pixels;
 }
 
-class _PoolBucket(this.lastUsedFrame) {
+class _PoolBucket(
+  this.width,
+  this.height,
+  this.msaaSampleCount,
+  this.lastUsedFrame,
+) {
+  final int width;
+  final int height;
+  final int msaaSampleCount;
   final List<GpuRenderTarget> targets = [];
   int used = 0;
   int lastUsedFrame;
 }
 
 class _TextureTargetEntry(
+  final int width,
+  final int height,
+  final GpuPixelFormat format,
+  final Color clearValue,
+  final Object? role,
+  final int msaaSampleCount,
   final GpuTextureTarget target,
   var int lastUsedFrame,
   final int estimatedBytes,

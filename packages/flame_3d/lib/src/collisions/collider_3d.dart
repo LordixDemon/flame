@@ -61,6 +61,34 @@ class Collider3D({
   final Aabb3 _colliderWorldAabb = Aabb3();
   final Aabb3 _localShapeAabb = Aabb3();
 
+  int _cachedMatrixVersion = -1;
+  Component? _cachedMatrixParent;
+  double _cachedOffsetX = double.nan;
+  double _cachedOffsetY = 0.0;
+  double _cachedOffsetZ = 0.0;
+  int _colliderMatrixRev = 0;
+  Shape3D? _cachedAabbShape;
+  int _cachedAabbMatrixRev = -1;
+
+  /// The collision systems this collider registered with when it mounted.
+  @internal
+  final List<CollisionSystem3D> enclosingCollisionSystems = [];
+
+  @override
+  void onMount() {
+    super.onMount();
+    CollisionSystem3D.attachToEnclosingSystems(this);
+  }
+
+  @override
+  void onRemove() {
+    for (var i = 0; i < enclosingCollisionSystems.length; i++) {
+      enclosingCollisionSystems[i].unregisterMountedCollider(this);
+    }
+    enclosingCollisionSystems.clear();
+    super.onRemove();
+  }
+
   /// The logical owner component of this collider: its parent [Component3D] if
   /// attached as a child, or `this` when standalone.
   Component3D get hostComponent {
@@ -68,14 +96,27 @@ class Collider3D({
     return p is Component3D ? p : this;
   }
 
-  /// World transformation matrix of [shape], combining [worldTransformMatrix]
-  /// with [localOffset].
-  Matrix4 get colliderWorldMatrix {
-    final w = worldTransformMatrix;
-    final m = w.storage;
+  bool _refreshColliderWorldMatrix() {
+    final p = parent;
+    final ver = worldTransformVersion;
     final ox = localOffset.x;
     final oy = localOffset.y;
     final oz = localOffset.z;
+    if ((isMounted || p == null) &&
+        ver == _cachedMatrixVersion &&
+        identical(p, _cachedMatrixParent) &&
+        ox == _cachedOffsetX &&
+        oy == _cachedOffsetY &&
+        oz == _cachedOffsetZ) {
+      return false;
+    }
+    _cachedMatrixVersion = ver;
+    _cachedMatrixParent = p;
+    _cachedOffsetX = ox;
+    _cachedOffsetY = oy;
+    _cachedOffsetZ = oz;
+    final w = worldTransformMatrix;
+    final m = w.storage;
     _colliderWorldMatrix.setFrom(w);
     if (ox != 0.0 || oy != 0.0 || oz != 0.0) {
       final out = _colliderWorldMatrix.storage;
@@ -83,13 +124,42 @@ class Collider3D({
       out[13] = m[1] * ox + m[5] * oy + m[9] * oz + m[13];
       out[14] = m[2] * ox + m[6] * oy + m[10] * oz + m[14];
     }
+    _colliderMatrixRev++;
+    return true;
+  }
+
+  /// Recomputes [_colliderWorldAabb] only when the collider's transform,
+  /// [localOffset], or [shape] changed; returns whether the AABB was refreshed.
+  @internal
+  bool refreshCachedWorldAabb() {
+    final matChanged = _refreshColliderWorldMatrix();
+    if (!matChanged &&
+        _cachedAabbMatrixRev == _colliderMatrixRev &&
+        identical(_cachedAabbShape, _shape)) {
+      return false;
+    }
+    _cachedAabbMatrixRev = _colliderMatrixRev;
+    _cachedAabbShape = _shape;
+    _shape.computeWorldAabb(_colliderWorldMatrix, _colliderWorldAabb);
+    return true;
+  }
+
+  /// Last world-space AABB computed by [colliderWorldAabb] or
+  /// [refreshCachedWorldAabb].
+  @internal
+  Aabb3 get cachedWorldAabb => _colliderWorldAabb;
+
+  /// World transformation matrix of [shape], combining [worldTransformMatrix]
+  /// with [localOffset].
+  Matrix4 get colliderWorldMatrix {
+    _refreshColliderWorldMatrix();
     return _colliderWorldMatrix;
   }
 
   /// Computes and returns the world-space AABB of [shape] at
   /// [colliderWorldMatrix].
   Aabb3 get colliderWorldAabb {
-    _shape.computeWorldAabb(colliderWorldMatrix, _colliderWorldAabb);
+    refreshCachedWorldAabb();
     return _colliderWorldAabb;
   }
 
@@ -175,56 +245,170 @@ class CollisionSystem3D({
       DynamicAabbTree3D<Collider3D>(fatMargin: fatMargin);
 
   final Set<Collider3D> _manualColliders = {};
+  final Set<Collider3D> _mountedColliders = {};
+  final List<Collider3D> _activeColliders = [];
+  final List<Component> _walkStack = [];
+  bool _collidersDirty = true;
   final Map<Collider3D, int> _proxyIds = {};
   final Set<Collider3D> _activeSetScratch = {};
   final List<Collider3D> _staleScratch = [];
   Map<_ColliderPairKey, (Collider3D, Collider3D)> _activePairs = {};
+  Map<_ColliderPairKey, (Collider3D, Collider3D)> _nextPairs = {};
+
+  Collider3D? _stepQueryCollider;
+  int _stepQueryProxy = -1;
+  late final void Function(int, Collider3D) _onStepCandidate =
+      _handleStepCandidate;
+
+  @override
+  void onMount() {
+    super.onMount();
+    final root = parent;
+    if (root != null) {
+      _walkStack
+        ..clear()
+        ..add(root);
+      while (_walkStack.isNotEmpty) {
+        final comp = _walkStack.removeLast();
+        if (comp is Collider3D) {
+          registerMountedCollider(comp);
+        }
+        _walkStack.addAll(comp.children);
+      }
+    }
+  }
+
+  @override
+  void onRemove() {
+    for (final c in _mountedColliders) {
+      c.enclosingCollisionSystems.remove(this);
+    }
+    _mountedColliders.clear();
+    _collidersDirty = true;
+    super.onRemove();
+  }
+
+  /// Registers [collider] mounted under this system's parent. Called when a
+  /// [Collider3D] mounts.
+  @internal
+  void registerMountedCollider(Collider3D collider) {
+    if (_mountedColliders.add(collider)) {
+      collider.enclosingCollisionSystems.add(this);
+      _collidersDirty = true;
+    }
+  }
+
+  /// Unregisters a mounted [collider] when removed from the tree.
+  @internal
+  void unregisterMountedCollider(Collider3D collider) {
+    if (_mountedColliders.remove(collider)) {
+      _collidersDirty = true;
+      if (!_manualColliders.contains(collider)) {
+        final proxy = _proxyIds.remove(collider);
+        if (proxy != null) {
+          broadphaseTree.remove(proxy);
+        }
+        _flushRemovedCollider(collider);
+      }
+    }
+  }
+
+  /// Registers [collider] with every enclosing [CollisionSystem3D] sibling of
+  /// its ancestors.
+  @internal
+  static void attachToEnclosingSystems(Collider3D collider) {
+    var ancestor = collider.parent;
+    while (ancestor != null) {
+      for (final sibling in ancestor.children) {
+        if (sibling is CollisionSystem3D) {
+          sibling.registerMountedCollider(collider);
+        }
+      }
+      ancestor = ancestor.parent;
+    }
+  }
 
   /// Explicitly registers [collider] for standalone or unmounted simulation.
   void register(Collider3D collider) {
-    _manualColliders.add(collider);
+    if (_manualColliders.add(collider)) {
+      _collidersDirty = true;
+    }
   }
 
   /// Unregisters a manually registered [collider] and fires any pending end
   /// callbacks for pairs involving it.
   void unregister(Collider3D collider) {
-    _manualColliders.remove(collider);
-    final proxy = _proxyIds.remove(collider);
-    if (proxy != null) {
-      broadphaseTree.remove(proxy);
+    if (_manualColliders.remove(collider)) {
+      _collidersDirty = true;
     }
-    _flushRemovedCollider(collider);
+    if (!_mountedColliders.contains(collider)) {
+      final proxy = _proxyIds.remove(collider);
+      if (proxy != null) {
+        broadphaseTree.remove(proxy);
+      }
+      _flushRemovedCollider(collider);
+    }
+  }
+
+  void _refreshColliders() {
+    final root = parent;
+    final walk = root != null && !isMounted;
+    if (!walk && !_collidersDirty) {
+      return;
+    }
+    _collidersDirty = false;
+    _activeColliders.clear();
+    final seen = _activeSetScratch..clear();
+
+    for (final c in _manualColliders) {
+      if (seen.add(c)) {
+        _activeColliders.add(c);
+      }
+    }
+    for (final c in _mountedColliders) {
+      if (seen.add(c)) {
+        _activeColliders.add(c);
+      }
+    }
+    if (walk) {
+      _walkStack
+        ..clear()
+        ..add(root);
+      while (_walkStack.isNotEmpty) {
+        final comp = _walkStack.removeLast();
+        if (comp is Collider3D && seen.add(comp)) {
+          _activeColliders.add(comp);
+        }
+        _walkStack.addAll(comp.children);
+      }
+    }
+
+    if (_proxyIds.length != _activeColliders.length ||
+        _proxyIds.keys.any((c) => !seen.contains(c))) {
+      _staleScratch.clear();
+      for (final c in _proxyIds.keys) {
+        if (!seen.contains(c)) {
+          _staleScratch.add(c);
+        }
+      }
+      for (var i = 0; i < _staleScratch.length; i++) {
+        final proxy = _proxyIds.remove(_staleScratch[i]);
+        if (proxy != null) {
+          broadphaseTree.remove(proxy);
+        }
+      }
+    }
   }
 
   /// Collects all active colliders (both mounted in the enclosing world/parent
   /// tree and manually registered via [register]).
   List<Collider3D> collectColliders([List<Collider3D>? out]) {
+    _refreshColliders();
     final result = out ?? <Collider3D>[];
-    result.clear();
-    final seen = _activeSetScratch..clear();
-
-    void addUnique(Collider3D c) {
-      if (seen.add(c)) {
-        result.add(c);
-      }
-    }
-
-    for (final c in _manualColliders) {
-      addUnique(c);
-    }
-
-    final root = parent;
-    if (root != null) {
-      void visit(Component comp) {
-        if (comp is Collider3D) {
-          addUnique(comp);
-        }
-        for (final child in comp.children) {
-          visit(child);
-        }
-      }
-
-      visit(root);
+    if (!identical(result, _activeColliders)) {
+      result
+        ..clear()
+        ..addAll(_activeColliders);
     }
     return result;
   }
@@ -232,37 +416,18 @@ class CollisionSystem3D({
   /// Synchronizes [broadphaseTree] with all currently active colliders,
   /// returning the active collider list.
   List<Collider3D> syncBroadphase() {
-    final colliders = collectColliders(_collectedScratch);
-
-    // Prune colliders that were unmounted or removed.
-    if (_proxyIds.length != colliders.length ||
-        _proxyIds.keys.any((c) => !_activeSetScratch.contains(c))) {
-      _staleScratch.clear();
-      for (final c in _proxyIds.keys) {
-        if (!_activeSetScratch.contains(c)) {
-          _staleScratch.add(c);
-        }
-      }
-      for (var i = 0; i < _staleScratch.length; i++) {
-        final c = _staleScratch[i];
-        final proxy = _proxyIds.remove(c);
-        if (proxy != null) {
-          broadphaseTree.remove(proxy);
-        }
-      }
-    }
-
-    for (var i = 0; i < colliders.length; i++) {
-      final c = colliders[i];
-      final box = c.colliderWorldAabb;
+    _refreshColliders();
+    for (var i = 0; i < _activeColliders.length; i++) {
+      final c = _activeColliders[i];
+      final moved = c.refreshCachedWorldAabb();
       final existingProxy = _proxyIds[c];
       if (existingProxy == null) {
-        _proxyIds[c] = broadphaseTree.insert(c, box);
-      } else {
-        broadphaseTree.update(existingProxy, box);
+        _proxyIds[c] = broadphaseTree.insert(c, c.cachedWorldAabb);
+      } else if (moved) {
+        broadphaseTree.update(existingProxy, c.cachedWorldAabb);
       }
     }
-    return colliders;
+    return _activeColliders;
   }
 
   @override
@@ -277,54 +442,18 @@ class CollisionSystem3D({
   /// [CollisionCallbacks3D] and [TriggerVolume3D] events.
   void step() {
     final colliders = syncBroadphase();
-    final nextPairs = <_ColliderPairKey, (Collider3D, Collider3D)>{};
+    final nextPairs = _nextPairs..clear();
 
     for (var i = 0; i < colliders.length; i++) {
       final a = colliders[i];
-      final proxyA = _proxyIds[a]!;
-      final boxA = a.colliderWorldAabb;
-      _queryAabb.setFrom(boxA);
-
-      broadphaseTree.queryAabbCallback(_queryAabb, (proxyB, b) {
-        if (proxyB <= proxyA) {
-          return;
-        }
-        if (!a.canCollideWith(b)) {
-          return;
-        }
-        if (!aabbOverlaps(a.colliderWorldAabb, b.colliderWorldAabb)) {
-          return;
-        }
-
-        // Canonical pair ordering so manifold A->B direction is deterministic.
-        final swap = identityHashCode(a) > identityHashCode(b);
-        final first = swap ? b : a;
-        final second = swap ? a : b;
-
-        final manifold = Narrowphase3D.test(
-          first.shape,
-          first.colliderWorldMatrix,
-          second.shape,
-          second.colliderWorldMatrix,
-        );
-        if (manifold == null) {
-          return;
-        }
-
-        final key = _ColliderPairKey(first, second);
-        final wasActive = _activePairs.containsKey(key);
-        nextPairs[key] = (first, second);
-
-        final flipped = manifold.flipped();
-        if (!wasActive) {
-          _dispatchStart(first, second, manifold);
-          _dispatchStart(second, first, flipped);
-        } else {
-          _dispatchStay(first, second, manifold);
-          _dispatchStay(second, first, flipped);
-        }
-      });
+      if (a.isStatic) {
+        continue;
+      }
+      _stepQueryCollider = a;
+      _stepQueryProxy = _proxyIds[a]!;
+      broadphaseTree.queryAabbCallback(a.cachedWorldAabb, _onStepCandidate);
     }
+    _stepQueryCollider = null;
 
     for (final entry in _activePairs.entries) {
       if (!nextPairs.containsKey(entry.key)) {
@@ -334,7 +463,62 @@ class CollisionSystem3D({
       }
     }
 
+    final prev = _activePairs;
     _activePairs = nextPairs;
+    _nextPairs = prev..clear();
+  }
+
+  void _handleStepCandidate(int proxyB, Collider3D b) {
+    final a = _stepQueryCollider!;
+    if (!b.isStatic && proxyB <= _stepQueryProxy) {
+      return;
+    }
+    if (!a.canCollideWith(b)) {
+      return;
+    }
+    if (!aabbOverlaps(a.cachedWorldAabb, b.cachedWorldAabb)) {
+      return;
+    }
+
+    // Canonical pair ordering so manifold A->B direction is deterministic.
+    final swap = identityHashCode(a) > identityHashCode(b);
+    final first = swap ? b : a;
+    final second = swap ? a : b;
+
+    final manifold = Narrowphase3D.test(
+      first.shape,
+      first.colliderWorldMatrix,
+      second.shape,
+      second.colliderWorldMatrix,
+    );
+    if (manifold == null) {
+      return;
+    }
+
+    final key = _ColliderPairKey(first, second);
+    final wasActive = _activePairs.containsKey(key);
+    _nextPairs[key] = (first, second);
+
+    final flipped = _hasCollisionReceiver(second) ? manifold.flipped() : null;
+    if (!wasActive) {
+      _dispatchStart(first, second, manifold);
+      if (flipped != null) {
+        _dispatchStart(second, first, flipped);
+      }
+    } else {
+      _dispatchStay(first, second, manifold);
+      if (flipped != null) {
+        _dispatchStay(second, first, flipped);
+      }
+    }
+  }
+
+  static bool _hasCollisionReceiver(Collider3D c) {
+    if (c is TriggerVolume3D || c is CollisionCallbacks3D) {
+      return true;
+    }
+    final p = c.parent;
+    return p is CollisionCallbacks3D && !identical(p, c);
   }
 
   /// Queries all colliders overlapping [shape] at [worldTransform].
@@ -812,7 +996,6 @@ class CollisionSystem3D({
   static final Quaternion _identityQuat = Quaternion.identity();
   static final Vector3 _unitScale = Vector3.all(1.0);
 
-  final List<Collider3D> _collectedScratch = [];
   final List<Collider3D> _candidatesScratch = [];
   final Aabb3 _queryAabb = Aabb3();
   final Matrix4 _queryTransform = Matrix4.identity();

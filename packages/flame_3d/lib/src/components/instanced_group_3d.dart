@@ -44,9 +44,10 @@ class InstancedGroup3D({
   int _length = 0;
   late Float32List _instances;
   Float32List? _worldInstances;
-  final Matrix4 _lastWorldMatrix = Matrix4.zero();
   int _localVersion = 0;
   int _transformedVersion = -1;
+  int _transformedWorldVer = -1;
+  int _worldBufferVersion = 1;
 
   final Aabb3 _localAabb = Aabb3();
   bool _localBoundsDirty = true;
@@ -174,6 +175,9 @@ class InstancedGroup3D({
   }
 
   @override
+  bool get usesDefaultFrustumVisibility => runtimeType == InstancedGroup3D;
+
+  @override
   Aabb3? computeLocalAabb() {
     if (_length == 0) {
       return null;
@@ -197,8 +201,12 @@ class InstancedGroup3D({
       return;
     }
     final world = worldTransformMatrix;
-    final buffer = _resolvedBuffer(world);
-    _updateMirroring(buffer, world);
+    final worldVer = worldTransformVersion;
+    final buffer = _resolvedBuffer(world, worldVer);
+    _updateMirroring(buffer, worldVer);
+    final bufVer = identical(buffer, _instances)
+        ? _localVersion
+        : _worldBufferVersion;
     final mirrored = _mirroredCount;
     if (mirrored == 0 || mirrored == _length) {
       for (final surface in mesh.surfaces) {
@@ -207,6 +215,7 @@ class InstancedGroup3D({
           instances: buffer,
           count: _length,
           mirrored: mirrored > 0,
+          instanceVersion: bufVer,
         );
       }
       return;
@@ -216,12 +225,18 @@ class InstancedGroup3D({
     final plain = _length - mirrored;
     for (final surface in mesh.surfaces) {
       context
-        ..drawInstances(surface, instances: _partitioned!, count: plain)
+        ..drawInstances(
+          surface,
+          instances: _partitioned!,
+          count: plain,
+          instanceVersion: _partitionVersion,
+        )
         ..drawInstances(
           surface,
           instances: _mirroredView!,
           count: mirrored,
           mirrored: true,
+          instanceVersion: _partitionVersion,
         );
     }
   }
@@ -233,20 +248,20 @@ class InstancedGroup3D({
   int _mirroredCount = 0;
   Float32List? _mirroringBuffer;
   int _mirroringVersion = -1;
-  final Matrix4 _mirroringWorld = Matrix4.zero();
+  int _mirroringWorldVer = -1;
+  int _partitionVersion = 1;
   Float32List? _partitioned;
   Float32List? _mirroredView;
 
-  void _updateMirroring(Float32List buffer, [Matrix4? worldMatrix]) {
-    final world = worldMatrix ?? worldTransformMatrix;
+  void _updateMirroring(Float32List buffer, int worldVer) {
     if (identical(buffer, _mirroringBuffer) &&
         _mirroringVersion == _localVersion &&
-        _mirroringWorld == world) {
+        _mirroringWorldVer == worldVer) {
       return;
     }
     _mirroringBuffer = buffer;
     _mirroringVersion = _localVersion;
-    _mirroringWorld.setFrom(world);
+    _mirroringWorldVer = worldVer;
 
     var mirrored = 0;
     for (var i = 0; i < _length; i++) {
@@ -259,6 +274,7 @@ class InstancedGroup3D({
       return;
     }
 
+    _partitionVersion++;
     var partitioned = _partitioned;
     if (partitioned == null || partitioned.length < _capacity * _stride) {
       partitioned = _partitioned = Float32List(_capacity * _stride);
@@ -318,8 +334,9 @@ class InstancedGroup3D({
     return best;
   }
 
-  Float32List _resolvedBuffer([Matrix4? worldMatrix]) {
+  Float32List _resolvedBuffer([Matrix4? worldMatrix, int? worldVer]) {
     final world = worldMatrix ?? worldTransformMatrix;
+    final wVer = worldVer ?? worldTransformVersion;
     if (world.isIdentity()) {
       return _instances;
     }
@@ -328,9 +345,10 @@ class InstancedGroup3D({
       out = _worldInstances = Float32List(_capacity * _stride);
       _transformedVersion = -1;
     }
-    if (_transformedVersion != _localVersion || _lastWorldMatrix != world) {
+    if (_transformedVersion != _localVersion || _transformedWorldVer != wVer) {
       _transformedVersion = _localVersion;
-      _lastWorldMatrix.setFrom(world);
+      _transformedWorldVer = wVer;
+      _worldBufferVersion++;
       final w = world.storage;
       for (var i = 0; i < _length; i++) {
         final b = i * _stride;

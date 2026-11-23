@@ -12,6 +12,7 @@ import 'package:flame_3d/src/ui3d/picture_texture.dart';
 import 'package:flutter/foundation.dart' show ValueChanged;
 import 'package:flutter/painting.dart'
     show TextDirection, TextPainter, TextSpan, TextStyle;
+import 'package:meta/meta.dart';
 
 /// Base interactive 2D control hosted on a [WidgetSurface3D] panel.
 abstract class SurfaceControl2D({
@@ -30,6 +31,10 @@ abstract class SurfaceControl2D({
   void invalidate() {
     _owner?.markDirty();
   }
+
+  /// Releases any cached native resources owned by this control.
+  @internal
+  void dispose() {}
 
   /// Paints this control onto [canvas] in panel pixel coordinates.
   void paint(ui.Canvas canvas);
@@ -62,6 +67,20 @@ class SurfaceButton2D({
   /// Callback invoked when a tap completes inside [bounds].
   ui.VoidCallback? onPressed;
 
+  final ui.Paint _fillPaint = ui.Paint();
+  final ui.Paint _borderPaint = ui.Paint()..style = ui.PaintingStyle.stroke;
+  TextPainter? _textPainter;
+  String? _cachedLabel;
+  ui.Color? _cachedTextColor;
+  double _cachedFontSize = -1;
+  double _cachedMaxWidth = -1;
+
+  @override
+  void dispose() {
+    _textPainter?.dispose();
+    _textPainter = null;
+  }
+
   @override
   void handlePointerUp(ui.Offset panelOffset, {required bool inside}) {
     if (enabled && inside) {
@@ -82,33 +101,42 @@ class SurfaceButton2D({
       bounds,
       ui.Radius.circular(borderRadius),
     );
+    _fillPaint.color = fill;
+    _borderPaint
+      ..color = borderColor
+      ..strokeWidth = hovered || pressed ? 2.5 : 1.5;
     canvas
-      ..drawRRect(rrect, ui.Paint()..color = fill)
-      ..drawRRect(
-        rrect,
-        ui.Paint()
-          ..color = borderColor
-          ..style = ui.PaintingStyle.stroke
-          ..strokeWidth = hovered || pressed ? 2.5 : 1.5,
-      );
+      ..drawRRect(rrect, _fillPaint)
+      ..drawRRect(rrect, _borderPaint);
 
     if (label.isNotEmpty) {
-      final painter = TextPainter(
-        text: TextSpan(
-          text: label,
-          style: TextStyle(
-            color: textColor,
-            fontSize: fontSize,
-            fontWeight: ui.FontWeight.w600,
+      final maxW = math.max(0.0, bounds.width - 8.0);
+      var painter = _textPainter;
+      if (painter == null ||
+          _cachedLabel != label ||
+          _cachedTextColor != textColor ||
+          _cachedFontSize != fontSize ||
+          _cachedMaxWidth != maxW) {
+        painter?.dispose();
+        painter = _textPainter = TextPainter(
+          text: TextSpan(
+            text: label,
+            style: TextStyle(
+              color: textColor,
+              fontSize: fontSize,
+              fontWeight: ui.FontWeight.w600,
+            ),
           ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout(maxWidth: math.max(0.0, bounds.width - 8.0));
+          textDirection: TextDirection.ltr,
+        )..layout(maxWidth: maxW);
+        _cachedLabel = label;
+        _cachedTextColor = textColor;
+        _cachedFontSize = fontSize;
+        _cachedMaxWidth = maxW;
+      }
       final tx = bounds.left + (bounds.width - painter.width) * 0.5;
       final ty = bounds.top + (bounds.height - painter.height) * 0.5;
-      painter
-        ..paint(canvas, ui.Offset(tx, ty))
-        ..dispose();
+      painter.paint(canvas, ui.Offset(tx, ty));
     }
   }
 }
@@ -170,6 +198,8 @@ class SurfaceSlider2D({
     _scrubAt(panelOffset.dx);
   }
 
+  final ui.Paint _paint = ui.Paint();
+
   @override
   void paint(ui.Canvas canvas) {
     final cy = bounds.center.dy;
@@ -184,7 +214,7 @@ class SurfaceSlider2D({
       trackRect,
       ui.Radius.circular(trackHeight * 0.5),
     );
-    canvas.drawRRect(trackRRect, ui.Paint()..color = trackColor);
+    canvas.drawRRect(trackRRect, _paint..color = trackColor);
 
     final frac = normalizedValue;
     final fillW = bounds.width * frac;
@@ -200,7 +230,7 @@ class SurfaceSlider2D({
           fillRect,
           ui.Radius.circular(trackHeight * 0.5),
         ),
-        ui.Paint()..color = activeColor,
+        _paint..color = activeColor,
       );
     }
 
@@ -212,7 +242,7 @@ class SurfaceSlider2D({
     canvas.drawCircle(
       ui.Offset(thumbX, cy),
       thumbRadius,
-      ui.Paint()..color = thumbColor,
+      _paint..color = thumbColor,
     );
   }
 }
@@ -300,6 +330,9 @@ class WidgetSurface3D({
 
   final Matrix4 _invWorld = Matrix4.identity();
   final Vector3 _worldNormal = Vector3(0.0, 0.0, 1.0);
+  final Vector3 _localPointScratch = Vector3.zero();
+  final ui.Paint _bgPaint = ui.Paint();
+  int _lastNormalWorldVer = -1;
 
   /// Registered interactive controls in paint order (hit-tested top-to-bottom).
   List<SurfaceControl2D> get controls =>
@@ -357,16 +390,23 @@ class WidgetSurface3D({
       _sinceLastUpload += dt;
     }
     // Keep `dragPlaneNormal` aligned with the panel's world-space +Z normal.
-    final m = worldTransformMatrix.storage;
-    _worldNormal.setValues(m[8], m[9], m[10]);
-    if (_worldNormal.length2 > 1e-12) {
-      _worldNormal.normalize();
-      dragPlaneNormal = _worldNormal;
+    final worldVer = worldTransformVersion;
+    if (worldVer != _lastNormalWorldVer) {
+      _lastNormalWorldVer = worldVer;
+      final m = worldTransformMatrix.storage;
+      _worldNormal.setValues(m[8], m[9], m[10]);
+      if (_worldNormal.length2 > 1e-12) {
+        _worldNormal.normalize();
+        dragPlaneNormal = _worldNormal;
+      }
     }
     if (_dirty && _sinceLastUpload >= minUploadInterval) {
       _refreshTextureNow();
     }
   }
+
+  @override
+  bool get usesDefaultFrustumVisibility => runtimeType == WidgetSurface3D;
 
   @override
   Aabb3? computeLocalAabb() => _panelMesh.aabb;
@@ -390,6 +430,9 @@ class WidgetSurface3D({
     final texture = _surfaceTexture;
     if (texture != null && texture.hasResource) {
       texture.dispose();
+    }
+    for (var i = 0; i < _controls.length; i++) {
+      _controls[i].dispose();
     }
     _textureReleased = true;
     super.onRemove();
@@ -465,17 +508,19 @@ class WidgetSurface3D({
           lx = lox + ldx * t;
           ly = loy + ldy * t;
         } else if (worldPoint != null) {
-          final lp = _invWorld.transformed3(worldPoint.clone());
-          lx = lp.x;
-          ly = lp.y;
+          _localPointScratch.setFrom(worldPoint);
+          _invWorld.transform3(_localPointScratch);
+          lx = _localPointScratch.x;
+          ly = _localPointScratch.y;
         } else {
           lx = lox;
           ly = loy;
         }
       } else if (worldPoint != null) {
-        final lp = _invWorld.transformed3(worldPoint.clone());
-        lx = lp.x;
-        ly = lp.y;
+        _localPointScratch.setFrom(worldPoint);
+        _invWorld.transform3(_localPointScratch);
+        lx = _localPointScratch.x;
+        ly = _localPointScratch.y;
       } else {
         return ui.Offset.zero;
       }
@@ -660,7 +705,7 @@ class WidgetSurface3D({
     if (backgroundColor.a > 0) {
       canvas.drawRect(
         ui.Rect.fromLTWH(0, 0, size.width, size.height),
-        ui.Paint()..color = backgroundColor,
+        _bgPaint..color = backgroundColor,
       );
     }
     paintSurface?.call(canvas, size);

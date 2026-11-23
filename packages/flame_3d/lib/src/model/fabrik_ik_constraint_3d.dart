@@ -80,7 +80,22 @@ class FabrikIkConstraint3D({
   final Vector3 _fromDir = Vector3.zero();
   final Vector3 _toDir = Vector3.zero();
   final Quaternion _deltaQ = Quaternion.identity();
-  final Matrix4 _oldCombined = Matrix4.identity();
+
+  late final List<Matrix4> _chainDeltas = List<Matrix4>.generate(
+    chainNodeIndices.length - 1,
+    (_) => Matrix4.identity(),
+    growable: false,
+  );
+  late final Int32List _chainOrderIdx = Int32List(
+    chainNodeIndices.length - 1,
+  );
+  final Matrix4 _stepDelta = Matrix4.identity();
+  final Matrix4 _accumDelta = Matrix4.identity();
+  final Matrix4 _mulTmp = Matrix4.identity();
+  final Vector3 _pCur = Vector3.zero();
+  final Vector3 _pNext = Vector3.zero();
+  ModelPoseWorkspace? _cachedWorkspace;
+  bool _chainStrictlyNested = false;
 
   double? _coneLimitAt(int jointIdx) {
     final perJoint = jointMaxConeAnglesRad;
@@ -266,48 +281,128 @@ class FabrikIkConstraint3D({
     }
 
     // 3. Apply solved joint directions into `workspace` in parent-to-child
-    // order, propagating each delta to descendants.
-    for (var i = 0; i < n - 1; i++) {
-      final curIdx = chainNodeIndices[i];
-      final nextIdx = chainNodeIndices[i + 1];
-      final curNode = workspace.nodesByIndex[curIdx]!;
-      final nextNode = workspace.nodesByIndex[nextIdx]!;
-      final cm = curNode.combinedTransform;
-      final nm = nextNode.combinedTransform;
-
-      _fromDir.setValues(
-        nm.storage[12] - cm.storage[12],
-        nm.storage[13] - cm.storage[13],
-        nm.storage[14] - cm.storage[14],
-      );
-      final o0 = i * 3;
-      final o1 = (i + 1) * 3;
-      _toDir.setValues(
-        _pos[o1] - _pos[o0],
-        _pos[o1 + 1] - _pos[o0 + 1],
-        _pos[o1 + 2] - _pos[o0 + 2],
-      );
-      if (_fromDir.length2 < 1e-12 || _toDir.length2 < 1e-12) {
-        continue;
+    // order, propagating cumulative deltas in a single topological pass when
+    // the chain is strictly nested (the standard skeleton case).
+    if (!identical(_cachedWorkspace, workspace)) {
+      _cachedWorkspace = workspace;
+      var nested = true;
+      final orderMap = workspace.orderIndexByNodeIndex;
+      final parentOrder = workspace.parentOrderIndex;
+      for (var i = 0; i < n - 1; i++) {
+        final ord = orderMap[chainNodeIndices[i]];
+        if (ord == null) {
+          nested = false;
+          break;
+        }
+        _chainOrderIdx[i] = ord;
+        final nextOrd = orderMap[chainNodeIndices[i + 1]];
+        if (nextOrd == null) {
+          nested = false;
+          break;
+        }
+        var curP = parentOrder[nextOrd];
+        var found = false;
+        while (curP >= 0) {
+          if (curP == ord) {
+            found = true;
+            break;
+          }
+          curP = parentOrder[curP];
+        }
+        if (!found) {
+          nested = false;
+          break;
+        }
       }
-      _fromDir.normalize();
-      _toDir.normalize();
+      _chainStrictlyNested = nested;
+    }
 
-      _oldCombined.setFrom(cm);
-      BoneModifier3D.swingRotationInto(
-        _fromDir,
-        _toDir,
-        _deltaQ,
-        blendWeight: w,
-      );
-      BoneModifier3D.rotateCombinedAroundOrigin(cm, _deltaQ);
-      BoneModifier3D.propagateDeltaToDescendants(
-        model,
+    if (_chainStrictlyNested) {
+      _accumDelta.setIdentity();
+      for (var i = 0; i < n - 1; i++) {
+        final o0 = i * 3;
+        final o1 = (i + 1) * 3;
+        _pCur.setValues(_origPos[o0], _origPos[o0 + 1], _origPos[o0 + 2]);
+        _accumDelta.transform3(_pCur);
+        _pNext.setValues(_origPos[o1], _origPos[o1 + 1], _origPos[o1 + 2]);
+        _accumDelta.transform3(_pNext);
+
+        _fromDir
+          ..setFrom(_pNext)
+          ..sub(_pCur);
+        _toDir.setValues(
+          _pos[o1] - _pos[o0],
+          _pos[o1 + 1] - _pos[o0 + 1],
+          _pos[o1 + 2] - _pos[o0 + 2],
+        );
+        if (_fromDir.length2 >= 1e-12 && _toDir.length2 >= 1e-12) {
+          _fromDir.normalize();
+          _toDir.normalize();
+          BoneModifier3D.swingRotationInto(
+            _fromDir,
+            _toDir,
+            _deltaQ,
+            blendWeight: w,
+          );
+          BoneModifier3D.buildPivotRotationDelta(
+            _pCur.x,
+            _pCur.y,
+            _pCur.z,
+            _deltaQ,
+            _stepDelta,
+          );
+          _mulTmp
+            ..setFrom(_stepDelta)
+            ..multiply(_accumDelta);
+          _accumDelta.setFrom(_mulTmp);
+        }
+        _chainDeltas[i].setFrom(_accumDelta);
+      }
+      BoneModifier3D.applyChainDeltas(
         workspace,
-        curIdx,
-        _oldCombined,
-        cm,
+        _chainOrderIdx,
+        _chainDeltas,
       );
+    } else {
+      for (var i = 0; i < n - 1; i++) {
+        final curIdx = chainNodeIndices[i];
+        final nextIdx = chainNodeIndices[i + 1];
+        final curNode = workspace.nodesByIndex[curIdx]!;
+        final nextNode = workspace.nodesByIndex[nextIdx]!;
+        final cm = curNode.combinedTransform;
+        final nm = nextNode.combinedTransform;
+
+        _fromDir.setValues(
+          nm.storage[12] - cm.storage[12],
+          nm.storage[13] - cm.storage[13],
+          nm.storage[14] - cm.storage[14],
+        );
+        final o0 = i * 3;
+        final o1 = (i + 1) * 3;
+        _toDir.setValues(
+          _pos[o1] - _pos[o0],
+          _pos[o1 + 1] - _pos[o0 + 1],
+          _pos[o1 + 2] - _pos[o0 + 2],
+        );
+        if (_fromDir.length2 < 1e-12 || _toDir.length2 < 1e-12) {
+          continue;
+        }
+        _fromDir.normalize();
+        _toDir.normalize();
+
+        BoneModifier3D.swingRotationInto(
+          _fromDir,
+          _toDir,
+          _deltaQ,
+          blendWeight: w,
+        );
+        BoneModifier3D.rotateAndPropagateToDescendants(
+          workspace,
+          curIdx,
+          cm,
+          _deltaQ,
+        );
+      }
     }
   }
 

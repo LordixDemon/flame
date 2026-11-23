@@ -33,6 +33,9 @@ class Line3D._({
     return line;
   }
 
+  @override
+  bool get usesDefaultFrustumVisibility => runtimeType == Line3D;
+
   static Transform3D _calculateTransform(
     Vector3 start,
     Vector3 end,

@@ -45,6 +45,11 @@ extension _AnimationStatePlayback on AnimationState {
         ..animationRef = null
         .._blendSpace1D = null
         .._blendSpace2D = null
+        .._cached1DSpace = null
+        .._cached1DParam = double.nan
+        .._cached2DSpace = null
+        .._cached2DX = double.nan
+        .._cached2DY = double.nan
         .._blendDuration = 0.0
         .._blendElapsed = 0.0;
       if (_spareStates.length < 32) {
@@ -125,6 +130,11 @@ extension _AnimationStatePlayback on AnimationState {
     _blendDuration = source._blendDuration;
     _blendSpace1D = source._blendSpace1D;
     _blendSpace2D = source._blendSpace2D;
+    _cached1DSpace = null;
+    _cached1DParam = double.nan;
+    _cached2DSpace = null;
+    _cached2DX = double.nan;
+    _cached2DY = double.nan;
     blendParameter1D = source.blendParameter1D;
     _seenParam1D = source._seenParam1D;
     _blendParam2D.setFrom(source._blendParam2D);
@@ -223,10 +233,12 @@ extension _AnimationStatePlayback on AnimationState {
     double scaledDt,
     AnimationEventCallback3D fire,
   ) {
-    final bracket = space.resolveBracket(blendParameter1D);
-    final a = space.samples[bracket.indexA];
-    final b = space.samples[bracket.indexB];
-    final t = bracket.t;
+    _ensure1DBracket(space);
+    final idxA = _cached1DIndexA;
+    final idxB = _cached1DIndexB;
+    final a = space.samples[idxA];
+    final b = space.samples[idxB];
+    final t = _cached1DT;
 
     if (space.syncNormalizedPhase) {
       final durA = a.animation.lastTime;
@@ -265,7 +277,7 @@ extension _AnimationStatePlayback on AnimationState {
         }
       }
     } else {
-      final domIdx = t < 0.5 ? bracket.indexA : bracket.indexB;
+      final domIdx = t < 0.5 ? idxA : idxB;
       _advanceUnsyncedSamples(space.samples, domIdx, scaledDt, fire);
     }
   }
@@ -317,11 +329,7 @@ extension _AnimationStatePlayback on AnimationState {
     double scaledDt,
     AnimationEventCallback3D fire,
   ) {
-    final activeCount = space.evaluateWeights(
-      _blendParam2D,
-      _active2DIndices,
-      _active2DWeights,
-    );
+    final activeCount = _ensure2DWeights(space);
     if (space.syncNormalizedPhase) {
       var effDur = 0.0;
       var durWeightSum = 0.0;

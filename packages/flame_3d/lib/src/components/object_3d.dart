@@ -91,31 +91,69 @@ abstract class Object3D({
   @internal
   bool spatialIndexDirty = false;
 
+  /// Whether this component uses the default frustum AABB test in
+  /// [isVisible] without custom subclass overrides.
+  @internal
+  bool get usesDefaultFrustumVisibility => false;
+
   /// Whether an ancestor's AABB was fully inside the frustum, meaning
   /// children can skip their own frustum tests.
   static bool _ancestorFullyInside = false;
 
   @override
   void renderTree(Canvas canvas) {
+    if (!visible) {
+      return;
+    }
+    final world = worldOrNull;
+    if (world != null) {
+      if (!world.isTraversingTree && !isEffectivelyVisible) {
+        return;
+      }
+      _renderObjectTree(world, world.context, canvas, fast3D: false);
+      return;
+    }
     if (!isEffectivelyVisible) {
       return;
     }
-    final world = worldRef;
+    final resolvedWorld = worldRef;
+    _renderObjectTree(
+      resolvedWorld,
+      resolvedWorld.context,
+      canvas,
+      fast3D: false,
+    );
+  }
+
+  @override
+  void renderTree3D(World3D world, RenderContext3D context, Canvas? canvas) {
+    if (!visible) {
+      return;
+    }
+    _renderObjectTree(world, context, canvas, fast3D: true);
+  }
+
+  void _renderObjectTree(
+    World3D world,
+    RenderContext3D context,
+    Canvas? canvas, {
+    required bool fast3D,
+  }) {
     assert(
       world.isRendering,
       'Object3D is rendered outside of the rendering of its World3D',
     );
-    final context = world.context;
-    if ((cameraMask & context.cameraMask) == 0) {
+    if (cameraMask != 0xFFFFFFFF && (cameraMask & context.cameraMask) == 0) {
       return;
     }
+    final hasKids = hasChildren;
     final isShadowPass = context.isShadowPass;
     var drawSelf = true;
     if (isShadowPass) {
       final layer = context.shadowCasterLayer;
       if (!castsShadows ||
           (layer != ShadowCasterLayer.all && !_inShadowLayer(layer))) {
-        if (!hasChildren) {
+        if (!hasKids) {
           return;
         }
         drawSelf = false;
@@ -145,22 +183,29 @@ abstract class Object3D({
       }
     }
 
-    if (hasChildren) {
+    if (hasKids) {
       final wasAncestorFullyInside = _ancestorFullyInside;
       if (cullResult == CullResult.inside) {
         _ancestorFullyInside = true;
       }
-      super.renderTree(canvas);
+      if (fast3D) {
+        super.renderTree3D(world, context, canvas);
+      } else {
+        super.renderTree(canvas!);
+      }
       _ancestorFullyInside = wasAncestorFullyInside;
       RenderProfile.lap(RenderPhase.traversal);
     }
 
     final inFrustum =
-        drawSelf && (cullResult == CullResult.inside || isVisible(frustum));
+        drawSelf &&
+        (cullResult == CullResult.inside ||
+            usesDefaultFrustumVisibility ||
+            isVisible(frustum));
     RenderProfile.lap(RenderPhase.culling);
     if (inFrustum) {
       world.recordVisibleObject(this);
-      if (!hasChildren || isEffectivelyVisible) {
+      if (fast3D ? visible : (!hasKids || isEffectivelyVisible)) {
         draw(context);
       }
     }

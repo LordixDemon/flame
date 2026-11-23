@@ -1,10 +1,46 @@
 part of 'world_3d.dart';
 
 extension _World3DPipeline on World3D {
-  bool _renderShadows(Canvas canvas, RenderContext3D? overrideContext) {
+  void _traverseWorldChildren(RenderContext3D ctx, Canvas? canvas) {
+    _rendering = true;
+    _traversingTree = true;
+    try {
+      if (isMounted &&
+          _nonComponent3DRootCount == 0 &&
+          !_rootHasPrioritizedChild &&
+          !debugMode) {
+        final roots = _rootComponents3D;
+        if (roots != null) {
+          for (var i = 0; i < roots.length; i++) {
+            roots[i].renderTree3D(this, ctx, canvas);
+          }
+        }
+      } else {
+        final allowFast3D = !debugMode;
+        for (final child in children) {
+          if (allowFast3D && child is Component3D) {
+            child.renderTree3D(this, ctx, canvas);
+          } else {
+            child.renderTree(canvas ?? fallbackDummyCanvas());
+          }
+        }
+      }
+    } finally {
+      _traversingTree = false;
+      _rendering = false;
+    }
+  }
+
+  bool _renderShadows(Canvas? canvas, RenderContext3D? overrideContext) {
     final lights = _passLights;
-    final ctx = (overrideContext ?? context)
-      ..lights = lights
+    final ctx = overrideContext ?? context;
+    if (!identical(ctx.syncedOwner, this) ||
+        !identical(ctx.lights, lights) ||
+        ctx.worldLightsVersion != lightsVersion) {
+      ctx.lights = lights;
+    }
+    ctx
+      ..setWorldLights(lights, lightsVersion)
       ..fog = _fog;
     final group = _shadowGroup;
     if (group != null && overrideContext == null) {
@@ -33,7 +69,7 @@ extension _World3DPipeline on World3D {
   /// [depthPrepassEnabled], [PostProcessSettings.needsDepthNormal], or
   /// diagnostic `depth`/`ssao` debug mode is active.
   bool _renderDepthNormalsImpl(
-    Canvas canvas,
+    Canvas? canvas,
     int width,
     int height, {
     RenderContext3D? overrideContext,
@@ -57,19 +93,9 @@ extension _World3DPipeline on World3D {
     prepareOcclusionCuller(ctx);
     _visibleObjects.clear();
     _collectingVisible = true;
-    var onlyComponent3D = true;
+    final onlyComponent3D = _allRootChildrenComponent3D();
     try {
-      _rendering = true;
-      try {
-        for (final child in children) {
-          if (child is! Component3D) {
-            onlyComponent3D = false;
-          }
-          child.renderTree(canvas);
-        }
-      } finally {
-        _rendering = false;
-      }
+      _traverseWorldChildren(ctx, canvas);
     } finally {
       _collectingVisible = false;
       ctx.endDepthNormalPass();
@@ -84,7 +110,7 @@ extension _World3DPipeline on World3D {
     return true;
   }
 
-  void _recordCasters(Canvas canvas) {
+  void _recordCasters(Canvas? canvas) {
     final ctx = context;
     if (ctx.isShadowPass &&
         ctx.shadowCasterLayer == ShadowCasterLayer.moving &&
@@ -93,23 +119,7 @@ extension _World3DPipeline on World3D {
       _recordMovingCasters(ctx);
       return;
     }
-    _rendering = true;
-    try {
-      for (final child in children) {
-        child.renderTree(canvas);
-      }
-    } finally {
-      _rendering = false;
-    }
-  }
-
-  bool _allRootChildrenComponent3D() {
-    for (final child in children) {
-      if (child is! Component3D) {
-        return false;
-      }
-    }
-    return true;
+    _traverseWorldChildren(ctx, canvas);
   }
 
   void _recordMovingCasters(RenderContext3D ctx) {
@@ -132,7 +142,9 @@ extension _World3DPipeline on World3D {
         if (cull == CullResult.outside) {
           continue;
         }
-        if (cull == CullResult.inside || obj.isVisible(frustum)) {
+        if (cull == CullResult.inside ||
+            obj.usesDefaultFrustumVisibility ||
+            obj.isVisible(frustum)) {
           if (obj.shadowMotion == ShadowCasterMotion.auto) {
             _shadowCasters.drawnMoving(obj);
           }
@@ -141,6 +153,32 @@ extension _World3DPipeline on World3D {
       }
     } finally {
       _rendering = false;
+    }
+  }
+
+  void _renderSceneImpl(Canvas? canvas, {RenderContext3D? overrideContext}) {
+    final ctx = overrideContext ?? context;
+    syncContextOptions(ctx);
+    prepareOcclusionCuller(ctx);
+    final reuseVisible =
+        _hasVisibleCache &&
+        identical(ctx, _visibleCtx) &&
+        ctx.cameraMask == _visibleCameraMask &&
+        sceneVersion == _visibleSceneVersion &&
+        sameMatrix16(ctx.viewProjection.storage, _visibleVp);
+    _hasVisibleCache = false;
+    if (reuseVisible) {
+      _rendering = true;
+      try {
+        final visible = _visibleObjects;
+        for (var i = 0; i < visible.length; i++) {
+          visible[i].draw(ctx);
+        }
+      } finally {
+        _rendering = false;
+      }
+    } else {
+      _traverseWorldChildren(ctx, canvas);
     }
   }
 
@@ -155,7 +193,11 @@ extension _World3DPipeline on World3D {
     GpuRenderTarget? ownedOutputTarget,
     Rect? visibleFrame,
   }) {
-    syncContextOptions(renderContext);
+    final usePost = needsPostCompositePass(device);
+    // The scene (and the targets composited into it) is the HDR target only
+    // when the composite decodes it.
+    final nextHdr = _hdrEnabled && usePost;
+    syncContextOptions(renderContext, hdrEnabled: nextHdr);
     renderContext.clearActiveSceneColorTarget();
 
     for (final custom in customPasses) {
@@ -176,7 +218,13 @@ extension _World3DPipeline on World3D {
     // Record the 3D scene's draws ONCE up front so we know whether refractive
     // or WBOIT translucent surfaces are present without traversing components
     // twice!
-    recordDraws();
+    final prevHdr = _pipelineHdrOverride;
+    _pipelineHdrOverride = nextHdr;
+    try {
+      recordDraws();
+    } finally {
+      _pipelineHdrOverride = prevHdr;
+    }
 
     final supportsTexTargets = device.backend.supportsTextureTargets;
     final sceneFormat =
@@ -184,14 +232,10 @@ extension _World3DPipeline on World3D {
             device.backend.supportsPixelFormat(GpuPixelFormat.rgbaFloat16)
         ? GpuPixelFormat.rgbaFloat16
         : GpuPixelFormat.rgba8888;
-    final usePost = needsPostCompositePass(device);
-    // The scene (and the targets composited into it) is the HDR target only
-    // when the composite decodes it.
-    final nextHdr = _hdrEnabled && usePost;
     if (renderContext.hdrEnabled != nextHdr) {
       renderContext
         ..hdrEnabled = nextHdr
-        ..bumpPassUniforms();
+        ..bumpPassOptionsUniforms();
     }
     final runGrab =
         supportsTexTargets &&
@@ -206,8 +250,9 @@ extension _World3DPipeline on World3D {
 
     // 1. Optional Scene Color Grab-Pass for screen-space water & IOR glass
     //    refraction.
+    GpuTextureTarget? grabTarget;
     if (runGrab) {
-      final grabTarget = device.textureTarget(
+      grabTarget = device.textureTarget(
         width,
         height,
         sceneFormat,
@@ -222,17 +267,25 @@ extension _World3DPipeline on World3D {
 
     // 2. Order-independent transparency (`OitMode3D.weightedBlended`).
     if (runWboit) {
-      final opaqueTarget = device.textureTarget(
-        width,
-        height,
-        sceneFormat,
-        clearValue: clearValue,
-        role: _SceneTarget.oitOpaque,
-        msaaSampleCount: msaaSampleCount,
-      );
-      device.beginTexturePass(opaqueTarget, frontFace: renderContext.frontFace);
-      renderContext.flushOpaquePreview();
-      device.endTexturePass();
+      final GpuTextureTarget opaqueTarget;
+      if (grabTarget != null && msaaSampleCount == 1) {
+        opaqueTarget = grabTarget;
+      } else {
+        opaqueTarget = device.textureTarget(
+          width,
+          height,
+          sceneFormat,
+          clearValue: clearValue,
+          role: _SceneTarget.oitOpaque,
+          msaaSampleCount: msaaSampleCount,
+        );
+        device.beginTexturePass(
+          opaqueTarget,
+          frontFace: renderContext.frontFace,
+        );
+        renderContext.flushOpaquePreview();
+        device.endTexturePass();
+      }
 
       final accumTarget = device.textureTarget(
         width,
@@ -434,16 +487,16 @@ extension _World3DPipeline on World3D {
       }
     }
 
-    final dummyRecorder = PictureRecorder();
-    final dummyCanvas = Canvas(dummyRecorder);
-
     try {
       return renderWithHost(resolvedDevice, resolvedContext, msaa: msaa, () {
         resolvedContext.setCamera(view, projection);
-        syncContextOptions(resolvedContext);
-        renderShadows(dummyCanvas, overrideContext: resolvedContext);
-        renderDepthNormals(
-          dummyCanvas,
+        syncContextOptions(
+          resolvedContext,
+          hdrEnabled: effectiveHdrEnabled(resolvedDevice),
+        );
+        renderShadowsNoCanvas(overrideContext: resolvedContext);
+        _renderDepthNormalsImpl(
+          null,
           width,
           height,
           overrideContext: resolvedContext,
@@ -467,14 +520,14 @@ extension _World3DPipeline on World3D {
           msaaSampleCount: msaa.sampleCount,
           clearValue: clearValue,
           ownedOutputTarget: ownedTarget,
-          recordDraws: () => renderScene(
-            dummyCanvas,
+          recordDraws: () => _renderSceneImpl(
+            null,
             overrideContext: resolvedContext,
           ),
         );
       });
     } finally {
-      dummyRecorder.endRecording().dispose();
+      disposeFallbackDummyCanvas();
       if (closeFrame) {
         if (resolvedEmbedded != null) {
           resolvedEmbedded.close();
@@ -500,21 +553,18 @@ extension _World3DPipeline on World3D {
   }) {
     final width = math.max(1, size.width.round());
     final height = math.max(1, size.height.round());
-    final dummyRecorder = PictureRecorder();
-    final dummyCanvas = Canvas(dummyRecorder);
     try {
       renderWithHost(device, context, msaa: msaa, () {
         context.setCamera(view, projection);
-        syncContextOptions(context);
-        renderShadows(dummyCanvas, overrideContext: context);
-        renderDepthNormals(
-          dummyCanvas,
+        syncContextOptions(context, hdrEnabled: false);
+        renderShadowsNoCanvas(overrideContext: context);
+        _renderDepthNormalsImpl(
+          null,
           width,
           height,
           overrideContext: context,
         );
-        syncContextOptions(context);
-        renderScene(dummyCanvas, overrideContext: context);
+        _renderSceneImpl(null, overrideContext: context);
         device.beginTexturePass(
           target,
           frontFace: context.frontFace,
@@ -525,7 +575,7 @@ extension _World3DPipeline on World3D {
         context.clearActiveSceneColorTarget();
       });
     } finally {
-      dummyRecorder.endRecording().dispose();
+      disposeFallbackDummyCanvas();
     }
   }
 }

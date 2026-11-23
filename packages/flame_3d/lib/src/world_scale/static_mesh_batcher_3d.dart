@@ -415,6 +415,9 @@ class StaticMeshBatcher3D({
   }
 
   @override
+  bool get usesDefaultFrustumVisibility => runtimeType == StaticMeshBatcher3D;
+
+  @override
   Aabb3? computeLocalAabb() {
     if (_slots.isEmpty) {
       return null;

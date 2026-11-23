@@ -140,11 +140,15 @@ extension _PhysicsWorldBroadphase3D on PhysicsWorld3D {
   }
 
   bool _jointBlocksCollision(RigidBody3D a, RigidBody3D b) {
-    for (var i = 0; i < _joints.length; i++) {
-      final j = _joints[i];
-      if (!j.collideConnected &&
-          ((identical(j.bodyA, a) && identical(j.bodyB, b)) ||
-              (identical(j.bodyA, b) && identical(j.bodyB, a)))) {
+    if (_joints.isEmpty) {
+      return false;
+    }
+    final partners = a.nonCollidingJointPartners;
+    if (partners == null || partners.isEmpty) {
+      return false;
+    }
+    for (var i = 0; i < partners.length; i++) {
+      if (identical(partners[i], b)) {
         return true;
       }
     }
@@ -153,13 +157,10 @@ extension _PhysicsWorldBroadphase3D on PhysicsWorld3D {
 
   void _collectBodyCandidate(int _, RigidBody3D cand) {
     final bodyA = _queryBody!;
-    if (cand.deterministicId <= bodyA.deterministicId) {
+    if (identical(cand, bodyA) || cand.solverIndex == 2) {
       return;
     }
     if (!bodyA.canCollideWith(cand)) {
-      return;
-    }
-    if (PhysicsWorld3D._isInactive(bodyA) && PhysicsWorld3D._isInactive(cand)) {
       return;
     }
     if (!aabbOverlaps(bodyA.cachedWorldAabb, cand.cachedWorldAabb)) {
@@ -176,7 +177,7 @@ extension _PhysicsWorldBroadphase3D on PhysicsWorld3D {
     if (!PhysicsWorld3D._isSolidColliderFor(collider, body)) {
       return;
     }
-    if (!aabbOverlaps(body.cachedWorldAabb, collider.colliderWorldAabb)) {
+    if (!aabbOverlaps(body.cachedWorldAabb, collider.cachedWorldAabb)) {
       return;
     }
     _colliderCandidates.add(collider);

@@ -204,6 +204,66 @@ class MutableManifoldBuffer3D() {
     _manifoldData[manifoldIndex * 4 + 3] = depth;
   }
 
+  /// Updates the normal stored for [manifoldIndex].
+  void setNormal(int manifoldIndex, double nx, double ny, double nz) {
+    final mo = manifoldIndex * 4;
+    _manifoldData[mo] = nx;
+    _manifoldData[mo + 1] = ny;
+    _manifoldData[mo + 2] = nz;
+  }
+
+  /// Flips normals and swaps witness points `A <-> B` for all manifolds from
+  /// [startManifold] to the end of the buffer.
+  void flipManifoldsFrom(int startManifold) {
+    for (var m = startManifold; m < _manifoldCount; m++) {
+      final mo = m * 4;
+      _manifoldData[mo] = -_manifoldData[mo];
+      _manifoldData[mo + 1] = -_manifoldData[mo + 1];
+      _manifoldData[mo + 2] = -_manifoldData[mo + 2];
+      final start = _manifoldRanges[m * 2];
+      final len = _manifoldRanges[m * 2 + 1];
+      for (var k = 0; k < len; k++) {
+        final co = (start + k) * 7;
+        final tx = _contactData[co];
+        final ty = _contactData[co + 1];
+        final tz = _contactData[co + 2];
+        _contactData[co] = _contactData[co + 3];
+        _contactData[co + 1] = _contactData[co + 4];
+        _contactData[co + 2] = _contactData[co + 5];
+        _contactData[co + 3] = tx;
+        _contactData[co + 4] = ty;
+        _contactData[co + 5] = tz;
+      }
+    }
+  }
+
+  /// Copies [srcManifoldIndex] (and all of its contacts) from [src] into
+  /// `this` without heap allocations.
+  void copyManifoldFrom(MutableManifoldBuffer3D src, int srcManifoldIndex) {
+    final mIdx = beginManifold(
+      src.normalX(srcManifoldIndex),
+      src.normalY(srcManifoldIndex),
+      src.normalZ(srcManifoldIndex),
+      src.depth(srcManifoldIndex),
+    );
+    final start = src.contactStart(srcManifoldIndex);
+    final len = src.contactLength(srcManifoldIndex);
+    for (var k = 0; k < len; k++) {
+      final ci = start + k;
+      addContact(
+        mIdx,
+        src.pointAX(ci),
+        src.pointAY(ci),
+        src.pointAZ(ci),
+        src.pointBX(ci),
+        src.pointBY(ci),
+        src.pointBZ(ci),
+        src.pointDepth(ci),
+        src.featureId(ci),
+      );
+    }
+  }
+
   /// Appends a contact point to [manifoldIndex].
   void addContact(
     int manifoldIndex,
@@ -417,6 +477,68 @@ abstract final class Narrowphase3D._() {
     Matrix4 transformB,
     MutableManifoldBuffer3D out,
   ) {
+    if (shapeA is CompoundShape3D) {
+      _rawManifoldBuf.clear();
+      _collectCompoundRawInto(
+        shapeA,
+        transformA,
+        shapeB,
+        transformB,
+        _rawManifoldBuf,
+        0,
+      );
+      _mergeCoDirectionalInto(_rawManifoldBuf, out);
+      return;
+    }
+    if (shapeB is CompoundShape3D) {
+      _rawManifoldBuf.clear();
+      _collectCompoundRawInto(
+        shapeB,
+        transformB,
+        shapeA,
+        transformA,
+        _rawManifoldBuf,
+        0,
+      );
+      _rawManifoldBuf.flipManifoldsFrom(0);
+      _mergeCoDirectionalInto(_rawManifoldBuf, out);
+      return;
+    }
+    if (shapeA is HeightfieldShape3D) {
+      _rawManifoldBuf.clear();
+      _heightfieldShapeRawInto(
+        shapeB,
+        transformB,
+        shapeA,
+        transformA,
+        _rawManifoldBuf,
+      );
+      _rawManifoldBuf.flipManifoldsFrom(0);
+      _mergeCoDirectionalInto(_rawManifoldBuf, out);
+      return;
+    }
+    if (shapeB is HeightfieldShape3D) {
+      _rawManifoldBuf.clear();
+      _heightfieldShapeRawInto(
+        shapeA,
+        transformA,
+        shapeB,
+        transformB,
+        _rawManifoldBuf,
+      );
+      _mergeCoDirectionalInto(_rawManifoldBuf, out);
+      return;
+    }
+    _primitiveOrConvexInto(shapeA, transformA, shapeB, transformB, out);
+  }
+
+  static void _primitiveOrConvexInto(
+    Shape3D shapeA,
+    Matrix4 transformA,
+    Shape3D shapeB,
+    Matrix4 transformB,
+    MutableManifoldBuffer3D out,
+  ) {
     switch ((shapeA, shapeB)) {
       case (final SphereShape3D a, final SphereShape3D b):
         final mA = transformA.storage;
@@ -471,10 +593,7 @@ abstract final class Narrowphase3D._() {
       case (final BoxShape3D a, final BoxShape3D b):
         _boxBoxInto(a, transformA, b, transformB, out);
       default:
-        final list = testAll(shapeA, transformA, shapeB, transformB);
-        for (var i = 0; i < list.length; i++) {
-          out.appendManifold(list[i]);
-        }
+        _convexConvexInto(shapeA, transformA, shapeB, transformB, out);
     }
   }
 

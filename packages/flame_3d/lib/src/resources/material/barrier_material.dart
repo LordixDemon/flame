@@ -766,7 +766,6 @@ class BarrierMaterial({
   final Float64List _packedImpacts = Float64List(maxImpactSlots * 8);
   // x, y, z, strength, r, g, b, and 1 when the color is the default.
   final Float64List _nearPoints = Float64List(maxNearPoints * 8);
-  final Matrix4 _inverse = Matrix4.zero();
 
   double _pulseStart = 0;
   double _pulseFrom = 0;
@@ -1285,6 +1284,9 @@ class BarrierMaterial({
   int _appliedFragGen = -1;
   RenderContext? _appliedContext;
   int _appliedCameraPass = -1;
+
+  @override
+  bool get hasPassStableFragmentShader => runtimeType == BarrierMaterial;
 
   @override
   bool get cachesApply => runtimeType == BarrierMaterial;
