@@ -180,7 +180,7 @@ base class GpuBackend._(
   }) {
     final buffer = _device.createBuffer(
       GPUBufferDescriptor(
-        size: _align(sizeInBytes, 4),
+        size: base.GpuBackend.alignUp(sizeInBytes, 4),
         usage:
             GPUBufferUsage.vertex |
             GPUBufferUsage.index |
@@ -194,7 +194,9 @@ base class GpuBackend._(
   @override
   GpuShaderLibrary loadShaderLibrary(String assetName) {
     final key = _wgslBundleKey(assetName);
-    final unprefixed = _wgslBundleKey(_withoutPackagePrefix(assetName));
+    final unprefixed = _wgslBundleKey(
+      base.GpuBackend.stripPackagePrefix(assetName),
+    );
     final bundle = _bundles[key] ?? _bundles[unprefixed];
     if (bundle == null) {
       if (assetName.startsWith(_packagePrefix)) {
@@ -203,7 +205,8 @@ base class GpuBackend._(
         // prepass, order-independent transparency, ...) is not available on
         // the web yet.
         throw UnsupportedError(
-          'The flame_3d shader "${_withoutPackagePrefix(assetName)}" has no '
+          'The flame_3d shader '
+          '"${base.GpuBackend.stripPackagePrefix(assetName)}" has no '
           'WebGPU build: the feature that draws with it is not available on '
           'the web yet. See the platform support sections of the flame_3d '
           'rendering and post-processing documentation.',
@@ -439,14 +442,6 @@ base class GpuBackend._(
 
   static const String _packagePrefix = 'packages/flame_3d/';
 
-  static String _withoutPackagePrefix(String assetName) {
-    if (!assetName.startsWith('packages/')) {
-      return assetName;
-    }
-    final packageEnd = assetName.indexOf('/', 'packages/'.length);
-    return packageEnd < 0 ? assetName : assetName.substring(packageEnd + 1);
-  }
-
   GPUTexture _solidTexture(int argb) {
     final texture = _device.createTexture(
       GPUTextureDescriptor(
@@ -483,7 +478,7 @@ base class GpuBackend._(
         }
       }
     }
-    return _align(max, 4);
+    return base.GpuBackend.alignUp(max, 4);
   }
 }
 
@@ -1245,7 +1240,7 @@ Uint8List _padded(ByteData data) {
   if (source.length % 4 == 0) {
     return source;
   }
-  return Uint8List(_align(source.length, 4))
+  return Uint8List(base.GpuBackend.alignUp(source.length, 4))
     ..setRange(0, source.length, source);
 }
 
@@ -1257,9 +1252,6 @@ const _depthFormat = 'depth24plus-stencil8';
 
 /// WebGPU minimum uniform buffer offset alignment.
 const _uniformAlignment = 256;
-
-int _align(int value, int alignment) =>
-    ((value + alignment - 1) ~/ alignment) * alignment;
 
 String _wgslBundleKey(String assetName) {
   if (assetName.endsWith('.wgslbundle')) {

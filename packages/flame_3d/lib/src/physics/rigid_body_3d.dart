@@ -6,6 +6,7 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/game.dart' show NotifyingQuaternion, NotifyingVector3;
 import 'package:flame_3d/physics.dart' show PhysicsWorld3D;
+import 'package:flame_3d/src/extensions/geometry_math.dart';
 import 'package:meta/meta.dart';
 
 /// Deterministic 32-bit-safe SplitMix/Xoshiro128** PRNG used by
@@ -244,7 +245,7 @@ class RigidBody3D({
     if (!_hasComOffset) {
       return pos;
     }
-    _rotateQuat(bodyRotation, localCenterOfMass, _worldComScratch);
+    rotateVectorByQuat(bodyRotation, localCenterOfMass, _worldComScratch);
     _worldComScratch.add(pos);
     return _worldComScratch;
   }
@@ -659,7 +660,7 @@ class RigidBody3D({
     final offDiag2 = ts[1] * ts[1] + ts[2] * ts[2] + ts[5] * ts[5];
     final diag2 = ts[0] * ts[0] + ts[4] * ts[4] + ts[8] * ts[8];
     if (offDiag2 > 1e-12 * diag2 &&
-        _invertSymmetric3(tensor, _localInvInertiaTensor)) {
+        invertSymmetric3D(tensor, _localInvInertiaTensor)) {
       _hasOffDiagonalInertia = true;
       final inv = _localInvInertiaTensor.storage;
       _localInvInertia.setValues(inv[0], inv[4], inv[8]);
@@ -679,55 +680,6 @@ class RigidBody3D({
     _localInvInertiaTensor.storage[4] = _localInvInertia.y;
     _localInvInertiaTensor.storage[8] = _localInvInertia.z;
     updateWorldInertia();
-  }
-
-  static bool _invertSymmetric3(Matrix3 sym, Matrix3 out) {
-    final s = sym.storage;
-    final a00 = s[0];
-    final a01 = s[1];
-    final a02 = s[2];
-    final a11 = s[4];
-    final a12 = s[5];
-    final a22 = s[8];
-
-    final c00 = a11 * a22 - a12 * a12;
-    final c01 = -(a01 * a22 - a12 * a02);
-    final c02 = a01 * a12 - a11 * a02;
-    final c11 = a00 * a22 - a02 * a02;
-    final c12 = -(a00 * a12 - a01 * a02);
-    final c22 = a00 * a11 - a01 * a01;
-
-    final det = a00 * c00 + a01 * c01 + a02 * c02;
-    if (det.abs() <= 1e-14) {
-      return false;
-    }
-    final invDet = 1.0 / det;
-    final o = out.storage;
-    o[0] = c00 * invDet;
-    o[1] = c01 * invDet;
-    o[2] = c02 * invDet;
-    o[3] = c01 * invDet;
-    o[4] = c11 * invDet;
-    o[5] = c12 * invDet;
-    o[6] = c02 * invDet;
-    o[7] = c12 * invDet;
-    o[8] = c22 * invDet;
-    return true;
-  }
-
-  static void _rotateQuat(Quaternion q, Vector3 v, Vector3 out) {
-    final qx = q.x;
-    final qy = q.y;
-    final qz = q.z;
-    final qw = q.w;
-    final tx = 2.0 * (qy * v.z - qz * v.y);
-    final ty = 2.0 * (qz * v.x - qx * v.z);
-    final tz = 2.0 * (qx * v.y - qy * v.x);
-    out.setValues(
-      v.x + qw * tx + (qy * tz - qz * ty),
-      v.y + qw * ty + (qz * tx - qx * tz),
-      v.z + qw * tz + (qx * ty - qy * tx),
-    );
   }
 
   static void _cross(Vector3 a, Vector3 b, Vector3 out) {

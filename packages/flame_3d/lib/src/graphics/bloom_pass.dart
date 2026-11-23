@@ -1,9 +1,9 @@
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' show Color, Image, Rect, Size;
 
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/graphics/fullscreen_quad.dart';
 import 'package:meta/meta.dart';
 
 /// Runs soft-knee bright-pass extraction, multi-pass blur, and unified
@@ -29,24 +29,6 @@ class BloomPass(final GraphicsDevice _device) {
       'packages/flame_3d/assets/shaders/bloom_composite.shaderbundle';
   static const String _compositeSimpleBundle =
       'packages/flame_3d/assets/shaders/bloom_composite_simple.shaderbundle';
-
-  static final Surface _fullscreenQuad = Surface.fromBuffers(
-    vertices: Float32List.fromList(const [
-      -1.0, -1.0, 0.0, //
-      1.0, -1.0, 0.0, //
-      1.0, 1.0, 0.0, //
-      -1.0, 1.0, 0.0, //
-    ]),
-    indices: Uint16List.fromList(const [0, 1, 2, 0, 2, 3]),
-    layout: VertexLayout(const [
-      VertexAttribute(VertexLayout.positionAttribute, 3),
-    ]),
-  );
-
-  static const RenderState _fullscreenState = RenderState(
-    depthTest: false,
-    depthWrite: false,
-  );
 
   late final Shader _prefilterVert = VertexShader.fromAsset(_prefilterBundle);
   late final Shader _prefilterFrag = FragmentShader.fromAsset(
@@ -462,10 +444,14 @@ class BloomPass(final GraphicsDevice _device) {
   void _drawQuad(Shader vert, Shader frag, _BloomShaderCache cache) {
     vert.resource;
     frag.resource;
-    final pipeline = _device.pipelineFor(vert, frag, _fullscreenQuad.layout);
+    final pipeline = _device.pipelineFor(
+      vert,
+      frag,
+      fullscreenQuadSurface.layout,
+    );
     _device
       ..bindPipeline(pipeline)
-      ..setRenderState(_fullscreenState)
+      ..setRenderState(fullscreenQuadState)
       ..bindUniformBlock(cache.block);
     final slots = cache.samplerSlots;
     final indices = cache.samplerIndices;
@@ -476,8 +462,8 @@ class BloomPass(final GraphicsDevice _device) {
       );
     }
     _device
-      ..bindSurface(_fullscreenQuad)
-      ..drawSurface(_fullscreenQuad);
+      ..bindSurface(fullscreenQuadSurface)
+      ..drawSurface(fullscreenQuadSurface);
   }
 }
 

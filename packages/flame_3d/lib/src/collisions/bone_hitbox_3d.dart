@@ -3,6 +3,7 @@ import 'package:flame_3d/collisions.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/model.dart';
+import 'package:flame_3d/src/extensions/geometry_math.dart';
 
 /// A single skeletal bone hitbox descriptor attached to a bone (by [boneName]
 /// or [nodeIndex]) inside a [SkinnedHitboxRig3D].
@@ -245,7 +246,7 @@ class SkinnedHitboxRig3D({
       ..setFrom(worldRay.direction)
       ..scale(1.0 / dirLen);
 
-    if (!_rayHitsAabb(_unitRay, _unionAabb, maxDistance)) {
+    if (!rayHitsAabb(_unitRay, _unionAabb, maxDistance)) {
       return null;
     }
 
@@ -258,7 +259,7 @@ class SkinnedHitboxRig3D({
       if (idx == null) {
         continue;
       }
-      if (!_rayHitsAabb(_unitRay, hb.worldAabb, limit)) {
+      if (!rayHitsAabb(_unitRay, hb.worldAabb, limit)) {
         continue;
       }
       final hit = hb.shape.raycast(
@@ -315,7 +316,7 @@ class SkinnedHitboxRig3D({
       ..setFrom(worldRay.direction)
       ..scale(1.0 / dirLen);
 
-    if (!_rayHitsAabb(_unitRay, _unionAabb, maxDistance)) {
+    if (!rayHitsAabb(_unitRay, _unionAabb, maxDistance)) {
       return hits;
     }
 
@@ -325,7 +326,7 @@ class SkinnedHitboxRig3D({
       if (idx == null) {
         continue;
       }
-      if (!_rayHitsAabb(_unitRay, hb.worldAabb, maxDistance)) {
+      if (!rayHitsAabb(_unitRay, hb.worldAabb, maxDistance)) {
         continue;
       }
       final hit = hb.shape.raycast(
@@ -366,37 +367,5 @@ class SkinnedHitboxRig3D({
       }
     }
     return null;
-  }
-
-  static bool _rayHitsAabb(Ray ray, Aabb3 box, double maxT) {
-    var tMin = 0.0;
-    var tMax = maxT;
-
-    bool slab(double o, double d, double lo, double hi) {
-      final minV = lo - 1e-5;
-      final maxV = hi + 1e-5;
-      if (d.abs() < 1e-12) {
-        return o >= minV && o <= maxV;
-      }
-      final inv = 1.0 / d;
-      var t1 = (minV - o) * inv;
-      var t2 = (maxV - o) * inv;
-      if (t1 > t2) {
-        final s = t1;
-        t1 = t2;
-        t2 = s;
-      }
-      if (t1 > tMin) {
-        tMin = t1;
-      }
-      if (t2 < tMax) {
-        tMax = t2;
-      }
-      return tMin <= tMax;
-    }
-
-    return slab(ray.origin.x, ray.direction.x, box.min.x, box.max.x) &&
-        slab(ray.origin.y, ray.direction.y, box.min.y, box.max.y) &&
-        slab(ray.origin.z, ray.direction.z, box.min.z, box.max.z);
   }
 }

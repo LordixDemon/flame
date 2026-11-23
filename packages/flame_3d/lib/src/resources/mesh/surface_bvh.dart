@@ -311,6 +311,210 @@ class SurfaceBvh {
   final Int32List _triangles;
 
   final Int32List _stack = Int32List(128);
+  Int32List _queryStack = Int32List(128);
+  bool _inQuery = false;
+
+  /// Appends indices of triangles in [surface] whose BVH leaf (or individual
+  /// triangle bounds when [filterTriangles] is `true`) overlaps [localAabb].
+  ///
+  /// Returns `outTriangles.length`. Pass an empty [outTriangles] list to
+  /// collect only results for this query.
+  int queryAabb(
+    Aabb3 localAabb,
+    List<int> outTriangles, {
+    bool filterTriangles = false,
+  }) {
+    return queryAabbExtents(
+      localAabb.min.x,
+      localAabb.min.y,
+      localAabb.min.z,
+      localAabb.max.x,
+      localAabb.max.y,
+      localAabb.max.z,
+      outTriangles,
+      filterTriangles: filterTriangles,
+    );
+  }
+
+  /// Appends indices of triangles in [surface] whose BVH leaf (or individual
+  /// triangle bounds when [filterTriangles] is `true`) overlaps the local-space
+  /// box `[minX..maxX] x [minY..maxY] x [minZ..maxZ]`.
+  ///
+  /// Returns `outTriangles.length`.
+  int queryAabbExtents(
+    double minX,
+    double minY,
+    double minZ,
+    double maxX,
+    double maxY,
+    double maxZ,
+    List<int> outTriangles, {
+    bool filterTriangles = false,
+  }) {
+    if (nodeCount == 0) {
+      return outTriangles.length;
+    }
+    final qMinX = minX - 1e-5;
+    final qMinY = minY - 1e-5;
+    final qMinZ = minZ - 1e-5;
+    final qMaxX = maxX + 1e-5;
+    final qMaxY = maxY + 1e-5;
+    final qMaxZ = maxZ + 1e-5;
+
+    final bounds = _bounds;
+    final counts = _counts;
+    final leftOrFirst = _leftOrFirst;
+    final rightChild = _rightChild;
+    final triangles = _triangles;
+
+    final verts = filterTriangles ? surface.vertexData : null;
+    final indices = filterTriangles ? surface.indices : null;
+    final stride = _stride;
+    final posOffset = _positionOffset;
+
+    final reentrant = _inQuery;
+    if (reentrant) {
+      final localStack = <int>[0];
+      while (localStack.isNotEmpty) {
+        final node = localStack.removeLast();
+        final nb = node * 6;
+        if (bounds[nb] > qMaxX ||
+            bounds[nb + 3] < qMinX ||
+            bounds[nb + 1] > qMaxY ||
+            bounds[nb + 4] < qMinY ||
+            bounds[nb + 2] > qMaxZ ||
+            bounds[nb + 5] < qMinZ) {
+          continue;
+        }
+        final cnt = counts[node];
+        if (cnt > 0) {
+          _appendLeafTriangles(
+            leftOrFirst[node],
+            cnt,
+            triangles,
+            outTriangles,
+            verts,
+            indices,
+            stride,
+            posOffset,
+            qMinX,
+            qMinY,
+            qMinZ,
+            qMaxX,
+            qMaxY,
+            qMaxZ,
+          );
+        } else {
+          localStack
+            ..add(rightChild[node])
+            ..add(leftOrFirst[node]);
+        }
+      }
+      return outTriangles.length;
+    }
+
+    _inQuery = true;
+    try {
+      var sp = 0;
+      _queryStack[sp++] = 0;
+      while (sp > 0) {
+        final node = _queryStack[--sp];
+        final nb = node * 6;
+        if (bounds[nb] > qMaxX ||
+            bounds[nb + 3] < qMinX ||
+            bounds[nb + 1] > qMaxY ||
+            bounds[nb + 4] < qMinY ||
+            bounds[nb + 2] > qMaxZ ||
+            bounds[nb + 5] < qMinZ) {
+          continue;
+        }
+        final cnt = counts[node];
+        if (cnt > 0) {
+          _appendLeafTriangles(
+            leftOrFirst[node],
+            cnt,
+            triangles,
+            outTriangles,
+            verts,
+            indices,
+            stride,
+            posOffset,
+            qMinX,
+            qMinY,
+            qMinZ,
+            qMaxX,
+            qMaxY,
+            qMaxZ,
+          );
+        } else {
+          if (sp + 2 > _queryStack.length) {
+            final grown = Int32List(_queryStack.length * 2)
+              ..setRange(0, sp, _queryStack);
+            _queryStack = grown;
+          }
+          _queryStack[sp++] = rightChild[node];
+          _queryStack[sp++] = leftOrFirst[node];
+        }
+      }
+    } finally {
+      _inQuery = false;
+    }
+    return outTriangles.length;
+  }
+
+  static void _appendLeafTriangles(
+    int start,
+    int count,
+    Int32List triangles,
+    List<int> outTriangles,
+    Float32List? verts,
+    List<int>? indices,
+    int stride,
+    int posOffset,
+    double qMinX,
+    double qMinY,
+    double qMinZ,
+    double qMaxX,
+    double qMaxY,
+    double qMaxZ,
+  ) {
+    if (verts == null || indices == null) {
+      for (var i = start; i < start + count; i++) {
+        outTriangles.add(triangles[i]);
+      }
+      return;
+    }
+    for (var i = start; i < start + count; i++) {
+      final tri = triangles[i];
+      final b = tri * 3;
+      final i0 = indices[b] * stride + posOffset;
+      final i1 = indices[b + 1] * stride + posOffset;
+      final i2 = indices[b + 2] * stride + posOffset;
+
+      final x0 = verts[i0];
+      final x1 = verts[i1];
+      final x2 = verts[i2];
+      if (math.min(x0, math.min(x1, x2)) > qMaxX ||
+          math.max(x0, math.max(x1, x2)) < qMinX) {
+        continue;
+      }
+      final y0 = verts[i0 + 1];
+      final y1 = verts[i1 + 1];
+      final y2 = verts[i2 + 1];
+      if (math.min(y0, math.min(y1, y2)) > qMaxY ||
+          math.max(y0, math.max(y1, y2)) < qMinY) {
+        continue;
+      }
+      final z0 = verts[i0 + 2];
+      final z1 = verts[i1 + 2];
+      final z2 = verts[i2 + 2];
+      if (math.min(z0, math.min(z1, z2)) > qMaxZ ||
+          math.max(z0, math.max(z1, z2)) < qMinZ) {
+        continue;
+      }
+      outTriangles.add(tri);
+    }
+  }
 
   /// Finds the closest intersection of [ray] (in [surface]'s local space)
   /// within `[0, maxDistance]`, or `null` when nothing is hit.

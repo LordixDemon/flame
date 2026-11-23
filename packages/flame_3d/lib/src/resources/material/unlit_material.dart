@@ -2,6 +2,7 @@ import 'dart:ui' hide FragmentShader;
 
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/resources/material/material_apply_cache.dart';
 
 /// {@template unlit_material}
 /// A material that renders textures without any lighting calculations.
@@ -58,9 +59,7 @@ class UnlitMaterial({
       _albedoTexture = noteChange(_albedoTexture, value);
   Texture _albedoTexture = albedoTexture ?? Texture.standard;
 
-  int _appliedVersion = -1;
-  Shader? _appliedFrag;
-  int _appliedFragGen = -1;
+  final SimpleApplyCache _applyCache = SimpleApplyCache();
   Shader? _cachedFrag;
   int _cachedFragGen = -1;
   int _texIdx = -1;
@@ -71,31 +70,21 @@ class UnlitMaterial({
   bool get cachesApply => runtimeType == UnlitMaterial;
 
   @override
-  void invalidateApplyCache() {
-    _appliedVersion = -1;
-  }
+  void invalidateApplyCache() => _applyCache.invalidate();
 
   @override
   bool isApplyCacheValid(
     RenderContext context,
     Shader vertexShader,
     Shader fragmentShader,
-  ) {
-    return _appliedVersion == version &&
-        identical(_appliedFrag, fragmentShader) &&
-        _appliedFragGen == fragmentShader.generation;
-  }
+  ) => _applyCache.isValid(version, fragmentShader);
 
   @override
   void recordApplyCache(
     RenderContext context,
     Shader vertexShader,
     Shader fragmentShader,
-  ) {
-    _appliedVersion = version;
-    _appliedFrag = fragmentShader;
-    _appliedFragGen = fragmentShader.generation;
-  }
+  ) => _applyCache.record(version, fragmentShader);
 
   @override
   void apply(RenderContext context) {

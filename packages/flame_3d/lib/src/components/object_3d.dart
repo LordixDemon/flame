@@ -82,7 +82,7 @@ abstract class Object3D({
 
   ShadowCasterMotion _shadowMotion = ShadowCasterMotion.auto;
 
-  /// Index inside [ShadowCasterTracker]'s active movers list, or `-1`.
+  /// Index inside `ShadowCasterTracker`'s active movers list, or `-1`.
   @internal
   int shadowMoverIndex = -1;
 

@@ -6,6 +6,7 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/debug.dart';
 import 'package:flame_3d/graphics.dart';
+import 'package:flame_3d/src/components/component_3d.dart' show ComponentBounds;
 import 'package:flame_test/flame_test.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';

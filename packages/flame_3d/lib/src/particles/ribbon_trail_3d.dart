@@ -8,6 +8,7 @@ import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/particles.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/extensions/geometry_math.dart';
 
 /// {@template stroke_batch_3d}
 /// Collects one or more 3D polylines (motion ribbons, laser beams, trajectory
@@ -316,14 +317,7 @@ class StrokeBatch3D({
       _transformedVersion = _localVersion;
       _lastWorldMatrix.setFrom(world);
       final m = world.storage;
-      final det =
-          m[0] * (m[5] * m[10] - m[6] * m[9]) -
-          m[4] * (m[1] * m[10] - m[2] * m[9]) +
-          m[8] * (m[1] * m[6] - m[2] * m[5]);
-      final vol = det.abs();
-      final widthScale = vol == 1
-          ? 1.0
-          : (vol == 0 ? 0.0 : math.exp(math.log(vol) / 3));
+      final widthScale = uniformScale3x3(m);
 
       for (var i = 0; i < _segmentCount; i++) {
         final b = i * _stride;

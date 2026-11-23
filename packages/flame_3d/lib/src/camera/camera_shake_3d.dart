@@ -2,6 +2,8 @@ import 'dart:math' as math;
 
 import 'package:flame/components.dart';
 import 'package:flame_3d/camera.dart';
+import 'package:flame_3d/src/camera/camera_rig_support.dart';
+import 'package:meta/meta.dart';
 
 /// Trauma-based 6-DOF (3D position + pitch/yaw/roll angular) camera shake
 /// component for a [CameraComponent3D].
@@ -18,9 +20,12 @@ class CameraShake3D({
   final int seed = 1337,
   super.priority,
   super.key,
-}) extends Component {
+}) extends Component with CameraRigSupport {
   final CameraComponent3D? _explicitCamera = camera;
-  CameraComponent3D? _mountedCamera;
+
+  @override
+  @protected
+  CameraComponent3D? get explicitCamera => _explicitCamera;
 
   double _trauma = 0.0;
   double _elapsed = 0.0;
@@ -51,31 +56,7 @@ class CameraShake3D({
   double get shakeIntensity => _trauma * _trauma;
 
   /// Resolved [CameraComponent3D] driven by this shake component.
-  CameraComponent3D get camera {
-    final resolved = _resolveCamera();
-    if (resolved == null) {
-      throw StateError(
-        'CameraShake3D requires a CameraComponent3D passed to its constructor '
-        'or present as an ancestor.',
-      );
-    }
-    return resolved;
-  }
-
-  CameraComponent3D? _resolveCamera() {
-    if (_explicitCamera != null) {
-      return _explicitCamera;
-    }
-    if (_mountedCamera != null) {
-      return _mountedCamera;
-    }
-    for (final ancestor in ancestors()) {
-      if (ancestor is CameraComponent3D) {
-        return _mountedCamera = ancestor;
-      }
-    }
-    return null;
-  }
+  CameraComponent3D get camera => requireCamera('CameraShake3D');
 
   /// Adds [amount] to [trauma], clamped to `[0..1]`.
   void addTrauma(double amount) {
@@ -85,7 +66,7 @@ class CameraShake3D({
   /// Clears all active trauma and immediately restores the unshaken camera
   /// pose.
   void reset() {
-    final cam = _resolveCamera();
+    final cam = resolveCamera();
     if (cam != null) {
       _removePreviousShakeIfUnmodified(cam);
     }
@@ -96,23 +77,23 @@ class CameraShake3D({
   @override
   void onMount() {
     super.onMount();
-    _mountedCamera = null;
+    resetMountedCamera();
   }
 
   @override
   void onRemove() {
-    final cam = _resolveCamera();
+    final cam = resolveCamera();
     if (cam != null) {
       _removePreviousShakeIfUnmodified(cam);
     }
-    _mountedCamera = null;
+    resetMountedCamera();
     super.onRemove();
   }
 
   @override
   void update(double dt) {
     super.update(dt);
-    final cam = _resolveCamera();
+    final cam = resolveCamera();
     if (cam == null) {
       return;
     }

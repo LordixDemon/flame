@@ -4,6 +4,8 @@ import 'package:flame/components.dart';
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/graphics.dart' show CullMode;
+import 'package:flame_3d/src/camera/camera_rig_support.dart';
+import 'package:meta/meta.dart';
 
 /// Collision-aware 3D spring-arm follow camera controller.
 ///
@@ -28,7 +30,7 @@ class SpringArmCamera3D({
   var bool Function(Object3D object)? collisionFilter,
   super.priority,
   super.key,
-}) extends Component {
+}) extends Component with CameraRigSupport {
   this
     : assert(armLength > 0, 'armLength must be positive'),
       assert(minArmLength >= 0, 'minArmLength must be non-negative'),
@@ -39,8 +41,11 @@ class SpringArmCamera3D({
 
   final CameraComponent3D? _explicitCamera = camera;
   final World3D? _explicitWorld = world;
-  CameraComponent3D? _mountedCamera;
   World3D? _mountedWorld;
+
+  @override
+  @protected
+  CameraComponent3D? get explicitCamera => _explicitCamera;
 
   /// Fallback world-space target point followed when [targetComponent] is
   /// `null`. Mutating this vector in place updates the followed point.
@@ -76,31 +81,7 @@ class SpringArmCamera3D({
   final Ray _probeRay = Ray();
 
   /// Resolved [CameraComponent3D] driven by this controller.
-  CameraComponent3D get camera {
-    final resolved = _resolveCamera();
-    if (resolved == null) {
-      throw StateError(
-        'SpringArmCamera3D requires a CameraComponent3D passed to its '
-        'constructor or present as an ancestor.',
-      );
-    }
-    return resolved;
-  }
-
-  CameraComponent3D? _resolveCamera() {
-    if (_explicitCamera != null) {
-      return _explicitCamera;
-    }
-    if (_mountedCamera != null) {
-      return _mountedCamera;
-    }
-    for (final ancestor in ancestors()) {
-      if (ancestor is CameraComponent3D) {
-        return _mountedCamera = ancestor;
-      }
-    }
-    return null;
-  }
+  CameraComponent3D get camera => requireCamera('SpringArmCamera3D');
 
   World3D? _resolveWorld(CameraComponent3D? cam) {
     if (_explicitWorld != null) {
@@ -130,13 +111,13 @@ class SpringArmCamera3D({
   @override
   void onMount() {
     super.onMount();
-    _mountedCamera = null;
+    resetMountedCamera();
     _mountedWorld = null;
   }
 
   @override
   void onRemove() {
-    _mountedCamera = null;
+    resetMountedCamera();
     _mountedWorld = null;
     super.onRemove();
   }
@@ -220,15 +201,8 @@ class SpringArmCamera3D({
     return customFilter == null || customFilter(candidate);
   }
 
-  static final Vector3 _zAxis = Vector3(0, 0, 1);
-  static final Vector3 _negativeYAxis = Vector3(0, -1, 0);
-
   void _computeArmDirection() {
-    final ref = _upAxis.z.abs() < 0.9 ? _zAxis : _negativeYAxis;
-    _upAxis.crossInto(ref, _axisX);
-    _axisX.normalize();
-    _axisX.crossInto(_upAxis, _axisZ);
-    _axisZ.normalize();
+    buildCameraHorizontalFrame(_upAxis, _axisX, _axisZ);
 
     final cosY = math.cos(yaw);
     final sinY = math.sin(yaw);

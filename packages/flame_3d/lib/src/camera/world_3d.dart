@@ -10,12 +10,19 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/components/component_3d.dart'
+    show ComponentBounds, ShadowCasterTracker;
 import 'package:flame_3d/src/embedding/embedded_renderer.dart';
+import 'package:flame_3d/src/extensions/clip_space.dart';
+import 'package:flame_3d/src/extensions/geometry_math.dart';
 import 'package:flame_3d/src/graphics/material_tracker.dart';
 import 'package:flame_3d/src/world_scale/occlusion_culler_3d.dart';
 import 'package:meta/meta.dart';
 
 part 'shadow_group.dart';
+part 'world_3d_lighting.dart';
+part 'world_3d_pipeline.dart';
+part 'world_3d_queries.dart';
 
 /// {@template world_3d}
 /// The root component for all 3D world elements.
@@ -103,14 +110,6 @@ class World3D({
   int _settingsOffset = 0;
   int _animationTicks = 0;
   final MaterialTracker _drawnMaterials = MaterialTracker();
-
-  /// Replaces a setting by [assign], keeping [_valuesVersion] as it was:
-  /// the setter marks the scene dirty.
-  void _replaceSetting(void Function() assign) {
-    final before = _settingsVersion;
-    assign();
-    _settingsOffset += before - _settingsVersion;
-  }
 
   /// The part of [sceneVersion] that follows the components of this world
   /// (and the lights and world settings it draws with), without the values
@@ -614,7 +613,7 @@ class World3D({
     final vp = ctx.viewProjection.storage;
     if (identical(_lastRasterizedCuller, culler) &&
         _occFrame == frame &&
-        _sameVp16(vp, _occVp)) {
+        sameMatrix16(vp, _occVp)) {
       return;
     }
     _lastRasterizedCuller = culler;
@@ -691,14 +690,6 @@ class World3D({
     }
   }
 
-  void _addToSceneBounds(Component3D child) {
-    if (child.includeInSceneBounds) {
-      _sceneBounds.add(child);
-    } else {
-      _unboundedComponents.add(child);
-    }
-  }
-
   /// Moves [child] in or out of [sceneBounds] after its
   /// [Component3D.includeInSceneBounds] changed.
   @internal
@@ -772,18 +763,6 @@ class World3D({
     }
   }
 
-  Game? _resolveGame() {
-    if (!isMounted) {
-      _cachedGame = null;
-      return findGame();
-    }
-    final cached = _cachedGame;
-    if (cached != null) {
-      return cached;
-    }
-    return _cachedGame = findGame();
-  }
-
   @override
   void update(double dt) {
     super.update(dt);
@@ -809,18 +788,6 @@ class World3D({
       }
     }
     return host?.context;
-  }
-
-  Scene3DHost _findHost() {
-    for (final ancestor in ancestors()) {
-      if (ancestor case final Scene3DHost host) {
-        return host;
-      }
-    }
-    throw StateError(
-      'A World3D needs a Scene3DHost ancestor: a Scene3DComponent, or a '
-      'Game3D game such as FlameGame3D.',
-    );
   }
 
   /// The projection of the shadow map of this world.
@@ -861,88 +828,18 @@ class World3D({
     }
   }
 
-  bool _renderShadows(Canvas canvas, RenderContext3D? overrideContext) {
-    final lights = _passLights;
-    final ctx = (overrideContext ?? context)
-      ..lights = lights
-      ..fog = _fog;
-    final group = _shadowGroup;
-    if (group != null && overrideContext == null) {
-      return group._renderFor(this, ctx, canvas);
-    }
-    if (!ctx.beginShadowPass(
-      projection: _shadowProjection,
-      sceneBounds: sceneBounds,
-      castersKey: _shadowCasterKey(this, _shadowKeyVersion, lights),
-      stillCastersKey: _prepareStillCasters(this, lights),
-    )) {
-      return ctx.hasActiveShadows;
-    }
-    try {
-      _recordCasters(canvas);
-      while (ctx.advanceShadowAtlasTile()) {
-        _recordCasters(canvas);
-      }
-    } finally {
-      ctx.endShadowPass();
-    }
-    return true;
-  }
-
-  /// Renders the half-resolution clip-depth + view-normal prepass when
-  /// [depthPrepassEnabled], [PostProcessSettings.needsDepthNormal], or
-  /// diagnostic `depth`/`ssao` debug mode is active.
+  /// Record the depth and view-space normal buffer for this frame.
   bool renderDepthNormals(
     Canvas canvas,
     int width,
     int height, {
     RenderContext3D? overrideContext,
-  }) {
-    _hasVisibleCache = false;
-    final ctx = overrideContext ?? context;
-    final debugNeedsDn =
-        _renderDebugMode3D == RenderDebugMode3D.depth ||
-        _renderDebugMode3D == RenderDebugMode3D.ssao;
-    final needed =
-        _depthPrepassEnabled ||
-        debugNeedsDn ||
-        (_postProcess?.needsDepthNormal ?? false);
-    if (!needed) {
-      ctx.clearDepthNormalPass();
-      return false;
-    }
-    if (!ctx.beginDepthNormalPass(width, height)) {
-      return false;
-    }
-    prepareOcclusionCuller(ctx);
-    _visibleObjects.clear();
-    _collectingVisible = true;
-    var onlyComponent3D = true;
-    try {
-      _rendering = true;
-      try {
-        for (final child in children) {
-          if (child is! Component3D) {
-            onlyComponent3D = false;
-          }
-          child.renderTree(canvas);
-        }
-      } finally {
-        _rendering = false;
-      }
-    } finally {
-      _collectingVisible = false;
-      ctx.endDepthNormalPass();
-    }
-    if (onlyComponent3D) {
-      _hasVisibleCache = true;
-      _visibleCtx = ctx;
-      _visibleCameraMask = ctx.cameraMask;
-      _visibleSceneVersion = sceneVersion;
-      _visibleVp.setAll(0, ctx.viewProjection.storage);
-    }
-    return true;
-  }
+  }) => _renderDepthNormalsImpl(
+    canvas,
+    width,
+    height,
+    overrideContext: overrideContext,
+  );
 
   static Object _shadowCasterKey(
     Object owner,
@@ -974,66 +871,6 @@ class World3D({
 
   static final Vector3 _keyDir = Vector3.zero();
 
-  void _recordCasters(Canvas canvas) {
-    final ctx = context;
-    if (ctx.isShadowPass &&
-        ctx.shadowCasterLayer == ShadowCasterLayer.moving &&
-        _shadowCasters.moversComplete &&
-        _allRootChildrenComponent3D()) {
-      _recordMovingCasters(ctx);
-      return;
-    }
-    _rendering = true;
-    try {
-      for (final child in children) {
-        child.renderTree(canvas);
-      }
-    } finally {
-      _rendering = false;
-    }
-  }
-
-  bool _allRootChildrenComponent3D() {
-    for (final child in children) {
-      if (child is! Component3D) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  void _recordMovingCasters(RenderContext3D ctx) {
-    final movers = _shadowCasters.movers;
-    if (movers.isEmpty) {
-      return;
-    }
-    final frustum = ctx.frustum;
-    final passMask = ctx.cameraMask;
-    _rendering = true;
-    try {
-      for (var i = 0; i < movers.length; i++) {
-        final obj = movers[i];
-        if (!obj.castsShadows ||
-            !obj.isEffectivelyVisible ||
-            !_passesCameraMaskHierarchy(obj, passMask)) {
-          continue;
-        }
-        final cull = obj.aabb.frustumCullTest(frustum);
-        if (cull == CullResult.outside) {
-          continue;
-        }
-        if (cull == CullResult.inside || obj.isVisible(frustum)) {
-          if (obj.shadowMotion == ShadowCasterMotion.auto) {
-            _shadowCasters.drawnMoving(obj);
-          }
-          obj.draw(ctx);
-        }
-      }
-    } finally {
-      _rendering = false;
-    }
-  }
-
   static bool _passesCameraMaskHierarchy(Component3D node, int passMask) {
     flame.Component? cur = node;
     while (cur != null) {
@@ -1045,15 +882,6 @@ class World3D({
         return true;
       }
       cur = cur.parent;
-    }
-    return true;
-  }
-
-  static bool _sameVp16(Float32List a, Float32List b) {
-    for (var i = 0; i < 16; i++) {
-      if (a[i] != b[i]) {
-        return false;
-      }
     }
     return true;
   }
@@ -1107,7 +935,7 @@ class World3D({
         identical(ctx, _visibleCtx) &&
         ctx.cameraMask == _visibleCameraMask &&
         sceneVersion == _visibleSceneVersion &&
-        _sameVp16(ctx.viewProjection.storage, _visibleVp);
+        sameMatrix16(ctx.viewProjection.storage, _visibleVp);
     _hasVisibleCache = false;
     _rendering = true;
     try {
@@ -1197,252 +1025,6 @@ class World3D({
     }
   }
 
-  Image _executeWorldRenderPipeline({
-    required GraphicsDevice device,
-    required RenderContext3D renderContext,
-    required int width,
-    required int height,
-    required int msaaSampleCount,
-    required Color clearValue,
-    required void Function() recordDraws,
-    GpuRenderTarget? ownedOutputTarget,
-    Rect? visibleFrame,
-  }) {
-    syncContextOptions(renderContext);
-    renderContext.clearActiveSceneColorTarget();
-
-    for (final custom in customPasses) {
-      if (custom.enabled &&
-          custom.stage == CustomRenderPassStage3D.beforeScene) {
-        custom.execute(
-          CustomRenderPassContext3D(
-            device: device,
-            renderContext: renderContext,
-            width: width,
-            height: height,
-            depthNormalTexture: renderContext.activeDepthNormalTexture,
-          ),
-        );
-      }
-    }
-
-    // Record the 3D scene's draws ONCE up front so we know whether refractive
-    // or WBOIT translucent surfaces are present without traversing components
-    // twice!
-    recordDraws();
-
-    final supportsTexTargets = device.backend.supportsTextureTargets;
-    final sceneFormat =
-        _hdrEnabled &&
-            device.backend.supportsPixelFormat(GpuPixelFormat.rgbaFloat16)
-        ? GpuPixelFormat.rgbaFloat16
-        : GpuPixelFormat.rgba8888;
-    final usePost = needsPostCompositePass(device);
-    // The scene (and the targets composited into it) is the HDR target only
-    // when the composite decodes it.
-    final nextHdr = _hdrEnabled && usePost;
-    if (renderContext.hdrEnabled != nextHdr) {
-      renderContext
-        ..hdrEnabled = nextHdr
-        ..bumpPassUniforms();
-    }
-    final runGrab =
-        supportsTexTargets &&
-        (_grabSceneColorEnabled || renderContext.hasRefractiveDraws);
-    // The accumulation target needs floats: without them (OpenGL ES) the
-    // translucent draws are sorted instead.
-    final runWboit =
-        supportsTexTargets &&
-        _oitMode == OitMode3D.weightedBlended &&
-        device.backend.supportsPixelFormat(GpuPixelFormat.rgbaFloat16) &&
-        renderContext.hasTranslucentDraws;
-
-    // 1. Optional Scene Color Grab-Pass for screen-space water & IOR glass
-    //    refraction.
-    if (runGrab) {
-      final grabTarget = device.textureTarget(
-        width,
-        height,
-        sceneFormat,
-        clearValue: clearValue,
-        role: _SceneTarget.grab,
-      );
-      device.beginTexturePass(grabTarget, frontFace: renderContext.frontFace);
-      renderContext.flushOpaquePreview();
-      device.endTexturePass();
-      renderContext.setActiveSceneColorTarget(grabTarget);
-    }
-
-    // 2. Order-independent transparency (`OitMode3D.weightedBlended`).
-    if (runWboit) {
-      final opaqueTarget = device.textureTarget(
-        width,
-        height,
-        sceneFormat,
-        clearValue: clearValue,
-        role: _SceneTarget.oitOpaque,
-        msaaSampleCount: msaaSampleCount,
-      );
-      device.beginTexturePass(opaqueTarget, frontFace: renderContext.frontFace);
-      renderContext.flushOpaquePreview();
-      device.endTexturePass();
-
-      final accumTarget = device.textureTarget(
-        width,
-        height,
-        GpuPixelFormat.rgbaFloat16,
-        clearValue: const Color(0x00000000),
-        role: _SceneTarget.oitAccumulation,
-      );
-      device.beginTexturePass(accumTarget, frontFace: renderContext.frontFace);
-      renderContext.flushWboitSubpass(revealPass: false, releaseAfter: false);
-      device.endTexturePass();
-
-      final revealTarget = device.textureTarget(
-        width,
-        height,
-        GpuPixelFormat.rgba8888,
-        role: _SceneTarget.oitRevealage,
-      );
-      device.beginTexturePass(revealTarget, frontFace: renderContext.frontFace);
-      renderContext.flushWboitSubpass(revealPass: true, releaseAfter: false);
-      device.endTexturePass();
-
-      if (usePost) {
-        final wboitSceneTarget = device.textureTarget(
-          width,
-          height,
-          sceneFormat,
-          clearValue: clearValue,
-          role: _SceneTarget.scene,
-          msaaSampleCount: msaaSampleCount,
-        );
-        device.beginTexturePass(
-          wboitSceneTarget,
-          frontFace: renderContext.frontFace,
-        );
-        renderContext.drawWboitComposite(
-          opaqueTarget: opaqueTarget,
-          accumTarget: accumTarget,
-          revealTarget: revealTarget,
-        );
-        device.endTexturePass();
-        _runAfterSceneCustomPasses(
-          device,
-          renderContext,
-          width,
-          height,
-          wboitSceneTarget,
-        );
-        renderContext.clearActiveSceneColorTarget();
-        return device.applyBloomFromTarget(
-          wboitSceneTarget,
-          _bloom,
-          postProcess: _postProcess,
-          depthNormalTexture: renderContext.activeDepthNormalTexture,
-          outputTarget: ownedOutputTarget,
-          hdrEnabled: _hdrEnabled,
-          renderDebugMode: _renderDebugMode3D,
-          visibleFrame: visibleFrame,
-        );
-      }
-
-      if (ownedOutputTarget != null) {
-        device.beginOwnedPass(
-          ownedOutputTarget,
-          frontFace: renderContext.frontFace,
-        );
-      } else {
-        device.beginPass(
-          Size(width.toDouble(), height.toDouble()),
-          frontFace: renderContext.frontFace,
-        );
-      }
-      renderContext.drawWboitComposite(
-        opaqueTarget: opaqueTarget,
-        accumTarget: accumTarget,
-        revealTarget: revealTarget,
-      );
-      renderContext.clearActiveSceneColorTarget();
-      return device.endPass();
-    }
-
-    // 3. Standard opaque + sorted translucent path (with optional HDR / Bloom /
-    //    PostProcess / ColorLut3D / Debug composite).
-    if (usePost) {
-      final texTarget = device.textureTarget(
-        width,
-        height,
-        sceneFormat,
-        clearValue: clearValue,
-        role: _SceneTarget.scene,
-        msaaSampleCount: msaaSampleCount,
-      );
-      device.beginTexturePass(texTarget, frontFace: renderContext.frontFace);
-      renderContext.flush();
-      device.endTexturePass();
-
-      _runAfterSceneCustomPasses(
-        device,
-        renderContext,
-        width,
-        height,
-        texTarget,
-      );
-      renderContext.clearActiveSceneColorTarget();
-      return device.applyBloomFromTarget(
-        texTarget,
-        _bloom,
-        postProcess: _postProcess,
-        depthNormalTexture: renderContext.activeDepthNormalTexture,
-        outputTarget: ownedOutputTarget,
-        hdrEnabled: _hdrEnabled,
-        renderDebugMode: _renderDebugMode3D,
-        visibleFrame: visibleFrame,
-      );
-    }
-
-    if (ownedOutputTarget != null) {
-      device.beginOwnedPass(
-        ownedOutputTarget,
-        frontFace: renderContext.frontFace,
-      );
-    } else {
-      device.beginPass(
-        Size(width.toDouble(), height.toDouble()),
-        msaaSampleCount: msaaSampleCount,
-        frontFace: renderContext.frontFace,
-      );
-    }
-    renderContext.flush();
-    renderContext.clearActiveSceneColorTarget();
-    return device.endPass();
-  }
-
-  void _runAfterSceneCustomPasses(
-    GraphicsDevice device,
-    RenderContext3D renderContext,
-    int width,
-    int height,
-    GpuTextureTarget sceneTarget,
-  ) {
-    for (final custom in customPasses) {
-      if (custom.enabled &&
-          custom.stage == CustomRenderPassStage3D.afterScene) {
-        custom.execute(
-          CustomRenderPassContext3D(
-            device: device,
-            renderContext: renderContext,
-            width: width,
-            height: height,
-            sceneTarget: sceneTarget,
-            depthNormalTexture: renderContext.activeDepthNormalTexture,
-          ),
-        );
-      }
-    }
-  }
-
   /// Renders this world once at [size] physical pixels from [view] and
   /// [projection] into an independent [Image], which the caller disposes.
   ///
@@ -1467,10 +1049,7 @@ class World3D({
     context: context,
   );
 
-  /// [renderToImage] into [target] when given, a render target the caller
-  /// keeps from frame to frame instead of a new one per call; the image is
-  /// then only valid until the target renders into its color texture again
-  /// (two frames later), so it must be drawn in the current frame.
+  /// Render this world into an off-screen [Image] using an isolated host.
   @internal
   Image renderToImageInto(
     Size size, {
@@ -1481,91 +1060,18 @@ class World3D({
     GraphicsDevice? device,
     RenderContext3D? context,
     GpuRenderTarget? target,
-  }) {
-    final width = math.max(1, size.width.round());
-    final height = math.max(1, size.height.round());
+  }) => _renderToImageIntoImpl(
+    size,
+    view: view,
+    projection: projection,
+    msaa: msaa,
+    clearValue: clearValue,
+    device: device,
+    context: context,
+    target: target,
+  );
 
-    GraphicsDevice resolvedDevice;
-    RenderContext3D resolvedContext;
-    var closeFrame = false;
-    EmbeddedRenderer? resolvedEmbedded;
-
-    if (device != null && context != null) {
-      resolvedDevice = device;
-      resolvedContext = context;
-    } else {
-      final hostRef = _contextOrNull != null ? host : null;
-      if (hostRef is Game3D) {
-        resolvedDevice = hostRef.device;
-        resolvedContext = hostRef.context;
-        if (!hostRef.isRenderingFrame) {
-          resolvedDevice.begin();
-          closeFrame = true;
-        }
-      } else {
-        final embedded = resolvedEmbedded = EmbeddedRenderer.of(
-          _resolveGame() ?? this,
-        );
-        resolvedDevice = embedded.device;
-        resolvedContext = embedded.context;
-        closeFrame = embedded.open();
-      }
-    }
-
-    final dummyRecorder = PictureRecorder();
-    final dummyCanvas = Canvas(dummyRecorder);
-
-    try {
-      return renderWithHost(resolvedDevice, resolvedContext, msaa: msaa, () {
-        resolvedContext.setCamera(view, projection);
-        syncContextOptions(resolvedContext);
-        renderShadows(dummyCanvas, overrideContext: resolvedContext);
-        renderDepthNormals(
-          dummyCanvas,
-          width,
-          height,
-          overrideContext: resolvedContext,
-        );
-
-        final usePost = needsPostCompositePass(resolvedDevice);
-        final ownedTarget =
-            target ??
-            resolvedDevice.backend.createRenderTarget(
-              width: width,
-              height: height,
-              clearValue: usePost ? const Color(0x00000000) : clearValue,
-              msaaSampleCount: usePost ? 1 : msaa.sampleCount,
-            );
-
-        return executeWorldRenderPipeline(
-          device: resolvedDevice,
-          renderContext: resolvedContext,
-          width: width,
-          height: height,
-          msaaSampleCount: msaa.sampleCount,
-          clearValue: clearValue,
-          ownedOutputTarget: ownedTarget,
-          recordDraws: () => renderScene(
-            dummyCanvas,
-            overrideContext: resolvedContext,
-          ),
-        );
-      });
-    } finally {
-      dummyRecorder.endRecording().dispose();
-      if (closeFrame) {
-        if (resolvedEmbedded != null) {
-          resolvedEmbedded.close();
-        } else {
-          resolvedDevice.end();
-        }
-      }
-    }
-  }
-
-  /// Renders a non-post-processed pass directly into [target], preserving prior
-  /// contents when [keepContents] is `true`. Used by `CameraStack3D` to chain
-  /// compatible `depthOnly` slots onto a single native-keep texture target.
+  /// Render this world directly into [target], optionally preserving contents.
   @internal
   void renderChainedIntoTextureTarget({
     required Size size,
@@ -1576,37 +1082,16 @@ class World3D({
     required GpuTextureTarget target,
     required bool keepContents,
     Msaa msaa = Msaa.off,
-  }) {
-    final width = math.max(1, size.width.round());
-    final height = math.max(1, size.height.round());
-    final dummyRecorder = PictureRecorder();
-    final dummyCanvas = Canvas(dummyRecorder);
-    try {
-      renderWithHost(device, context, msaa: msaa, () {
-        context.setCamera(view, projection);
-        syncContextOptions(context);
-        renderShadows(dummyCanvas, overrideContext: context);
-        renderDepthNormals(
-          dummyCanvas,
-          width,
-          height,
-          overrideContext: context,
-        );
-        syncContextOptions(context);
-        renderScene(dummyCanvas, overrideContext: context);
-        device.beginTexturePass(
-          target,
-          frontFace: context.frontFace,
-          keepContents: keepContents,
-        );
-        context.flush();
-        device.endTexturePass();
-        context.clearActiveSceneColorTarget();
-      });
-    } finally {
-      dummyRecorder.endRecording().dispose();
-    }
-  }
+  }) => _renderChainedIntoTextureTargetImpl(
+    size: size,
+    view: view,
+    projection: projection,
+    device: device,
+    context: context,
+    target: target,
+    keepContents: keepContents,
+    msaa: msaa,
+  );
 
   /// Runs [body] with [device] and [context] as this world's host, so that
   /// its components record their draws into [context] whatever host the
@@ -1661,31 +1146,7 @@ class World3D({
     }
   }
 
-  void _gatherLights(flame.Component node) {
-    for (final child in node.children) {
-      if (child is LightComponent) {
-        // The light reads its position and direction from this matrix,
-        // which a mounted light refreshes in its update.
-        child.worldTransformMatrix;
-        _lights.add(child.light);
-        _lightListRevision++;
-      }
-      _gatherLights(child);
-    }
-  }
-
-  /// Casts [ray] (in world space) against the [Object3D]s of this world
-  /// within [maxDistance], returning the closest [RayHit3D] or `null` when
-  /// missed.
-  ///
-  /// Only what a render pass could draw is hit: a [Component3D] that is not
-  /// [Component3D.visible], or whose [Component3D.cameraMask] shares no bit
-  /// with [cameraMask], is skipped with its whole subtree, as the passes skip
-  /// it. The default [cameraMask] matches every object some camera draws;
-  /// pass the mask of a camera or of a `Scene3DComponent` to hit only what it
-  /// shows. With [includeHidden], every object is tested, whatever its
-  /// visibility and camera mask (for collision-like probes against invisible
-  /// geometry). [filter], when given, must also accept the object.
+  /// Cast [ray] into this world and return the closest hit, or `null`.
   RayHit3D? raycast(
     Ray ray, {
     double maxDistance = double.infinity,
@@ -1693,67 +1154,16 @@ class World3D({
     bool Function(Object3D object)? filter,
     int cameraMask = 0xFFFFFFFF,
     bool includeHidden = false,
-  }) {
-    if (!(maxDistance > 0)) {
-      return null;
-    }
-    final dirLen = ray.direction.length;
-    if (dirLen <= 1e-12) {
-      return null;
-    }
-    _unitRay.origin.setFrom(ray.origin);
-    _unitRay.direction
-      ..setFrom(ray.direction)
-      ..scale(1.0 / dirLen);
+  }) => _raycastImpl(
+    ray,
+    maxDistance: maxDistance,
+    cullMode: cullMode,
+    filter: filter,
+    cameraMask: cameraMask,
+    includeHidden: includeHidden,
+  );
 
-    if (spatialIndex3DEnabled) {
-      return spatialIndex3D.raycast(
-        this,
-        _unitRay,
-        maxDistance: maxDistance,
-        cullMode: cullMode,
-        filter: _indexFilter(filter, cameraMask, includeHidden),
-      );
-    }
-
-    RayHit3D? best;
-    var limit = maxDistance;
-
-    void visit(flame.Component component) {
-      if (component is Component3D) {
-        if (!includeHidden && !_drawnFor(component, cameraMask)) {
-          return;
-        }
-        if (!_rayHitsAabb(_unitRay, component.aabb, limit)) {
-          return;
-        }
-        if (component is Object3D && (filter == null || filter(component))) {
-          final hit = component.raycast(
-            _unitRay,
-            maxDistance: limit,
-            cullMode: cullMode,
-          );
-          if (hit != null && hit.distance < limit) {
-            limit = hit.distance;
-            best = hit;
-          }
-        }
-      }
-      for (final child in component.children) {
-        visit(child);
-      }
-    }
-
-    for (final child in children) {
-      visit(child);
-    }
-    return best;
-  }
-
-  /// Casts [ray] against the [Object3D]s of this world within [maxDistance],
-  /// returning every hit sorted from nearest to farthest.
-  ///
-  /// Hidden and masked-out objects are skipped as in [raycast].
+  /// Cast [ray] into this world and return all hits sorted by distance.
   List<RayHit3D> raycastAll(
     Ray ray, {
     double maxDistance = double.infinity,
@@ -1761,128 +1171,23 @@ class World3D({
     bool Function(Object3D object)? filter,
     int cameraMask = 0xFFFFFFFF,
     bool includeHidden = false,
-  }) {
-    final hits = <RayHit3D>[];
-    if (!(maxDistance > 0)) {
-      return hits;
-    }
-    final dirLen = ray.direction.length;
-    if (dirLen <= 1e-12) {
-      return hits;
-    }
-    _unitRay.origin.setFrom(ray.origin);
-    _unitRay.direction
-      ..setFrom(ray.direction)
-      ..scale(1.0 / dirLen);
-
-    if (spatialIndex3DEnabled) {
-      return spatialIndex3D.raycastAll(
-        this,
-        _unitRay,
-        maxDistance: maxDistance,
-        cullMode: cullMode,
-        filter: _indexFilter(filter, cameraMask, includeHidden),
-      );
-    }
-
-    void visit(flame.Component component) {
-      if (component is Component3D) {
-        if (!includeHidden && !_drawnFor(component, cameraMask)) {
-          return;
-        }
-        if (!_rayHitsAabb(_unitRay, component.aabb, maxDistance)) {
-          return;
-        }
-        if (component is Object3D && (filter == null || filter(component))) {
-          final hit = component.raycast(
-            _unitRay,
-            maxDistance: maxDistance,
-            cullMode: cullMode,
-          );
-          if (hit != null) {
-            hits.add(hit);
-          }
-        }
-      }
-      for (final child in component.children) {
-        visit(child);
-      }
-    }
-
-    for (final child in children) {
-      visit(child);
-    }
-    hits.sort((a, b) => a.distance.compareTo(b.distance));
-    return hits;
-  }
+  }) => _raycastAllImpl(
+    ray,
+    maxDistance: maxDistance,
+    cullMode: cullMode,
+    filter: filter,
+    cameraMask: cameraMask,
+    includeHidden: includeHidden,
+  );
 
   /// Whether a render pass with [cameraMask] draws [component] itself (its
   /// ancestors aside).
   static bool _drawnFor(Component3D component, int cameraMask) =>
       component.visible && (component.cameraMask & cameraMask) != 0;
 
-  /// The filter of an indexed ray cast: the index holds every [Object3D]
-  /// flat, so the visibility and masks of the ancestors are checked here.
-  bool Function(Object3D object)? _indexFilter(
-    bool Function(Object3D object)? filter,
-    int cameraMask,
-    bool includeHidden,
-  ) {
-    if (includeHidden) {
-      return filter;
-    }
-    return (object) {
-      flame.Component? cursor = object;
-      while (cursor != null && !identical(cursor, this)) {
-        if (cursor is Component3D && !_drawnFor(cursor, cameraMask)) {
-          return false;
-        }
-        cursor = cursor.parent;
-      }
-      return filter == null || filter(object);
-    };
-  }
-
-  static bool _rayHitsAabb(Ray ray, Aabb3 box, double maxT) {
-    var tMin = 0.0;
-    var tMax = maxT;
-    final ox = ray.origin.x;
-    final oy = ray.origin.y;
-    final oz = ray.origin.z;
-    final dx = ray.direction.x;
-    final dy = ray.direction.y;
-    final dz = ray.direction.z;
-
-    bool slab(double o, double d, double lo, double hi) {
-      final minVal = lo - 1e-5;
-      final maxVal = hi + 1e-5;
-      if (d.abs() < 1e-12) {
-        return o >= minVal && o <= maxVal;
-      }
-      final inv = 1.0 / d;
-      var t1 = (minVal - o) * inv;
-      var t2 = (maxVal - o) * inv;
-      if (t1 > t2) {
-        final s = t1;
-        t1 = t2;
-        t2 = s;
-      }
-      if (t1 > tMin) {
-        tMin = t1;
-      }
-      if (t2 < tMax) {
-        tMax = t2;
-      }
-      return tMin <= tMax;
-    }
-
-    return slab(ox, dx, box.min.x, box.max.x) &&
-        slab(oy, dy, box.min.y, box.max.y) &&
-        slab(oz, dz, box.min.z, box.max.z);
-  }
-
   static final Ray _unitRay = Ray();
 
+  /// Render this world from its active camera onto [canvas].
   @internal
   @override
   void renderFromCamera(Canvas canvas) {
@@ -1940,43 +1245,4 @@ class World3D({
     }
     return value;
   }
-}
-
-class _SnapshotHost() implements Scene3DHost {
-  @override
-  GraphicsDevice get device => _device!;
-  GraphicsDevice? _device;
-  set device(GraphicsDevice? value) => _device = value;
-
-  @override
-  RenderContext3D get context => _context!;
-  RenderContext3D? _context;
-  set context(RenderContext3D? value) => _context = value;
-
-  Msaa msaa = Msaa.off;
-
-  @override
-  int get msaaSampleCount => msaa.sampleCount;
-
-  @override
-  double get pixelRatio => 1.0;
-}
-
-/// The texture targets of the passes of one frame of a [World3D], so that
-/// no two of them share a target (see [GraphicsDevice.textureTarget]).
-enum _SceneTarget() {
-  /// The scene before the post-processing composite.
-  scene,
-
-  /// The opaque scene sampled by refractive materials.
-  grab,
-
-  /// The opaque draws of order-independent transparency.
-  oitOpaque,
-
-  /// The accumulated colors of order-independent transparency.
-  oitAccumulation,
-
-  /// The revealage of order-independent transparency.
-  oitRevealage,
 }

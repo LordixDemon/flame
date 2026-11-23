@@ -6,6 +6,7 @@ import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
+import 'package:flame_3d/src/extensions/geometry_math.dart';
 import 'package:flame_3d/src/model/animation_state.dart';
 import 'package:flame_3d/src/model/model.dart';
 import 'package:flame_3d/src/model/model_animation.dart';
@@ -543,82 +544,15 @@ class SkinnedCrowdBatch3D({
     }
     if (_boundsDirty) {
       _boundsDirty = false;
-      final modelBox = model.animatedAabb;
-      final cx = 0.5 * (modelBox.min.x + modelBox.max.x);
-      final cy = 0.5 * (modelBox.min.y + modelBox.max.y);
-      final cz = 0.5 * (modelBox.min.z + modelBox.max.z);
-      final hx = 0.5 * (modelBox.max.x - modelBox.min.x);
-      final hy = 0.5 * (modelBox.max.y - modelBox.min.y);
-      final hz = 0.5 * (modelBox.max.z - modelBox.min.z);
-      final transforms = _transforms;
-
-      var minX = double.infinity;
-      var minY = double.infinity;
-      var minZ = double.infinity;
-      var maxX = double.negativeInfinity;
-      var maxY = double.negativeInfinity;
-      var maxZ = double.negativeInfinity;
-
-      for (var idx = 0; idx < _length; idx++) {
-        final b = idx * 16;
-        final m0 = transforms[b];
-        final m1 = transforms[b + 1];
-        final m2 = transforms[b + 2];
-        final m4 = transforms[b + 4];
-        final m5 = transforms[b + 5];
-        final m6 = transforms[b + 6];
-        final m8 = transforms[b + 8];
-        final m9 = transforms[b + 9];
-        final m10 = transforms[b + 10];
-
-        final wx = m0 * cx + m4 * cy + m8 * cz + transforms[b + 12];
-        final wy = m1 * cx + m5 * cy + m9 * cz + transforms[b + 13];
-        final wz = m2 * cx + m6 * cy + m10 * cz + transforms[b + 14];
-
-        final ex = m0.abs() * hx + m4.abs() * hy + m8.abs() * hz;
-        final ey = m1.abs() * hx + m5.abs() * hy + m9.abs() * hz;
-        final ez = m2.abs() * hx + m6.abs() * hy + m10.abs() * hz;
-
-        if (wx - ex < minX) {
-          minX = wx - ex;
-        }
-        if (wy - ey < minY) {
-          minY = wy - ey;
-        }
-        if (wz - ez < minZ) {
-          minZ = wz - ez;
-        }
-        if (wx + ex > maxX) {
-          maxX = wx + ex;
-        }
-        if (wy + ey > maxY) {
-          maxY = wy + ey;
-        }
-        if (wz + ez > maxZ) {
-          maxZ = wz + ez;
-        }
-      }
-      _localAabb
-        ..min.setValues(minX, minY, minZ)
-        ..max.setValues(maxX, maxY, maxZ);
+      expandAabbByTransformedInstances(
+        _transforms,
+        _length,
+        16,
+        model.animatedAabb,
+        _localAabb,
+      );
     }
     return _localAabb;
-  }
-
-  static bool _isMirroredF32(Float32List m, int base) {
-    final m0 = m[base];
-    final m1 = m[base + 1];
-    final m2 = m[base + 2];
-    final m4 = m[base + 4];
-    final m5 = m[base + 5];
-    final m6 = m[base + 6];
-    final m8 = m[base + 8];
-    final m9 = m[base + 9];
-    final m10 = m[base + 10];
-    return (m0 * (m5 * m10 - m6 * m9) -
-            m4 * (m1 * m10 - m2 * m9) +
-            m8 * (m1 * m6 - m2 * m5)) <
-        0.0;
   }
 
   @override
@@ -632,8 +566,9 @@ class SkinnedCrowdBatch3D({
 
     final batchWorld = worldTransformMatrix;
     final batchIsIdentity = batchWorld.isIdentity();
-    final batchMirrorBit =
-        !batchIsIdentity && _isMirroredF32(batchWorld.storage, 0) ? 1 : 0;
+    final batchMirrorBit = !batchIsIdentity && isMirrored3x3(batchWorld.storage)
+        ? 1
+        : 0;
 
     // 1. Skinned mesh nodes: group agents sharing `(clipIndex, frameIndex)` and
     //    handedness into contiguous pose buckets and submit 1 instanced draw
@@ -652,10 +587,10 @@ class SkinnedCrowdBatch3D({
         final clipIdx = _clipIndices[i];
         final frameIdx = _frameIndices[i];
         final pose = poseBanks[clipIdx].frames[frameIdx][slot];
-        final poseMirrorBit = _isMirroredF32(pose.combinedTransform.storage, 0)
+        final poseMirrorBit = isMirrored3x3(pose.combinedTransform.storage)
             ? 1
             : 0;
-        final agentMirrorBit = _isMirroredF32(_transforms, i * 16) ? 1 : 0;
+        final agentMirrorBit = isMirrored3x3(_transforms, i * 16) ? 1 : 0;
         final mirrorBit = batchMirrorBit ^ agentMirrorBit ^ poseMirrorBit;
         final bucketId =
             ((_clipBaseOffsets[clipIdx] + frameIdx) << 1) | mirrorBit;

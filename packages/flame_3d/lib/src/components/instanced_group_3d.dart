@@ -6,6 +6,7 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/extensions/geometry_math.dart';
 
 /// {@template instanced_group_3d}
 /// Draws many instances of one [Mesh] in a single `O(1)` submission per
@@ -179,64 +180,13 @@ class InstancedGroup3D({
     }
     if (_localBoundsDirty) {
       _localBoundsDirty = false;
-      final meshBox = mesh.aabb;
-      final cx = 0.5 * (meshBox.min.x + meshBox.max.x);
-      final cy = 0.5 * (meshBox.min.y + meshBox.max.y);
-      final cz = 0.5 * (meshBox.min.z + meshBox.max.z);
-      final hx = 0.5 * (meshBox.max.x - meshBox.min.x);
-      final hy = 0.5 * (meshBox.max.y - meshBox.min.y);
-      final hz = 0.5 * (meshBox.max.z - meshBox.min.z);
-      final instances = _instances;
-
-      var minX = double.infinity;
-      var minY = double.infinity;
-      var minZ = double.infinity;
-      var maxX = double.negativeInfinity;
-      var maxY = double.negativeInfinity;
-      var maxZ = double.negativeInfinity;
-
-      for (var idx = 0; idx < _length; idx++) {
-        final b = idx * _stride;
-        final m0 = instances[b];
-        final m1 = instances[b + 1];
-        final m2 = instances[b + 2];
-        final m4 = instances[b + 4];
-        final m5 = instances[b + 5];
-        final m6 = instances[b + 6];
-        final m8 = instances[b + 8];
-        final m9 = instances[b + 9];
-        final m10 = instances[b + 10];
-
-        final wx = m0 * cx + m4 * cy + m8 * cz + instances[b + 12];
-        final wy = m1 * cx + m5 * cy + m9 * cz + instances[b + 13];
-        final wz = m2 * cx + m6 * cy + m10 * cz + instances[b + 14];
-
-        final ex = m0.abs() * hx + m4.abs() * hy + m8.abs() * hz;
-        final ey = m1.abs() * hx + m5.abs() * hy + m9.abs() * hz;
-        final ez = m2.abs() * hx + m6.abs() * hy + m10.abs() * hz;
-
-        if (wx - ex < minX) {
-          minX = wx - ex;
-        }
-        if (wy - ey < minY) {
-          minY = wy - ey;
-        }
-        if (wz - ez < minZ) {
-          minZ = wz - ez;
-        }
-        if (wx + ex > maxX) {
-          maxX = wx + ex;
-        }
-        if (wy + ey > maxY) {
-          maxY = wy + ey;
-        }
-        if (wz + ez > maxZ) {
-          maxZ = wz + ez;
-        }
-      }
-      _localAabb
-        ..min.setValues(minX, minY, minZ)
-        ..max.setValues(maxX, maxY, maxZ);
+      expandAabbByTransformedInstances(
+        _instances,
+        _length,
+        _stride,
+        mesh.aabb,
+        _localAabb,
+      );
     }
     return _localAabb;
   }
@@ -300,7 +250,7 @@ class InstancedGroup3D({
 
     var mirrored = 0;
     for (var i = 0; i < _length; i++) {
-      if (_mirrors(buffer, i * _stride)) {
+      if (isMirrored3x3(buffer, i * _stride)) {
         mirrored++;
       }
     }
@@ -317,7 +267,7 @@ class InstancedGroup3D({
     var mirroredAt = (_length - mirrored) * _stride;
     for (var i = 0; i < _length; i++) {
       final base = i * _stride;
-      if (_mirrors(buffer, base)) {
+      if (isMirrored3x3(buffer, base)) {
         partitioned.setRange(mirroredAt, mirroredAt + _stride, buffer, base);
         mirroredAt += _stride;
       } else {
@@ -332,25 +282,6 @@ class InstancedGroup3D({
         view.offsetInBytes != viewStart * Float32List.bytesPerElement) {
       _mirroredView = Float32List.sublistView(partitioned, viewStart);
     }
-  }
-
-  /// Whether the model matrix at [base] in [buffer] mirrors (its upper 3x3
-  /// has a negative determinant).
-  static bool _mirrors(Float32List buffer, int base) {
-    final m0 = buffer[base];
-    final m1 = buffer[base + 1];
-    final m2 = buffer[base + 2];
-    final m4 = buffer[base + 4];
-    final m5 = buffer[base + 5];
-    final m6 = buffer[base + 6];
-    final m8 = buffer[base + 8];
-    final m9 = buffer[base + 9];
-    final m10 = buffer[base + 10];
-    final determinant =
-        m0 * (m5 * m10 - m6 * m9) -
-        m4 * (m1 * m10 - m2 * m9) +
-        m8 * (m1 * m6 - m2 * m5);
-    return determinant < 0;
   }
 
   @override

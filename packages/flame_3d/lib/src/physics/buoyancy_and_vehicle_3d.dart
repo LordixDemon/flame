@@ -5,6 +5,8 @@ import 'package:flame_3d/collisions.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/physics.dart';
+import 'package:flame_3d/src/extensions/geometry_math.dart';
+import 'package:flame_3d/src/physics/physics_solver_math_3d.dart';
 import 'package:meta/meta.dart';
 
 /// Local pontoon sample point used by [BuoyancyVolume3D] to evaluate submerged
@@ -153,7 +155,7 @@ class BuoyancyVolume3D({
       if (body.bodyType != BodyType3D.dynamic || body.inverseMass <= 0.0) {
         continue;
       }
-      if (volBounds != null && !_aabbOverlaps(volBounds, body.bodyWorldAabb)) {
+      if (volBounds != null && !aabbOverlaps(volBounds, body.bodyWorldAabb)) {
         continue;
       }
 
@@ -339,15 +341,6 @@ class BuoyancyVolume3D({
         radius: hy,
       ),
     ]);
-  }
-
-  static bool _aabbOverlaps(Aabb3 a, Aabb3 b) {
-    return a.min.x <= b.max.x &&
-        a.max.x >= b.min.x &&
-        a.min.y <= b.max.y &&
-        a.max.y >= b.min.y &&
-        a.min.z <= b.max.z &&
-        a.max.z >= b.min.z;
   }
 }
 
@@ -589,7 +582,7 @@ class RaycastVehicle3D({
 
   /// Current forward speed (`m/s`) of [chassis] along [forwardAxisLocal].
   double get forwardSpeed {
-    _rotateQuat(chassis.bodyRotation, forwardAxisLocal, _fwdWorld);
+    rotateVectorByQuat(chassis.bodyRotation, forwardAxisLocal, _fwdWorld);
     return chassis.linearVelocity.dot(_fwdWorld);
   }
 
@@ -627,9 +620,13 @@ class RaycastVehicle3D({
       final spec = wheels[i];
       final state = wheelStates[i];
 
-      _rotateQuat(qChassis, spec.connectionPointLocal, _connWorld);
+      rotateVectorByQuat(qChassis, spec.connectionPointLocal, _connWorld);
       _connWorld.add(posChassis);
-      _rotateQuat(qChassis, spec.suspensionDirectionLocal, _suspDirWorld);
+      rotateVectorByQuat(
+        qChassis,
+        spec.suspensionDirectionLocal,
+        _suspDirWorld,
+      );
       _suspDirWorld.normalize();
       _upWorld
         ..setFrom(_suspDirWorld)
@@ -682,7 +679,7 @@ class RaycastVehicle3D({
       _rContact
         ..setFrom(state.contactPoint)
         ..sub(com);
-      _velocityAtLever(chassis, _rContact, _vContact);
+      velocityAtLever(chassis, _rContact, _vContact);
 
       final proj = hitNormal.dot(_upWorld);
       final vn = _vContact.dot(hitNormal);
@@ -715,15 +712,19 @@ class RaycastVehicle3D({
         continue;
       }
 
-      _rotateQuat(qChassis, spec.suspensionDirectionLocal, _suspDirWorld);
+      rotateVectorByQuat(
+        qChassis,
+        spec.suspensionDirectionLocal,
+        _suspDirWorld,
+      );
       _upWorld
         ..setFrom(_suspDirWorld)
         ..negate()
         ..normalize();
-      _rotateQuat(qChassis, forwardAxisLocal, _fwdWorld);
+      rotateVectorByQuat(qChassis, forwardAxisLocal, _fwdWorld);
       if (spec.hasCustomAxle) {
         // Roll perpendicular to the wheel's own axle.
-        _rotateQuat(qChassis, spec.axleDirectionLocal, _axleScratch);
+        rotateVectorByQuat(qChassis, spec.axleDirectionLocal, _axleScratch);
         _axleScratch.crossInto(_upWorld, _steeredFwd);
         if (_steeredFwd.length2 > 1e-12) {
           _steeredFwd.normalize();
@@ -738,7 +739,7 @@ class RaycastVehicle3D({
 
       if (state.steerAngleRad.abs() > 1e-6) {
         _steerQuat.setAxisAngle(_upWorld, state.steerAngleRad);
-        _rotateQuat(_steerQuat, _fwdWorld, _steeredFwd);
+        rotateVectorByQuat(_steerQuat, _fwdWorld, _steeredFwd);
       } else {
         _steeredFwd.setFrom(_fwdWorld);
       }
@@ -777,19 +778,19 @@ class RaycastVehicle3D({
         ..add(_rApply);
 
       _rContact.setValues(rawRx, rawRy, rawRz);
-      _velocityAtLever(chassis, _rContact, _vContact);
+      velocityAtLever(chassis, _rContact, _vContact);
 
       final vFwd = _vContact.dot(_wheelFwd);
       final vSide = _vContact.dot(_wheelSide);
       state.rotationRad += (vFwd / spec.wheelRadius) * dt;
 
-      final kFwd = _singleBodyAxisK(
+      final kFwd = computeSingleBodyAxisK(
         chassis,
         _rApply,
         _wheelFwd,
         _inertiaScratch,
       );
-      final kSide = _singleBodyAxisK(
+      final kSide = computeSingleBodyAxisK(
         chassis,
         _rApply,
         _wheelSide,
@@ -860,7 +861,7 @@ class RaycastVehicle3D({
       if ((other.collisionLayer & chassis.collisionMask) == 0) {
         continue;
       }
-      if (!_rayHitsAabb(ray, other.bodyWorldAabb, bestDist)) {
+      if (!rayHitsAabb(ray, other.bodyWorldAabb, bestDist)) {
         continue;
       }
       final hit = other.shape.raycast(
@@ -889,75 +890,5 @@ class RaycastVehicle3D({
     }
 
     return bestNormal == null ? null : (bestDist, bestNormal);
-  }
-
-  static void _velocityAtLever(RigidBody3D b, Vector3 r, Vector3 out) {
-    final lv = b.linearVelocity;
-    final av = b.angularVelocity;
-    out.setValues(
-      lv.x + (av.y * r.z - av.z * r.y),
-      lv.y + (av.z * r.x - av.x * r.z),
-      lv.z + (av.x * r.y - av.y * r.x),
-    );
-  }
-
-  static double _singleBodyAxisK(
-    RigidBody3D b,
-    Vector3 r,
-    Vector3 axis,
-    Vector3 scratch,
-  ) {
-    final cx = r.y * axis.z - r.z * axis.y;
-    final cy = r.z * axis.x - r.x * axis.z;
-    final cz = r.x * axis.y - r.y * axis.x;
-    b.multiplyWorldInvInertia(cx, cy, cz, scratch);
-    return b.inverseMass + cx * scratch.x + cy * scratch.y + cz * scratch.z;
-  }
-
-  static void _rotateQuat(Quaternion q, Vector3 v, Vector3 out) {
-    final qx = q.x;
-    final qy = q.y;
-    final qz = q.z;
-    final qw = q.w;
-    final tx = 2.0 * (qy * v.z - qz * v.y);
-    final ty = 2.0 * (qz * v.x - qx * v.z);
-    final tz = 2.0 * (qx * v.y - qy * v.x);
-    out.setValues(
-      v.x + qw * tx + (qy * tz - qz * ty),
-      v.y + qw * ty + (qz * tx - qx * tz),
-      v.z + qw * tz + (qx * ty - qy * tx),
-    );
-  }
-
-  static bool _rayHitsAabb(Ray ray, Aabb3 box, double maxT) {
-    var tMin = 0.0;
-    var tMax = maxT;
-
-    bool slab(double o, double d, double lo, double hi) {
-      final minV = lo - 1e-5;
-      final maxV = hi + 1e-5;
-      if (d.abs() < 1e-12) {
-        return o >= minV && o <= maxV;
-      }
-      final inv = 1.0 / d;
-      var t1 = (minV - o) * inv;
-      var t2 = (maxV - o) * inv;
-      if (t1 > t2) {
-        final s = t1;
-        t1 = t2;
-        t2 = s;
-      }
-      if (t1 > tMin) {
-        tMin = t1;
-      }
-      if (t2 < tMax) {
-        tMax = t2;
-      }
-      return tMin <= tMax;
-    }
-
-    return slab(ray.origin.x, ray.direction.x, box.min.x, box.max.x) &&
-        slab(ray.origin.y, ray.direction.y, box.min.y, box.max.y) &&
-        slab(ray.origin.z, ray.direction.z, box.min.z, box.max.z);
   }
 }

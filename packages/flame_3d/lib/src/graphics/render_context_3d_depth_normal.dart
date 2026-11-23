@@ -204,13 +204,8 @@ class _DepthNormalPass(final RenderContext3D _context) {
     context._count = 0;
   }
 
-  bool _batchesWith(int first, int other) {
-    final context = _context;
-    return identical(context._surfaces[first], context._surfaces[other]) &&
-        identical(context._pipelines[first], context._pipelines[other]) &&
-        context._joints[other] == null &&
-        context._external[other] == null;
-  }
+  bool _batchesWith(int first, int other) =>
+      _context._batchesBasic(first, other);
 
   void _submit(Int32List order, int start, int count) {
     final context = _context;
@@ -233,23 +228,7 @@ class _DepthNormalPass(final RenderContext3D _context) {
       ..setRenderState(_renderState)
       ..setFrontFace(context.frontFace);
     context._bindJoints(vertexShader, joints);
-    device.bindSurface(surface);
-
-    final external = context._external[first];
-    if (external != null) {
-      final instanceCount = context._externalCounts[first];
-      device
-        ..bindInstances(
-          external,
-          instanceCount,
-          startFloat: context._externalOffsets[first],
-        )
-        ..drawSurface(surface, instanceCount: instanceCount);
-      return;
-    }
-    device
-      ..bindInstancesOf(context._instances, order, start, count)
-      ..drawSurface(surface, instanceCount: count);
+    context._drawBatchGeometry(surface, order, start, count);
   }
 
   /// Submits [batchCount] matching draws starting at [position] in [order] with
@@ -286,60 +265,18 @@ class _DepthNormalPass(final RenderContext3D _context) {
       .._boundMaterial = null;
     device
       ..setRenderState(_renderState)
-      ..setFrontFace(context.frontFace)
-      ..bindSurface(surface);
-    final external = context._external[draw];
-    if (external != null) {
-      final instanceCount = context._externalCounts[draw];
-      device
-        ..bindInstances(
-          external,
-          instanceCount,
-          startFloat: context._externalOffsets[draw],
-        )
-        ..drawSurface(surface, instanceCount: instanceCount);
-      return;
-    }
-    device
-      ..bindInstancesOf(context._instances, order, position, batchCount)
-      ..drawSurface(surface, instanceCount: batchCount);
+      ..setFrontFace(context.frontFace);
+    context._drawBatchGeometry(surface, order, position, batchCount);
   }
 
-  _CasterPipeline? _pipelineFor(VertexLayout layout) {
-    var entry = _pipelines[layout];
-    if (entry == null) {
-      final position = layout.attribute(VertexLayout.positionAttribute);
-      final skinned =
-          layout.attribute('vertexJoints')?.components == 4 &&
-          layout.attribute('vertexWeights')?.components == 4;
-      entry = _pipelines[layout] = _CasterPipeline(
-        drawable: position != null && position.components == 3,
-        skinned: skinned,
-      );
-    }
-    if (!entry.drawable) {
-      return null;
-    }
-    final vertexShader = entry.skinned ? _skinnedVertexShader : _vertexShader;
-    final fragmentShader = _fragmentShader;
-    vertexShader.resource;
-    fragmentShader.resource;
-    if (entry._pipeline == null ||
-        entry._vertexGeneration != vertexShader.generation ||
-        entry._fragmentGeneration != fragmentShader.generation) {
-      entry
-        .._pipeline = _context.device.pipelineFor(
-          vertexShader,
-          fragmentShader,
-          layout,
-        )
-        .._vertexGeneration = vertexShader.generation
-        .._fragmentGeneration = fragmentShader.generation
-        ..vertexShader = vertexShader
-        ..fragmentShader = fragmentShader;
-    }
-    return entry;
-  }
+  _CasterPipeline? _pipelineFor(VertexLayout layout) => _CasterPipeline.resolve(
+    _context.device,
+    _pipelines,
+    layout,
+    _vertexShader,
+    _skinnedVertexShader,
+    _fragmentShader,
+  );
 
   static void writeUniforms(RenderContext3D context, UniformBlock block) {
     final dn = context._depthNormal;

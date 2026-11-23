@@ -2,6 +2,8 @@ import 'dart:math' as math;
 
 import 'package:flame/components.dart';
 import 'package:flame_3d/camera.dart';
+import 'package:flame_3d/src/camera/camera_rig_support.dart';
+import 'package:meta/meta.dart';
 
 /// Production 3D orbit, zoom, screen-space pan, and `fitAabb` framing
 /// controller for a [CameraComponent3D].
@@ -22,7 +24,7 @@ class OrbitCameraController3D({
   var double damping = 12.0,
   super.priority,
   super.key,
-}) extends Component {
+}) extends Component with CameraRigSupport {
   this
     : assert(minPitch <= maxPitch, 'minPitch must be <= maxPitch'),
       assert(
@@ -41,7 +43,10 @@ class OrbitCameraController3D({
   }
 
   final CameraComponent3D? _explicitCamera = camera;
-  CameraComponent3D? _mountedCamera;
+
+  @override
+  @protected
+  CameraComponent3D? get explicitCamera => _explicitCamera;
 
   /// World-space pivot point around which the camera orbits.
   final Vector3 target = target?.clone() ?? Vector3.zero();
@@ -87,37 +92,13 @@ class OrbitCameraController3D({
   final Vector3 _screenUp = Vector3.zero();
 
   /// Resolved [CameraComponent3D] driven by this controller.
-  CameraComponent3D get camera {
-    final resolved = _resolveCamera();
-    if (resolved == null) {
-      throw StateError(
-        'OrbitCameraController3D requires a CameraComponent3D passed to its '
-        'constructor or present as an ancestor.',
-      );
-    }
-    return resolved;
-  }
-
-  CameraComponent3D? _resolveCamera() {
-    if (_explicitCamera != null) {
-      return _explicitCamera;
-    }
-    if (_mountedCamera != null) {
-      return _mountedCamera;
-    }
-    for (final ancestor in ancestors()) {
-      if (ancestor is CameraComponent3D) {
-        return _mountedCamera = ancestor;
-      }
-    }
-    return null;
-  }
+  CameraComponent3D get camera => requireCamera('OrbitCameraController3D');
 
   @override
   void onMount() {
     super.onMount();
-    _mountedCamera = null;
-    final cam = _resolveCamera();
+    resetMountedCamera();
+    final cam = resolveCamera();
     if (cam != null) {
       _applyToCamera(cam);
     }
@@ -125,7 +106,7 @@ class OrbitCameraController3D({
 
   @override
   void onRemove() {
-    _mountedCamera = null;
+    resetMountedCamera();
     super.onRemove();
   }
 
@@ -147,7 +128,7 @@ class OrbitCameraController3D({
   /// Pans [target] parallel to the camera's image plane by [delta] viewport
   /// pixels scaled by [speed].
   void panScreenDelta(Vector2 delta, {double speed = 1.0}) {
-    final cam = _resolveCamera();
+    final cam = resolveCamera();
     var unitsPerPixel = 0.01 * _currentDistance;
     if (cam != null) {
       final vh = cam.viewport.virtualSize.y;
@@ -190,7 +171,7 @@ class OrbitCameraController3D({
     final radius = math.max(1e-3, math.sqrt(hx * hx + hy * hy + hz * hz));
     final paddedRadius = radius * math.max(1.0, padding);
 
-    final cam = _resolveCamera();
+    final cam = resolveCamera();
     var aspect = 1.0;
     if (cam != null) {
       final vpSize = cam.viewport.virtualSize;
@@ -226,7 +207,7 @@ class OrbitCameraController3D({
     _currentPitch = _pitch;
     _currentDistance = _distance;
     _currentTarget.setFrom(target);
-    final cam = _resolveCamera();
+    final cam = resolveCamera();
     if (cam != null) {
       _applyToCamera(cam);
     }
@@ -255,22 +236,14 @@ class OrbitCameraController3D({
       );
     }
 
-    final cam = _resolveCamera();
+    final cam = resolveCamera();
     if (cam != null) {
       _applyToCamera(cam);
     }
   }
 
-  static final Vector3 _zAxis = Vector3(0, 0, 1);
-  static final Vector3 _negativeYAxis = Vector3(0, -1, 0);
-
-  void _computeHorizontalFrame() {
-    final ref = _upAxis.z.abs() < 0.9 ? _zAxis : _negativeYAxis;
-    _upAxis.crossInto(ref, _axisX);
-    _axisX.normalize();
-    _axisX.crossInto(_upAxis, _axisZ);
-    _axisZ.normalize();
-  }
+  void _computeHorizontalFrame() =>
+      buildCameraHorizontalFrame(_upAxis, _axisX, _axisZ);
 
   void _computeScreenAxes(double yawRad, double pitchRad) {
     _computeHorizontalFrame();

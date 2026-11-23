@@ -5,6 +5,8 @@ import 'dart:ui' hide FragmentShader;
 import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/resources/material/material_apply_cache.dart';
+import 'package:flame_3d/src/resources/material/surface_buffer_helpers.dart';
 
 /// {@template water_material}
 /// Animated 4-wave Gerstner GPU water material with scrolling micro-ripples,
@@ -508,74 +510,47 @@ class WaterMaterial({
   );
   static final Vector2 _foamSourceOrigin = Vector2.zero();
 
-  int _appliedVersion = -1;
-  Shader? _appliedFrag;
-  int _appliedFragGen = -1;
-  int _appliedVertMask = 0;
-  int _appliedVertGen0 = -1;
-  int _appliedVertGen1 = -1;
-  Shader? _appliedCustomVert;
-  int _appliedCustomVertGen = -1;
+  final MultiVariantApplyCache _applyCache = MultiVariantApplyCache(2);
+
+  int _variantSlot(Shader vert) {
+    if (identical(vert, super.vertexShader)) {
+      return 0;
+    }
+    if (identical(vert, _maskedVertexShader)) {
+      return 1;
+    }
+    return -1;
+  }
 
   @override
   bool get cachesApply => runtimeType == WaterMaterial;
 
   @override
-  void invalidateApplyCache() {
-    _appliedVersion = -1;
-    _appliedVertMask = 0;
-    _appliedCustomVert = null;
-  }
+  void invalidateApplyCache() => _applyCache.invalidate();
 
   @override
   bool isApplyCacheValid(
     RenderContext context,
     Shader vertexShader,
     Shader fragmentShader,
-  ) {
-    if (_appliedVersion != version ||
-        !identical(_appliedFrag, fragmentShader) ||
-        _appliedFragGen != fragmentShader.generation) {
-      return false;
-    }
-    if (identical(vertexShader, super.vertexShader)) {
-      return (_appliedVertMask & 1) != 0 &&
-          _appliedVertGen0 == vertexShader.generation;
-    }
-    if (identical(vertexShader, _maskedVertexShader)) {
-      return (_appliedVertMask & 2) != 0 &&
-          _appliedVertGen1 == vertexShader.generation;
-    }
-    return identical(_appliedCustomVert, vertexShader) &&
-        _appliedCustomVertGen == vertexShader.generation;
-  }
+  ) => _applyCache.isValid(
+    version: version,
+    vertexShader: vertexShader,
+    fragmentShader: fragmentShader,
+    variantSlot: _variantSlot(vertexShader),
+  );
 
   @override
   void recordApplyCache(
     RenderContext context,
     Shader vertexShader,
     Shader fragmentShader,
-  ) {
-    if (_appliedVersion != version ||
-        !identical(_appliedFrag, fragmentShader) ||
-        _appliedFragGen != fragmentShader.generation) {
-      _appliedVersion = version;
-      _appliedFrag = fragmentShader;
-      _appliedFragGen = fragmentShader.generation;
-      _appliedVertMask = 0;
-      _appliedCustomVert = null;
-    }
-    if (identical(vertexShader, super.vertexShader)) {
-      _appliedVertMask |= 1;
-      _appliedVertGen0 = vertexShader.generation;
-    } else if (identical(vertexShader, _maskedVertexShader)) {
-      _appliedVertMask |= 2;
-      _appliedVertGen1 = vertexShader.generation;
-    } else {
-      _appliedCustomVert = vertexShader;
-      _appliedCustomVertGen = vertexShader.generation;
-    }
-  }
+  ) => _applyCache.record(
+    version: version,
+    vertexShader: vertexShader,
+    fragmentShader: fragmentShader,
+    variantSlot: _variantSlot(vertexShader),
+  );
 
   @override
   void apply(RenderContext context) {
@@ -908,21 +883,11 @@ class WaterMaterial({
     Aabb3? aabb,
   }) {
     final count = positions.length ~/ 3;
-    void check(List<double>? values, String name, int perVertex) {
-      if (values != null && values.length != count * perVertex) {
-        throw ArgumentError.value(
-          values.length,
-          name,
-          'Must hold $perVertex float(s) for each of the $count vertices',
-        );
-      }
-    }
-
-    check(positions, 'positions', 3);
-    check(colors, 'colors', 4);
-    check(depths, 'depths', 1);
-    check(foam, 'foam', 1);
-    check(calm, 'calm', 1);
+    checkVertexArrayLength(positions, 'positions', count, 3);
+    checkVertexArrayLength(colors, 'colors', count, 4);
+    checkVertexArrayLength(depths, 'depths', count, 1);
+    checkVertexArrayLength(foam, 'foam', count, 1);
+    checkVertexArrayLength(calm, 'calm', count, 1);
     const stride = 10;
     final data = Float32List(count * stride);
     for (var i = 0; i < count; i++) {
@@ -939,21 +904,9 @@ class WaterMaterial({
         ..[o + 8] = foam?[i] ?? 0
         ..[o + 9] = calm?[i] ?? 0;
     }
-    var wide = count > 0xFFFF;
-    for (var i = 0; !wide && i < indices.length; i++) {
-      wide = indices[i] >= 0xFFFF;
-    }
-    final List<int> indexList;
-    if (indices is Uint16List || indices is Uint32List) {
-      indexList = indices;
-    } else if (wide) {
-      indexList = Uint32List.fromList(indices);
-    } else {
-      indexList = Uint16List.fromList(indices);
-    }
     return Surface.fromBuffers(
       vertices: data,
-      indices: indexList,
+      indices: packTriangleIndices(indices, count),
       layout: vertexLayout,
       material: material,
       aabb: aabb,

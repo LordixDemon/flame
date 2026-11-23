@@ -7,6 +7,7 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/extensions/geometry_math.dart';
 import 'package:meta/meta.dart';
 
 @immutable
@@ -671,10 +672,7 @@ class StaticMeshBatcher3D({
       bool needsNormalNormalize;
 
       if (isUniformOrtho) {
-        final det =
-            m0 * (m5 * m10 - m6 * m9) +
-            m4 * (m6 * m8 - m2 * m10) +
-            m8 * (m2 * m9 - m5 * m8);
+        final det = determinant3x3(m);
         flipWinding = det < 0;
         nSign = flipWinding ? -1.0 : 1.0;
         needsNormalNormalize = (l0 - 1.0).abs() > 1e-4;

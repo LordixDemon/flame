@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flame_3d/physics.dart';
+import 'package:flame_3d/src/extensions/geometry_math.dart';
 import 'package:flame_3d/src/physics/physics_world_3d.dart'
     show WarmContactRecord3D;
 
@@ -31,29 +32,9 @@ abstract final class PhysicsSnapshot3D._() {
   static const int _warmRecordBytes = 16 + 8 * WarmContactRecord3D.valueCount;
   static const int _wheelStateBytes = 49;
 
-  static final Uint32List _crcTable = _buildCrc32Table();
-
-  static Uint32List _buildCrc32Table() {
-    final table = Uint32List(256);
-    for (var i = 0; i < 256; i++) {
-      var c = i;
-      for (var k = 0; k < 8; k++) {
-        c = (c & 1) != 0 ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-      }
-      table[i] = c & 0xFFFFFFFF;
-    }
-    return table;
-  }
-
   /// Computes the IEEE 802.3 CRC32 checksum of `bytes[start..end)`.
-  static int computeCrc32(Uint8List bytes, [int start = 0, int? end]) {
-    final stop = end ?? bytes.length;
-    var crc = 0xFFFFFFFF;
-    for (var i = start; i < stop; i++) {
-      crc = _crcTable[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
-    }
-    return (crc ^ 0xFFFFFFFF) & 0xFFFFFFFF;
-  }
+  static int computeCrc32(Uint8List bytes, [int start = 0, int? end]) =>
+      computeCrc32Bytes(bytes, start: start, end: end);
 
   /// Returns `true` when [bytes] has a valid `'P3DS'` header and matching
   /// trailing CRC32 checksum.

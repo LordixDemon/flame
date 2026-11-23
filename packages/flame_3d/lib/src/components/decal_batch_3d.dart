@@ -6,6 +6,7 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/extensions/clip_space.dart';
 
 /// {@template decal_batch_3d}
 /// Draws many flat 3D surface decals in a single instanced draw call using
@@ -332,7 +333,7 @@ class DecalBatch3D({
         _sortedVersion == _localVersion &&
         identical(_sortedSource, source) &&
         _sortedWorld == worldTransformMatrix &&
-        _sameMatrix(_sortedViewProjection, viewProjection)) {
+        sameMatrix16(_sortedViewProjection, viewProjection)) {
       return sorted;
     }
     _sortedValid = true;
@@ -369,15 +370,6 @@ class DecalBatch3D({
       sorted.setRange(i * _stride, (i + 1) * _stride, source, from);
     }
     return sorted;
-  }
-
-  static bool _sameMatrix(Float32List kept, Float32List current) {
-    for (var i = 0; i < 16; i++) {
-      if (kept[i] != current[i]) {
-        return false;
-      }
-    }
-    return true;
   }
 
   /// Sorts the first [count] indices of [order] by decreasing [depths],

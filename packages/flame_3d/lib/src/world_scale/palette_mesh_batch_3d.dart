@@ -7,6 +7,7 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/extensions/geometry_math.dart';
 
 class _PalettePart3D(
   final int partId,
@@ -47,6 +48,8 @@ class PaletteMeshBatch3D({
 
   /// Hard limit imposed by the shader `JointMatrices` uniform block (`64`).
   static const int maxJoints = 64;
+
+  static final Aabb3 _partBoundsScratch = Aabb3();
 
   final List<_PalettePart3D> _parts = <_PalettePart3D>[];
   final List<Matrix4> _activeJoints = <Matrix4>[];
@@ -353,27 +356,24 @@ class PaletteMeshBatch3D({
           continue;
         }
         final box = part.mesh.aabb;
-        final cx = 0.5 * (box.min.x + box.max.x);
-        final cy = 0.5 * (box.min.y + box.max.y);
-        final cz = 0.5 * (box.min.z + box.max.z);
-        final hx = 0.5 * (box.max.x - box.min.x);
-        final hy = 0.5 * (box.max.y - box.min.y);
-        final hz = 0.5 * (box.max.z - box.min.z);
-        final m = part.transform.storage;
+        transformAabbArvo(
+          part.transform.storage,
+          0,
+          0.5 * (box.min.x + box.max.x),
+          0.5 * (box.min.y + box.max.y),
+          0.5 * (box.min.z + box.max.z),
+          0.5 * (box.max.x - box.min.x),
+          0.5 * (box.max.y - box.min.y),
+          0.5 * (box.max.z - box.min.z),
+          _partBoundsScratch,
+        );
 
-        final wx = m[0] * cx + m[4] * cy + m[8] * cz + m[12];
-        final wy = m[1] * cx + m[5] * cy + m[9] * cz + m[13];
-        final wz = m[2] * cx + m[6] * cy + m[10] * cz + m[14];
-        final ex = m[0].abs() * hx + m[4].abs() * hy + m[8].abs() * hz;
-        final ey = m[1].abs() * hx + m[5].abs() * hy + m[9].abs() * hz;
-        final ez = m[2].abs() * hx + m[6].abs() * hy + m[10].abs() * hz;
-
-        minX = math.min(minX, wx - ex);
-        minY = math.min(minY, wy - ey);
-        minZ = math.min(minZ, wz - ez);
-        maxX = math.max(maxX, wx + ex);
-        maxY = math.max(maxY, wy + ey);
-        maxZ = math.max(maxZ, wz + ez);
+        minX = math.min(minX, _partBoundsScratch.min.x);
+        minY = math.min(minY, _partBoundsScratch.min.y);
+        minZ = math.min(minZ, _partBoundsScratch.min.z);
+        maxX = math.max(maxX, _partBoundsScratch.max.x);
+        maxY = math.max(maxY, _partBoundsScratch.max.y);
+        maxZ = math.max(maxZ, _partBoundsScratch.max.z);
         any = true;
       }
 

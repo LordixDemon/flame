@@ -7,6 +7,7 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/extensions/clip_space.dart';
 import 'package:flame_3d/src/world_scale/chunked_terrain_3d.dart';
 import 'package:meta/meta.dart';
 
@@ -714,7 +715,7 @@ class FoliageSystem3D({
         _drawCacheMaxBend == maxBendAngle &&
         _drawCacheWindDirX == windDirection.x &&
         _drawCacheWindDirY == windDirection.y &&
-        _sameVp16(vp, _drawCacheVp);
+        sameMatrix16(vp, _drawCacheVp);
     final int count;
     if (hitCache) {
       count = _lastVisibleInstanceCount;
@@ -754,15 +755,6 @@ class FoliageSystem3D({
         material: material,
       );
     }
-  }
-
-  static bool _sameVp16(Float32List a, Float32List b) {
-    for (var i = 0; i < 16; i++) {
-      if (a[i] != b[i]) {
-        return false;
-      }
-    }
-    return true;
   }
 
   void _ensureInteractorScratch(int count) {

@@ -5,6 +5,7 @@ import 'package:flame_3d/camera.dart' show Frustum, Plane, Ray, World3D;
 import 'package:flame_3d/collisions.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
+import 'package:flame_3d/src/extensions/geometry_math.dart';
 import 'package:meta/meta.dart';
 
 /// Mixin on [Component3D] receiving 3D collider contact lifecycle callbacks
@@ -291,7 +292,7 @@ class CollisionSystem3D({
         if (!a.canCollideWith(b)) {
           return;
         }
-        if (!_boxesOverlap(a.colliderWorldAabb, b.colliderWorldAabb)) {
+        if (!aabbOverlaps(a.colliderWorldAabb, b.colliderWorldAabb)) {
           return;
         }
 
@@ -358,7 +359,7 @@ class CollisionSystem3D({
       if (filter != null && !filter(c)) {
         return;
       }
-      if (!_boxesOverlap(_queryAabb, c.colliderWorldAabb)) {
+      if (!aabbOverlaps(_queryAabb, c.colliderWorldAabb)) {
         return;
       }
       final manifold = Narrowphase3D.test(
@@ -410,7 +411,7 @@ class CollisionSystem3D({
       if (filter != null && !filter(c)) {
         continue;
       }
-      if (!_boxesOverlap(_queryAabb, c.colliderWorldAabb)) {
+      if (!aabbOverlaps(_queryAabb, c.colliderWorldAabb)) {
         continue;
       }
       final manifold = Narrowphase3D.test(
@@ -577,7 +578,7 @@ class CollisionSystem3D({
         return filter == null || filter(c);
       },
       narrowphase: (c, unitRay, limit) {
-        if (!_rayHitsAabb(unitRay, c.colliderWorldAabb, limit)) {
+        if (!rayHitsAabb(unitRay, c.colliderWorldAabb, limit)) {
           return null;
         }
         final hit = c.shape.raycast(
@@ -641,7 +642,7 @@ class CollisionSystem3D({
         return filter == null || filter(c);
       },
       narrowphase: (c, unitRay, limit) {
-        if (!_rayHitsAabb(unitRay, c.colliderWorldAabb, limit)) {
+        if (!rayHitsAabb(unitRay, c.colliderWorldAabb, limit)) {
           return null;
         }
         final hit = c.shape.raycast(
@@ -806,47 +807,6 @@ class CollisionSystem3D({
     if (p is CollisionCallbacks3D && !identical(p, receiver)) {
       p.onCollisionEnd3D(other);
     }
-  }
-
-  static bool _boxesOverlap(Aabb3 a, Aabb3 b) {
-    return a.min.x <= b.max.x &&
-        a.max.x >= b.min.x &&
-        a.min.y <= b.max.y &&
-        a.max.y >= b.min.y &&
-        a.min.z <= b.max.z &&
-        a.max.z >= b.min.z;
-  }
-
-  static bool _rayHitsAabb(Ray ray, Aabb3 box, double maxT) {
-    var tMin = 0.0;
-    var tMax = maxT;
-
-    bool slab(double o, double d, double lo, double hi) {
-      final minV = lo - 1e-5;
-      final maxV = hi + 1e-5;
-      if (d.abs() < 1e-12) {
-        return o >= minV && o <= maxV;
-      }
-      final inv = 1.0 / d;
-      var t1 = (minV - o) * inv;
-      var t2 = (maxV - o) * inv;
-      if (t1 > t2) {
-        final s = t1;
-        t1 = t2;
-        t2 = s;
-      }
-      if (t1 > tMin) {
-        tMin = t1;
-      }
-      if (t2 < tMax) {
-        tMax = t2;
-      }
-      return tMin <= tMax;
-    }
-
-    return slab(ray.origin.x, ray.direction.x, box.min.x, box.max.x) &&
-        slab(ray.origin.y, ray.direction.y, box.min.y, box.max.y) &&
-        slab(ray.origin.z, ray.direction.z, box.min.z, box.max.z);
   }
 
   static final Quaternion _identityQuat = Quaternion.identity();

@@ -26,19 +26,6 @@ class _OitAndGrabPass(final RenderContext3D _context) {
   static const String _wboitCompositeBundle =
       'packages/flame_3d/assets/shaders/wboit_composite.shaderbundle';
 
-  static final Surface _fullscreenQuad = Surface.fromBuffers(
-    vertices: Float32List.fromList(const [
-      -1.0, -1.0, 0.0, //
-      1.0, -1.0, 0.0, //
-      1.0, 1.0, 0.0, //
-      -1.0, 1.0, 0.0, //
-    ]),
-    indices: Uint16List.fromList(const [0, 1, 2, 0, 2, 3]),
-    layout: VertexLayout(const [
-      VertexAttribute(VertexLayout.positionAttribute, 3),
-    ]),
-  );
-
   late final Shader _compVert = VertexShader.fromAsset(_wboitCompositeBundle);
   late final Shader _compFrag = FragmentShader.fromAsset(
     _wboitCompositeBundle,
@@ -238,7 +225,7 @@ class _OitAndGrabPass(final RenderContext3D _context) {
     final pipeline = device.pipelineFor(
       _compVert,
       _compFrag,
-      _fullscreenQuad.layout,
+      fullscreenQuadSurface.layout,
     );
     device
       ..bindPipeline(pipeline)
@@ -246,8 +233,8 @@ class _OitAndGrabPass(final RenderContext3D _context) {
       ..bindTexture(_compFrag.slot('opaqueTexture'), opaqueTex)
       ..bindTexture(_compFrag.slot('accumTexture'), accumTex)
       ..bindTexture(_compFrag.slot('revealTexture'), revealTex)
-      ..bindSurface(_fullscreenQuad)
-      ..drawSurface(_fullscreenQuad);
+      ..bindSurface(fullscreenQuadSurface)
+      ..drawSurface(fullscreenQuadSurface);
 
     if (sortedCount > 0) {
       _drawOpaqueDepth();

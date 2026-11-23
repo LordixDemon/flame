@@ -4,6 +4,7 @@ import 'package:flame/components.dart' show Component, HasWorldRef;
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
+import 'package:flame_3d/src/extensions/geometry_math.dart';
 import 'package:flame_3d/src/parser/gltf/animation_interpolation.dart';
 import 'package:flutter/animation.dart' show Curve, Curves;
 import 'package:meta/meta.dart';
@@ -368,9 +369,9 @@ class VirtualCameraBrain3D({
 
   void _applyToOutputCamera() {
     _fwdScratch.setValues(0.0, 0.0, -1.0);
-    _rotateByQuat(_currentRot, _fwdScratch);
+    rotateVectorByQuat(_currentRot, _fwdScratch, _fwdScratch);
     _upScratch.setValues(0.0, 1.0, 0.0);
-    _rotateByQuat(_currentRot, _upScratch);
+    rotateVectorByQuat(_currentRot, _upScratch, _upScratch);
 
     camera.position.setFrom(_currentPos);
     camera.target.setValues(
@@ -381,21 +382,6 @@ class VirtualCameraBrain3D({
     camera.up = _upScratch;
     camera.rotation.setFrom(_currentRot);
     camera.fovY = _currentFovY;
-  }
-
-  static void _rotateByQuat(Quaternion q, Vector3 v) {
-    final qx = q.x;
-    final qy = q.y;
-    final qz = q.z;
-    final qw = q.w;
-    final tx = 2.0 * (qy * v.z - qz * v.y);
-    final ty = 2.0 * (qz * v.x - qx * v.z);
-    final tz = 2.0 * (qx * v.y - qy * v.x);
-    v.setValues(
-      v.x + qw * tx + (qy * tz - qz * ty),
-      v.y + qw * ty + (qz * tx - qx * tz),
-      v.z + qw * tz + (qx * ty - qy * tx),
-    );
   }
 
   void _collectCandidates(List<VirtualCamera3D> out) {

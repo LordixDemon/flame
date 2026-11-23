@@ -99,8 +99,11 @@ class ShadowGroup() {
     final lags =
         !startsRound &&
         (world._groupRound < _round - 1 ||
-            !_sameMatrix(world._groupView, view) ||
-            !_sameMatrix(world._groupProjection, projection));
+            !sameMatrix16(world._groupView.storage, view.storage) ||
+            !sameMatrix16(
+              world._groupProjection.storage,
+              projection.storage,
+            ));
     world._groupView.setFrom(view);
     world._groupProjection.setFrom(projection);
     world._groupViewProjection
@@ -136,8 +139,11 @@ class ShadowGroup() {
         _viewProjections.add(viewProjection.clone());
         changed = true;
       } else if (!identical(_viewWorlds[count], member) ||
-          !_sameMatrix(_views[count], view) ||
-          !_sameMatrix(_viewProjections[count], viewProjection)) {
+          !sameMatrix16(_views[count].storage, view.storage) ||
+          !sameMatrix16(
+            _viewProjections[count].storage,
+            viewProjection.storage,
+          )) {
         _viewWorlds[count] = member;
         _views[count].setFrom(view);
         _viewProjections[count].setFrom(viewProjection);
@@ -160,8 +166,8 @@ class ShadowGroup() {
   /// and [viewProjection].
   bool _hasView(int count, Matrix4 view, Matrix4 viewProjection) {
     for (var i = 0; i < count; i++) {
-      if (_sameMatrix(_viewProjections[i], viewProjection) &&
-          _sameMatrix(_views[i], view)) {
+      if (sameMatrix16(_viewProjections[i].storage, viewProjection.storage) &&
+          sameMatrix16(_views[i].storage, view.storage)) {
         return true;
       }
     }
@@ -172,17 +178,6 @@ class ShadowGroup() {
   /// the next frame on.
   void _leave(World3D world) {
     _worlds.remove(world);
-  }
-
-  static bool _sameMatrix(Matrix4 a, Matrix4 b) {
-    final x = a.storage;
-    final y = b.storage;
-    for (var i = 0; i < 16; i++) {
-      if (x[i] != y[i]) {
-        return false;
-      }
-    }
-    return true;
   }
 
   /// The union of the bounds of the casters of the last map.
@@ -210,8 +205,11 @@ class ShadowGroup() {
     // Scene3DComponent) is drawn with the camera of the pass.
     if (world._groupRound != _round ||
         (!world._groupNotedByHost &&
-            (!_sameMatrix(world._groupView, context.view) ||
-                !_sameMatrix(world._groupProjection, context.projection)))) {
+            (!sameMatrix16(world._groupView.storage, context.view.storage) ||
+                !sameMatrix16(
+                  world._groupProjection.storage,
+                  context.projection.storage,
+                )))) {
       _note(world, context.view, context.projection, byHost: false);
     }
     final device = context.device;

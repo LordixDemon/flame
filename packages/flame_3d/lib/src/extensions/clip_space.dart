@@ -1,7 +1,118 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:meta/meta.dart';
 import 'package:vector_math/vector_math.dart' show Frustum, Plane;
+
+/// Exact element-wise equality check for two 16-element matrices.
+@internal
+bool sameMatrix16(List<double> a, List<double> b) {
+  for (var i = 0; i < 16; i++) {
+    if (a[i] != b[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// Epsilon-tolerant element-wise equality check for two 16-element matrices.
+@internal
+bool sameMatrix16Approx(List<double> a, List<double> b, [double eps = 1e-6]) {
+  for (var i = 0; i < 16; i++) {
+    if ((a[i] - b[i]).abs() > eps) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// Projects world point `(wx, wy, wz)` into homogeneous clip coordinates
+/// `[x, y, z, w]` at [offset] of [out] using column-major 4x4 matrix [vp].
+@internal
+@pragma('vm:prefer-inline')
+void projectClipPoint4(
+  Float32List vp,
+  double wx,
+  double wy,
+  double wz,
+  Float64List out,
+  int offset,
+) {
+  out
+    ..[offset] = vp[0] * wx + vp[4] * wy + vp[8] * wz + vp[12]
+    ..[offset + 1] = vp[1] * wx + vp[5] * wy + vp[9] * wz + vp[13]
+    ..[offset + 2] = vp[2] * wx + vp[6] * wy + vp[10] * wz + vp[14]
+    ..[offset + 3] = vp[3] * wx + vp[7] * wy + vp[11] * wz + vp[15];
+}
+
+/// Clips a homogeneous 4D convex polygon of [count] vertices in [src] against
+/// `w >= 1e-4` and writes the clipped polygon into [dst], returning the new
+/// vertex count.
+@internal
+int clipPolygonW(Float64List src, int count, Float64List dst) {
+  const minW = 1e-4;
+  var outCount = 0;
+  for (var i = 0; i < count; i++) {
+    final a = i * 4;
+    final b = ((i + 1) % count) * 4;
+    final da = src[a + 3] - minW;
+    final db = src[b + 3] - minW;
+    final aIn = da >= 0;
+    final bIn = db >= 0;
+    if (aIn) {
+      final o = outCount++ * 4;
+      dst
+        ..[o] = src[a]
+        ..[o + 1] = src[a + 1]
+        ..[o + 2] = src[a + 2]
+        ..[o + 3] = src[a + 3];
+    }
+    if (aIn != bIn) {
+      final t = da / (da - db);
+      final o = outCount++ * 4;
+      dst
+        ..[o] = src[a] + (src[b] - src[a]) * t
+        ..[o + 1] = src[a + 1] + (src[b + 1] - src[a + 1]) * t
+        ..[o + 2] = src[a + 2] + (src[b + 2] - src[a + 2]) * t
+        ..[o + 3] = minW;
+    }
+  }
+  return outCount;
+}
+
+/// Clips a homogeneous 4D convex polygon of [count] vertices in [src] against
+/// the Impeller near plane `z >= 0` and writes the clipped polygon into [dst],
+/// returning the new vertex count.
+@internal
+int clipPolygonNearZ(Float64List src, int count, Float64List dst) {
+  var outCount = 0;
+  for (var i = 0; i < count; i++) {
+    final a = i * 4;
+    final b = ((i + 1) % count) * 4;
+    final da = src[a + 2];
+    final db = src[b + 2];
+    final aIn = da >= 0;
+    final bIn = db >= 0;
+    if (aIn) {
+      final o = outCount++ * 4;
+      dst
+        ..[o] = src[a]
+        ..[o + 1] = src[a + 1]
+        ..[o + 2] = src[a + 2]
+        ..[o + 3] = src[a + 3];
+    }
+    if (aIn != bIn) {
+      final t = da / (da - db);
+      final o = outCount++ * 4;
+      dst
+        ..[o] = src[a] + (src[b] - src[a]) * t
+        ..[o + 1] = src[a + 1] + (src[b + 1] - src[a + 1]) * t
+        ..[o + 2] = 0
+        ..[o + 3] = src[a + 3] + (src[b + 3] - src[a + 3]) * t;
+    }
+  }
+  return outCount;
+}
 
 // Matrix math shared by the Matrix4 and Frustum extensions and the 3D camera.
 //

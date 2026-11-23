@@ -1,6 +1,8 @@
 import 'package:flame/components.dart';
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/camera/camera_rig_support.dart';
+import 'package:meta/meta.dart';
 
 /// Moves a [CameraComponent3D] smoothly along an [eyeSpline] and an optional
 /// [lookAtSpline] or fixed [lookAtTarget], with normalized [progress] in
@@ -17,7 +19,7 @@ class CameraDollyTrack3D({
   var void Function()? onComplete,
   super.priority,
   super.key,
-}) extends Component {
+}) extends Component with CameraRigSupport {
   this : assert(duration > 0, 'duration must be positive') {
     if (_explicitCamera != null) {
       _applyToCamera(_explicitCamera);
@@ -25,7 +27,10 @@ class CameraDollyTrack3D({
   }
 
   final CameraComponent3D? _explicitCamera = camera;
-  CameraComponent3D? _mountedCamera;
+
+  @override
+  @protected
+  CameraComponent3D? get explicitCamera => _explicitCamera;
 
   /// Optional fixed world-space point observed while traversing [eyeSpline]
   /// when [lookAtSpline] is `null`. When both are `null`, the camera looks
@@ -43,7 +48,7 @@ class CameraDollyTrack3D({
     _progress = value.clamp(0.0, 1.0);
     _elapsed = _progress * duration;
     _completed = !loop && _progress >= 1.0;
-    final cam = _resolveCamera();
+    final cam = resolveCamera();
     if (cam != null) {
       _applyToCamera(cam);
     }
@@ -53,38 +58,14 @@ class CameraDollyTrack3D({
   bool get isCompleted => _completed;
 
   /// Resolved [CameraComponent3D] driven by this dolly track.
-  CameraComponent3D get camera {
-    final resolved = _resolveCamera();
-    if (resolved == null) {
-      throw StateError(
-        'CameraDollyTrack3D requires a CameraComponent3D passed to its '
-        'constructor or present as an ancestor.',
-      );
-    }
-    return resolved;
-  }
-
-  CameraComponent3D? _resolveCamera() {
-    if (_explicitCamera != null) {
-      return _explicitCamera;
-    }
-    if (_mountedCamera != null) {
-      return _mountedCamera;
-    }
-    for (final ancestor in ancestors()) {
-      if (ancestor is CameraComponent3D) {
-        return _mountedCamera = ancestor;
-      }
-    }
-    return null;
-  }
+  CameraComponent3D get camera => requireCamera('CameraDollyTrack3D');
 
   /// Resets [progress] to `0` and restarts playback.
   void reset() {
     _elapsed = 0.0;
     _progress = 0.0;
     _completed = false;
-    final cam = _resolveCamera();
+    final cam = resolveCamera();
     if (cam != null) {
       _applyToCamera(cam);
     }
@@ -93,8 +74,8 @@ class CameraDollyTrack3D({
   @override
   void onMount() {
     super.onMount();
-    _mountedCamera = null;
-    final cam = _resolveCamera();
+    resetMountedCamera();
+    final cam = resolveCamera();
     if (cam != null) {
       _applyToCamera(cam);
     }
@@ -102,14 +83,14 @@ class CameraDollyTrack3D({
 
   @override
   void onRemove() {
-    _mountedCamera = null;
+    resetMountedCamera();
     super.onRemove();
   }
 
   @override
   void update(double dt) {
     super.update(dt);
-    final cam = _resolveCamera();
+    final cam = resolveCamera();
     if (!playing || _completed) {
       return;
     }

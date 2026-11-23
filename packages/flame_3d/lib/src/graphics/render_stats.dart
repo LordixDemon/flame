@@ -1,3 +1,5 @@
+import 'package:meta/meta.dart';
+
 /// {@template render_stats}
 /// Counters of the GPU work recorded during one frame.
 ///
@@ -136,6 +138,33 @@ class RenderStats() {
     shadowReusedTriangles = other.shadowReusedTriangles;
     updatedMaterials = other.updatedMaterials;
     animatedMaterials = other.animatedMaterials;
+  }
+
+  /// Stores `after - before` for every counter into `this`.
+  @internal
+  void setDifference(RenderStats after, RenderStats before) {
+    renderPasses = after.renderPasses - before.renderPasses;
+    drawCalls = after.drawCalls - before.drawCalls;
+    instances = after.instances - before.instances;
+    triangles = after.triangles - before.triangles;
+    pipelineChanges = after.pipelineChanges - before.pipelineChanges;
+    stateChanges = after.stateChanges - before.stateChanges;
+    materialChanges = after.materialChanges - before.materialChanges;
+    uniformUploads = after.uniformUploads - before.uniformUploads;
+    uploadedBytes = after.uploadedBytes - before.uploadedBytes;
+    particles = after.particles - before.particles;
+    shadowPasses = after.shadowPasses - before.shadowPasses;
+    shadowDrawCalls = after.shadowDrawCalls - before.shadowDrawCalls;
+    shadowTriangles = after.shadowTriangles - before.shadowTriangles;
+    shadowLayersReused = after.shadowLayersReused - before.shadowLayersReused;
+    shadowLayersRendered =
+        after.shadowLayersRendered - before.shadowLayersRendered;
+    shadowReusedDrawCalls =
+        after.shadowReusedDrawCalls - before.shadowReusedDrawCalls;
+    shadowReusedTriangles =
+        after.shadowReusedTriangles - before.shadowReusedTriangles;
+    updatedMaterials = after.updatedMaterials - before.updatedMaterials;
+    animatedMaterials = after.animatedMaterials - before.animatedMaterials;
   }
 
   @override

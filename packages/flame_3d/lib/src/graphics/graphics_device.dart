@@ -4,7 +4,13 @@ import 'dart:ui';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/graphics/bloom_pass.dart';
+import 'package:flame_3d/src/graphics/fullscreen_quad.dart';
 import 'package:meta/meta.dart';
+
+part 'device_pipeline.dart';
+part 'gpu_transient_arena.dart';
+part 'graphics_device_draw.dart';
+part 'graphics_device_pool.dart';
 
 /// {@template graphics_device}
 /// The [GraphicsDevice] provides a way for developers to interact with the GPU
@@ -141,19 +147,6 @@ class GraphicsDevice({
   bool get isSuspended => _suspended;
   bool _suspended = false;
 
-  /// Starts recording a pass into [target], or into nothing while the
-  /// device is not ready.
-  GpuRenderPass _beginGpuPass(
-    GpuFrame frame,
-    GpuRenderTarget target, {
-    bool keepContents = false,
-  }) {
-    _suspended = !backend.isDeviceReady;
-    return _suspended
-        ? _SuspendedRenderPass.instance
-        : frame.beginRenderPass(target, keepContents: keepContents);
-  }
-
   /// Begin a new frame.
   ///
   /// Starts the frame whose transient storage is shared across all render
@@ -173,41 +166,7 @@ class GraphicsDevice({
     _gpuFrame = null;
     _arena.endFrame();
     lastFrameStats.setFrom(stats);
-
-    // Release the targets of sizes unused for a while, and the targets of a
-    // size beyond how many were used in this frame.
-    if (_pool.isNotEmpty) {
-      _evictPoolKeys.clear();
-      for (final entry in _pool.entries) {
-        final bucket = entry.value;
-        final used = bucket.used;
-        if (used == 0) {
-          if (_frame - bucket.lastUsedFrame >= targetRetainFrames) {
-            _evictPoolKeys.add(entry.key);
-          }
-        } else {
-          bucket.lastUsedFrame = _frame;
-          final targets = bucket.targets;
-          if (used < targets.length) {
-            targets.removeRange(used, targets.length);
-          }
-        }
-      }
-      for (var i = 0; i < _evictPoolKeys.length; i++) {
-        _pool.remove(_evictPoolKeys[i]);
-      }
-    }
-    if (_textureTargets.isNotEmpty) {
-      _evictTextureKeys.clear();
-      for (final entry in _textureTargets.entries) {
-        if (_frame - entry.value.lastUsedFrame >= targetRetainFrames) {
-          _evictTextureKeys.add(entry.key);
-        }
-      }
-      for (var i = 0; i < _evictTextureKeys.length; i++) {
-        _textureTargets.remove(_evictTextureKeys[i]);
-      }
-    }
+    _evictUnusedTargets();
   }
 
   /// Begin a render pass at the given [size], in physical pixels.
@@ -301,45 +260,6 @@ class GraphicsDevice({
     final resolvedLayout = layout ?? VertexLayout.standard;
     final vert = material.vertexShaderFor(resolvedLayout);
     return pipelineFor(vert, material.fragmentShader, resolvedLayout);
-  }
-
-  void _clearPassBindings() {
-    if (_boundUniformCount > 0) {
-      _boundUniformSlots.fillRange(0, _boundUniformCount, null);
-      _boundUniformBuffers.fillRange(0, _boundUniformCount, null);
-      _boundUniformCount = 0;
-    }
-    if (_boundTexCount > 0) {
-      _boundTexSlots.fillRange(0, _boundTexCount, null);
-      _boundTexHandles.fillRange(0, _boundTexCount, null);
-      _boundTexCount = 0;
-    }
-  }
-
-  void _startPass(GpuRenderPass renderPass, WindingOrder frontFace) {
-    _renderPass = renderPass;
-    stats.renderPasses++;
-
-    // The state every pass starts with, see `GpuFrame.beginRenderPass`.
-    _pipeline = null;
-    _surface = null;
-    _clearPassBindings();
-    _hasViewport = false;
-    _hasScissor = false;
-    _bindingEpoch++;
-    _blend = BlendState.opaque;
-    _depthCompare = CompareFunction.less;
-    _depthWrite = true;
-    _cullMode = CullMode.none;
-    _frontFace = WindingOrder.counterClockwise;
-    _stencil = null;
-    _polygonMode = PolygonFillMode.fill;
-    _topology = PrimitiveTopology.triangles;
-    if (frontFace != _frontFace) {
-      renderPass.setWindingOrder(frontFace);
-      _frontFace = frontFace;
-      stats.stateChanges++;
-    }
   }
 
   /// Submit the render pass to the GPU and return the rendered [Image].
@@ -482,38 +402,8 @@ class GraphicsDevice({
     _copyBundle,
     slots: const ['sourceTexture'],
   );
-  static final Surface _copyQuad = Surface.fromBuffers(
-    vertices: Float32List.fromList(const [
-      -1.0, -1.0, 0.0, //
-      1.0, -1.0, 0.0, //
-      1.0, 1.0, 0.0, //
-      -1.0, 1.0, 0.0, //
-    ]),
-    indices: Uint16List.fromList(const [0, 1, 2, 0, 2, 3]),
-    layout: VertexLayout(const [
-      VertexAttribute(VertexLayout.positionAttribute, 3),
-    ]),
-  );
-  static const RenderState _copyState = RenderState(
-    depthTest: false,
-    depthWrite: false,
-  );
   final List<GpuTextureTarget?> _copySources = List.filled(2, null);
   final List<Texture> _copyTextures = List.filled(2, Texture.standard);
-
-  /// Draws [source] over the whole open pass.
-  void _copyTexture(int slot, GpuTextureTarget source) {
-    if (!identical(_copySources[slot], source)) {
-      _copySources[slot] = source;
-      _copyTextures[slot] = Texture(
-        null,
-        width: source.width,
-        height: source.height,
-        gpuTexture: source.texture,
-      );
-    }
-    drawTextureCopy(_copyTextures[slot]);
-  }
 
   /// Draws [texture] over the viewport of the open pass, without testing or
   /// writing depth: texel for texel when it has the size of the viewport and
@@ -521,11 +411,13 @@ class GraphicsDevice({
   @internal
   void drawTextureCopy(Texture texture) {
     _copyFragment.setTexture('sourceTexture', texture);
-    bindPipeline(pipelineFor(_copyVertex, _copyFragment, _copyQuad.layout));
-    setRenderState(_copyState);
+    bindPipeline(
+      pipelineFor(_copyVertex, _copyFragment, fullscreenQuadSurface.layout),
+    );
+    setRenderState(fullscreenQuadState);
     bindTexture(_copyFragment.slot('sourceTexture'), texture);
-    bindSurface(_copyQuad);
-    drawSurface(_copyQuad);
+    bindSurface(fullscreenQuadSurface);
+    drawSurface(fullscreenQuadSurface);
   }
 
   /// Submit the pass begun by [beginTexturePass] to the GPU.
@@ -887,53 +779,6 @@ class GraphicsDevice({
     RenderProfile.lap(RenderPhase.binding);
   }
 
-  void _bindUniformResolved(
-    GpuUniformSlot slot,
-    GpuBuffer buffer,
-    int offsetInBytes,
-    int lengthInBytes,
-  ) {
-    for (var i = 0; i < _boundUniformCount; i++) {
-      if (identical(_boundUniformSlots[i], slot)) {
-        if (identical(_boundUniformBuffers[i], buffer) &&
-            _boundUniformOffsets[i] == offsetInBytes &&
-            _boundUniformLengths[i] == lengthInBytes) {
-          return;
-        }
-        _boundUniformBuffers[i] = buffer;
-        _boundUniformOffsets[i] = offsetInBytes;
-        _boundUniformLengths[i] = lengthInBytes;
-        _pass.bindUniform(
-          slot,
-          buffer,
-          offsetInBytes: offsetInBytes,
-          lengthInBytes: lengthInBytes,
-        );
-        return;
-      }
-    }
-    final idx = _boundUniformCount++;
-    if (idx == _boundUniformSlots.length) {
-      _boundUniformSlots.add(slot);
-      _boundUniformBuffers.add(buffer);
-      _boundUniformOffsets = Int32List(_boundUniformOffsets.length * 2)
-        ..setRange(0, _boundUniformOffsets.length, _boundUniformOffsets);
-      _boundUniformLengths = Int32List(_boundUniformLengths.length * 2)
-        ..setRange(0, _boundUniformLengths.length, _boundUniformLengths);
-    } else {
-      _boundUniformSlots[idx] = slot;
-      _boundUniformBuffers[idx] = buffer;
-    }
-    _boundUniformOffsets[idx] = offsetInBytes;
-    _boundUniformLengths[idx] = lengthInBytes;
-    _pass.bindUniform(
-      slot,
-      buffer,
-      offsetInBytes: offsetInBytes,
-      lengthInBytes: lengthInBytes,
-    );
-  }
-
   /// Bind a uniform [slot] to the [texture], sampled with its
   /// [Texture.sampler].
   void bindTexture(GpuUniformSlot slot, Texture texture) {
@@ -971,441 +816,5 @@ class GraphicsDevice({
     RenderProfile.lap(RenderPhase.binding);
   }
 
-  _TransientBlock _uploadUniform(Uint8List data) {
-    final length = data.length;
-    final block = _arena.allocate(length, backend.uniformAlignment);
-    block.staging.setRange(block.lastOffset, block.lastOffset + length, data);
-    stats
-      ..uniformUploads += 1
-      ..uploadedBytes += length;
-    return block;
-  }
-
-  /// Acquire a render target from the pool, creating one if needed.
-  GpuRenderTarget _acquireRenderTarget(Size size, int msaaSampleCount) {
-    final key = (
-      _pixels(size.width),
-      _pixels(size.height),
-      msaaSampleCount,
-    );
-    final bucket = _pool[key] ??= _PoolBucket(_frame);
-    final index = bucket.used;
-    final targets = bucket.targets;
-    if (index < targets.length) {
-      bucket.used = index + 1;
-      return targets[index];
-    }
-
-    final target = backend.createRenderTarget(
-      width: key.$1,
-      height: key.$2,
-      clearValue: clearValue,
-      msaaSampleCount: key.$3,
-    );
-
-    targets.add(target);
-    bucket.used = index + 1;
-    return target;
-  }
-
-  static int _pixels(double size) {
-    final pixels = size.round();
-    return pixels < 1 ? 1 : pixels;
-  }
-
   static const _instanceAlignment = 16;
-}
-
-class _PoolBucket(this.lastUsedFrame) {
-  final List<GpuRenderTarget> targets = [];
-  int used = 0;
-  int lastUsedFrame;
-}
-
-class _TextureTargetEntry(
-  final GpuTextureTarget target,
-  var int lastUsedFrame,
-  final int estimatedBytes,
-);
-
-/// {@template device_pipeline}
-/// A render pipeline built by a [GraphicsDevice] for one vertex shader,
-/// fragment shader and surface [VertexLayout], with what the device learned
-/// about how it reads its inputs.
-/// {@endtemplate}
-class DevicePipeline._(
-  /// The backend pipeline.
-  final GpuPipeline pipeline, {
-
-  /// The backend vertex shader linked into this pipeline.
-  required final GpuShader vertexShader,
-
-  /// The backend fragment shader linked into this pipeline.
-  required final GpuShader fragmentShader,
-
-  /// A number identifying this pipeline within its device, usable to sort
-  /// draws by pipeline.
-  required final int id,
-
-  /// Whether the vertex shader reads per-instance data, so an instance buffer
-  /// must be bound for every draw.
-  required final bool usesInstanceData,
-
-  /// Whether the vertex shader reads its model matrix from the instance data,
-  /// so draws of the same surface and material can be batched into one
-  /// instanced draw.
-  required final bool instanced,
-}) {
-  factory DevicePipeline._create(
-    GpuBackend backend,
-    GpuShader vertexShader,
-    GpuShader fragmentShader,
-    VertexLayout layout,
-    int id,
-  ) {
-    final vertexAttributes = <GpuVertexAttribute>[];
-    final instanceAttributes = <GpuVertexAttribute>[];
-    final inputs = vertexShader.inputs;
-
-    void addInstanceAttribute(int index, String name, int location) {
-      instanceAttributes.add(
-        GpuVertexAttribute(
-          name: name,
-          location: location,
-          components: VertexLayout.instanceAttributes[index].components,
-          offsetInBytes: index * 16,
-        ),
-      );
-    }
-
-    if (inputs == null) {
-      for (final (index, attribute) in layout.attributes.indexed) {
-        vertexAttributes.add(
-          GpuVertexAttribute(
-            name: attribute.name,
-            location: index,
-            components: attribute.components,
-            offsetInBytes: layout.offsetOf(attribute.name)! * 4,
-          ),
-        );
-      }
-      for (final (index, attribute)
-          in VertexLayout.instanceAttributes.indexed) {
-        addInstanceAttribute(
-          index,
-          attribute.name,
-          layout.attributes.length + index,
-        );
-      }
-    } else {
-      for (final input in inputs) {
-        final attribute = layout.attribute(input.name);
-        if (attribute != null) {
-          vertexAttributes.add(
-            GpuVertexAttribute(
-              name: input.name,
-              location: input.location,
-              components: attribute.components,
-              offsetInBytes: layout.offsetOf(input.name)! * 4,
-            ),
-          );
-          continue;
-        }
-        final instanceIndex = VertexLayout.instanceAttributes.indexWhere(
-          (a) => a.name == input.name,
-        );
-        if (instanceIndex < 0) {
-          final instanceInputs = VertexLayout.instanceAttributes
-              .map((a) => a.name)
-              .join(', ');
-          throw StateError(
-            'The vertex shader input "${input.name}" is not provided by the '
-            'surface vertex layout $layout, nor is it an instance input '
-            '($instanceInputs)',
-          );
-        }
-        addInstanceAttribute(instanceIndex, input.name, input.location);
-      }
-    }
-
-    final modelColumns = instanceAttributes
-        .where((a) => a.name.startsWith('instanceModel'))
-        .length;
-    if (modelColumns != 0 && modelColumns != 4) {
-      throw StateError(
-        'A vertex shader must declare all four instanceModel columns or none',
-      );
-    }
-
-    final pipeline = backend.createPipeline(
-      vertexShader: vertexShader,
-      fragmentShader: fragmentShader,
-      vertexLayout: GpuVertexLayout([
-        GpuVertexBufferLayout(
-          strideInBytes: layout.strideInBytes,
-          attributes: vertexAttributes,
-        ),
-        if (instanceAttributes.isNotEmpty)
-          GpuVertexBufferLayout(
-            strideInBytes: VertexLayout.instanceStrideInFloats * 4,
-            attributes: instanceAttributes,
-            perInstance: true,
-          ),
-      ]),
-    );
-    return DevicePipeline._(
-      pipeline,
-      vertexShader: vertexShader,
-      fragmentShader: fragmentShader,
-      id: id,
-      usesInstanceData: instanceAttributes.isNotEmpty,
-      instanced: modelColumns == 4,
-    );
-  }
-}
-
-/// A host-visible GPU buffer and its CPU staging copy.
-class _TransientBlock(final GpuBuffer buffer, final int capacity) {
-  late final Uint8List staging = Uint8List(capacity);
-  late final Float32List floats = staging.buffer.asFloat32List();
-
-  int used = 0;
-  int flushed = 0;
-  int lastOffset = 0;
-
-  void flush() {
-    if (used > flushed) {
-      buffer.write(
-        ByteData.sublistView(staging, flushed, used),
-        destinationOffsetInBytes: flushed,
-      );
-      flushed = used;
-    }
-  }
-}
-
-/// The transient blocks used by one frame, pooled across completed frames so
-/// pass completion callbacks allocate zero closures per pass or frame.
-class _FrameUploads(final _TransientArena _arena) {
-  final List<_TransientBlock> blocks = [];
-  int pendingPasses = 0;
-  bool ended = false;
-
-  late final void Function() completionCallback = _onCompleted;
-
-  void _onCompleted() {
-    pendingPasses--;
-    if (ended && pendingPasses == 0) {
-      _arena._release(this);
-    }
-  }
-}
-
-/// Sub-allocates the uniform and instance data of a frame from a pool of
-/// [_TransientBlock]s, uploads it once per pass and recycles the blocks once
-/// the GPU completed every pass of the frame that used them.
-class _TransientArena(final GpuBackend _backend) {
-  static const _blockSize = 256 * 1024;
-  static const _maxFreeBlocks = 8;
-  static const _maxFreeFrames = 8;
-
-  final List<_TransientBlock> _free = [];
-  final List<_FrameUploads> _freeFrames = [];
-  late _FrameUploads _frame = _FrameUploads(this);
-  _TransientBlock? _current;
-
-  _TransientBlock allocate(int size, int alignment) {
-    var block = _current;
-    if (block != null) {
-      final offset = _align(block.used, alignment);
-      if (offset + size <= block.capacity) {
-        block
-          ..lastOffset = offset
-          ..used = offset + size;
-        return block;
-      }
-    }
-    block = _current = _takeBlock(size);
-    _frame.blocks.add(block);
-    return block
-      ..lastOffset = 0
-      ..used = size;
-  }
-
-  _TransientBlock _takeBlock(int size) {
-    for (var i = 0; i < _free.length; i++) {
-      final block = _free[i];
-      if (block.capacity >= size) {
-        _free.removeAt(i);
-        return block
-          ..used = 0
-          ..flushed = 0;
-      }
-    }
-    var capacity = _blockSize;
-    while (capacity < size) {
-      capacity *= 2;
-    }
-    return _TransientBlock(
-      _backend.createBuffer(
-        storageMode: GpuStorageMode.hostVisible,
-        sizeInBytes: capacity,
-      ),
-      capacity,
-    );
-  }
-
-  void flush() {
-    for (var i = 0; i < _frame.blocks.length; i++) {
-      _frame.blocks[i].flush();
-    }
-  }
-
-  void Function() passCompletion() {
-    _frame.pendingPasses++;
-    return _frame.completionCallback;
-  }
-
-  void endFrame() {
-    final frame = _frame..ended = true;
-    if (frame.pendingPasses == 0) {
-      _release(frame);
-    }
-    _frame = _freeFrames.isNotEmpty
-        ? _freeFrames.removeLast()
-        : _FrameUploads(this);
-    _current = null;
-  }
-
-  void _release(_FrameUploads frame) {
-    for (var i = 0; i < frame.blocks.length; i++) {
-      if (_free.length < _maxFreeBlocks) {
-        _free.add(frame.blocks[i]);
-      }
-    }
-    frame
-      ..blocks.clear()
-      ..pendingPasses = 0
-      ..ended = false;
-    if (_freeFrames.length < _maxFreeFrames) {
-      _freeFrames.add(frame);
-    }
-  }
-
-  static int _align(int value, int alignment) {
-    final remainder = value % alignment;
-    return remainder == 0 ? value : value + alignment - remainder;
-  }
-}
-
-/// The pass recorded while the GPU device is not ready: it records nothing.
-class _SuspendedRenderPass() implements GpuRenderPass {
-  static final _SuspendedRenderPass instance = _SuspendedRenderPass();
-
-  static Image? _blank;
-
-  /// A new handle to a transparent 1 by 1 image (a clone, so that callers
-  /// may dispose it).
-  static Image blankImage() {
-    final blank = _blank ??= () {
-      final recorder = PictureRecorder();
-      Canvas(recorder);
-      final picture = recorder.endRecording();
-      final image = picture.toImageSync(1, 1);
-      picture.dispose();
-      return image;
-    }();
-    return blank.clone();
-  }
-
-  @override
-  void bindPipeline(GpuPipeline pipeline) {}
-
-  @override
-  void setBlendState(BlendState blend) {}
-
-  @override
-  void setDepthState({
-    required CompareFunction compare,
-    required bool writeEnabled,
-  }) {}
-
-  @override
-  void setCullMode(CullMode cullMode) {}
-
-  @override
-  void setWindingOrder(WindingOrder windingOrder) {}
-
-  @override
-  void setViewport(
-    int x,
-    int y,
-    int width,
-    int height, {
-    double zNear = 0.0,
-    double zFar = 1.0,
-  }) {}
-
-  @override
-  void setScissor(int x, int y, int width, int height) {}
-
-  @override
-  void setStencil(StencilState? stencil) {}
-
-  @override
-  void setPolygonMode(PolygonFillMode mode) {}
-
-  @override
-  void setPrimitiveTopology(PrimitiveTopology topology) {}
-
-  @override
-  void bindVertexBuffer(
-    GpuBuffer buffer, {
-    required int offsetInBytes,
-    required int lengthInBytes,
-    int slot = 0,
-  }) {}
-
-  @override
-  void bindIndexBuffer(
-    GpuBuffer buffer, {
-    required int offsetInBytes,
-    required int lengthInBytes,
-    required GpuIndexType indexType,
-  }) {}
-
-  @override
-  void bindUniform(
-    GpuUniformSlot slot,
-    GpuBuffer buffer, {
-    required int offsetInBytes,
-    required int lengthInBytes,
-  }) {}
-
-  @override
-  void bindTexture(
-    GpuUniformSlot slot,
-    GpuTexture texture, {
-    TextureSampler sampler = TextureSampler.nearest,
-  }) {}
-
-  @override
-  void clearBindings() {}
-
-  @override
-  void draw(int vertexCount, {int instanceCount = 1}) {}
-
-  @override
-  void drawIndexed(int indexCount, {int instanceCount = 1}) {}
-
-  @override
-  Image submit({void Function()? onCompleted}) {
-    onCompleted?.call();
-    return blankImage();
-  }
-
-  @override
-  void commit({void Function()? onCompleted}) {
-    onCompleted?.call();
-  }
 }

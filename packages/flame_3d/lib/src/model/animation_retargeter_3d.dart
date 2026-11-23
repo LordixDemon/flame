@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flame_3d/core.dart';
+import 'package:flame_3d/src/extensions/geometry_math.dart';
 import 'package:flame_3d/src/model/animation_state.dart';
 import 'package:flame_3d/src/model/model.dart';
 import 'package:flame_3d/src/model/model_animation.dart';
@@ -572,14 +573,14 @@ abstract final class AnimationRetargeter3D._() {
     final times = <double>[for (final kf in src.values) kf.time];
     Vector3 mapPos(Vector3 p) {
       final delta = p - srcRest.localTranslation;
-      _rotateByQuat(parentMapRot, delta);
+      rotateVectorByQuat(parentMapRot, delta, delta);
       delta.scale(scale);
       return dstRest.localTranslation + delta;
     }
 
     Vector3 mapTangent(Vector3 t) {
       final v = t.clone();
-      _rotateByQuat(parentMapRot, v);
+      rotateVectorByQuat(parentMapRot, v, v);
       v.scale(scale);
       return v;
     }
@@ -757,19 +758,4 @@ class _CandidateBoneName({
   }
 
   static final RegExp _nonAlphaNum = RegExp('[^a-z0-9]');
-}
-
-void _rotateByQuat(Quaternion q, Vector3 v) {
-  final qx = q.x;
-  final qy = q.y;
-  final qz = q.z;
-  final qw = q.w;
-  final tx = 2.0 * (qy * v.z - qz * v.y);
-  final ty = 2.0 * (qz * v.x - qx * v.z);
-  final tz = 2.0 * (qx * v.y - qy * v.x);
-  v.setValues(
-    v.x + qw * tx + (qy * tz - qz * ty),
-    v.y + qw * ty + (qz * tx - qx * tz),
-    v.z + qw * tz + (qx * ty - qy * tx),
-  );
 }

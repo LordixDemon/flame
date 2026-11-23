@@ -7,6 +7,7 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/extensions/geometry_math.dart';
 
 /// Normalized 4-layer biome weights (`sand + grass + rock + snow == 1.0`) at a
 /// point on a [ChunkedTerrain3D].
@@ -528,7 +529,7 @@ class ChunkedTerrain3D({
       _worldNodeBox
         ..setFrom(node.localBounds)
         ..transform(worldMat);
-      if (!_rayIntersectsAabb(worldRay, _worldNodeBox, limit)) {
+      if (!rayHitsAabb(worldRay, _worldNodeBox, limit)) {
         return;
       }
       final kids = node.children;
@@ -954,37 +955,5 @@ class ChunkedTerrain3D({
         ? box.min.z - p.z
         : (p.z > box.max.z ? p.z - box.max.z : 0.0);
     return math.sqrt(dx * dx + dy * dy + dz * dz);
-  }
-
-  static bool _rayIntersectsAabb(Ray ray, Aabb3 box, double maxT) {
-    var tMin = 0.0;
-    var tMax = maxT;
-
-    bool slab(double o, double d, double lo, double hi) {
-      final minVal = lo - 1e-5;
-      final maxVal = hi + 1e-5;
-      if (d.abs() < 1e-12) {
-        return o >= minVal && o <= maxVal;
-      }
-      final inv = 1.0 / d;
-      var t1 = (minVal - o) * inv;
-      var t2 = (maxVal - o) * inv;
-      if (t1 > t2) {
-        final tmp = t1;
-        t1 = t2;
-        t2 = tmp;
-      }
-      if (t1 > tMin) {
-        tMin = t1;
-      }
-      if (t2 < tMax) {
-        tMax = t2;
-      }
-      return tMin <= tMax;
-    }
-
-    return slab(ray.origin.x, ray.direction.x, box.min.x, box.max.x) &&
-        slab(ray.origin.y, ray.direction.y, box.min.y, box.max.y) &&
-        slab(ray.origin.z, ray.direction.z, box.min.z, box.max.z);
   }
 }

@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/navigation.dart';
+import 'package:flame_3d/src/extensions/geometry_math.dart';
 
 /// A single 3D navigation crowd agent managed by [CrowdSteering3D].
 class CrowdAgent3D({
@@ -118,17 +119,8 @@ class CrowdSteering3D({
 
     final up = upAxis;
     final basisU = _basisU;
-    if (up.x.abs() < 0.9) {
-      basisU.setValues(1.0, 0.0, 0.0);
-    } else {
-      basisU.setValues(0.0, 1.0, 0.0);
-    }
-    basisU
-      ..addScaled(up, -basisU.dot(up))
-      ..normalize();
     final basisV = _basisV;
-    up.crossInto(basisU, basisV);
-    basisV.normalize();
+    buildUpTangentBasis3D(up, basisU, basisV);
 
     final ux = up.x;
     final uy = up.y;

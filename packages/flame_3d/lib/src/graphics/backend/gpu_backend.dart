@@ -76,6 +76,25 @@ abstract base class GpuBackend() {
   /// textures in [format].
   bool supportsPixelFormat(GpuPixelFormat format) => !format.isCompressed;
 
+  /// Strips a `packages/<name>/` asset prefix when present, matching root
+  /// package test bundles.
+  @internal
+  static String stripPackagePrefix(String assetName) {
+    if (!assetName.startsWith('packages/')) {
+      return assetName;
+    }
+    final packageEnd = assetName.indexOf('/', 'packages/'.length);
+    return packageEnd < 0 ? assetName : assetName.substring(packageEnd + 1);
+  }
+
+  /// Rounds [value] up to the nearest multiple of [alignment].
+  @internal
+  @pragma('vm:prefer-inline')
+  static int alignUp(int value, int alignment) {
+    final remainder = value % alignment;
+    return remainder == 0 ? value : value + alignment - remainder;
+  }
+
   /// Creates a [GpuTexture] with [mipLevelCount] mip levels (at most
   /// [maxMipLevelCount]).
   GpuTexture createTexture({

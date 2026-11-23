@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/model.dart';
+import 'package:meta/meta.dart';
 
 /// Base procedural bone modifier applied in model space after keyframe
 /// evaluation and before skinning joint matrices are written.
@@ -103,6 +104,147 @@ abstract class BoneModifier3D() {
     out.setAxisAngle(_axis, angle);
   }
 
+  /// Analytic Law-of-Cosines two-bone IK solver for a `root -> mid -> tip`
+  /// bone chain toward world-space [targetWorld] with bend direction
+  /// [poleWorld], blended by [blendWeight] in `[0, 1]`.
+  @internal
+  static void solveTwoBoneIk({
+    required Model model,
+    required ModelPoseWorkspace workspace,
+    required Matrix4 invWorldMatrix,
+    required int rootIndex,
+    required int midIndex,
+    required int tipIndex,
+    required Vector3 targetWorld,
+    required Vector3 poleWorld,
+    required double blendWeight,
+  }) {
+    final w = blendWeight.clamp(0.0, 1.0);
+    if (w <= 0.0) {
+      return;
+    }
+    final rootNode = workspace.nodesByIndex[rootIndex];
+    final midNode = workspace.nodesByIndex[midIndex];
+    final tipNode = workspace.nodesByIndex[tipIndex];
+    if (rootNode == null || midNode == null || tipNode == null) {
+      return;
+    }
+
+    final rm = rootNode.combinedTransform;
+    final mm = midNode.combinedTransform;
+    final tm = tipNode.combinedTransform;
+    _ikPRoot.setValues(rm.storage[12], rm.storage[13], rm.storage[14]);
+    _ikPMid.setValues(mm.storage[12], mm.storage[13], mm.storage[14]);
+    _ikPTip.setValues(tm.storage[12], tm.storage[13], tm.storage[14]);
+
+    final lenA = _ikPMid.distanceTo(_ikPRoot);
+    final lenB = _ikPTip.distanceTo(_ikPMid);
+    if (lenA < 1e-5 || lenB < 1e-5) {
+      return;
+    }
+
+    _ikTargetM.setFrom(targetWorld);
+    invWorldMatrix.transform3(_ikTargetM);
+    _ikPoleM.setFrom(poleWorld);
+    invWorldMatrix.transform3(_ikPoleM);
+
+    _ikDirTarget
+      ..setFrom(_ikTargetM)
+      ..sub(_ikPRoot);
+    final rawDist = _ikDirTarget.length;
+    if (rawDist < 1e-6) {
+      return;
+    }
+    _ikDirTarget.scale(1.0 / rawDist);
+
+    final minReach = (lenA - lenB).abs() + 1e-4;
+    final maxReach = lenA + lenB - 1e-4;
+    final clampedDist = rawDist.clamp(minReach, maxReach);
+
+    final cosAlpha =
+        ((lenA * lenA + clampedDist * clampedDist - lenB * lenB) /
+                (2.0 * lenA * clampedDist))
+            .clamp(-1.0, 1.0);
+    final sinAlpha = math.sqrt(math.max(0.0, 1.0 - cosAlpha * cosAlpha));
+
+    _ikPoleProj
+      ..setFrom(_ikPoleM)
+      ..sub(_ikPRoot);
+    final proj = _ikPoleProj.dot(_ikDirTarget);
+    _ikPoleProj.addScaled(_ikDirTarget, -proj);
+    if (_ikPoleProj.length2 < 1e-8) {
+      if (_ikDirTarget.x.abs() < 0.9) {
+        _ikDirTarget.crossInto(_unitX, _ikPoleProj);
+      } else {
+        _ikDirTarget.crossInto(_unitY, _ikPoleProj);
+      }
+    }
+    _ikPoleProj.normalize();
+
+    _ikNewMid
+      ..setFrom(_ikPRoot)
+      ..addScaled(_ikDirTarget, lenA * cosAlpha)
+      ..addScaled(_ikPoleProj, lenA * sinAlpha);
+
+    _ikOldUpper
+      ..setFrom(_ikPMid)
+      ..sub(_ikPRoot)
+      ..normalize();
+    _ikNewUpper
+      ..setFrom(_ikNewMid)
+      ..sub(_ikPRoot)
+      ..normalize();
+    _ikOldRootM.setFrom(rm);
+    swingRotationInto(
+      _ikOldUpper,
+      _ikNewUpper,
+      _ikQRoot,
+      blendWeight: w,
+    );
+    rotateCombinedAroundOrigin(rm, _ikQRoot);
+    propagateDeltaToDescendants(
+      model,
+      workspace,
+      rootIndex,
+      _ikOldRootM,
+      rm,
+    );
+
+    _ikPMid.setValues(mm.storage[12], mm.storage[13], mm.storage[14]);
+    _ikPTip.setValues(tm.storage[12], tm.storage[13], tm.storage[14]);
+    _ikGoalTip
+      ..setFrom(_ikPRoot)
+      ..addScaled(_ikDirTarget, clampedDist);
+
+    _ikCurLower
+      ..setFrom(_ikPTip)
+      ..sub(_ikPMid);
+    _ikNewLower
+      ..setFrom(_ikGoalTip)
+      ..sub(_ikPMid);
+    if (_ikCurLower.length2 < 1e-10 || _ikNewLower.length2 < 1e-10) {
+      return;
+    }
+    _ikCurLower.normalize();
+    _ikNewLower.normalize();
+
+    _ikOldMidM.setFrom(mm);
+    swingRotationInto(
+      _ikCurLower,
+      _ikNewLower,
+      _ikQMid,
+      blendWeight: w,
+    );
+    rotateCombinedAroundOrigin(mm, _ikQMid);
+    propagateDeltaToDescendants(
+      model,
+      workspace,
+      midIndex,
+      _ikOldMidM,
+      mm,
+    );
+  }
+
   static final Matrix4 _invOld = Matrix4.identity();
   static final Matrix4 _delta = Matrix4.identity();
   static final Set<int> _affected = {};
@@ -112,6 +254,23 @@ abstract class BoneModifier3D() {
   static final Matrix4 _rotMat = Matrix4.identity();
   static final Matrix4 _temp = Matrix4.identity();
   static final Vector3 _axis = Vector3.zero();
+  static final Vector3 _ikPRoot = Vector3.zero();
+  static final Vector3 _ikPMid = Vector3.zero();
+  static final Vector3 _ikPTip = Vector3.zero();
+  static final Vector3 _ikTargetM = Vector3.zero();
+  static final Vector3 _ikPoleM = Vector3.zero();
+  static final Vector3 _ikDirTarget = Vector3.zero();
+  static final Vector3 _ikPoleProj = Vector3.zero();
+  static final Vector3 _ikNewMid = Vector3.zero();
+  static final Vector3 _ikOldUpper = Vector3.zero();
+  static final Vector3 _ikNewUpper = Vector3.zero();
+  static final Vector3 _ikCurLower = Vector3.zero();
+  static final Vector3 _ikNewLower = Vector3.zero();
+  static final Vector3 _ikGoalTip = Vector3.zero();
+  static final Quaternion _ikQRoot = Quaternion.identity();
+  static final Quaternion _ikQMid = Quaternion.identity();
+  static final Matrix4 _ikOldRootM = Matrix4.identity();
+  static final Matrix4 _ikOldMidM = Matrix4.identity();
 }
 
 /// Smoothly rotates a bone (such as a head, turret, or eye) so its local
@@ -393,24 +552,6 @@ class TwoBoneIkConstraint3D({
   int? _midIdx;
   int? _tipIdx;
 
-  final Vector3 _pRoot = Vector3.zero();
-  final Vector3 _pMid = Vector3.zero();
-  final Vector3 _pTip = Vector3.zero();
-  final Vector3 _targetM = Vector3.zero();
-  final Vector3 _poleM = Vector3.zero();
-  final Vector3 _dirTarget = Vector3.zero();
-  final Vector3 _poleProj = Vector3.zero();
-  final Vector3 _newMid = Vector3.zero();
-  final Vector3 _oldUpper = Vector3.zero();
-  final Vector3 _newUpper = Vector3.zero();
-  final Vector3 _curLower = Vector3.zero();
-  final Vector3 _newLower = Vector3.zero();
-  final Vector3 _goalTip = Vector3.zero();
-  final Quaternion _qRoot = Quaternion.identity();
-  final Quaternion _qMid = Quaternion.identity();
-  final Matrix4 _oldRootM = Matrix4.identity();
-  final Matrix4 _oldMidM = Matrix4.identity();
-
   @override
   void apply(
     Model model,
@@ -429,132 +570,16 @@ class TwoBoneIkConstraint3D({
     if (rIdx == null || mIdx == null || tIdx == null) {
       return;
     }
-
-    final rootNode = workspace.nodesByIndex[rIdx];
-    final midNode = workspace.nodesByIndex[mIdx];
-    final tipNode = workspace.nodesByIndex[tIdx];
-    if (rootNode == null || midNode == null || tipNode == null) {
-      return;
-    }
-
-    final rm = rootNode.combinedTransform;
-    final mm = midNode.combinedTransform;
-    final tm = tipNode.combinedTransform;
-    _pRoot.setValues(rm.storage[12], rm.storage[13], rm.storage[14]);
-    _pMid.setValues(mm.storage[12], mm.storage[13], mm.storage[14]);
-    _pTip.setValues(tm.storage[12], tm.storage[13], tm.storage[14]);
-
-    final lenA = _pMid.distanceTo(_pRoot);
-    final lenB = _pTip.distanceTo(_pMid);
-    if (lenA < 1e-5 || lenB < 1e-5) {
-      return;
-    }
-
-    _targetM.setFrom(targetWorld);
-    invWorldMatrix.transform3(_targetM);
-    _poleM.setFrom(poleWorld);
-    invWorldMatrix.transform3(_poleM);
-
-    _dirTarget
-      ..setFrom(_targetM)
-      ..sub(_pRoot);
-    final rawDist = _dirTarget.length;
-    if (rawDist < 1e-6) {
-      return;
-    }
-    _dirTarget.scale(1.0 / rawDist);
-
-    final minReach = (lenA - lenB).abs() + 1e-4;
-    final maxReach = lenA + lenB - 1e-4;
-    final clampedDist = rawDist.clamp(minReach, maxReach);
-
-    // Law of cosines for angle at `root` between `dirTarget` and upper limb:
-    final cosAlpha =
-        ((lenA * lenA + clampedDist * clampedDist - lenB * lenB) /
-                (2.0 * lenA * clampedDist))
-            .clamp(-1.0, 1.0);
-    final sinAlpha = math.sqrt(math.max(0.0, 1.0 - cosAlpha * cosAlpha));
-
-    // Orthogonalize `pole - root` against `dirTarget` for bend direction.
-    _poleProj
-      ..setFrom(_poleM)
-      ..sub(_pRoot);
-    final proj = _poleProj.dot(_dirTarget);
-    _poleProj.addScaled(_dirTarget, -proj);
-    if (_poleProj.length2 < 1e-8) {
-      // Fallback perpendicular to `dirTarget`.
-      if (_dirTarget.x.abs() < 0.9) {
-        _dirTarget.crossInto(BoneModifier3D._unitX, _poleProj);
-      } else {
-        _dirTarget.crossInto(BoneModifier3D._unitY, _poleProj);
-      }
-    }
-    _poleProj.normalize();
-
-    _newMid
-      ..setFrom(_pRoot)
-      ..addScaled(_dirTarget, lenA * cosAlpha)
-      ..addScaled(_poleProj, lenA * sinAlpha);
-
-    // 1. Rotate `root` so `(pMid - pRoot)` swings onto `(newMid - pRoot)`.
-    _oldUpper
-      ..setFrom(_pMid)
-      ..sub(_pRoot)
-      ..normalize();
-    _newUpper
-      ..setFrom(_newMid)
-      ..sub(_pRoot)
-      ..normalize();
-    _oldRootM.setFrom(rm);
-    BoneModifier3D.swingRotationInto(
-      _oldUpper,
-      _newUpper,
-      _qRoot,
+    BoneModifier3D.solveTwoBoneIk(
+      model: model,
+      workspace: workspace,
+      invWorldMatrix: invWorldMatrix,
+      rootIndex: rIdx,
+      midIndex: mIdx,
+      tipIndex: tIdx,
+      targetWorld: targetWorld,
+      poleWorld: poleWorld,
       blendWeight: w,
-    );
-    BoneModifier3D.rotateCombinedAroundOrigin(rm, _qRoot);
-    BoneModifier3D.propagateDeltaToDescendants(
-      model,
-      workspace,
-      rIdx,
-      _oldRootM,
-      rm,
-    );
-
-    // Re-read updated `mid` and `tip` positions after `root` rotation.
-    _pMid.setValues(mm.storage[12], mm.storage[13], mm.storage[14]);
-    _pTip.setValues(tm.storage[12], tm.storage[13], tm.storage[14]);
-    _goalTip
-      ..setFrom(_pRoot)
-      ..addScaled(_dirTarget, clampedDist);
-
-    // 2. Rotate `mid` so `(pTip - pMid)` swings onto `(goalTip - pMid)`.
-    _curLower
-      ..setFrom(_pTip)
-      ..sub(_pMid);
-    _newLower
-      ..setFrom(_goalTip)
-      ..sub(_pMid);
-    if (_curLower.length2 < 1e-10 || _newLower.length2 < 1e-10) {
-      return;
-    }
-    _curLower.normalize();
-    _newLower.normalize();
-
-    _oldMidM.setFrom(mm);
-    BoneModifier3D.swingRotationInto(
-      _curLower,
-      _newLower,
-      _qMid,
-      blendWeight: w,
-    );
-    BoneModifier3D.rotateCombinedAroundOrigin(mm, _qMid);
-    BoneModifier3D.propagateDeltaToDescendants(
-      model,
-      workspace,
-      mIdx,
-      _oldMidM,
-      mm,
     );
   }
 }

@@ -5,6 +5,7 @@ import 'dart:ui' show Color;
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/extensions/geometry_math.dart';
 
 /// Smooth 3D Catmull-Rom spline passing through `controlPoints` (`>= 2`
 /// points), supporting open and closed loops.
@@ -168,7 +169,7 @@ class TubeSplineMesh({
           stepQuat.setAxisAngle(rotAxis, math.atan2(sinA, cosA));
           // `Quaternion.rotate` of vector_math rotates by the inverse; the
           // frame must turn with the tangent, so the matrix form is used.
-          _rotateByQuaternion(stepQuat, normalFrame);
+          rotateVectorByQuat(stepQuat, normalFrame, normalFrame);
           normalFrame.normalize();
         }
       }
@@ -253,21 +254,4 @@ class TubeSplineMesh({
       ),
     );
   }
-}
-
-/// Rotates [v] in place by [q] (`q * v * conjugate(q)`), as the rotation
-/// matrix of [q] does.
-void _rotateByQuaternion(Quaternion q, Vector3 v) {
-  final qx = q.x;
-  final qy = q.y;
-  final qz = q.z;
-  final qw = q.w;
-  final tx = 2.0 * (qy * v.z - qz * v.y);
-  final ty = 2.0 * (qz * v.x - qx * v.z);
-  final tz = 2.0 * (qx * v.y - qy * v.x);
-  v.setValues(
-    v.x + qw * tx + (qy * tz - qz * ty),
-    v.y + qw * ty + (qz * tx - qx * tz),
-    v.z + qw * tz + (qx * ty - qy * tx),
-  );
 }
