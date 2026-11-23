@@ -313,6 +313,31 @@ class ParticleSystem3D({
   int _recycleCursor = 0;
   bool _everSpawned = false;
   bool _muted = false;
+  int _stateVersion = 0;
+  int _sortSerial = 0;
+  int _cachedSortVersion = -1;
+  int _cachedSortWorldVer = -1;
+  bool _cachedSortLocal = false;
+  final Float32List _cachedSortView = Float32List(16);
+  int _cachedPackVersion = -1;
+  int _cachedPackSortSerial = -1;
+  int _cachedPackWorldVer = -1;
+  bool _cachedPackLocal = false;
+  bool _cachedPackSorted = false;
+  Material? _cachedPackMaterial;
+  ParticleFlipbook3D? _cachedPackFlipbook;
+  int _cachedPackFrames = -1;
+  bool _cachedPackBlending = false;
+  ParticleCurve? _cachedSizeCurve;
+  ColorRamp? _cachedColorRamp;
+  ParticleCurve? _cachedOpacityCurve;
+  ParticleCurve? _cachedRotationCurve;
+  double _cachedVelStretch = -1;
+  double _cachedMaxStretch = -1;
+  double _cachedInstD0 = 0;
+  double _cachedInstD1 = 0;
+  double _cachedInstD2 = 0;
+  double _cachedInstD3 = 0;
 
   static final ParticleEmitter3D _defaultEmitter = ParticleEmitter3D();
 
@@ -369,6 +394,8 @@ class ParticleSystem3D({
   void clear() {
     if (particles.length > 0) {
       _markDrawChanged();
+    } else {
+      _stateVersion++;
     }
     particles.clear();
     _hasRawBounds = false;
@@ -551,6 +578,7 @@ class ParticleSystem3D({
   /// the calls that change the particles outside it ([burst], [spawn],
   /// [clear], [prewarm]) once each.
   void _markDrawChanged() {
+    _stateVersion++;
     if (worldOrNull != null) {
       markDrawDirty(shadows: castsShadows && mesh != null);
     } else {
@@ -1230,19 +1258,85 @@ class ParticleSystem3D({
     }
     RenderProfile.lap(RenderPhase.recording);
     final sorted = sortsParticles;
+    final isLocal = space == ParticleSpace.local;
+    final worldVer = isLocal ? worldTransformVersion : 0;
     if (sorted) {
-      _sortBackToFront(context.view);
+      final viewStorage = context.view.storage;
+      if (_cachedSortVersion != _stateVersion ||
+          _cachedSortLocal != isLocal ||
+          _cachedSortWorldVer != worldVer ||
+          !_sameMatrix16(viewStorage, _cachedSortView)) {
+        _sortBackToFront(context.view);
+        _cachedSortVersion = _stateVersion;
+        _cachedSortLocal = isLocal;
+        _cachedSortWorldVer = worldVer;
+        for (var i = 0; i < 16; i++) {
+          _cachedSortView[i] = viewStorage[i];
+        }
+        _sortSerial++;
+      }
     }
-    if (material != null) {
-      _writeBillboards(sorted, material);
-    } else {
-      _writeMeshes(sorted);
+
+    final frames = material?.frameCount ?? 0;
+    final blending = material?.frameBlending ?? false;
+    final instData = instanceData.storage;
+    final d0 = instData[0];
+    final d1 = instData[1];
+    final d2 = instData[2];
+    final d3 = instData[3];
+    final packStale =
+        _cachedPackVersion != _stateVersion ||
+        _cachedPackSorted != sorted ||
+        (sorted && _cachedPackSortSerial != _sortSerial) ||
+        _cachedPackLocal != isLocal ||
+        _cachedPackWorldVer != worldVer ||
+        !identical(_cachedPackMaterial, material) ||
+        !identical(_cachedPackFlipbook, flipbook) ||
+        _cachedPackFrames != frames ||
+        _cachedPackBlending != blending ||
+        !identical(_cachedSizeCurve, sizeOverLife) ||
+        !identical(_cachedColorRamp, colorOverLife) ||
+        !identical(_cachedOpacityCurve, opacityOverLife) ||
+        !identical(_cachedRotationCurve, rotationOverLife) ||
+        _cachedVelStretch != velocityStretch ||
+        _cachedMaxStretch != maxStretch ||
+        _cachedInstD0 != d0 ||
+        _cachedInstD1 != d1 ||
+        _cachedInstD2 != d2 ||
+        _cachedInstD3 != d3;
+
+    if (packStale) {
+      if (material != null) {
+        _writeBillboards(sorted, material);
+      } else {
+        _writeMeshes(sorted);
+      }
+      _cachedPackVersion = _stateVersion;
+      _cachedPackSorted = sorted;
+      _cachedPackSortSerial = _sortSerial;
+      _cachedPackLocal = isLocal;
+      _cachedPackWorldVer = worldVer;
+      _cachedPackMaterial = material;
+      _cachedPackFlipbook = flipbook;
+      _cachedPackFrames = frames;
+      _cachedPackBlending = blending;
+      _cachedSizeCurve = sizeOverLife;
+      _cachedColorRamp = colorOverLife;
+      _cachedOpacityCurve = opacityOverLife;
+      _cachedRotationCurve = rotationOverLife;
+      _cachedVelStretch = velocityStretch;
+      _cachedMaxStretch = maxStretch;
+      _cachedInstD0 = d0;
+      _cachedInstD1 = d1;
+      _cachedInstD2 = d2;
+      _cachedInstD3 = d3;
     }
+
     final center = _center
       ..setFrom(_bounds.min)
       ..add(_bounds.max)
       ..scale(0.5);
-    if (space == ParticleSpace.local) {
+    if (isLocal) {
       worldTransformMatrix.transform3(center);
     }
     RenderProfile.lap(RenderPhase.particles);
@@ -1256,9 +1350,9 @@ class ParticleSystem3D({
       );
     } else {
       final mesh = this.mesh!;
-      for (var i = 0; i < mesh.surfaceCount; i++) {
+      for (final surface in mesh.surfaces) {
         context.drawInstances(
-          mesh.surfaces.elementAt(i),
+          surface,
           instances: _instances,
           count: count,
           center: center,
@@ -1270,12 +1364,21 @@ class ParticleSystem3D({
     }
   }
 
+  static bool _sameMatrix16(Float32List a, Float32List b) {
+    for (var i = 0; i < 16; i++) {
+      if (a[i] != b[i] && (a[i] - b[i]).abs() > 1e-6) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   /// Whether one of the materials of the mesh is opaque, so that the
   /// depth-normal prepass draws the particles.
   bool get _hasOpaqueSurface {
     final mesh = this.mesh!;
-    for (var i = 0; i < mesh.surfaceCount; i++) {
-      if (!mesh.surfaces.elementAt(i).material.renderState.translucent) {
+    for (final surface in mesh.surfaces) {
+      if (!surface.material.renderState.translucent) {
         return true;
       }
     }
@@ -1290,8 +1393,8 @@ class ParticleSystem3D({
       return material.castsShadows;
     }
     final mesh = this.mesh!;
-    for (var i = 0; i < mesh.surfaceCount; i++) {
-      if (mesh.surfaces.elementAt(i).material.castsShadows) {
+    for (final surface in mesh.surfaces) {
+      if (surface.material.castsShadows) {
         return true;
       }
     }

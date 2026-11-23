@@ -17,6 +17,7 @@ class BloomSettings({
   var double _softKnee = 0.5,
   var double _intensity = 0.6,
   var double _radius = 1.0,
+  var bool _dualKawase = false,
 
   /// Number of blur passes (`1` to `4`).
   int passes = 2,
@@ -41,6 +42,11 @@ class BloomSettings({
   /// Filter spread multiplier in texels (`> 0`).
   double get radius => _radius;
   set radius(double value) => _radius = noteChange(_radius, value);
+
+  /// Whether to blur using a progressive Dual Kawase downsample/upsample
+  /// pyramid instead of fixed half-resolution Kawase passes.
+  bool get dualKawase => _dualKawase;
+  set dualKawase(bool value) => _dualKawase = noteChange(_dualKawase, value);
 
   /// Number of blur iterations (`1` to `4`).
   int get passes => _passes;

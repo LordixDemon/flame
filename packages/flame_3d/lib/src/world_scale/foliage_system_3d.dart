@@ -152,6 +152,8 @@ class FoliageSystem3D({
   late final Float32List _posY = Float32List(capacity);
   late final Float32List _posZ = Float32List(capacity);
   late final Float32List _yaw = Float32List(capacity);
+  late final Float32List _cosYaw = Float32List(capacity);
+  late final Float32List _sinYaw = Float32List(capacity);
   late final Float32List _scaleX = Float32List(capacity);
   late final Float32List _scaleY = Float32List(capacity);
   late final Float32List _scaleZ = Float32List(capacity);
@@ -160,6 +162,8 @@ class FoliageSystem3D({
   late final Float32List _colorB = Float32List(capacity);
   late final Float32List _colorA = Float32List(capacity);
   late final Float32List _windPhase = Float32List(capacity);
+  late final Float32List _cosPhase = Float32List(capacity);
+  late final Float32List _sinPhase = Float32List(capacity);
   late final Float32List _densityRank = Float32List(capacity);
   late final Float32List _bendX = Float32List(capacity);
   late final Float32List _bendZ = Float32List(capacity);
@@ -172,6 +176,34 @@ class FoliageSystem3D({
   int _bladeCount = 0;
   double _windTime = 0;
   bool _cellsDirty = true;
+  int _stateVersion = 0;
+  bool _anyCellBent = false;
+
+  // Draw-cache snapshot to share packed instances across multi-pass renders
+  // (depth-normal prepass + main scene) with matching viewer/frustum.
+  bool _drawCacheValid = false;
+  int _drawCacheStateVer = -1;
+  int _drawCacheWorldVer = -1;
+  double _drawCacheCamX = 0;
+  double _drawCacheCamY = 0;
+  double _drawCacheCamZ = 0;
+  double _drawCacheMaxDist = -1;
+  double _drawCacheFadeStart = -1;
+  double _drawCacheWindStrength = -1;
+  double _drawCacheWindFreq = -1;
+  double _drawCacheMaxBend = -1;
+  double _drawCacheWindDirX = 0;
+  double _drawCacheWindDirY = 0;
+  final Float32List _drawCacheVp = Float32List(16);
+
+  // Active interactor scratch buffers reused across `_updateInteractors`.
+  Float64List _activeIx = Float64List(0);
+  Float64List _activeIy = Float64List(0);
+  Float64List _activeIz = Float64List(0);
+  Float64List _activeIr = Float64List(0);
+  Float64List _activeIrSq = Float64List(0);
+  Float64List _activeIStrength = Float64List(0);
+  Int32List _cellInteractors = Int32List(0);
 
   // Spatial cell CSR structure:
   Int32List _cellOffsets = Int32List(0);
@@ -214,6 +246,9 @@ class FoliageSystem3D({
     _bladeCount = 0;
     _cellCount = 0;
     _cellsDirty = true;
+    _anyCellBent = false;
+    _stateVersion++;
+    _drawCacheValid = false;
     markAabbDirty();
     markDrawDirty(shadows: castsShadows);
   }
@@ -236,6 +271,8 @@ class FoliageSystem3D({
     _posY[i] = position.y;
     _posZ[i] = position.z;
     _yaw[i] = yaw;
+    _cosYaw[i] = math.cos(yaw);
+    _sinYaw[i] = math.sin(yaw);
     _scaleX[i] = bladeScale?.x ?? 1.0;
     _scaleY[i] = bladeScale?.y ?? 1.0;
     _scaleZ[i] = bladeScale?.z ?? 1.0;
@@ -244,13 +281,17 @@ class FoliageSystem3D({
     _colorB[i] = color.b;
     _colorA[i] = color.a;
     final hash = _hashFloat01(i * 747796405 + 2891336453);
-    _windPhase[i] = windPhase ?? (hash * math.pi * 2.0);
+    final resolvedPhase = windPhase ?? (hash * math.pi * 2.0);
+    _windPhase[i] = resolvedPhase;
+    _cosPhase[i] = math.cos(resolvedPhase);
+    _sinPhase[i] = math.sin(resolvedPhase);
     _densityRank[i] = (densityRank ?? _hashFloat01(i * 1597334677 + 3812015801))
         .clamp(0.0, 1.0);
     _bendX[i] = 0;
     _bendZ[i] = 0;
     _crush[i] = 0;
     _cellsDirty = true;
+    _stateVersion++;
     markAabbDirty();
     markDrawDirty(shadows: castsShadows);
     return i;
@@ -398,6 +439,9 @@ class FoliageSystem3D({
       return;
     }
     _windTime += dt;
+    if (windStrength != 0) {
+      _stateVersion++;
+    }
     _updateInteractors(dt);
   }
 
@@ -405,6 +449,17 @@ class FoliageSystem3D({
   /// instances into the contiguous GPU instance buffer (`24` floats/instance),
   /// returning the number of visible instances.
   int buildVisibleInstances({
+    required Vector3 cameraPosition,
+    Frustum? frustum,
+  }) {
+    _drawCacheValid = false;
+    return _packVisibleInstances(
+      cameraPosition: cameraPosition,
+      frustum: frustum,
+    );
+  }
+
+  int _packVisibleInstances({
     required Vector3 cameraPosition,
     Frustum? frustum,
   }) {
@@ -455,6 +510,8 @@ class FoliageSystem3D({
     final windDirZ = windDirection.y;
     final windAmp = windStrength;
     final windOmega = _windTime * windFrequency;
+    final cosW = math.cos(windOmega);
+    final sinW = math.sin(windOmega);
 
     var outInstances = 0;
     const stride = VertexLayout.instanceStrideInFloats;
@@ -537,13 +594,12 @@ class FoliageSystem3D({
         final sy = _scaleY[i] * distScale * (1.0 - 0.65 * crush);
         final sz = _scaleZ[i] * distScale;
 
-        final yaw = _yaw[i];
-        final cy = math.cos(yaw);
-        final syaw = math.sin(yaw);
+        final cy = _cosYaw[i];
+        final syaw = _sinYaw[i];
 
         final phase = _windPhase[i];
-        final sway =
-            windAmp * math.sin(windOmega + phase) * (1.0 - 0.5 * crush);
+        final sinTotal = sinW * _cosPhase[i] + cosW * _sinPhase[i];
+        final sway = windAmp * sinTotal * (1.0 - 0.5 * crush);
         final tiltX = _bendX[i] + windDirX * sway;
         final tiltZ = _bendZ[i] + windDirZ * sway;
 
@@ -641,13 +697,52 @@ class FoliageSystem3D({
     if (_bladeCount == 0) {
       return;
     }
-    // Distance thinning follows the viewer, also in shadow passes (where the
-    // camera is the light's view, centered on the world origin): the blades
-    // that cast shadows are the ones the main pass shows.
-    final count = buildVisibleInstances(
-      cameraPosition: context.viewerPosition,
-      frustum: context.frustum,
-    );
+    final camPos = context.viewerPosition;
+    final vp = context.viewProjection.storage;
+    final worldVer = worldTransformVersion;
+    final hitCache =
+        _drawCacheValid &&
+        _drawCacheStateVer == _stateVersion &&
+        _drawCacheWorldVer == worldVer &&
+        _drawCacheCamX == camPos.x &&
+        _drawCacheCamY == camPos.y &&
+        _drawCacheCamZ == camPos.z &&
+        _drawCacheMaxDist == maxDrawDistance &&
+        _drawCacheFadeStart == fadeStartFraction &&
+        _drawCacheWindStrength == windStrength &&
+        _drawCacheWindFreq == windFrequency &&
+        _drawCacheMaxBend == maxBendAngle &&
+        _drawCacheWindDirX == windDirection.x &&
+        _drawCacheWindDirY == windDirection.y &&
+        _sameVp16(vp, _drawCacheVp);
+    final int count;
+    if (hitCache) {
+      count = _lastVisibleInstanceCount;
+    } else {
+      // Distance thinning follows the viewer, also in shadow passes (where the
+      // camera is the light's view, centered on the world origin): the blades
+      // that cast shadows are the ones the main pass shows.
+      count = _packVisibleInstances(
+        cameraPosition: camPos,
+        frustum: context.frustum,
+      );
+      _drawCacheValid = true;
+      _drawCacheStateVer = _stateVersion;
+      _drawCacheWorldVer = worldVer;
+      _drawCacheCamX = camPos.x;
+      _drawCacheCamY = camPos.y;
+      _drawCacheCamZ = camPos.z;
+      _drawCacheMaxDist = maxDrawDistance;
+      _drawCacheFadeStart = fadeStartFraction;
+      _drawCacheWindStrength = windStrength;
+      _drawCacheWindFreq = windFrequency;
+      _drawCacheMaxBend = maxBendAngle;
+      _drawCacheWindDirX = windDirection.x;
+      _drawCacheWindDirY = windDirection.y;
+      for (var k = 0; k < 16; k++) {
+        _drawCacheVp[k] = vp[k];
+      }
+    }
     if (count <= 0) {
       return;
     }
@@ -661,17 +756,81 @@ class FoliageSystem3D({
     }
   }
 
+  static bool _sameVp16(Float32List a, Float32List b) {
+    for (var i = 0; i < 16; i++) {
+      if (a[i] != b[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void _ensureInteractorScratch(int count) {
+    if (_activeIx.length >= count) {
+      return;
+    }
+    var cap = math.max(16, _activeIx.length);
+    while (cap < count) {
+      cap *= 2;
+    }
+    _activeIx = Float64List(cap);
+    _activeIy = Float64List(cap);
+    _activeIz = Float64List(cap);
+    _activeIr = Float64List(cap);
+    _activeIrSq = Float64List(cap);
+    _activeIStrength = Float64List(cap);
+    _cellInteractors = Int32List(cap);
+  }
+
   void _updateInteractors(double dt) {
     _ensureSpatialCells();
     if (_cellCount == 0) {
       return;
     }
 
-    final worldMat = worldTransformMatrix;
-    final isIdentity = worldMat.isIdentity();
-    if (!isIdentity) {
-      _invWorldScratch.setFrom(worldMat);
-      _invWorldScratch.invert();
+    var activeCount = 0;
+    if (interactors.isNotEmpty) {
+      _ensureInteractorScratch(interactors.length);
+      final worldMat = worldTransformMatrix;
+      final isIdentity = worldMat.isIdentity();
+      Float32List? invM;
+      if (!isIdentity) {
+        _invWorldScratch.setFrom(worldMat);
+        _invWorldScratch.invert();
+        invM = _invWorldScratch.storage;
+      }
+      for (var s = 0; s < interactors.length; s++) {
+        final inter = interactors[s];
+        final r = inter.radius;
+        final strength = inter.strength.clamp(0.0, 1.0);
+        if (r <= 0 || strength <= 0) {
+          continue;
+        }
+        final p = inter.position;
+        if (invM == null) {
+          _activeIx[activeCount] = p.x;
+          _activeIy[activeCount] = p.y;
+          _activeIz[activeCount] = p.z;
+        } else {
+          _activeIx[activeCount] =
+              invM[0] * p.x + invM[4] * p.y + invM[8] * p.z + invM[12];
+          _activeIy[activeCount] =
+              invM[1] * p.x + invM[5] * p.y + invM[9] * p.z + invM[13];
+          _activeIz[activeCount] =
+              invM[2] * p.x + invM[6] * p.y + invM[10] * p.z + invM[14];
+        }
+        _activeIr[activeCount] = r;
+        _activeIrSq[activeCount] = r * r;
+        _activeIStrength[activeCount] = strength;
+        activeCount++;
+      }
+    }
+
+    if (activeCount == 0 && !_anyCellBent) {
+      if (windStrength > 0) {
+        markDrawDirty(shadows: castsShadows);
+      }
+      return;
     }
 
     final attackAlpha = (1.0 - math.exp(-trampleAttackRate * dt)).clamp(
@@ -684,6 +843,7 @@ class FoliageSystem3D({
     );
 
     var anyChanged = false;
+    var anyCellStillBent = false;
 
     for (var cell = 0; cell < _cellCount; cell++) {
       final cb = cell * 6;
@@ -694,50 +854,23 @@ class FoliageSystem3D({
       final cMaxY = _cellBounds[cb + 4];
       final cMaxZ = _cellBounds[cb + 5];
 
-      var overlapped = false;
-      for (var s = 0; s < interactors.length; s++) {
-        final inter = interactors[s];
-        if (inter.strength <= 0 || inter.radius <= 0) {
-          continue;
-        }
-        double ix;
-        double iy;
-        double iz;
-        if (isIdentity) {
-          ix = inter.position.x;
-          iy = inter.position.y;
-          iz = inter.position.z;
-        } else {
-          final m = _invWorldScratch.storage;
-          ix =
-              m[0] * inter.position.x +
-              m[4] * inter.position.y +
-              m[8] * inter.position.z +
-              m[12];
-          iy =
-              m[1] * inter.position.x +
-              m[5] * inter.position.y +
-              m[9] * inter.position.z +
-              m[13];
-          iz =
-              m[2] * inter.position.x +
-              m[6] * inter.position.y +
-              m[10] * inter.position.z +
-              m[14];
-        }
-        final r = inter.radius;
+      var cellHitCount = 0;
+      for (var s = 0; s < activeCount; s++) {
+        final ix = _activeIx[s];
+        final iy = _activeIy[s];
+        final iz = _activeIz[s];
+        final r = _activeIr[s];
         if (ix + r >= cMinX &&
             ix - r <= cMaxX &&
             iy + r >= cMinY &&
             iy - r <= cMaxY &&
             iz + r >= cMinZ &&
             iz - r <= cMaxZ) {
-          overlapped = true;
-          break;
+          _cellInteractors[cellHitCount++] = s;
         }
       }
 
-      if (!overlapped && _cellHasBend[cell] == 0) {
+      if (cellHitCount == 0 && _cellHasBend[cell] == 0) {
         continue;
       }
 
@@ -751,55 +884,24 @@ class FoliageSystem3D({
         var targetBz = 0.0;
         var targetCrush = 0.0;
 
-        if (overlapped) {
+        if (cellHitCount > 0) {
           final bx = _posX[i];
           final by = _posY[i];
           final bz = _posZ[i];
 
-          for (var s = 0; s < interactors.length; s++) {
-            final inter = interactors[s];
-            final r = inter.radius;
-            final strength = inter.strength.clamp(0.0, 1.0);
-            if (r <= 0 || strength <= 0) {
-              continue;
-            }
-            double ix;
-            double iy;
-            double iz;
-            if (isIdentity) {
-              ix = inter.position.x;
-              iy = inter.position.y;
-              iz = inter.position.z;
-            } else {
-              final m = _invWorldScratch.storage;
-              ix =
-                  m[0] * inter.position.x +
-                  m[4] * inter.position.y +
-                  m[8] * inter.position.z +
-                  m[12];
-              iy =
-                  m[1] * inter.position.x +
-                  m[5] * inter.position.y +
-                  m[9] * inter.position.z +
-                  m[13];
-              iz =
-                  m[2] * inter.position.x +
-                  m[6] * inter.position.y +
-                  m[10] * inter.position.z +
-                  m[14];
-            }
-
-            final dx = bx - ix;
-            final dy = by - iy;
-            final dz = bz - iz;
+          for (var h = 0; h < cellHitCount; h++) {
+            final s = _cellInteractors[h];
+            final dx = bx - _activeIx[s];
+            final dy = by - _activeIy[s];
+            final dz = bz - _activeIz[s];
             final distSq = dx * dx + dy * dy + dz * dz;
-            if (distSq >= r * r) {
+            if (distSq >= _activeIrSq[s]) {
               continue;
             }
 
             final dist = math.sqrt(distSq);
-            final t = (1.0 - dist / r).clamp(0.0, 1.0);
-            final falloff = t * t * (3.0 - 2.0 * t) * strength;
+            final t = (1.0 - dist / _activeIr[s]).clamp(0.0, 1.0);
+            final falloff = t * t * (3.0 - 2.0 * t) * _activeIStrength[s];
 
             final hLen = math.sqrt(dx * dx + dz * dz);
             final ux = hLen > 1e-5 ? dx / hLen : 1.0;
@@ -841,8 +943,15 @@ class FoliageSystem3D({
       }
 
       _cellHasBend[cell] = cellStillBent ? 1 : 0;
+      if (cellStillBent) {
+        anyCellStillBent = true;
+      }
     }
+    _anyCellBent = anyCellStillBent;
 
+    if (anyChanged) {
+      _stateVersion++;
+    }
     if (anyChanged || windStrength > 0) {
       markDrawDirty(shadows: castsShadows);
     }

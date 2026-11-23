@@ -76,6 +76,7 @@ abstract class Material({
     }
     _vertexShader = shader;
     pipelineCache = null;
+    invalidateApplyCache();
     markChanged();
   }
 
@@ -86,6 +87,7 @@ abstract class Material({
     }
     _fragmentShader = shader;
     pipelineCache = null;
+    invalidateApplyCache();
     markChanged();
   }
 
@@ -298,6 +300,15 @@ abstract class Material({
   /// them, as it does not know which one is bound.
   Shader vertexShaderFor(VertexLayout layout) => vertexShader;
 
+  /// The fragment shader that draws surfaces laid out as [layout] within
+  /// [context]: [fragmentShader] unless overridden.
+  ///
+  /// Materials that offer a leaner fragment variant when optional features
+  /// are inactive for the active pass can override this to select it without
+  /// altering [fragmentShader].
+  Shader fragmentShaderFor(RenderContext3D context, VertexLayout layout) =>
+      fragmentShader;
+
   /// The material that draws this material's surfaces in the depth-normal
   /// prepass ([RenderContext3D.isDepthNormalPass]), or `null` (the default)
   /// for the prepass's own shaders.
@@ -314,6 +325,37 @@ abstract class Material({
   /// depth; a material that has a depth-normal material is drawn with it
   /// even when [instancesHoldModelMatrices] is `false`.
   Material? get depthNormalMaterial => null;
+
+  /// Whether repeated draws of this material with identical tracked inputs can
+  /// reuse previously written shader uniform blocks and samplers instead of
+  /// calling [apply] again.
+  ///
+  /// Built-in materials return `runtimeType == ExactClass` so subclasses
+  /// overriding [apply] continue to execute on every draw.
+  @internal
+  bool get cachesApply => false;
+
+  /// Whether shader values written by a prior [apply] are still current for
+  /// [vertexShader], [fragmentShader], and [context].
+  @internal
+  bool isApplyCacheValid(
+    RenderContext context,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) => false;
+
+  /// Records that [apply] populated [vertexShader] and [fragmentShader] for the
+  /// current material state and [context].
+  @internal
+  void recordApplyCache(
+    RenderContext context,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) {}
+
+  /// Drops any cached [apply] state.
+  @protected
+  void invalidateApplyCache() {}
 
   /// Writes this material's values into its shaders, see [Material].
   ///

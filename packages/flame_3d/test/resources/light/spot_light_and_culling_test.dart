@@ -17,9 +17,15 @@ void main() {
     late GraphicsDevice device;
     late RenderContext3D context;
     late SpatialMaterial material;
+    late VertexLayout lastLayout;
 
     setUp(() {
-      backend = FakeGpuBackend(blockSizes: {'JointMatrices': 4096});
+      backend = FakeGpuBackend(
+        blockSizes: {
+          'JointMatrices': 4096,
+          RenderContext3D.spatialPassBlock: 64 * 1024,
+        },
+      );
       device = GraphicsDevice(backend: backend);
       context = RenderContext3D(device);
       material = SpatialMaterial();
@@ -40,6 +46,7 @@ void main() {
         indices: const [0, 1, 2],
         material: material,
       );
+      lastLayout = surface.layout;
       device.begin();
       context
         ..prioritizeNearestLights = prioritize
@@ -59,9 +66,10 @@ void main() {
     }
 
     int offsetOf(String block, String member) {
-      return material.fragmentShader
-              .slot(block)
-              .getMemberOffsetInBytes(member)! ~/
+      return material
+              .fragmentShaderFor(context, lastLayout)
+              .slot(RenderContext3D.spatialPassBlock)
+              .getMemberOffsetInBytes('${block}_$member')! ~/
           Float32List.bytesPerElement;
     }
 
@@ -94,7 +102,7 @@ void main() {
         ),
       ]);
 
-      final spot = uniforms[RenderContext3D.spotLightsBlock]!;
+      final spot = uniforms[RenderContext3D.spatialPassBlock]!;
       expect(spot[offsetOf('SpotLights', 'numLights')], 2.0);
 
       final posOff = offsetOf('SpotLights', 'positions');
@@ -151,7 +159,7 @@ void main() {
           prioritize: true,
         );
 
-        final pt = uniforms[RenderContext3D.lightsBlock]!;
+        final pt = uniforms[RenderContext3D.spatialPassBlock]!;
         expect(pt[offsetOf('Lights', 'numLights')], 8.0);
         final ptPosOff = offsetOf('Lights', 'positions');
         final selectedPtX = [
@@ -162,7 +170,7 @@ void main() {
           expect((x - 100.0).abs(), lessThanOrEqualTo(20.0));
         }
 
-        final sp = uniforms[RenderContext3D.spotLightsBlock]!;
+        final sp = uniforms[RenderContext3D.spatialPassBlock]!;
         expect(sp[offsetOf('SpotLights', 'numLights')], 4.0);
         final spPosOff = offsetOf('SpotLights', 'positions');
         final selectedSpX = [

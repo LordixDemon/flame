@@ -256,6 +256,8 @@ class SpatialMaterial({
       'packages/flame_3d/assets/shaders/spatial_material.shaderbundle';
   static const String _pbrBundle =
       'packages/flame_3d/assets/shaders/spatial_material_pbr.shaderbundle';
+  static const String _pbrBasicBundle =
+      'packages/flame_3d/assets/shaders/spatial_material_pbr_basic.shaderbundle';
   static const String _pbrTangentBundle =
       'packages/flame_3d/assets/shaders/'
       'spatial_material_pbr_tangent.shaderbundle';
@@ -298,18 +300,20 @@ class SpatialMaterial({
     RenderContext3D.sceneColorSampler,
     RenderContext3D.shadowMapSampler,
     'Material',
-    RenderContext3D.passOptionsBlock,
-    RenderContext3D.ambientLightBlock,
-    RenderContext3D.lightsBlock,
-    RenderContext3D.directionalLightsBlock,
-    RenderContext3D.spotLightsBlock,
-    RenderContext3D.hemisphereLightBlock,
-    RenderContext3D.cameraBlock,
-    RenderContext3D.shadowsBlock,
-    RenderContext3D.fogBlock,
-    RenderContext3D.lightGridBlock,
+    RenderContext3D.spatialPassBlock,
     RenderContext3D.lightGridSampler,
   ];
+
+  static const List<String> _pbrBasicFragmentSlots = [
+    'albedoTexture',
+    RenderContext3D.shadowMapSampler,
+    'Material',
+    RenderContext3D.spatialPassBlock,
+    RenderContext3D.lightGridSampler,
+  ];
+
+  late final Shader? _defaultPbrFrag = _simpleShader ? null : fragmentShader;
+  Shader? _basicFragmentShader;
 
   Shader? _tangentVertexShader;
 
@@ -328,6 +332,36 @@ class SpatialMaterial({
     }
     return vertexShader;
   }
+
+  Shader _activeFragmentShader(RenderContext? context) {
+    if (runtimeType == SpatialMaterial &&
+        identical(fragmentShader, _defaultPbrFrag) &&
+        context is RenderContext3D &&
+        _normalTexture == null &&
+        _metallicRoughnessTexture == null &&
+        _occlusionTexture == null &&
+        _emissiveTexture == null &&
+        _lightmapTexture == null &&
+        _environmentTexture == null &&
+        _environmentProbe == null &&
+        _clearcoat <= 1e-4 &&
+        _transmission <= 1e-4 &&
+        !_ditherFade &&
+        context.renderDebugMode == RenderDebugMode3D.none &&
+        (context.lightProbeGrid == null ||
+            context.lightProbeGrid!.intensity <= 0) &&
+        context.reflectionProbes.isEmpty) {
+      return _basicFragmentShader ??= FragmentShader.fromAsset(
+        _pbrBasicBundle,
+        slots: _pbrBasicFragmentSlots,
+      );
+    }
+    return fragmentShader;
+  }
+
+  @override
+  Shader fragmentShaderFor(RenderContext3D context, VertexLayout layout) =>
+      _activeFragmentShader(context);
 
   /// Base albedo texture multiplied by [albedoColor].
   Texture get albedoTexture => _albedoTexture;
@@ -368,24 +402,98 @@ class SpatialMaterial({
     }
   }
 
-  static final Vector4 _emissiveVec = Vector4.zero();
-  static final Vector4 _uvVec = Vector4.zero();
-  static final Vector4 _paramsVec = Vector4.zero();
-  static final Vector4 _flagsVec = Vector4.zero();
-  static final Vector4 _flags2Vec = Vector4.zero();
-  static final Vector4 _pbrExtVec = Vector4.zero();
-  static final Vector4 _iblParamsVec = Vector4.zero();
-  static final Vector4 _shScratch = Vector4.zero();
-  static final Vector4 _probeBoxMinVec = Vector4.zero();
-  static final Vector4 _probeBoxMaxVec = Vector4.zero();
-  static final Vector4 _probeCenterVec = Vector4.zero();
-
   /// `true` when the material has neither an [environmentTexture] nor an
   /// [environmentProbe]: it then takes its environment from the
   /// `ReflectionProbeVolume3D` around each object it draws.
   @override
   bool get usesReflectionProbes =>
       environmentProbe == null && environmentTexture == null;
+
+  int _appliedVersion = -1;
+  Shader? _appliedFrag;
+  int _appliedFragGen = -1;
+  EnvironmentProbe3D? _appliedEnvProbe;
+  double _appliedEnvProbeIntensity = -1.0;
+  int _appliedProbeSlot = -1;
+  double _appliedProbeWeight = -1.0;
+  ReflectionProbeVolume3D? _appliedVolume;
+  bool _appliedVolumeBoxProj = false;
+  bool _appliedEnvHadRes = false;
+
+  Shader? _cachedFrag;
+  int _cachedFragGen = -1;
+  int _albedoTexIdx = -1;
+  int _normalTexIdx = -1;
+  int _ormTexIdx = -1;
+  int _occTexIdx = -1;
+  int _emiTexIdx = -1;
+  int _envTexIdx = -1;
+  int _lmTexIdx = -1;
+
+  @override
+  bool get cachesApply => runtimeType == SpatialMaterial;
+
+  @override
+  void invalidateApplyCache() {
+    _appliedVersion = -1;
+  }
+
+  @override
+  bool isApplyCacheValid(
+    RenderContext context,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) {
+    if (_appliedVersion != version ||
+        !identical(_appliedFrag, fragmentShader) ||
+        _appliedFragGen != fragmentShader.generation ||
+        !identical(_appliedEnvProbe, _environmentProbe) ||
+        (_environmentProbe?.intensity ?? -1.0) != _appliedEnvProbeIntensity) {
+      return false;
+    }
+    if (context is RenderContext3D) {
+      final vol = context.reflectionProbe;
+      if (_appliedProbeSlot != context.activeProbeSlot ||
+          _appliedProbeWeight != context.activeProbeWeight ||
+          !identical(_appliedVolume, vol) ||
+          (vol != null && _appliedVolumeBoxProj != vol.boxProjection)) {
+        return false;
+      }
+      if (!usesSimpleShader) {
+        final envTex =
+            environmentTexture ??
+            (vol?.probe ?? _environmentProbe)?.reflectionTexture;
+        if (envTex != null && envTex.hasResource != _appliedEnvHadRes) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  @override
+  void recordApplyCache(
+    RenderContext context,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) {
+    _appliedVersion = version;
+    _appliedFrag = fragmentShader;
+    _appliedFragGen = fragmentShader.generation;
+    _appliedEnvProbe = _environmentProbe;
+    _appliedEnvProbeIntensity = _environmentProbe?.intensity ?? -1.0;
+    if (context is RenderContext3D) {
+      final vol = context.reflectionProbe;
+      _appliedProbeSlot = context.activeProbeSlot;
+      _appliedProbeWeight = context.activeProbeWeight;
+      _appliedVolume = vol;
+      _appliedVolumeBoxProj = vol?.boxProjection ?? false;
+      final envTex =
+          environmentTexture ??
+          (vol?.probe ?? _environmentProbe)?.reflectionTexture;
+      _appliedEnvHadRes = envTex?.hasResource ?? false;
+    }
+  }
 
   @override
   void apply(RenderContext context) {
@@ -413,54 +521,96 @@ class SpatialMaterial({
     final envTex = environmentTexture ?? probe?.reflectionTexture;
     final premul = renderState.blend == BlendState.premultipliedAlpha;
 
-    fragmentShader
-      ..setTexture('albedoTexture', albedoTexture)
-      ..setTexture('normalTexture', normTex ?? Texture.standard)
-      ..setTexture('metallicRoughnessTexture', ormTex ?? Texture.standard)
-      ..setTexture('occlusionTexture', occTex ?? Texture.standard)
-      ..setTexture('emissiveTexture', emiTex ?? Texture.standard)
-      ..setTexture('environmentTexture', envTex ?? Texture.standard)
-      ..setColor('Material.albedoColor', albedoColor)
-      ..setVector4(
-        'Material.emissiveColor',
-        _emissiveVec..setValues(
-          emissiveColor.r * emissiveStrength,
-          emissiveColor.g * emissiveStrength,
-          emissiveColor.b * emissiveStrength,
-          alphaCutoff,
-        ),
-      )
-      ..setVector4(
-        'Material.uvTransform',
-        _uvVec..setValues(uvScale.x, uvScale.y, uvOffset.x, uvOffset.y),
-      )
-      ..setVector4(
-        'Material.params',
-        _paramsVec..setValues(
-          metallic,
-          roughness,
-          normalScale,
-          occlusionStrength,
-        ),
-      )
-      ..setVector4(
-        'Material.flags',
-        _flagsVec..setValues(
-          normTex != null ? 1.0 : 0.0,
-          ormTex != null ? 1.0 : 0.0,
-          occTex != null ? 1.0 : 0.0,
-          envTex != null ? environmentIntensity * volumeWeight : 0.0,
-        ),
-      )
-      ..setVector4(
-        'Material.flags2',
-        _flags2Vec..setValues(
-          doubleSided ? 1.0 : 0.0,
-          ditherFade ? 1.0 : 0.0,
-          premul ? 1.0 : 0.0,
-          emiTex != null ? 1.0 : 0.0,
-        ),
+    final frag = _activeFragmentShader(context);
+    frag.resource;
+    if (!identical(_cachedFrag, frag) || _cachedFragGen != frag.generation) {
+      _cachedFrag = frag;
+      _cachedFragGen = frag.generation;
+      _albedoTexIdx = frag.samplerIndexOf('albedoTexture');
+      _normalTexIdx = frag.samplerIndexOf('normalTexture');
+      _ormTexIdx = frag.samplerIndexOf('metallicRoughnessTexture');
+      _occTexIdx = frag.samplerIndexOf('occlusionTexture');
+      _emiTexIdx = frag.samplerIndexOf('emissiveTexture');
+      _envTexIdx = frag.samplerIndexOf('environmentTexture');
+      _lmTexIdx = frag.samplerIndexOf('lightmapTexture');
+    }
+
+    if (_albedoTexIdx >= 0) {
+      frag.setTextureAt(_albedoTexIdx, albedoTexture);
+    }
+    if (_normalTexIdx >= 0) {
+      frag.setTextureAt(_normalTexIdx, normTex ?? Texture.standard);
+    }
+    if (_ormTexIdx >= 0) {
+      frag.setTextureAt(_ormTexIdx, ormTex ?? Texture.standard);
+    }
+    if (_occTexIdx >= 0) {
+      frag.setTextureAt(_occTexIdx, occTex ?? Texture.standard);
+    }
+    if (_emiTexIdx >= 0) {
+      frag.setTextureAt(_emiTexIdx, emiTex ?? Texture.standard);
+    }
+    if (_envTexIdx >= 0) {
+      frag.setTextureAt(_envTexIdx, envTex ?? Texture.standard);
+    }
+
+    final matIdx = frag.blockIndexOf('Material');
+    if (matIdx < 0) {
+      return;
+    }
+    final matBlock = frag.blockAt(matIdx);
+    final off =
+        (matBlock.cachedWriterOffsets as _SpatialMaterialOffsets?) ??
+        (matBlock.cachedWriterOffsets = _SpatialMaterialOffsets(matBlock));
+
+    if (off._albedoColor >= 0) {
+      matBlock.writeColorAt(off._albedoColor, albedoColor);
+    }
+    if (off._emissiveColor >= 0) {
+      matBlock.writeVec4ValuesAt(
+        off._emissiveColor,
+        emissiveColor.r * emissiveStrength,
+        emissiveColor.g * emissiveStrength,
+        emissiveColor.b * emissiveStrength,
+        alphaCutoff,
       );
+    }
+    if (off._uvTransform >= 0) {
+      matBlock.writeVec4ValuesAt(
+        off._uvTransform,
+        uvScale.x,
+        uvScale.y,
+        uvOffset.x,
+        uvOffset.y,
+      );
+    }
+    if (off._params >= 0) {
+      matBlock.writeVec4ValuesAt(
+        off._params,
+        metallic,
+        roughness,
+        normalScale,
+        occlusionStrength,
+      );
+    }
+    if (off._flags >= 0) {
+      matBlock.writeVec4ValuesAt(
+        off._flags,
+        normTex != null ? 1.0 : 0.0,
+        ormTex != null ? 1.0 : 0.0,
+        occTex != null ? 1.0 : 0.0,
+        envTex != null ? environmentIntensity * volumeWeight : 0.0,
+      );
+    }
+    if (off._flags2 >= 0) {
+      matBlock.writeVec4ValuesAt(
+        off._flags2,
+        doubleSided ? 1.0 : 0.0,
+        ditherFade ? 1.0 : 0.0,
+        premul ? 1.0 : 0.0,
+        emiTex != null ? 1.0 : 0.0,
+      );
+    }
 
     if (!usesSimpleShader) {
       var maxMip = 0.0;
@@ -468,67 +618,103 @@ class SpatialMaterial({
         envTex.resource;
         maxMip = math.max(0, envTex.mipLevelCount - 1).toDouble();
       }
-      fragmentShader
-        ..setTexture('lightmapTexture', lmTex ?? Texture.standard)
-        ..setVector4(
-          'Material.pbrExt',
-          _pbrExtVec..setValues(
-            clearcoat,
-            clearcoatRoughness,
-            transmission,
-            ior,
-          ),
-        )
-        ..setVector4(
-          'Material.iblParams',
-          _iblParamsVec..setValues(
-            lmTex != null ? 1.0 : 0.0,
-            lightmapIntensity,
-            maxMip,
-            envTex != null ? 1.0 : 0.0,
-          ),
+      if (_lmTexIdx >= 0) {
+        frag.setTextureAt(_lmTexIdx, lmTex ?? Texture.standard);
+      }
+      if (off._pbrExt >= 0) {
+        matBlock.writeVec4ValuesAt(
+          off._pbrExt,
+          clearcoat,
+          clearcoatRoughness,
+          transmission,
+          ior,
         );
+      }
+      if (off._iblParams >= 0) {
+        matBlock.writeVec4ValuesAt(
+          off._iblParams,
+          lmTex != null ? 1.0 : 0.0,
+          lightmapIntensity,
+          maxMip,
+          envTex != null ? 1.0 : 0.0,
+        );
+      }
       if (volume != null) {
         final box = volume.worldBounds;
         final center = volume.worldCenter;
-        _probeBoxMinVec.setValues(box.min.x, box.min.y, box.min.z, 0);
-        _probeBoxMaxVec.setValues(box.max.x, box.max.y, box.max.z, 0);
-        _probeCenterVec.setValues(
-          center.x,
-          center.y,
-          center.z,
-          volume.boxProjection ? 1.0 : 0.0,
-        );
+        if (off._probeBoxMin >= 0) {
+          matBlock.writeVec4ValuesAt(
+            off._probeBoxMin,
+            box.min.x,
+            box.min.y,
+            box.min.z,
+            0,
+          );
+        }
+        if (off._probeBoxMax >= 0) {
+          matBlock.writeVec4ValuesAt(
+            off._probeBoxMax,
+            box.max.x,
+            box.max.y,
+            box.max.z,
+            0,
+          );
+        }
+        if (off._probeCenter >= 0) {
+          matBlock.writeVec4ValuesAt(
+            off._probeCenter,
+            center.x,
+            center.y,
+            center.z,
+            volume.boxProjection ? 1.0 : 0.0,
+          );
+        }
       } else {
-        _probeBoxMinVec.setZero();
-        _probeBoxMaxVec.setZero();
-        _probeCenterVec.setZero();
+        if (off._probeBoxMin >= 0) {
+          matBlock.writeVec4ValuesAt(off._probeBoxMin, 0, 0, 0, 0);
+        }
+        if (off._probeBoxMax >= 0) {
+          matBlock.writeVec4ValuesAt(off._probeBoxMax, 0, 0, 0, 0);
+        }
+        if (off._probeCenter >= 0) {
+          matBlock.writeVec4ValuesAt(off._probeCenter, 0, 0, 0, 0);
+        }
       }
-      fragmentShader
-        ..setVector4('Material.probeBoxMin', _probeBoxMinVec)
-        ..setVector4('Material.probeBoxMax', _probeBoxMaxVec)
-        ..setVector4('Material.probeCenter', _probeCenterVec);
     }
 
     // The coefficients give irradiance: like the direct lights, the diffuse
     // light is the irradiance times kD * base / pi.
-    final matBlock = fragmentShader.block('Material');
-    if (probe != null && probe.intensity > 0) {
-      final diffuseScale = probe.intensity * volumeWeight / math.pi;
-      for (var i = 0; i < 9; i++) {
-        final c = probe.shCoefficients[i];
-        matBlock.setVector4(
-          'shCoeffs',
-          _shScratch..setValues(c.x, c.y, c.z, i == 0 ? diffuseScale : 0.0),
-          index: i,
-        );
+    if (off._shCoeffs >= 0) {
+      if (probe != null && probe.intensity > 0) {
+        final diffuseScale = probe.intensity * volumeWeight / math.pi;
+        for (var i = 0; i < 9; i++) {
+          final c = probe.shCoefficients[i];
+          matBlock.writeVec4ValuesAt(
+            off._shCoeffs + i * 4,
+            c.x,
+            c.y,
+            c.z,
+            i == 0 ? diffuseScale : 0.0,
+          );
+        }
+      } else {
+        matBlock.writeVec4ValuesAt(off._shCoeffs, 0, 0, 0, 0);
       }
-    } else {
-      matBlock.setVector4(
-        'shCoeffs',
-        _shScratch..setZero(),
-        index: 0,
-      );
     }
   }
+}
+
+class _SpatialMaterialOffsets(final UniformBlock _b) {
+  late final int _albedoColor = _b.resolveOffset('albedoColor');
+  late final int _emissiveColor = _b.resolveOffset('emissiveColor');
+  late final int _uvTransform = _b.resolveOffset('uvTransform');
+  late final int _params = _b.resolveOffset('params');
+  late final int _flags = _b.resolveOffset('flags');
+  late final int _flags2 = _b.resolveOffset('flags2');
+  late final int _pbrExt = _b.resolveOffset('pbrExt');
+  late final int _iblParams = _b.resolveOffset('iblParams');
+  late final int _probeBoxMin = _b.resolveOffset('probeBoxMin');
+  late final int _probeBoxMax = _b.resolveOffset('probeBoxMax');
+  late final int _probeCenter = _b.resolveOffset('probeCenter');
+  late final int _shCoeffs = _b.resolveOffset('shCoeffs');
 }

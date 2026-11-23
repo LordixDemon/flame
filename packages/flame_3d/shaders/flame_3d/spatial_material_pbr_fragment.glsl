@@ -23,6 +23,7 @@ in vec4 fragClipPos;
 out vec4 outColor;
 
 uniform sampler2D albedoTexture;
+#ifndef FLAME_SPATIAL_BASIC
 uniform sampler2D normalTexture;
 uniform sampler2D metallicRoughnessTexture;
 uniform sampler2D occlusionTexture;
@@ -32,6 +33,7 @@ uniform sampler2D brdfLutTexture;
 uniform sampler2D lightmapTexture;
 uniform sampler2D probeGridTexture;
 uniform sampler2D sceneColorTexture;
+#endif
 
 uniform Material {
   vec4 albedoColor;
@@ -60,31 +62,79 @@ uniform Material {
   vec4 shCoeffs[9];
 } material;
 
-uniform PassOptions {
-  // x: 1 in a pass into the HDR scene target (output extended-range sRGB),
-  // y: debugMode, z: sceneColorActive, w: unused
-  vec4 flags;
-  // xyz: lightProbeGrid bounds min, w: grid intensity (>0 active)
-  vec4 gridBoundsMin;
-  // xyz: lightProbeGrid 1 / bounds span, w: irradiance of a texel value of 1,
-  // divided by pi
-  vec4 gridInvSpan;
-  // xyz: (resX, resY, resZ), w: unused
-  vec4 gridRes;
-} passOptions;
+// Consolidated pass uniform block shared by all SpatialMaterial PBR shaders.
+uniform SpatialPass {
+  mat4 Camera_view;
+  mat4 Camera_projection;
+  mat4 Shadows_lightViewProjection;
+  mat4 Shadows_cascadeViewProjection;
+  vec4 PassOptions_flags;
+  vec4 PassOptions_gridBoundsMin;
+  vec4 PassOptions_gridInvSpan;
+  vec4 PassOptions_gridRes;
+  vec4 Shadows_toLight;
+  vec4 Shadows_color;
+  vec4 Shadows_map;
+  vec4 Shadows_bias;
+  vec4 Shadows_decode;
+  vec4 Shadows_cascadeParams;
+  vec4 Shadows_atlas;
+  mat4 Shadows_atlasCascadeViewProjections[4];
+  vec4 Shadows_atlasCascadeRects[4];
+  vec4 Shadows_atlasCascadeParams[4];
+  mat4 Shadows_atlasSpotViewProjections[2];
+  vec4 Shadows_atlasSpotRects[2];
+  vec4 Shadows_atlasSpotParams[2];
+  vec4 Shadows_atlasSpotPositions[2];
+  vec4 Shadows_atlasSpotColors[2];
+  vec4 Shadows_atlasPointPosition;
+  vec4 Shadows_atlasPointRects[2];
+  vec4 Shadows_atlasPointParams;
+  vec4 Shadows_atlasPointColor;
+  vec4 Fog_color;
+  vec4 Fog_params;
+  vec4 Fog_height;
+  vec4 AmbientLight_color;
+  vec4 HemisphereLight_skyColor;
+  vec4 HemisphereLight_groundColor;
+  vec3 HemisphereLight_up;
+  float HemisphereLight_intensity;
+  vec3 Camera_position;
+  float AmbientLight_intensity;
+  vec4 DirectionalLights_directions[4];
+  vec4 DirectionalLights_colors[4];
+  vec3 Lights_positions[8];
+  vec4 Lights_colors[8];
+  vec4 Lights_intensities[8];
+  vec4 Lights_ranges[8];
+  vec3 SpotLights_positions[4];
+  vec4 SpotLights_directions[4];
+  vec4 SpotLights_colors[4];
+  vec4 SpotLights_cones[4];
+  float Lights_numLights;
+  float DirectionalLights_numLights;
+  float SpotLights_numLights;
+  vec4 LightGrid_origin;
+  vec4 LightGrid_cells;
+  vec4 LightGrid_data;
+  vec4 LightGrid_counts;
+} scene;
 
+#define FLAME_LIGHTS
 #include <flame_3d/lights.glsl>
+
+#define FLAME_LIGHT_GRID(member) scene.LightGrid_##member
 #include <flame_3d/light_grid.glsl>
 
-uniform Camera {
-  mat4 view;
-  mat4 projection;
-  vec3 position;
-} camera;
-
+#define FLAME_SHADOWS(member) scene.Shadows_##member
 #include <flame_3d/shadows.glsl>
+
+#define FLAME_FOG(member) scene.Fog_##member
 #include <flame_3d/fog.glsl>
+
+#ifndef FLAME_SPATIAL_BASIC
 #include <flame_3d/dither.glsl>
+#endif
 
 vec3 fresnelSchlick(float cosTheta, vec3 f0) {
   return f0 + (1.0 - f0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
@@ -118,6 +168,7 @@ float geometrySmith(vec3 normal, vec3 viewDir, vec3 lightDir, float roughness) {
     geometrySchlickGGX(NdotL, roughness);
 }
 
+#ifndef FLAME_SPATIAL_BASIC
 vec3 perturbNormal(
   vec3 n,
   vec4 vTangent,
@@ -189,9 +240,9 @@ vec3 boxProjectDir(vec3 worldPos, vec3 reflDir) {
 // LightProbeGrid3D.volumeTextureFor), trilinear: bilinear in x and y within a
 // Z slice, linear across the two nearest slices. Texels hold sqrt(E / range).
 vec3 sampleProbeGridBand(float band, vec3 uvw) {
-  float rx = max(1.0, passOptions.gridRes.x);
-  float ry = max(1.0, passOptions.gridRes.y);
-  float rz = max(1.0, passOptions.gridRes.z);
+  float rx = max(1.0, scene.PassOptions_gridRes.x);
+  float ry = max(1.0, scene.PassOptions_gridRes.y);
+  float rz = max(1.0, scene.PassOptions_gridRes.z);
 
   float zCoord = uvw.z * (rz - 1.0);
   float z0 = floor(zCoord);
@@ -215,7 +266,8 @@ vec3 sampleProbeGridBand(float band, vec3 uvw) {
 // the probe's SH9 irradiance without the xy, yz and zx terms of band 2.
 vec3 sampleProbeGrid3D(vec3 worldPos, vec3 n) {
   vec3 uvw = clamp(
-    (worldPos - passOptions.gridBoundsMin.xyz) * passOptions.gridInvSpan.xyz,
+    (worldPos - scene.PassOptions_gridBoundsMin.xyz) *
+      scene.PassOptions_gridInvSpan.xyz,
     vec3(0.0),
     vec3(1.0)
   );
@@ -229,8 +281,9 @@ vec3 sampleProbeGrid3D(vec3 worldPos, vec3 n) {
     plus.z * sampleProbeGridBand(4.0, uvw) +
     minus.z * sampleProbeGridBand(5.0, uvw);
   return max(e, vec3(0.0)) *
-    (passOptions.gridInvSpan.w * passOptions.gridBoundsMin.w);
+    (scene.PassOptions_gridInvSpan.w * scene.PassOptions_gridBoundsMin.w);
 }
+#endif
 
 vec3 processLightPbr(
   vec3 lightDir,
@@ -266,6 +319,7 @@ vec3 processLightPbr(
   vec3 baseLayer =
     (kD * baseColor / PI + specular * specularFactor) * radiance * NdotL;
 
+#ifndef FLAME_SPATIAL_BASIC
   if (clearcoat > 1e-4) {
     float ccNdotL = max(dot(geomNormal, lightDir), 0.0);
     float ccNdf = distributionGGX(geomNormal, halfwayDir, clearcoatRoughness);
@@ -282,6 +336,7 @@ vec3 processLightPbr(
       specularFactor;
     baseLayer = baseLayer * (vec3(1.0) - ccF) + ccSpec;
   }
+#endif
   return baseLayer;
 }
 
@@ -293,20 +348,24 @@ vec3 linearToExtendedSrgb(vec3 linear) {
   return mix(lo, hi, step(vec3(0.0031308), c));
 }
 
+#ifndef FLAME_SPATIAL_BASIC
 vec3 extendedSrgbToLinear(vec3 encoded) {
   vec3 c = max(encoded, vec3(0.0));
   vec3 lo = c / 12.92;
   vec3 hi = pow((c + 0.055) / 1.055, vec3(2.4));
   return mix(lo, hi, step(vec3(0.04045), c));
 }
+#endif
 
 void main() {
-  float debugMode = passOptions.flags.y;
+#ifndef FLAME_SPATIAL_BASIC
+  float debugMode = scene.PassOptions_flags.y;
   // Overdraw heat diagnostic mode (`RenderDebugMode3D.overdraw == 6`).
   if (abs(debugMode - 6.0) < 0.25) {
     outColor = vec4(0.22, 0.09, 0.03, 1.0);
     return;
   }
+#endif
 
   vec2 uv = fragTexCoord * material.uvTransform.xy + material.uvTransform.zw;
   vec4 albedoTexel = texture(albedoTexture, uv);
@@ -317,6 +376,7 @@ void main() {
   }
 
   vec3 normal = geomNormal;
+#ifndef FLAME_SPATIAL_BASIC
   if (material.flags.x > 0.5) {
     vec3 nSample = texture(normalTexture, uv).rgb;
     normal = perturbNormal(
@@ -334,18 +394,22 @@ void main() {
     outColor = vec4(normal * 0.5 + 0.5, 1.0);
     return;
   }
+#endif
 
   float metallic = material.params.x;
   float roughness = material.params.y;
+#ifndef FLAME_SPATIAL_BASIC
   float ao = 1.0;
   if (material.flags.y > 0.5) {
     vec3 orm = texture(metallicRoughnessTexture, uv).rgb;
     roughness *= orm.g;
     metallic *= orm.b;
   }
+#endif
   roughness = clamp(roughness, 0.04, 1.0);
   metallic = clamp(metallic, 0.0, 1.0);
 
+#ifndef FLAME_SPATIAL_BASIC
   // Roughness / Metallic diagnostic mode (`RenderDebugMode3D.roughnessMetallic == 7`).
   if (abs(debugMode - 7.0) < 0.25) {
     outColor = vec4(0.0, roughness, metallic, 1.0);
@@ -356,11 +420,14 @@ void main() {
     float occTex = texture(occlusionTexture, uv).r;
     ao = mix(1.0, occTex, clamp(material.params.w, 0.0, 1.0));
   }
+#endif
 
   vec3 emissive = material.emissiveColor.rgb;
+#ifndef FLAME_SPATIAL_BASIC
   if (material.flags2.w > 0.5) {
     emissive *= texture(emissiveTexture, uv).rgb;
   }
+#endif
 
   float fade = clamp(fragInstanceData.w, 0.0, 1.0);
   float alpha =
@@ -373,9 +440,11 @@ void main() {
   if (material.emissiveColor.a > 0.0 && alpha < material.emissiveColor.a) {
     discard;
   }
+#ifndef FLAME_SPATIAL_BASIC
   if (material.flags2.y > 0.5 && alpha < bayerDither4x4(gl_FragCoord.xy)) {
     discard;
   }
+#endif
 
   vec3 baseColor =
     material.albedoColor.rgb *
@@ -383,16 +452,23 @@ void main() {
     fragColor.rgb *
     albedoTexel.rgb;
 
+#ifndef FLAME_SPATIAL_BASIC
   // Unlit albedo diagnostic mode (`RenderDebugMode3D.albedo == 8`).
   if (abs(debugMode - 8.0) < 0.25) {
     outColor = vec4(baseColor, alpha);
     return;
   }
+#endif
 
-  vec3 viewDir = camera.projection[3][3] > 0.5
-      ? normalize(vec3(camera.view[0][2], camera.view[1][2], camera.view[2][2]))
-      : normalize(camera.position - fragPosition);
+  vec3 viewDir = scene.Camera_projection[3][3] > 0.5
+      ? normalize(vec3(
+          scene.Camera_view[0][2],
+          scene.Camera_view[1][2],
+          scene.Camera_view[2][2]
+        ))
+      : normalize(scene.Camera_position - fragPosition);
 
+#ifndef FLAME_SPATIAL_BASIC
   float clearcoat = clamp(material.pbrExt.x, 0.0, 1.0);
   float clearcoatRoughness = clamp(material.pbrExt.y, 0.04, 1.0);
   float transmission = clamp(material.pbrExt.z, 0.0, 1.0);
@@ -403,21 +479,29 @@ void main() {
   }
   float f0Scalar = ((ior - 1.0) / (ior + 1.0));
   f0Scalar = f0Scalar * f0Scalar;
+#else
+  float clearcoat = 0.0;
+  float clearcoatRoughness = 0.1;
+  float transmission = 0.0;
+  float f0Scalar = 0.04;
+#endif
 
   vec3 f0 = mix(vec3(f0Scalar), baseColor, metallic);
   float nDotV = max(dot(normal, viewDir), 0.0);
   vec3 kS = fresnelSchlick(nDotV, f0);
   vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic) * (1.0 - transmission);
 
-  vec3 ambient = kD * baseColor * ambientLight.color.rgb * ambientLight.intensity;
-  float hemi = 0.5 + 0.5 * dot(normal, hemisphereLight.up);
+  vec3 ambient = kD * baseColor * scene.AmbientLight_color.rgb *
+    scene.AmbientLight_intensity;
+  float hemi = 0.5 + 0.5 * dot(normal, scene.HemisphereLight_up);
   vec3 sky = mix(
-    hemisphereLight.groundColor.rgb,
-    hemisphereLight.skyColor.rgb,
+    scene.HemisphereLight_groundColor.rgb,
+    scene.HemisphereLight_skyColor.rgb,
     hemi
   );
-  ambient += kD * baseColor * sky * hemisphereLight.intensity;
+  ambient += kD * baseColor * sky * scene.HemisphereLight_intensity;
 
+#ifndef FLAME_SPATIAL_BASIC
   // shCoeffs[0].w includes the 1 / pi that turns irradiance into the diffuse
   // light of a Lambertian surface (direct lights use kD * base / pi too).
   if (material.shCoeffs[0].w > 0.0) {
@@ -444,7 +528,7 @@ void main() {
   }
 
   // Volumetric 3D LightProbeGrid3D trilinear indirect irradiance.
-  if (passOptions.gridBoundsMin.w > 0.0) {
+  if (scene.PassOptions_gridBoundsMin.w > 0.0) {
     ambient += kD * baseColor * sampleProbeGrid3D(fragPosition, normal);
   }
 
@@ -504,10 +588,10 @@ void main() {
   // Dielectric Transmission & Screen-Space Grab-Pass Refraction.
   if (transmission > 1e-4) {
     vec3 refractedBg;
-    if (passOptions.flags.z > 0.5) {
+    if (scene.PassOptions_flags.z > 0.5) {
       vec3 ndc = fragClipPos.xyz / max(fragClipPos.w, 1e-6);
       vec2 screenUv = vec2(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y);
-      vec3 viewN = mat3(camera.view) * normal;
+      vec3 viewN = mat3(scene.Camera_view) * normal;
       float refractScale = (1.0 - 1.0 / max(ior, 1.001)) * 0.32;
       vec2 refractUv = clamp(
         screenUv - vec2(viewN.x, -viewN.y) * refractScale,
@@ -515,7 +599,7 @@ void main() {
         vec2(0.998)
       );
       refractedBg = texture(sceneColorTexture, refractUv).rgb;
-      if (passOptions.flags.x > 0.5) {
+      if (scene.PassOptions_flags.x > 0.5) {
         // The HDR scene color is extended-range sRGB.
         refractedBg = extendedSrgbToLinear(refractedBg);
       }
@@ -533,16 +617,17 @@ void main() {
     ambient +=
       refractedBg * transmittance * (vec3(1.0) - kS) * transmission;
   }
+#endif
 
   vec3 lo = vec3(0.0);
   int cascadeIndexUsed = -1;
 
-  int blockPoints = int(lightGridBlockPointLights(lights.numLights));
+  int blockPoints = int(lightGridBlockPointLights(scene.Lights_numLights));
   for (int i = 0; i < blockPoints; i++) {
-    vec3 lightDirVec = lights.positions[i] - fragPosition;
+    vec3 lightDirVec = scene.Lights_positions[i] - fragPosition;
     float distance = length(lightDirVec) + EPSILON;
-    float intensity = lights.intensities[i].x;
-    float range = lights.ranges[i].x;
+    float intensity = scene.Lights_intensities[i].x;
+    float range = scene.Lights_ranges[i].x;
     float attenuation;
     if (range > 0.0) {
       float falloff = max(1.0 - distance / range, 0.0);
@@ -553,7 +638,7 @@ void main() {
     vec3 ptShadow = pointShadowFactor(i, fragPosition, geomNormal);
     lo += processLightPbr(
       normalize(lightDirVec),
-      lights.colors[i].rgb * attenuation * ptShadow,
+      scene.Lights_colors[i].rgb * attenuation * ptShadow,
       1.0,
       baseColor,
       normal,
@@ -605,8 +690,8 @@ void main() {
 
   vec3 sunShadow = vec3(1.0);
   int shadowed = int(FLAME_SHADOWS(toLight).w);
-  if (shadowed >= 0 && shadowed < int(directionalLights.numLights) &&
-      dot(geomNormal, directionalLights.directions[shadowed].xyz) > -0.05) {
+  if (shadowed >= 0 && shadowed < int(scene.DirectionalLights_numLights) &&
+      dot(geomNormal, scene.DirectionalLights_directions[shadowed].xyz) > -0.05) {
     float vis = shadowCascadeVisibility(
       fragPosition,
       geomNormal,
@@ -615,9 +700,9 @@ void main() {
     sunShadow = shadowFactor(vis);
   }
 
-  for (int i = 0; i < int(directionalLights.numLights); i++) {
-    vec4 direction = directionalLights.directions[i];
-    vec4 lightColor = directionalLights.colors[i];
+  for (int i = 0; i < int(scene.DirectionalLights_numLights); i++) {
+    vec4 direction = scene.DirectionalLights_directions[i];
+    vec4 lightColor = scene.DirectionalLights_colors[i];
     vec3 shadow = castsShadows(i) ? sunShadow : vec3(1.0);
     lo += processLightPbr(
       direction.xyz,
@@ -636,13 +721,13 @@ void main() {
     );
   }
 
-  int blockSpots = int(lightGridBlockSpotLights(spotLights.numLights));
+  int blockSpots = int(lightGridBlockSpotLights(scene.SpotLights_numLights));
   for (int i = 0; i < blockSpots; i++) {
-    vec3 toLight = spotLights.positions[i] - fragPosition;
+    vec3 toLight = scene.SpotLights_positions[i] - fragPosition;
     float dist = length(toLight) + EPSILON;
     vec3 l = toLight / dist;
-    vec4 spotDir = spotLights.directions[i];
-    vec4 spotCone = spotLights.cones[i];
+    vec4 spotDir = scene.SpotLights_directions[i];
+    vec4 spotCone = scene.SpotLights_cones[i];
     float cosTheta = dot(l, spotDir.xyz);
     float angular = clamp((cosTheta - spotCone.x) * spotCone.y, 0.0, 1.0);
     angular *= angular;
@@ -655,7 +740,7 @@ void main() {
       } else {
         attenuation = 1.0 / (dist * dist);
       }
-      vec4 spotColor = spotLights.colors[i];
+      vec4 spotColor = scene.SpotLights_colors[i];
       vec3 spotSh = spotShadowFactor(i, fragPosition, geomNormal);
       lo += processLightPbr(
         l,
@@ -726,6 +811,7 @@ void main() {
   float highlight = clamp(fragInstanceData.y, 0.0, 1.0);
   vec3 color = ambient + lo + emissive * (1.0 + boost) + vec3(highlight);
 
+#ifndef FLAME_SPATIAL_BASIC
   // Cascade split diagnostic overlay (`RenderDebugMode3D.cascadeSplits == 4`).
   if (abs(debugMode - 4.0) < 0.25) {
     vec3 splitTint = vec3(0.35, 0.4, 0.45);
@@ -740,12 +826,13 @@ void main() {
     }
     color = mix(clamp(color, 0.0, 1.0), splitTint, 0.65);
   }
+#endif
 
   // Without HDR the radiance is tone-mapped here (Reinhard, gamma 2.2). In an
   // HDR pass it is sRGB-encoded with an extended range (values above 1 are
   // kept), the space every material writes the HDR scene target in; the
   // composite decodes it to linear light for bloom and tone mapping.
-  if (passOptions.flags.x < 0.5) {
+  if (scene.PassOptions_flags.x < 0.5) {
     color = color / (color + vec3(1.0));
     color = pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
   } else {
@@ -755,14 +842,16 @@ void main() {
   color = applyFog(
     color,
     fragPosition,
-    camera.view,
-    camera.projection,
-    camera.position
+    scene.Camera_view,
+    scene.Camera_projection,
+    scene.Camera_position
   );
 
+#ifndef FLAME_SPATIAL_BASIC
   // Transmissive glass with Grab-Pass outputs opaque refracted background so it
   // does not double-blend with the background underneath.
-  float effectiveAlpha = (transmission > 1e-4 && passOptions.flags.z > 0.5)
+  float effectiveAlpha =
+    (transmission > 1e-4 && scene.PassOptions_flags.z > 0.5)
       ? max(alpha, transmission)
       : alpha;
 
@@ -773,6 +862,13 @@ void main() {
   } else {
     outColor = vec4(color, effectiveAlpha);
   }
+#else
+  if (material.flags2.z > 0.5) {
+    outColor = vec4(color * alpha, alpha);
+  } else {
+    outColor = vec4(color, alpha);
+  }
+#endif
 }
 
 #endif

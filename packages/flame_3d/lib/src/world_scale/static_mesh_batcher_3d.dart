@@ -37,11 +37,18 @@ class const _BatchGroupKey3D(
   final Color color,
 
   /// The instance data the merged surface is drawn with.
-  final (double, double, double, double) instanceData,
-) {
+  final (double, double, double, double) instanceData, {
+
+  /// Whether piece colors should be baked into vertex colors when supported by
+  /// [material] and [layout].
+  this.bakeColor = true,
+}) {
+  /// Whether vertex colors should be baked for pieces matching this key.
+  final bool bakeColor;
+
   /// Whether the pieces' colors are multiplied into their vertex colors
   /// instead of being drawn as the instance color.
-  bool get bakesColor => _bakesColor(material, layout);
+  bool get bakesColor => bakeColor && _bakesColor(material, layout);
 
   /// Whether [material] multiplies its vertex colors and its instance color
   /// alike, so that a color baked into the vertex colors of [layout] looks
@@ -59,7 +66,8 @@ class const _BatchGroupKey3D(
       identical(other.material, material) &&
       other.layout == layout &&
       other.color == color &&
-      other.instanceData == instanceData;
+      other.instanceData == instanceData &&
+      other.bakeColor == bakeColor;
 
   @override
   int get hashCode => Object.hash(
@@ -68,6 +76,7 @@ class const _BatchGroupKey3D(
     layout,
     color,
     instanceData,
+    bakeColor,
   );
 }
 
@@ -138,6 +147,7 @@ class _SlotRecord3D(final int slotId) {
 /// any chunk. Surfaces must be triangle lists.
 class StaticMeshBatcher3D({
   final double chunkSize = 32.0,
+  final bool bakeVertexColor = true,
   super.position,
   super.scale,
   super.rotation,
@@ -265,14 +275,15 @@ class StaticMeshBatcher3D({
       final pieceBounds = Aabb3.copy(srcSurface.aabb)..transform(transform);
       final material = srcSurface.material;
       final layout = srcSurface.layout;
+      final bakePieceColor =
+          bakeVertexColor && _BatchGroupKey3D._bakesColor(material, layout);
       final groupKey = _BatchGroupKey3D(
         chunkKey,
         material,
         layout,
-        _BatchGroupKey3D._bakesColor(material, layout)
-            ? const Color(0xFFFFFFFF)
-            : color,
+        bakePieceColor ? const Color(0xFFFFFFFF) : color,
         data,
+        bakeColor: bakePieceColor,
       );
       final batch = _batches.putIfAbsent(
         groupKey,
@@ -518,15 +529,38 @@ class StaticMeshBatcher3D({
       for (var i = 0; i < count; i++) {
         indices[start + i] = saved[i];
       }
+      if (!batch.hasVisibleGeometry) {
+        batch.localAabb.setFrom(piece.localBounds);
+        batch.hasVisibleGeometry = true;
+      } else {
+        batch.localAabb.hull(piece.localBounds);
+      }
     } else {
       for (var i = 0; i < count; i++) {
         indices[start + i] = 0;
       }
+      if (batch.hasVisibleGeometry &&
+          _touchesBoundary(batch.localAabb, piece.localBounds)) {
+        _recomputeChunkAabb(batch);
+      }
     }
-    _recomputeChunkAabb(batch);
     // The surface shares [indices]: upload only the slot's range (and drop
     // its ray-cast BVH, built from the old indices).
     batch.surface?.updateIndices(start: start, count: count);
+  }
+
+  static bool _touchesBoundary(Aabb3 box, Aabb3 pieceBox) {
+    const eps = 1e-5;
+    final bMin = box.min;
+    final bMax = box.max;
+    final pMin = pieceBox.min;
+    final pMax = pieceBox.max;
+    return pMin.x <= bMin.x + eps ||
+        pMax.x >= bMax.x - eps ||
+        pMin.y <= bMin.y + eps ||
+        pMax.y >= bMax.y - eps ||
+        pMin.z <= bMin.z + eps ||
+        pMax.z >= bMax.z - eps;
   }
 
   static void _recomputeChunkAabb(_MergedChunkBatch3D batch) {
@@ -595,21 +629,70 @@ class StaticMeshBatcher3D({
       final srcData = src.vertexData;
       final vCount = src.vertexCount;
       final m = piece.transformStorage;
+      final m0 = m[0];
+      final m1 = m[1];
+      final m2 = m[2];
+      final m4 = m[4];
+      final m5 = m[5];
+      final m6 = m[6];
+      final m8 = m[8];
+      final m9 = m[9];
+      final m10 = m[10];
 
-      // Cofactor matrix for inverse-transpose normal transform + determinant
-      // check for mirrored negative scales.
-      final c00 = m[5] * m[10] - m[6] * m[9];
-      final c01 = m[6] * m[8] - m[4] * m[10];
-      final c02 = m[4] * m[9] - m[5] * m[8];
-      final c10 = m[2] * m[9] - m[1] * m[10];
-      final c11 = m[0] * m[10] - m[2] * m[8];
-      final c12 = m[1] * m[8] - m[0] * m[9];
-      final c20 = m[1] * m[6] - m[2] * m[5];
-      final c21 = m[2] * m[4] - m[0] * m[6];
-      final c22 = m[0] * m[5] - m[1] * m[4];
-      final det = m[0] * c00 + m[4] * c10 + m[8] * c20;
-      final flipWinding = det < 0;
-      final nSign = flipWinding ? -1.0 : 1.0;
+      // Detect orthogonal uniform-scale transforms so rigid/uniform pieces
+      // skip cofactor calculation and unit-scale rotations skip per-vertex
+      // normal renormalization.
+      final l0 = m0 * m0 + m1 * m1 + m2 * m2;
+      final l1 = m4 * m4 + m5 * m5 + m6 * m6;
+      final l2 = m8 * m8 + m9 * m9 + m10 * m10;
+      final d01 = m0 * m4 + m1 * m5 + m2 * m6;
+      final d12 = m4 * m8 + m5 * m9 + m6 * m10;
+      final d02 = m0 * m8 + m1 * m9 + m2 * m10;
+      final tol = 1e-4 * l0;
+      final isUniformOrtho =
+          l0 > 1e-12 &&
+          (l0 - l1).abs() <= tol &&
+          (l0 - l2).abs() <= tol &&
+          d01.abs() <= tol &&
+          d12.abs() <= tol &&
+          d02.abs() <= tol;
+
+      double c00 = 0;
+      double c01 = 0;
+      double c02 = 0;
+      double c10 = 0;
+      double c11 = 0;
+      double c12 = 0;
+      double c20 = 0;
+      double c21 = 0;
+      double c22 = 0;
+      bool flipWinding;
+      double nSign;
+      bool needsNormalNormalize;
+
+      if (isUniformOrtho) {
+        final det =
+            m0 * (m5 * m10 - m6 * m9) +
+            m4 * (m6 * m8 - m2 * m10) +
+            m8 * (m2 * m9 - m5 * m8);
+        flipWinding = det < 0;
+        nSign = flipWinding ? -1.0 : 1.0;
+        needsNormalNormalize = (l0 - 1.0).abs() > 1e-4;
+      } else {
+        c00 = m5 * m10 - m6 * m9;
+        c01 = m6 * m8 - m4 * m10;
+        c02 = m4 * m9 - m5 * m8;
+        c10 = m2 * m9 - m1 * m10;
+        c11 = m0 * m10 - m2 * m8;
+        c12 = m1 * m8 - m0 * m9;
+        c20 = m1 * m6 - m2 * m5;
+        c21 = m2 * m4 - m0 * m6;
+        c22 = m0 * m5 - m1 * m4;
+        final det = m0 * c00 + m4 * c10 + m8 * c20;
+        flipWinding = det < 0;
+        nSign = flipWinding ? -1.0 : 1.0;
+        needsNormalNormalize = true;
+      }
 
       // Copy all attributes first, then transform position/normal/color in
       // place.
@@ -628,24 +711,32 @@ class StaticMeshBatcher3D({
           final py = mergedVerts[po + 1];
           final pz = mergedVerts[po + 2];
           mergedVerts
-            ..[po] = m[0] * px + m[4] * py + m[8] * pz + m[12]
-            ..[po + 1] = m[1] * px + m[5] * py + m[9] * pz + m[13]
-            ..[po + 2] = m[2] * px + m[6] * py + m[10] * pz + m[14];
+            ..[po] = m0 * px + m4 * py + m8 * pz + m[12]
+            ..[po + 1] = m1 * px + m5 * py + m9 * pz + m[13]
+            ..[po + 2] = m2 * px + m6 * py + m10 * pz + m[14];
         }
         if (nrmOffset != null) {
           final no = vo + nrmOffset;
           final nx = mergedVerts[no];
           final ny = mergedVerts[no + 1];
           final nz = mergedVerts[no + 2];
-          var wnx = (c00 * nx + c10 * ny + c20 * nz) * nSign;
-          var wny = (c01 * nx + c11 * ny + c21 * nz) * nSign;
-          var wnz = (c02 * nx + c12 * ny + c22 * nz) * nSign;
-          final len = math.sqrt(wnx * wnx + wny * wny + wnz * wnz);
-          if (len > 1e-12) {
-            final inv = 1.0 / len;
-            wnx *= inv;
-            wny *= inv;
-            wnz *= inv;
+          var wnx = isUniformOrtho
+              ? (m0 * nx + m4 * ny + m8 * nz) * nSign
+              : (c00 * nx + c10 * ny + c20 * nz) * nSign;
+          var wny = isUniformOrtho
+              ? (m1 * nx + m5 * ny + m9 * nz) * nSign
+              : (c01 * nx + c11 * ny + c21 * nz) * nSign;
+          var wnz = isUniformOrtho
+              ? (m2 * nx + m6 * ny + m10 * nz) * nSign
+              : (c02 * nx + c12 * ny + c22 * nz) * nSign;
+          if (needsNormalNormalize) {
+            final len = math.sqrt(wnx * wnx + wny * wny + wnz * wnz);
+            if (len > 1e-12) {
+              final inv = 1.0 / len;
+              wnx *= inv;
+              wny *= inv;
+              wnz *= inv;
+            }
           }
           mergedVerts
             ..[no] = wnx
@@ -665,15 +756,17 @@ class StaticMeshBatcher3D({
           final tx = mergedVerts[to];
           final ty = mergedVerts[to + 1];
           final tz = mergedVerts[to + 2];
-          var wtx = m[0] * tx + m[4] * ty + m[8] * tz;
-          var wty = m[1] * tx + m[5] * ty + m[9] * tz;
-          var wtz = m[2] * tx + m[6] * ty + m[10] * tz;
-          final tLen = math.sqrt(wtx * wtx + wty * wty + wtz * wtz);
-          if (tLen > 1e-12) {
-            final inv = 1.0 / tLen;
-            wtx *= inv;
-            wty *= inv;
-            wtz *= inv;
+          var wtx = m0 * tx + m4 * ty + m8 * tz;
+          var wty = m1 * tx + m5 * ty + m9 * tz;
+          var wtz = m2 * tx + m6 * ty + m10 * tz;
+          if (needsNormalNormalize) {
+            final tLen = math.sqrt(wtx * wtx + wty * wty + wtz * wtz);
+            if (tLen > 1e-12) {
+              final inv = 1.0 / tLen;
+              wtx *= inv;
+              wty *= inv;
+              wtz *= inv;
+            }
           }
           mergedVerts
             ..[to] = wtx

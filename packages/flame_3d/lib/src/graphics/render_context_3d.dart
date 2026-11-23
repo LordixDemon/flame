@@ -174,6 +174,12 @@ class RenderContext3D(super.device) extends RenderContext {
   @internal
   static const String stylizedPassBlock = 'StylizedPass';
 
+  /// The name of the consolidated pass block in which `SpatialMaterial`'s
+  /// PBR fragment shaders read pass-level camera, options, lighting, light
+  /// grid, shadows, and fog uniforms.
+  @internal
+  static const String spatialPassBlock = 'SpatialPass';
+
   static const List<String> _stylizedPassParts = [
     cameraBlock,
     ambientLightBlock,
@@ -185,6 +191,19 @@ class RenderContext3D(super.device) extends RenderContext {
     fogBlock,
     waterVolumeBlock,
     lightGridBlock,
+  ];
+
+  static const List<String> _spatialPassParts = [
+    cameraBlock,
+    passOptionsBlock,
+    ambientLightBlock,
+    lightsBlock,
+    directionalLightsBlock,
+    spotLightsBlock,
+    hemisphereLightBlock,
+    lightGridBlock,
+    shadowsBlock,
+    fogBlock,
   ];
 
   /// The maximum number of point lights written to the [lightsBlock].
@@ -253,13 +272,34 @@ class RenderContext3D(super.device) extends RenderContext {
   WindingOrder get frontFace =>
       _isMirrored ? WindingOrder.clockwise : WindingOrder.counterClockwise;
 
+  /// Monotonically incremented whenever the main viewer camera changes
+  /// outside shadow rendering, used by LODs and view-dependent caches.
+  int get viewerEpoch => _viewerEpoch;
+  int _viewerEpoch = 0;
+
   /// The joint matrices of the draw [Material.apply] runs for, or `null` when
   /// it is not skinned.
   List<Matrix4>? get jointTransforms => _jointTransforms;
   List<Matrix4>? _jointTransforms;
 
   /// The lights of the scene. Must be set before the draws are flushed.
-  List<Light> lights = const [];
+  List<Light> get lights => _lights;
+  set lights(List<Light> value) {
+    _lights = value;
+    _worldLightsVersion = null;
+    _syncedLightRev = -1;
+  }
+
+  List<Light> _lights = const [];
+  int? _worldLightsVersion;
+
+  /// Sets [lights] together with the enclosing [World3D.lightsVersion] so
+  /// light-grid builds can skip unchanged passes in O(1).
+  @internal
+  void setWorldLights(List<Light> value, int lightsVersion) {
+    _lights = value;
+    _worldLightsVersion = lightsVersion;
+  }
 
   /// How the passes shade more point and spot lights than the
   /// [lightsBlock] and [spotLightsBlock] hold, or `null` (the default) to
@@ -319,8 +359,13 @@ class RenderContext3D(super.device) extends RenderContext {
 
   final Map<String, PassUniformWriter> _passUniforms = {};
   final Map<String, PassTextureProvider> _passTextures = {};
+  final Map<String, int> _customWriterKinds = {};
   int _passUniformsVersion = 0;
   int _pass = 0;
+  int _cameraPass = 0;
+
+  @internal
+  int get cameraPass => _cameraPass;
 
   /// Bumps the pass uniform epoch when per-pass state (such as `hdrEnabled`,
   /// `renderDebugMode`, `SceneColor`, or `lightProbeGrid`) changes after
@@ -338,8 +383,15 @@ class RenderContext3D(super.device) extends RenderContext {
   void registerPassUniform(String name, PassUniformWriter? writer) {
     if (writer == null) {
       _passUniforms.remove(name);
+      _customWriterKinds.remove(name);
     } else {
       _passUniforms[name] = writer;
+      final defaultKind = _defaultPassKindFor(name, writer);
+      if (defaultKind > 0) {
+        _customWriterKinds.remove(name);
+      } else {
+        _customWriterKinds[name] = 1;
+      }
     }
     _passUniformsVersion++;
   }
@@ -358,6 +410,10 @@ class RenderContext3D(super.device) extends RenderContext {
   /// Set the camera matrices for the next pass.
   void setCamera(Matrix4 viewMatrix, Matrix4 projectionMatrix) {
     _pass++;
+    _cameraPass++;
+    if (!_shadows.recording) {
+      _viewerEpoch++;
+    }
     _shadows
       ..active = false
       ..atlasActive = false;
@@ -381,6 +437,56 @@ class RenderContext3D(super.device) extends RenderContext {
       _depthRow[i] = m[i * 4 + depthRow];
     }
     _isMirrored = mirrors(_viewProjectionMatrix);
+  }
+
+  void _saveCameraSnapshot(_CameraSnapshot out) {
+    out.view.setFrom(_viewMatrix);
+    out.projection.setFrom(_projectionMatrix);
+    out.viewProjection.setFrom(_viewProjectionMatrix);
+    out.cameraPosition.setFrom(_cameraPosition);
+    out.depthRow.setAll(0, _depthRow);
+    out.isMirrored = _isMirrored;
+    _copyFrustum(out.frustum, _frustum);
+  }
+
+  void _restoreCameraSnapshot(
+    _CameraSnapshot snap, {
+    required bool active,
+    required bool atlasActive,
+  }) {
+    _pass++;
+    _cameraPass++;
+    _shadows
+      ..active = active
+      ..atlasActive = atlasActive;
+    _viewMatrix.setFrom(snap.view);
+    _projectionMatrix.setFrom(snap.projection);
+    _viewProjectionMatrix.setFrom(snap.viewProjection);
+    _cameraPosition.setFrom(snap.cameraPosition);
+    _depthRow.setAll(0, snap.depthRow);
+    _isMirrored = snap.isMirrored;
+    _copyFrustum(_frustum, snap.frustum);
+  }
+
+  static void _copyFrustum(Frustum dst, Frustum src) {
+    dst.plane0
+      ..normal.setFrom(src.plane0.normal)
+      ..constant = src.plane0.constant;
+    dst.plane1
+      ..normal.setFrom(src.plane1.normal)
+      ..constant = src.plane1.constant;
+    dst.plane2
+      ..normal.setFrom(src.plane2.normal)
+      ..constant = src.plane2.constant;
+    dst.plane3
+      ..normal.setFrom(src.plane3.normal)
+      ..constant = src.plane3.constant;
+    dst.plane4
+      ..normal.setFrom(src.plane4.normal)
+      ..constant = src.plane4.constant;
+    dst.plane5
+      ..normal.setFrom(src.plane5.normal)
+      ..constant = src.plane5.constant;
   }
 
   final Matrix4 _inverseView = Matrix4.identity();
@@ -462,6 +568,7 @@ class RenderContext3D(super.device) extends RenderContext {
     Color color = const Color(0xFFFFFFFF),
     Vector4? instanceData,
     Map<int, List<Matrix4>>? jointTransforms,
+    bool? mirrored,
   }) {
     final multiSurface = mesh.surfaces.length > 1;
     if (multiSurface) {
@@ -474,6 +581,7 @@ class RenderContext3D(super.device) extends RenderContext {
         color: color,
         instanceData: instanceData,
         jointTransforms: jointTransforms,
+        mirrored: mirrored,
       );
     } finally {
       if (multiSurface) {
@@ -490,16 +598,16 @@ class RenderContext3D(super.device) extends RenderContext {
     Vector4? instanceData,
     List<Matrix4>? jointTransforms,
     Material? material,
+    bool? mirrored,
   }) {
     final drawMaterial = material ?? surface.material;
     final shadowPass = _shadows.recording;
     if (shadowPass) {
       drawMaterial.wasRecorded = true;
-    }
-    if (shadowPass &&
-        (!drawMaterial.castsShadows ||
-            !drawMaterial.instancesHoldModelMatrices)) {
-      return;
+      if (!drawMaterial.castsShadows ||
+          !drawMaterial.instancesHoldModelMatrices) {
+        return;
+      }
     }
     final i = _count;
     if (i == _capacity) {
@@ -509,22 +617,45 @@ class RenderContext3D(super.device) extends RenderContext {
 
     _surfaces[i] = surface;
     _materials[i] = drawMaterial;
-    _pipelines[i] = shadowPass
-        ? null
-        : _pipelineFor(drawMaterial, surface.layout);
     _joints[i] = jointTransforms != null && jointTransforms.isNotEmpty
         ? jointTransforms
         : null;
+    _external[i] = null;
 
     final m = (transform ?? _modelMatrix).storage;
-    final determinant =
-        m[0] * (m[5] * m[10] - m[6] * m[9]) -
-        m[4] * (m[1] * m[10] - m[2] * m[9]) +
-        m[8] * (m[1] * m[6] - m[2] * m[5]);
-    _mirrored[i] = determinant < 0 ? 1 : 0;
-
     final base = i * VertexLayout.instanceStrideInFloats;
     final instances = _instances..setRange(base, base + 16, m);
+
+    if (shadowPass) {
+      _pipelines[i] = null;
+      _vertexShaders[i] = null;
+      _mirrored[i] = 0;
+      _probeSlots[i] = 0;
+      _probeWeights[i] = 0;
+      _prepassGroups[i] = 0;
+      _depths[i] = 0;
+      RenderProfile.lap(RenderPhase.recording);
+      return;
+    }
+
+    final (pipeline, vertShader, fragShader) = _pipelineTripleFor(
+      drawMaterial,
+      surface.layout,
+    );
+    _pipelines[i] = pipeline;
+    _vertexShaders[i] = vertShader;
+    _fragmentShaders[i] = fragShader;
+
+    if (mirrored != null) {
+      _mirrored[i] = mirrored ? 1 : 0;
+    } else {
+      final determinant =
+          m[0] * (m[5] * m[10] - m[6] * m[9]) -
+          m[4] * (m[1] * m[10] - m[2] * m[9]) +
+          m[8] * (m[1] * m[6] - m[2] * m[5]);
+      _mirrored[i] = determinant < 0 ? 1 : 0;
+    }
+
     instances[base + 16] = color.r;
     instances[base + 17] = color.g;
     instances[base + 18] = color.b;
@@ -544,16 +675,14 @@ class RenderContext3D(super.device) extends RenderContext {
         ..[base + 23] = data[3];
     }
 
-    final aabb = surface.aabb;
-    final cx = (aabb.min.x + aabb.max.x) * 0.5;
-    final cy = (aabb.min.y + aabb.max.y) * 0.5;
-    final cz = (aabb.min.z + aabb.max.z) * 0.5;
+    final center = surface.aabbCenter;
+    final cx = center.x;
+    final cy = center.y;
+    final cz = center.z;
     final wx = m[0] * cx + m[4] * cy + m[8] * cz + m[12];
     final wy = m[1] * cx + m[5] * cy + m[9] * cz + m[13];
     final wz = m[2] * cx + m[6] * cy + m[10] * cz + m[14];
-    if (!shadowPass &&
-        reflectionProbes.isNotEmpty &&
-        drawMaterial.usesReflectionProbes) {
+    if (reflectionProbes.isNotEmpty && drawMaterial.usesReflectionProbes) {
       _selectProbeFor(i, wx, wy, wz);
     } else {
       _probeSlots[i] = 0;
@@ -561,8 +690,7 @@ class RenderContext3D(super.device) extends RenderContext {
     }
     final d = _depthRow;
     var depth = d[0] * wx + d[1] * wy + d[2] * wz + d[3];
-    if (!shadowPass &&
-        drawMaterial.renderState.translucent &&
+    if (drawMaterial.renderState.translucent &&
         drawMaterial.renderState.depthPrepass) {
       if (drawMaterial.depthPrepassGroup case final key?) {
         depth = _joinSharedPrepassGroup(i, key, depth);
@@ -580,7 +708,6 @@ class RenderContext3D(super.device) extends RenderContext {
       _prepassGroups[i] = 0;
     }
     _depths[i] = depth;
-    _external[i] = null;
     RenderProfile.lap(RenderPhase.recording);
   }
 
@@ -597,6 +724,8 @@ class RenderContext3D(super.device) extends RenderContext {
     Surface surface, {
     required Float32List instances,
     required int count,
+    int instanceOffset = 0,
+    List<Matrix4>? jointTransforms,
     Material? material,
     Vector3? center,
     bool mirrored = false,
@@ -604,9 +733,11 @@ class RenderContext3D(super.device) extends RenderContext {
     if (count <= 0) {
       return;
     }
+    assert(instanceOffset >= 0, 'instanceOffset must be non-negative');
     assert(
-      instances.length >= count * VertexLayout.instanceStrideInFloats,
-      'instances holds fewer than $count instances',
+      instances.length >=
+          (instanceOffset + count) * VertexLayout.instanceStrideInFloats,
+      'instances holds fewer than ${instanceOffset + count} instances',
     );
     final drawMaterial = material ?? surface.material;
     if (_shadows.recording) {
@@ -617,7 +748,10 @@ class RenderContext3D(super.device) extends RenderContext {
             !drawMaterial.instancesHoldModelMatrices)) {
       return;
     }
-    final pipeline = _pipelineFor(drawMaterial, surface.layout);
+    final (pipeline, vertShader, fragShader) = _pipelineTripleFor(
+      drawMaterial,
+      surface.layout,
+    );
     if (!pipeline.instanced) {
       throw StateError(
         'drawInstances needs a material whose vertex shader reads the '
@@ -633,10 +767,15 @@ class RenderContext3D(super.device) extends RenderContext {
     _surfaces[i] = surface;
     _materials[i] = drawMaterial;
     _pipelines[i] = pipeline;
-    _joints[i] = null;
+    _vertexShaders[i] = vertShader;
+    _fragmentShaders[i] = fragShader;
+    _joints[i] = jointTransforms != null && jointTransforms.isNotEmpty
+        ? jointTransforms
+        : null;
     _mirrored[i] = mirrored ? 1 : 0;
     _external[i] = instances;
     _externalCounts[i] = count;
+    _externalOffsets[i] = instanceOffset * VertexLayout.instanceStrideInFloats;
 
     if (!_shadows.recording &&
         reflectionProbes.isNotEmpty &&
@@ -671,12 +810,39 @@ class RenderContext3D(super.device) extends RenderContext {
     RenderProfile.lap(RenderPhase.recording);
   }
 
-  DevicePipeline _pipelineFor(Material material, VertexLayout layout) {
+  Material? _lastPipeMat;
+  VertexLayout? _lastPipeLayout;
+  Shader? _lastPipeVert;
+  Shader? _lastPipeFrag;
+  int _lastPipeMatVer = -1;
+  int _lastPipeVertGen = -1;
+  int _lastPipeFragGen = -1;
+  DevicePipeline? _lastPipeDev;
+
+  DevicePipeline _pipelineFor(Material material, VertexLayout layout) =>
+      _pipelineTripleFor(material, layout).$1;
+
+  (DevicePipeline, Shader, Shader) _pipelineTripleFor(
+    Material material,
+    VertexLayout layout,
+  ) {
+    final matVer = material.version;
+    if (identical(material, _lastPipeMat) &&
+        identical(layout, _lastPipeLayout) &&
+        matVer == _lastPipeMatVer &&
+        _lastPipeDev != null &&
+        _lastPipeVertGen == _lastPipeVert!.generation &&
+        _lastPipeFragGen == _lastPipeFrag!.generation &&
+        identical(material.fragmentShaderFor(this, layout), _lastPipeFrag)) {
+      return (_lastPipeDev!, _lastPipeVert!, _lastPipeFrag!);
+    }
+
     final vertexShader = material.vertexShaderFor(layout);
-    final fragmentShader = material.fragmentShader;
+    final fragmentShader = material.fragmentShaderFor(this, layout);
     vertexShader.resource;
     fragmentShader.resource;
     final cache = material.pipelineCache;
+    DevicePipeline pipeline;
     if (cache != null &&
         identical(cache.device, device) &&
         identical(cache.layout, layout) &&
@@ -684,20 +850,30 @@ class RenderContext3D(super.device) extends RenderContext {
         cache.fragmentGeneration == fragmentShader.generation &&
         identical(cache.vertexShader, vertexShader) &&
         identical(cache.fragmentShader, fragmentShader)) {
-      return cache.pipeline;
+      pipeline = cache.pipeline;
+    } else {
+      pipeline = device.pipelineFor(vertexShader, fragmentShader, layout);
+      material.wasRecorded = true;
+      material.pipelineCache = MaterialPipelineCache(
+        device: device,
+        layout: layout,
+        vertexShader: vertexShader,
+        fragmentShader: fragmentShader,
+        vertexGeneration: vertexShader.generation,
+        fragmentGeneration: fragmentShader.generation,
+        pipeline: pipeline,
+      );
     }
-    final pipeline = device.pipelineFor(vertexShader, fragmentShader, layout);
-    material.wasRecorded = true;
-    material.pipelineCache = MaterialPipelineCache(
-      device: device,
-      layout: layout,
-      vertexShader: vertexShader,
-      fragmentShader: fragmentShader,
-      vertexGeneration: vertexShader.generation,
-      fragmentGeneration: fragmentShader.generation,
-      pipeline: pipeline,
-    );
-    return pipeline;
+
+    _lastPipeMat = material;
+    _lastPipeLayout = layout;
+    _lastPipeMatVer = matVer;
+    _lastPipeVert = vertexShader;
+    _lastPipeFrag = fragmentShader;
+    _lastPipeVertGen = vertexShader.generation;
+    _lastPipeFragGen = fragmentShader.generation;
+    _lastPipeDev = pipeline;
+    return (pipeline, vertexShader, fragmentShader);
   }
 
   /// Whether the draws being recorded are those of a shadow map.
@@ -938,6 +1114,12 @@ class RenderContext3D(super.device) extends RenderContext {
   double get reflectionProbeWeight =>
       reflectionProbe == null ? 0.0 : _drawProbeWeight;
 
+  @internal
+  int get activeProbeSlot => _drawProbeSlot;
+
+  @internal
+  double get activeProbeWeight => _drawProbeWeight;
+
   int _drawProbeSlot = 0;
   double _drawProbeWeight = 0;
   int _boundProbeSlot = 0;
@@ -1088,16 +1270,18 @@ class RenderContext3D(super.device) extends RenderContext {
     RenderContext3D context,
     UniformBlock block,
   ) {
-    final v = _scratchVector4;
-    block.setVector4(
-      'flags',
-      v..setValues(
+    final off =
+        (block.cachedWriterOffsets as _PassOptionsOffsets?) ??
+        (block.cachedWriterOffsets = _PassOptionsOffsets(block));
+    if (off.flags >= 0) {
+      block.writeVec4ValuesAt(
+        off.flags,
         context.hdrEnabled ? 1.0 : 0.0,
         context.renderDebugMode.index.toDouble(),
         context._oitGrab.grabActive ? 1.0 : 0.0,
         0.0,
-      ),
-    );
+      );
+    }
 
     final grid = context.lightProbeGrid;
     if (grid != null && grid.intensity > 0) {
@@ -1105,35 +1289,44 @@ class RenderContext3D(super.device) extends RenderContext {
       final sx = math.max(1e-5, b.max.x - b.min.x);
       final sy = math.max(1e-5, b.max.y - b.min.y);
       final sz = math.max(1e-5, b.max.z - b.min.z);
-      block
-        ..setVector4(
-          'gridBoundsMin',
-          v..setValues(b.min.x, b.min.y, b.min.z, grid.intensity),
-        )
-        ..setVector4(
-          'gridInvSpan',
-          // The grid holds irradiance: the diffuse light is E * kD * base / pi.
-          v..setValues(
-            1.0 / sx,
-            1.0 / sy,
-            1.0 / sz,
-            grid.volumeTextureRange / math.pi,
-          ),
-        )
-        ..setVector4(
-          'gridRes',
-          v..setValues(
-            grid.resolutionX.toDouble(),
-            grid.resolutionY.toDouble(),
-            grid.resolutionZ.toDouble(),
-            0.0,
-          ),
+      if (off.gridBoundsMin >= 0) {
+        block.writeVec4ValuesAt(
+          off.gridBoundsMin,
+          b.min.x,
+          b.min.y,
+          b.min.z,
+          grid.intensity,
         );
+      }
+      if (off.gridInvSpan >= 0) {
+        // The grid holds irradiance: the diffuse light is E * kD * base / pi.
+        block.writeVec4ValuesAt(
+          off.gridInvSpan,
+          1.0 / sx,
+          1.0 / sy,
+          1.0 / sz,
+          grid.volumeTextureRange / math.pi,
+        );
+      }
+      if (off.gridRes >= 0) {
+        block.writeVec4ValuesAt(
+          off.gridRes,
+          grid.resolutionX.toDouble(),
+          grid.resolutionY.toDouble(),
+          grid.resolutionZ.toDouble(),
+          0.0,
+        );
+      }
     } else {
-      block
-        ..setVector4('gridBoundsMin', v..setZero())
-        ..setVector4('gridInvSpan', v)
-        ..setVector4('gridRes', v..setValues(1, 1, 1, 0));
+      if (off.gridBoundsMin >= 0) {
+        block.writeVec4ValuesAt(off.gridBoundsMin, 0, 0, 0, 0);
+      }
+      if (off.gridInvSpan >= 0) {
+        block.writeVec4ValuesAt(off.gridInvSpan, 0, 0, 0, 0);
+      }
+      if (off.gridRes >= 0) {
+        block.writeVec4ValuesAt(off.gridRes, 1, 1, 1, 0);
+      }
     }
   }
 
@@ -1199,6 +1392,8 @@ class RenderContext3D(super.device) extends RenderContext {
     _surfaces.fillRange(0, count, null);
     _materials.fillRange(0, count, null);
     _pipelines.fillRange(0, count, null);
+    _vertexShaders.fillRange(0, count, null);
+    _fragmentShaders.fillRange(0, count, null);
     _joints.fillRange(0, count, null);
     _external.fillRange(0, count, null);
   }
@@ -1264,14 +1459,24 @@ class RenderContext3D(super.device) extends RenderContext {
     final surface = _surfaces[first]!;
     final material = _materials[first]!;
     final pipeline = _pipelines[first]!;
-    final vertexShader = material.vertexShaderFor(surface.layout);
+    final vertexShader =
+        _vertexShaders[first] ?? material.vertexShaderFor(surface.layout);
+    final fragmentShader =
+        _fragmentShaders[first] ??
+        material.fragmentShaderFor(this, surface.layout);
     RenderProfile.lap(RenderPhase.batch);
 
+    final joints = _joints[first];
     device.bindPipeline(pipeline);
     if (device.bindingEpoch != _bindingEpoch) {
       _bindingEpoch = device.bindingEpoch;
       _boundMaterial = null;
-      _bindPassSlots(material, vertexShader);
+      _bindPassSlots(
+        material,
+        vertexShader,
+        fragmentShader: fragmentShader,
+        skipJoints: pipeline.instanced && joints != null,
+      );
     }
     final baseState = material.renderState;
     var effectiveState = _depthPrepassOverride
@@ -1316,13 +1521,18 @@ class RenderContext3D(super.device) extends RenderContext {
       _drawProbeSlot = _probeSlots[first];
       _drawProbeWeight = _probeWeights[first];
       if (!identical(material, _boundMaterial) || _probeChanged) {
-        _jointTransforms = null;
-        _applyMaterial(material, vertexShader);
+        _jointTransforms = joints;
+        _applyMaterial(material, vertexShader, fragmentShader);
       }
+      _bindJoints(vertexShader, joints);
       final instanceCount = _externalCounts[first];
       device
         ..bindSurface(surface)
-        ..bindInstances(external, instanceCount)
+        ..bindInstances(
+          external,
+          instanceCount,
+          startFloat: _externalOffsets[first],
+        )
         ..drawSurface(surface, instanceCount: instanceCount);
       RenderProfile.lap(RenderPhase.draw);
       return;
@@ -1340,7 +1550,7 @@ class RenderContext3D(super.device) extends RenderContext {
         _jointTransforms = _joints[draw];
         _drawProbeSlot = _probeSlots[draw];
         _drawProbeWeight = _probeWeights[draw];
-        _applyMaterial(material, vertexShader);
+        _applyMaterial(material, vertexShader, fragmentShader);
         _bindJoints(vertexShader, _joints[draw]);
         device.bindSurface(surface);
         if (pipeline.usesInstanceData) {
@@ -1352,12 +1562,11 @@ class RenderContext3D(super.device) extends RenderContext {
       return;
     }
 
-    final joints = _joints[first];
     _drawProbeSlot = _probeSlots[first];
     _drawProbeWeight = _probeWeights[first];
     if (!identical(material, _boundMaterial) || _probeChanged) {
       _jointTransforms = joints;
-      _applyMaterial(material, vertexShader);
+      _applyMaterial(material, vertexShader, fragmentShader);
     }
     _bindJoints(vertexShader, joints);
     device
@@ -1383,61 +1592,144 @@ class RenderContext3D(super.device) extends RenderContext {
       _drawProbeSlot != _boundProbeSlot ||
       _drawProbeWeight != _boundProbeWeight;
 
-  void _applyMaterial(Material material, Shader vertexShader) {
+  void _applyMaterial(
+    Material material,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) {
     RenderProfile.lap(RenderPhase.binding);
     _boundProbeSlot = _drawProbeSlot;
     _boundProbeWeight = _drawProbeWeight;
     materialTracker?.note(material);
-    material.apply(this);
+    if (!material.cachesApply ||
+        !material.isApplyCacheValid(this, vertexShader, fragmentShader)) {
+      material.apply(this);
+      if (material.cachesApply) {
+        material.recordApplyCache(this, vertexShader, fragmentShader);
+      }
+    }
     RenderProfile.lap(RenderPhase.materialApply);
-    _bindSlots(vertexShader, _materialScope);
-    _bindSlots(material.fragmentShader, _materialScope);
+    _bindMaterialPlan(_planFor(vertexShader), vertexShader);
+    _bindMaterialPlan(_planFor(fragmentShader), fragmentShader);
     if (!identical(material, _boundMaterial)) {
       device.stats.materialChanges++;
       _boundMaterial = material;
     }
   }
 
-  void _bindPassSlots(Material material, Shader vertexShader) {
-    _bindSlots(vertexShader, _passScope);
-    _bindSlots(material.fragmentShader, _passScope);
+  void _bindPassSlots(
+    Material material,
+    Shader vertexShader, {
+    Shader? fragmentShader,
+    bool skipJoints = false,
+  }) {
+    _bindPassPlan(_planFor(vertexShader), skipJoints: skipJoints);
+    _bindPassPlan(
+      _planFor(fragmentShader ?? material.fragmentShader),
+      skipJoints: true,
+    );
   }
 
   void _bindJoints(Shader vertexShader, List<Matrix4>? joints) {
     if (joints == null) {
       return;
     }
-    _bindSlots(vertexShader, _jointsScope, joints);
+    final js = _planFor(vertexShader).jointsSlot;
+    if (js == null) {
+      return;
+    }
+    _writeAndBindJoints(js, joints);
   }
 
-  void _bindSlots(Shader shader, int scope, [List<Matrix4>? joints]) {
-    final plan = _planFor(shader);
-    final slots = plan.slots;
-    final kinds = plan.kinds;
-    for (var i = 0; i < slots.length; i++) {
-      final kind = kinds[i];
-      final slot = slots[i];
-      switch (kind) {
-        case _sampler when scope == _materialScope:
-          device.bindTexture(
-            slot,
-            shader.texture(plan.names[i]) ?? Texture.standard,
-          );
-        case _passSampler when scope == _passScope:
-          device.bindTexture(slot, _passTextures[plan.names[i]]!(this));
-        case _material when scope == _materialScope:
-          device.bindUniformBlock(shader.block(plan.names[i]));
-        case _passBlock when scope == _passScope:
-          device.bindUniformBlock(_passBlockFor(slot, plan.writers[i]!));
-        case _jointsBlock when scope == _passScope:
-          device.bindUniformBlock(_jointsBlockFor(slot));
-        case _jointsBlock when scope == _jointsScope:
-          final block = _jointsBlockFor(slot);
-          RenderProfile.lap(RenderPhase.binding);
-          _writeJoints(block, joints!);
-          RenderProfile.lap(RenderPhase.uniformWrite);
-          device.bindUniformBlock(block);
+  void _bindMaterialPlan(_ShaderPlan plan, Shader shader) {
+    final blocks = plan.materialBlocks;
+    for (var i = 0; i < blocks.length; i++) {
+      device.bindUniformBlock(shader.blockAt(blocks[i].blockIndex));
+    }
+    final samplers = plan.materialSamplers;
+    for (var i = 0; i < samplers.length; i++) {
+      final s = samplers[i];
+      device.bindTexture(
+        s.slot,
+        shader.textureAt(s.samplerIndex) ?? Texture.standard,
+      );
+    }
+  }
+
+  void _bindPassPlan(_ShaderPlan plan, {bool skipJoints = false}) {
+    final blocks = plan.passBlocks;
+    for (var i = 0; i < blocks.length; i++) {
+      _bindPassBlockEntry(blocks[i]);
+    }
+    final samplers = plan.passSamplers;
+    for (var i = 0; i < samplers.length; i++) {
+      final s = samplers[i];
+      device.bindTexture(s.slot, s.provider(this));
+    }
+    final js = plan.jointsSlot;
+    if (js != null && !skipJoints) {
+      _bindDefaultJoints(js);
+    }
+  }
+
+  void _bindDefaultJoints(_JointsEntry js) {
+    final pass = _pass;
+    if (_sharedPassEpochs[_passKindJointsIdentity] == pass &&
+        _sharedPassSigs[_passKindJointsIdentity] == js.layoutSignature) {
+      final buf = _sharedPassBuffers[_passKindJointsIdentity];
+      if (buf != null) {
+        device.bindUniformSlice(
+          js.slot,
+          buf,
+          offsetInBytes: _sharedPassOffsets[_passKindJointsIdentity],
+          lengthInBytes: _sharedPassLengths[_passKindJointsIdentity],
+        );
+        return;
       }
+    }
+    device.bindUniformBlock(js.defaultBlock);
+    if (!device.isSuspended && js.defaultBlock.uploadBuffer != null) {
+      _sharedPassEpochs[_passKindJointsIdentity] = pass;
+      _sharedPassSigs[_passKindJointsIdentity] = js.layoutSignature;
+      _sharedPassBuffers[_passKindJointsIdentity] =
+          js.defaultBlock.uploadBuffer;
+      _sharedPassOffsets[_passKindJointsIdentity] =
+          js.defaultBlock.uploadOffset;
+      _sharedPassLengths[_passKindJointsIdentity] =
+          js.defaultBlock.bytes.lengthInBytes;
+    }
+  }
+
+  void _bindPassBlockEntry(_PassBlockEntry entry) {
+    final kind = entry.passKind;
+    final pass = _pass;
+    if (kind > 0 &&
+        _sharedPassEpochs[kind] == pass &&
+        _sharedPassSigs[kind] == entry.layoutSignature) {
+      final buf = _sharedPassBuffers[kind];
+      if (buf != null) {
+        device.bindUniformSlice(
+          entry.slot,
+          buf,
+          offsetInBytes: _sharedPassOffsets[kind],
+          lengthInBytes: _sharedPassLengths[kind],
+        );
+        return;
+      }
+    }
+    if (entry.writtenPass != pass) {
+      entry.writtenPass = pass;
+      RenderProfile.lap(RenderPhase.binding);
+      entry.writer(this, entry.block);
+      RenderProfile.lap(RenderPhase.uniformWrite);
+    }
+    device.bindUniformBlock(entry.block);
+    if (kind > 0 && !device.isSuspended && entry.block.uploadBuffer != null) {
+      _sharedPassEpochs[kind] = pass;
+      _sharedPassSigs[kind] = entry.layoutSignature;
+      _sharedPassBuffers[kind] = entry.block.uploadBuffer;
+      _sharedPassOffsets[kind] = entry.block.uploadOffset;
+      _sharedPassLengths[kind] = entry.block.bytes.lengthInBytes;
     }
   }
 
@@ -1450,92 +1742,284 @@ class RenderContext3D(super.device) extends RenderContext {
         cached.generation == shader.generation) {
       return cached;
     }
-    final names = <String>[];
-    final slots = <GpuUniformSlot>[];
-    final kinds = <int>[];
-    final writers = <PassUniformWriter?>[];
-    for (final name in shader.slots) {
-      final slot = shader.slot(name);
+    final passBlocks = <_PassBlockEntry>[];
+    final passSamplers = <_PassSamplerEntry>[];
+    final materialBlocks = <_MatBlockEntry>[];
+    final materialSamplers = <_MatSamplerEntry>[];
+    _JointsEntry? jointsSlot;
+
+    final shaderSlots = shader.slots;
+    final resolvedSlots = shader.resolvedSlots;
+    for (var i = 0; i < shaderSlots.length; i++) {
+      final name = shaderSlots[i];
+      final slot = resolvedSlots[i];
+      if (slot.sizeInBytes == null) {
+        final provider = _passTextures[name];
+        if (provider != null) {
+          passSamplers.add(_PassSamplerEntry(slot, provider));
+        } else {
+          materialSamplers.add(
+            _MatSamplerEntry(slot, shader.samplerIndexOf(name)),
+          );
+        }
+        continue;
+      }
       final writer =
           _passUniforms[name] ??
-          (name == stylizedPassBlock ? _writeStylizedPass : null);
-      names.add(name);
-      slots.add(slot);
-      writers.add(writer);
-      kinds.add(switch (slot.sizeInBytes) {
-        null when _passTextures.containsKey(name) => _passSampler,
-        null => _sampler,
-        _ when writer != null => _passBlock,
-        _ when name == jointMatricesBlock => _jointsBlock,
-        _ => _material,
-      });
+          (name == stylizedPassBlock
+              ? _writeStylizedPass
+              : (name == spatialPassBlock ? _writeSpatialPass : null));
+      if (writer != null) {
+        final block = _passBlocks[slot] ??= UniformBlock(slot);
+        final kind = _resolvedPassKind(name, writer);
+        final sig = kind > 0 ? _passLayoutSignature(kind, block) : 0;
+        passBlocks.add(_PassBlockEntry(slot, block, writer, kind, sig));
+      } else if (name == jointMatricesBlock) {
+        final defaultBlock = _jointBlocks[slot] ??= UniformBlock(slot);
+        final rows = defaultBlock.resolveOffset(jointRowsMember);
+        final joints = rows >= 0
+            ? UniformBlock.missingOffset
+            : (defaultBlock.memberOffset('joints') ?? 0);
+        final capacity = rows >= 0
+            ? (defaultBlock.data.length - rows) ~/ 12
+            : (defaultBlock.data.length - joints) ~/ 16;
+        final sig = Object.hash(slot.sizeInBytes ?? 0, rows, joints);
+        jointsSlot = _JointsEntry(
+          slot,
+          defaultBlock,
+          rows,
+          joints,
+          capacity,
+          sig,
+        );
+      } else {
+        materialBlocks.add(
+          _MatBlockEntry(slot, shader.blockIndexOf(name)),
+        );
+      }
     }
+
     final plan = _ShaderPlan(
       context: this,
       version: _passUniformsVersion,
       generation: shader.generation,
-      names: names,
-      slots: slots,
-      kinds: kinds,
-      writers: writers,
+      passBlocks: passBlocks,
+      passSamplers: passSamplers,
+      materialBlocks: materialBlocks,
+      materialSamplers: materialSamplers,
+      jointsSlot: jointsSlot,
     );
     shader.renderCache = plan;
     return plan;
   }
 
+  static const int _passKindCustom = 0;
+  static const int _passKindCameraMatrices = 1;
+  static const int _passKindCamera = 2;
+  static const int _passKindAmbient = 3;
+  static const int _passKindLights = 4;
+  static const int _passKindDirLights = 5;
+  static const int _passKindSpotLights = 6;
+  static const int _passKindHemi = 7;
+  static const int _passKindLightGrid = 8;
+  static const int _passKindShadows = 9;
+  static const int _passKindShadowAtlas = 10;
+  static const int _passKindFog = 11;
+  static const int _passKindWaterVolume = 12;
+  static const int _passKindDepthNormal = 13;
+  static const int _passKindSceneColor = 14;
+  static const int _passKindPassOptions = 15;
+  static const int _passKindShadowCaster = 16;
+  static const int _passKindStylized = 17;
+  static const int _passKindSpatial = 18;
+  static const int _passKindJointsIdentity = 19;
+  static const int _passKindCount = 20;
+
+  final Int32List _sharedPassEpochs = Int32List(_passKindCount)
+    ..fillRange(0, _passKindCount, -1);
+  final Int32List _sharedPassSigs = Int32List(_passKindCount);
+  final List<GpuBuffer?> _sharedPassBuffers = List.filled(_passKindCount, null);
+  final Int32List _sharedPassOffsets = Int32List(_passKindCount);
+  final Int32List _sharedPassLengths = Int32List(_passKindCount);
+
+  static int _defaultPassKindFor(String name, PassUniformWriter writer) {
+    if (name == cameraMatricesBlock && identical(writer, writeCameraUniforms)) {
+      return _passKindCameraMatrices;
+    }
+    if (name == cameraBlock && identical(writer, writeCameraUniforms)) {
+      return _passKindCamera;
+    }
+    if (name == ambientLightBlock &&
+        identical(writer, writeAmbientLightUniforms)) {
+      return _passKindAmbient;
+    }
+    if (name == lightsBlock && identical(writer, writeLightsUniforms)) {
+      return _passKindLights;
+    }
+    if (name == directionalLightsBlock &&
+        identical(writer, writeDirectionalLightsUniforms)) {
+      return _passKindDirLights;
+    }
+    if (name == spotLightsBlock && identical(writer, writeSpotLightsUniforms)) {
+      return _passKindSpotLights;
+    }
+    if (name == hemisphereLightBlock &&
+        identical(writer, writeHemisphereLightUniforms)) {
+      return _passKindHemi;
+    }
+    if (name == lightGridBlock && identical(writer, writeLightGridUniforms)) {
+      return _passKindLightGrid;
+    }
+    if (name == shadowsBlock && identical(writer, writeShadowsUniforms)) {
+      return _passKindShadows;
+    }
+    if (name == shadowAtlasBlock &&
+        identical(writer, _ShadowPass.writeAtlasUniforms)) {
+      return _passKindShadowAtlas;
+    }
+    if (name == fogBlock && identical(writer, writeFogUniforms)) {
+      return _passKindFog;
+    }
+    if (name == waterVolumeBlock &&
+        identical(writer, writeWaterVolumeUniforms)) {
+      return _passKindWaterVolume;
+    }
+    if (name == depthNormalBlock &&
+        identical(writer, _DepthNormalPass.writeUniforms)) {
+      return _passKindDepthNormal;
+    }
+    if (name == sceneColorBlock &&
+        identical(writer, _OitAndGrabPass.writeSceneColorUniforms)) {
+      return _passKindSceneColor;
+    }
+    if (name == passOptionsBlock &&
+        identical(writer, writePassOptionsUniforms)) {
+      return _passKindPassOptions;
+    }
+    if (name == shadowCasterBlock &&
+        identical(writer, _ShadowPass.writeCasterUniforms)) {
+      return _passKindShadowCaster;
+    }
+    return _passKindCustom;
+  }
+
+  int _resolvedPassKind(String name, PassUniformWriter writer) {
+    if (name == stylizedPassBlock && identical(writer, _writeStylizedPass)) {
+      return _allDefaultPassParts(_stylizedPassParts)
+          ? _passKindStylized
+          : _passKindCustom;
+    }
+    if (name == spatialPassBlock && identical(writer, _writeSpatialPass)) {
+      return _allDefaultPassParts(_spatialPassParts)
+          ? _passKindSpatial
+          : _passKindCustom;
+    }
+    if (_customWriterKinds.containsKey(name)) {
+      return _passKindCustom;
+    }
+    return _defaultPassKindFor(name, writer);
+  }
+
+  bool _allDefaultPassParts(List<String> parts) {
+    for (var i = 0; i < parts.length; i++) {
+      if (_customWriterKinds.containsKey(parts[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  static int _passLayoutSignature(int kind, UniformBlock block) {
+    final len = block.bytes.lengthInBytes;
+    if (kind == _passKindSpatial) {
+      return Object.hash(
+        len,
+        block.resolveOffset('PassOptions_flags'),
+        block.resolveOffset('Lights_numLights'),
+        block.resolveOffset('Shadows_atlas'),
+        block.resolveOffset('LightGrid_counts'),
+      );
+    }
+    if (kind == _passKindStylized) {
+      return Object.hash(
+        len,
+        block.resolveOffset('Camera_view'),
+        block.resolveOffset('Lights_numLights'),
+        block.resolveOffset('WaterVolume_plane'),
+      );
+    }
+    return len;
+  }
+
   final Map<GpuUniformSlot, UniformBlock> _passBlocks = {};
-  final Map<GpuUniformSlot, int> _passBlockPasses = {};
   final Map<GpuUniformSlot, UniformBlock> _jointBlocks = {};
 
-  UniformBlock _passBlockFor(GpuUniformSlot slot, PassUniformWriter writer) {
-    final block = _passBlocks[slot] ??= UniformBlock(slot);
-    if (_passBlockPasses[slot] != _pass) {
-      _passBlockPasses[slot] = _pass;
-      RenderProfile.lap(RenderPhase.binding);
-      writer(this, block);
-      RenderProfile.lap(RenderPhase.uniformWrite);
-    }
-    return block;
-  }
-
   final Map<UniformBlock, List<UniformBlock>> _stylizedPassViews = {};
+  final Map<UniformBlock, List<UniformBlock>> _spatialPassViews = {};
 
-  static void _writeStylizedPass(RenderContext3D context, UniformBlock block) {
-    final views = context._stylizedPassViews[block] ??= [
-      for (final part in _stylizedPassParts)
-        PrefixedUniformBlock(block, '${part}_'),
+  static void _writePrefixedPass(
+    RenderContext3D context,
+    UniformBlock block,
+    List<String> parts,
+    Map<UniformBlock, List<UniformBlock>> viewsMap,
+  ) {
+    final views = viewsMap[block] ??= [
+      for (final part in parts) PrefixedUniformBlock(block, '${part}_'),
     ];
     for (var i = 0; i < views.length; i++) {
-      context._passUniforms[_stylizedPassParts[i]]?.call(context, views[i]);
+      context._passUniforms[parts[i]]?.call(context, views[i]);
     }
   }
 
-  UniformBlock _jointsBlockFor(GpuUniformSlot slot) {
-    return _jointBlocks[slot] ??= UniformBlock(slot);
+  static void _writeStylizedPass(RenderContext3D context, UniformBlock block) {
+    _writePrefixedPass(
+      context,
+      block,
+      _stylizedPassParts,
+      context._stylizedPassViews,
+    );
   }
 
-  /// Writes [joints] into the joint matrices [block] of a skinned draw: the
-  /// top three rows of each matrix into its `jointRows` (the layout of
-  /// `flame_3d/skinning.glsl`, whose matrices' bottom row is `(0, 0, 0, 1)`),
-  /// or each whole matrix into its `joints` when it declares `mat4` matrices
-  /// instead (shaders of before, and the WebGPU bundles).
-  static void _writeJoints(UniformBlock block, List<Matrix4> joints) {
-    final rows = block.memberOffset(jointRowsMember);
-    if (rows != null) {
-      final capacity = (block.data.length - rows) ~/ 12;
-      if (joints.length > capacity) {
-        throw StateError(
-          'At most $capacity joints per surface are supported;'
-          ' found ${joints.length}',
-        );
-      }
-      final data = block.data;
-      for (var i = 0; i < joints.length; i++) {
+  static void _writeSpatialPass(RenderContext3D context, UniformBlock block) {
+    _writePrefixedPass(
+      context,
+      block,
+      _spatialPassParts,
+      context._spatialPassViews,
+    );
+  }
+
+  Float32List _jointPackScratch = Float32List(1024);
+  int _jointCacheFrame = -1;
+  final List<_JointUploadEntry> _jointCacheActive = [];
+  final List<_JointUploadEntry> _jointCachePool = [];
+
+  void _writeAndBindJoints(_JointsEntry js, List<Matrix4> joints) {
+    final count = joints.length;
+    if (count > js.capacity) {
+      throw StateError(
+        'At most ${js.capacity} joints per surface are supported; '
+        'found $count',
+      );
+    }
+    final isRow = js.isRowMode;
+    final stride = isRow ? 12 : 16;
+    final base = isRow ? js.rowsOffset : js.jointsOffset;
+    final floatLen = js.defaultBlock.data.length;
+    final byteLen = floatLen * 4;
+    if (_jointPackScratch.length < floatLen) {
+      _jointPackScratch = Float32List(floatLen);
+    }
+    final scratch = _jointPackScratch;
+    if (base > 0) {
+      scratch.fillRange(0, base, 0.0);
+    }
+    final writtenEnd = base + count * stride;
+    if (isRow) {
+      for (var i = 0; i < count; i++) {
         final m = joints[i].storage;
-        final o = rows + i * 12;
-        // The storage is column-major: row r is m[r], m[4 + r], m[8 + r],
-        // m[12 + r].
-        data
+        final o = base + i * 12;
+        scratch
           ..[o] = m[0]
           ..[o + 1] = m[4]
           ..[o + 2] = m[8]
@@ -1549,61 +2033,182 @@ class RenderContext3D(super.device) extends RenderContext {
           ..[o + 10] = m[10]
           ..[o + 11] = m[14];
       }
-      block.markDirty();
+    } else {
+      for (var i = 0; i < count; i++) {
+        scratch.setRange(base + i * 16, base + (i + 1) * 16, joints[i].storage);
+      }
+    }
+    if (writtenEnd < floatLen) {
+      scratch.fillRange(writtenEnd, floatLen, 0.0);
+    }
+
+    final frame = device.frame;
+    if (_jointCacheFrame != frame) {
+      _jointCacheFrame = frame;
+      _jointCachePool.addAll(_jointCacheActive);
+      _jointCacheActive.clear();
+    }
+
+    final writtenCount = count * stride;
+    RenderProfile.lap(RenderPhase.uniformWrite);
+    for (var i = 0; i < _jointCacheActive.length; i++) {
+      final e = _jointCacheActive[i];
+      if (e.isRow == isRow &&
+          e.floatLen == floatLen &&
+          e.jointCount == count &&
+          e.base == base &&
+          _floatsEqual(e.snapshot, scratch, base, writtenCount)) {
+        device.bindUniformSlice(
+          js.slot,
+          e.buffer,
+          offsetInBytes: e.offset,
+          lengthInBytes: byteLen,
+        );
+        return;
+      }
+    }
+
+    final uploaded = device.uploadUniformBytes(
+      scratch.buffer.asUint8List(0, byteLen),
+    );
+    if (uploaded == null) {
       return;
     }
-    final base = block.memberOffset('joints') ?? 0;
-    final capacity = (block.data.length - base) ~/ 16;
-    if (joints.length > capacity) {
-      throw StateError(
-        'At most $capacity joints per surface are supported;'
-        ' found ${joints.length}',
-      );
+    final (buf, off) = uploaded;
+    device.bindUniformSlice(
+      js.slot,
+      buf,
+      offsetInBytes: off,
+      lengthInBytes: byteLen,
+    );
+    if (_jointCacheActive.length >= 64) {
+      return;
     }
-    for (var i = 0; i < joints.length; i++) {
-      block.writeAt(base + i * 16, joints[i].storage);
+    final entry = _jointCachePool.isNotEmpty
+        ? _jointCachePool.removeLast()
+        : _JointUploadEntry();
+    entry.store(
+      isRow: isRow,
+      floatLen: floatLen,
+      jointCount: count,
+      base: base,
+      scratch: scratch,
+      written: writtenCount,
+      buffer: buf,
+      offset: off,
+    );
+    _jointCacheActive.add(entry);
+  }
+
+  static bool _floatsEqual(
+    Float32List snapshot,
+    Float32List scratch,
+    int base,
+    int count,
+  ) {
+    if (count > 0 &&
+        (snapshot[0] != scratch[base] ||
+            snapshot[count - 1] != scratch[base + count - 1])) {
+      return false;
     }
+    for (var i = 0; i < count; i++) {
+      if (snapshot[i] != scratch[base + i]) {
+        return false;
+      }
+    }
+    return true;
   }
 
   static void writeCameraUniforms(
     RenderContext3D context,
     UniformBlock block,
   ) {
-    block
-      ..setMatrix4('view', context.view)
-      ..setMatrix4('projection', context.projection)
-      ..setMatrix4('viewProjection', context.viewProjection)
-      ..setVector3('position', context.cameraPosition);
+    final off =
+        (block.cachedWriterOffsets as _CameraOffsets?) ??
+        (block.cachedWriterOffsets = _CameraOffsets(block));
+    if (off.view >= 0) {
+      block.writeMatrix4At(off.view, context.view);
+    }
+    if (off.projection >= 0) {
+      block.writeMatrix4At(off.projection, context.projection);
+    }
+    if (off.viewProjection >= 0) {
+      block.writeMatrix4At(off.viewProjection, context.viewProjection);
+    }
+    if (off.position >= 0) {
+      final p = context.cameraPosition;
+      block.writeVec3ValuesAt(off.position, p.x, p.y, p.z);
+    }
+  }
+
+  int _lightSelPass = -1;
+  List<Light>? _lightSelList;
+  int _lightSelLength = -1;
+  int _lightSelMask = 0;
+  AmbientLight? _selAmbient;
+  bool _selHasHemisphere = false;
+  HemisphereLight? _selHemisphere;
+  final List<Light> _selDirectionals = [];
+
+  void _ensureLightSelection() {
+    final list = lights;
+    if (_lightSelPass == _pass &&
+        identical(_lightSelList, list) &&
+        _lightSelLength == list.length &&
+        _lightSelMask == cameraMask) {
+      return;
+    }
+    _lightSelPass = _pass;
+    _lightSelList = list;
+    _lightSelLength = list.length;
+    _lightSelMask = cameraMask;
+    _selAmbient = null;
+    _selHasHemisphere = false;
+    _selHemisphere = null;
+    _selDirectionals.clear();
+    for (var i = 0; i < list.length; i++) {
+      final l = list[i];
+      if ((l.lightMask & cameraMask) == 0) {
+        continue;
+      }
+      final source = l.source;
+      if (source is AmbientLight) {
+        _selAmbient ??= source;
+      } else if (source is HemisphereLight) {
+        _selHasHemisphere = true;
+        _selHemisphere ??= source;
+      } else if (source is DirectionalLight &&
+          _selDirectionals.length < maxDirectionalLights) {
+        _selDirectionals.add(l);
+      }
+    }
   }
 
   static void writeAmbientLightUniforms(
     RenderContext3D context,
     UniformBlock block,
   ) {
-    final lights = context.lights;
-    AmbientLight? ambient;
-    var hasHemisphere = false;
-    for (var i = 0; i < lights.length && ambient == null; i++) {
-      if ((lights[i].lightMask & context.cameraMask) == 0) {
-        continue;
+    context._ensureLightSelection();
+    final off =
+        (block.cachedWriterOffsets as _AmbientOffsets?) ??
+        (block.cachedWriterOffsets = _AmbientOffsets(block));
+    final ambient = context._selAmbient;
+    if (ambient == null && context._selHasHemisphere) {
+      if (off.color >= 0) {
+        block.writeVec4ValuesAt(off.color, 0, 0, 0, 0);
       }
-      final source = lights[i].source;
-      if (source is AmbientLight) {
-        ambient = source;
-      } else if (source is HemisphereLight) {
-        hasHemisphere = true;
+      if (off.intensity >= 0) {
+        block.writeFloatAt(off.intensity, 0);
       }
-    }
-    if (ambient == null && hasHemisphere) {
-      block
-        ..setColor('color', const Color(0x00000000))
-        ..setFloat('intensity', 0);
       return;
     }
-    ambient ??= _defaultAmbientLight;
-    block
-      ..setColor('color', ambient.color)
-      ..setFloat('intensity', ambient.intensity);
+    final resolved = ambient ?? _defaultAmbientLight;
+    if (off.color >= 0) {
+      block.writeColorAt(off.color, resolved.color);
+    }
+    if (off.intensity >= 0) {
+      block.writeFloatAt(off.intensity, resolved.intensity);
+    }
   }
 
   bool prioritizeNearestLights = false;
@@ -1963,6 +2568,7 @@ class RenderContext3D(super.device) extends RenderContext {
         spots: _gridSpots,
         bounds: lightGridBounds,
         viewProjection: _viewProjectionMatrix,
+        lightsVersion: _worldLightsVersion,
       );
     }
     return _lightGrid.hasLights;
@@ -1985,84 +2591,106 @@ class RenderContext3D(super.device) extends RenderContext {
     RenderContext3D context,
     UniformBlock block,
   ) {
-    final v = _scratchVector4;
+    final off =
+        (block.cachedWriterOffsets as _LightGridOffsets?) ??
+        (block.cachedWriterOffsets = _LightGridOffsets(block));
     if (context._buildLightGrid()) {
       final grid = context._lightGrid;
       final s = grid.stats;
-      block
-        ..setVector4(
-          'origin',
-          v..setValues(
-            grid.origin.x,
-            grid.origin.y,
-            grid.origin.z,
-            1 / s.cellSize,
-          ),
-        )
-        ..setVector4(
-          'cells',
-          v..setValues(
-            s.cellsX.toDouble(),
-            s.cellsY.toDouble(),
-            s.cellsZ.toDouble(),
-            (s.cellsX * s.cellsY).toDouble(),
-          ),
-        )
-        ..setVector4(
-          'data',
-          v..setValues(
-            LightGrid3D.textureWidth.toDouble(),
-            1 / LightGrid3D.textureWidth,
-            1 / s.textureHeight,
-            1,
-          ),
+      if (off.origin >= 0) {
+        block.writeVec4ValuesAt(
+          off.origin,
+          grid.origin.x,
+          grid.origin.y,
+          grid.origin.z,
+          1 / s.cellSize,
         );
+      }
+      if (off.cells >= 0) {
+        block.writeVec4ValuesAt(
+          off.cells,
+          s.cellsX.toDouble(),
+          s.cellsY.toDouble(),
+          s.cellsZ.toDouble(),
+          (s.cellsX * s.cellsY).toDouble(),
+        );
+      }
+      if (off.data >= 0) {
+        block.writeVec4ValuesAt(
+          off.data,
+          LightGrid3D.textureWidth.toDouble(),
+          1 / LightGrid3D.textureWidth,
+          1 / s.textureHeight,
+          1,
+        );
+      }
     } else {
-      block
-        ..setVector4('origin', v..setZero())
-        ..setVector4('cells', v)
-        ..setVector4('data', v);
+      if (off.origin >= 0) {
+        block.writeVec4ValuesAt(off.origin, 0, 0, 0, 0);
+      }
+      if (off.cells >= 0) {
+        block.writeVec4ValuesAt(off.cells, 0, 0, 0, 0);
+      }
+      if (off.data >= 0) {
+        block.writeVec4ValuesAt(off.data, 0, 0, 0, 0);
+      }
     }
-    block.setVector4(
-      'counts',
-      v..setValues(
+    if (off.counts >= 0) {
+      block.writeVec4ValuesAt(
+        off.counts,
         context._gridUniformPoints.toDouble(),
         context._gridUniformSpots.toDouble(),
         0,
         0,
-      ),
-    );
+      );
+    }
   }
 
   static void writeLightsUniforms(RenderContext3D context, UniformBlock block) {
+    final off =
+        (block.cachedWriterOffsets as _LightsOffsets?) ??
+        (block.cachedWriterOffsets = _LightsOffsets(block));
     final lights = context.lights;
     final count = _selectPointLights(context, _topLightIndices);
+    final dataLen = block.data.length;
     for (var k = 0; k < count; k++) {
       final light = lights[_topLightIndices[k]];
       final source = light.source as PointLight;
       final range = source.range;
-      block
-        ..setVector3('positions', light.position, index: k)
-        ..setColor('colors', source.color, index: k)
-        ..setFloat('intensities', source.intensity, index: k)
-        ..setFloat(
-          'ranges',
+      final p = light.position;
+      if (off.positions >= 0 && off.positions + k * 4 + 3 <= dataLen) {
+        block.writeVec3ValuesAt(off.positions + k * 4, p.x, p.y, p.z);
+      }
+      if (off.colors >= 0 && off.colors + k * 4 + 4 <= dataLen) {
+        block.writeColorAt(off.colors + k * 4, source.color);
+      }
+      if (off.intensities >= 0 && off.intensities + k * 4 < dataLen) {
+        block.writeFloatAt(off.intensities + k * 4, source.intensity);
+      }
+      if (off.ranges >= 0 && off.ranges + k * 4 < dataLen) {
+        block.writeFloatAt(
+          off.ranges + k * 4,
           range != null && range > 0 ? range : 0,
-          index: k,
         );
+      }
     }
-    block.setFloat('numLights', count.toDouble());
+    if (off.numLights >= 0) {
+      block.writeFloatAt(off.numLights, count.toDouble());
+    }
   }
 
   static void writeSpotLightsUniforms(
     RenderContext3D context,
     UniformBlock block,
   ) {
+    final off =
+        (block.cachedWriterOffsets as _SpotLightsOffsets?) ??
+        (block.cachedWriterOffsets = _SpotLightsOffsets(block));
     final lights = context.lights;
     final count = _selectSpotLights(context, _topLightIndices);
+    final dataLen = block.data.length;
 
     final dir = _scratchDirection;
-    final val = _scratchVector4;
     for (var k = 0; k < count; k++) {
       final light = lights[_topLightIndices[k]];
       final source = light.source as SpotLight;
@@ -2073,94 +2701,107 @@ class RenderContext3D(super.device) extends RenderContext {
       final invSpan = 1.0 / math.max(math.cos(inner) - cosOuter, 1e-4);
       final range = source.range;
       final c = source.color;
-      block
-        ..setVector3('positions', light.position, index: k)
-        ..setVector4(
-          'directions',
-          val..setValues(-dir.x, -dir.y, -dir.z, source.specular),
-          index: k,
-        )
-        ..setVector4(
-          'colors',
-          val..setValues(c.r, c.g, c.b, source.intensity),
-          index: k,
-        )
-        ..setVector4(
-          'cones',
-          val..setValues(
-            cosOuter,
-            invSpan,
-            range != null && range > 0 ? range : 0,
-            0,
-          ),
-          index: k,
+      final p = light.position;
+      if (off.positions >= 0 && off.positions + k * 4 + 3 <= dataLen) {
+        block.writeVec3ValuesAt(off.positions + k * 4, p.x, p.y, p.z);
+      }
+      if (off.directions >= 0 && off.directions + k * 4 + 4 <= dataLen) {
+        block.writeVec4ValuesAt(
+          off.directions + k * 4,
+          -dir.x,
+          -dir.y,
+          -dir.z,
+          source.specular,
         );
+      }
+      if (off.colors >= 0 && off.colors + k * 4 + 4 <= dataLen) {
+        block.writeVec4ValuesAt(
+          off.colors + k * 4,
+          c.r,
+          c.g,
+          c.b,
+          source.intensity,
+        );
+      }
+      if (off.cones >= 0 && off.cones + k * 4 + 4 <= dataLen) {
+        block.writeVec4ValuesAt(
+          off.cones + k * 4,
+          cosOuter,
+          invSpan,
+          range != null && range > 0 ? range : 0,
+          0,
+        );
+      }
     }
-    block.setFloat('numLights', count.toDouble());
+    if (off.numLights >= 0) {
+      block.writeFloatAt(off.numLights, count.toDouble());
+    }
   }
 
   static void writeDirectionalLightsUniforms(
     RenderContext3D context,
     UniformBlock block,
   ) {
-    final lights = context.lights;
+    context._ensureLightSelection();
+    final off =
+        (block.cachedWriterOffsets as _DirLightsOffsets?) ??
+        (block.cachedWriterOffsets = _DirLightsOffsets(block));
+    final dirs = context._selDirectionals;
+    final count = dirs.length;
     final direction = _scratchDirection;
-    final value = _scratchVector4;
-    var count = 0;
-    for (var i = 0; i < lights.length && count < maxDirectionalLights; i++) {
-      final light = lights[i];
-      if ((light.lightMask & context.cameraMask) == 0) {
-        continue;
-      }
-      final source = light.source;
-      if (source is! DirectionalLight) {
-        continue;
-      }
+    final dataLen = block.data.length;
+    for (var k = 0; k < count; k++) {
+      final light = dirs[k];
+      final source = light.source as DirectionalLight;
       light.direction(direction);
       final color = source.color;
-      block
-        ..setVector4(
-          'directions',
-          value..setValues(
-            -direction.x,
-            -direction.y,
-            -direction.z,
-            source.specular,
-          ),
-          index: count,
-        )
-        ..setVector4(
-          'colors',
-          value..setValues(color.r, color.g, color.b, source.intensity),
-          index: count,
+      if (off.directions >= 0 && off.directions + k * 4 + 4 <= dataLen) {
+        block.writeVec4ValuesAt(
+          off.directions + k * 4,
+          -direction.x,
+          -direction.y,
+          -direction.z,
+          source.specular,
         );
-      count++;
+      }
+      if (off.colors >= 0 && off.colors + k * 4 + 4 <= dataLen) {
+        block.writeVec4ValuesAt(
+          off.colors + k * 4,
+          color.r,
+          color.g,
+          color.b,
+          source.intensity,
+        );
+      }
     }
-    block.setFloat('numLights', count.toDouble());
+    if (off.numLights >= 0) {
+      block.writeFloatAt(off.numLights, count.toDouble());
+    }
   }
 
   static void writeHemisphereLightUniforms(
     RenderContext3D context,
     UniformBlock block,
   ) {
-    final lights = context.lights;
-    HemisphereLight? hemisphere;
-    for (var i = 0; i < lights.length && hemisphere == null; i++) {
-      if ((lights[i].lightMask & context.cameraMask) == 0) {
-        continue;
-      }
-      final source = lights[i].source;
-      if (source is HemisphereLight) {
-        hemisphere = source;
-      }
-    }
+    context._ensureLightSelection();
+    final off =
+        (block.cachedWriterOffsets as _HemiOffsets?) ??
+        (block.cachedWriterOffsets = _HemiOffsets(block));
+    final hemisphere = context._selHemisphere;
     final up = _scratchDirection;
     if (hemisphere == null) {
-      block
-        ..setColor('skyColor', const Color(0x00000000))
-        ..setColor('groundColor', const Color(0x00000000))
-        ..setVector3('up', up..setValues(0, 1, 0))
-        ..setFloat('intensity', 0);
+      if (off.skyColor >= 0) {
+        block.writeVec4ValuesAt(off.skyColor, 0, 0, 0, 0);
+      }
+      if (off.groundColor >= 0) {
+        block.writeVec4ValuesAt(off.groundColor, 0, 0, 0, 0);
+      }
+      if (off.up >= 0) {
+        block.writeVec3ValuesAt(off.up, 0, 1, 0);
+      }
+      if (off.intensity >= 0) {
+        block.writeFloatAt(off.intensity, 0);
+      }
       return;
     }
     up.setFrom(hemisphere.up);
@@ -2169,21 +2810,35 @@ class RenderContext3D(super.device) extends RenderContext {
     } else {
       up.setValues(0, 1, 0);
     }
-    block
-      ..setColor('skyColor', hemisphere.skyColor)
-      ..setColor('groundColor', hemisphere.groundColor)
-      ..setVector3('up', up)
-      ..setFloat('intensity', hemisphere.intensity);
+    if (off.skyColor >= 0) {
+      block.writeColorAt(off.skyColor, hemisphere.skyColor);
+    }
+    if (off.groundColor >= 0) {
+      block.writeColorAt(off.groundColor, hemisphere.groundColor);
+    }
+    if (off.up >= 0) {
+      block.writeVec3ValuesAt(off.up, up.x, up.y, up.z);
+    }
+    if (off.intensity >= 0) {
+      block.writeFloatAt(off.intensity, hemisphere.intensity);
+    }
   }
 
   static void writeFogUniforms(RenderContext3D context, UniformBlock block) {
+    final off =
+        (block.cachedWriterOffsets as _FogOffsets?) ??
+        (block.cachedWriterOffsets = _FogOffsets(block));
     final fog = context.fog;
-    final v = _scratchVector4;
     if (fog == null || fog.maxOpacity <= 0) {
-      block
-        ..setVector4('color', v..setZero())
-        ..setVector4('params', v)
-        ..setVector4('height', v..setValues(0, 1, 0, 0));
+      if (off.color >= 0) {
+        block.writeVec4ValuesAt(off.color, 0, 0, 0, 0);
+      }
+      if (off.params >= 0) {
+        block.writeVec4ValuesAt(off.params, 0, 0, 0, 0);
+      }
+      if (off.height >= 0) {
+        block.writeVec4ValuesAt(off.height, 0, 1, 0, 0);
+      }
       return;
     }
     final up = _scratchDirection..setFrom(fog.up);
@@ -2194,24 +2849,33 @@ class RenderContext3D(super.device) extends RenderContext {
     }
     final span = math.max(fog.end - fog.start, 1e-4);
     final c = fog.color;
-    block
-      ..setVector4(
-        'color',
-        v..setValues(c.r, c.g, c.b, c.a * fog.maxOpacity.clamp(0.0, 1.0)),
-      )
-      ..setVector4(
-        'params',
-        v..setValues(
-          math.max(0.0, fog.start),
-          1.0 / span,
-          math.max(0.0, fog.density),
-          math.max(0.0, fog.heightFalloff),
-        ),
-      )
-      ..setVector4(
-        'height',
-        v..setValues(up.x, up.y, up.z, fog.baseHeight),
+    if (off.color >= 0) {
+      block.writeVec4ValuesAt(
+        off.color,
+        c.r,
+        c.g,
+        c.b,
+        c.a * fog.maxOpacity.clamp(0.0, 1.0),
       );
+    }
+    if (off.params >= 0) {
+      block.writeVec4ValuesAt(
+        off.params,
+        math.max(0.0, fog.start),
+        1.0 / span,
+        math.max(0.0, fog.density),
+        math.max(0.0, fog.heightFalloff),
+      );
+    }
+    if (off.height >= 0) {
+      block.writeVec4ValuesAt(
+        off.height,
+        up.x,
+        up.y,
+        up.z,
+        fog.baseHeight,
+      );
+    }
   }
 
   /// Fills the [waterVolumeBlock] from [waterVolume], see
@@ -2220,14 +2884,23 @@ class RenderContext3D(super.device) extends RenderContext {
     RenderContext3D context,
     UniformBlock block,
   ) {
+    final off =
+        (block.cachedWriterOffsets as _WaterVolOffsets?) ??
+        (block.cachedWriterOffsets = _WaterVolOffsets(block));
     final water = context.waterVolume;
-    final v = _scratchVector4;
     if (water == null || !water.isActive) {
-      block
-        ..setVector4('plane', v..setValues(0, 1, 0, 0))
-        ..setVector4('deep', v..setZero())
-        ..setVector4('caustics', v)
-        ..setVector4('boundsMin', v);
+      if (off.plane >= 0) {
+        block.writeVec4ValuesAt(off.plane, 0, 1, 0, 0);
+      }
+      if (off.deep >= 0) {
+        block.writeVec4ValuesAt(off.deep, 0, 0, 0, 0);
+      }
+      if (off.caustics >= 0) {
+        block.writeVec4ValuesAt(off.caustics, 0, 0, 0, 0);
+      }
+      if (off.boundsMin >= 0) {
+        block.writeVec4ValuesAt(off.boundsMin, 0, 0, 0, 0);
+      }
       return;
     }
     final up = _scratchDirection..setFrom(water.up);
@@ -2241,60 +2914,120 @@ class RenderContext3D(super.device) extends RenderContext {
     final caustic = water.causticColor;
     final line = water.waterlineColor;
     final scale = water.causticScale;
-    block
-      ..setVector4('plane', v..setValues(up.x, up.y, up.z, water.level))
-      ..setVector4(
-        'shallow',
-        v..setValues(
-          shallow.r,
-          shallow.g,
-          shallow.b,
-          math.max(0.0, water.absorption),
-        ),
-      )
-      ..setVector4('deep', v..setValues(deep.r, deep.g, deep.b, 1))
-      ..setVector4(
-        'caustics',
-        v..setValues(
-          math.max(0.0, water.causticStrength),
-          scale > 0 ? 1 / scale : 0,
-          water.phase,
-          math.max(0.0, water.waterlineWidth),
-        ),
-      )
-      ..setVector4(
-        'causticColor',
-        v..setValues(
-          caustic.r,
-          caustic.g,
-          caustic.b,
-          water.waterlineLightTint.clamp(0.0, 1.0),
-        ),
-      )
-      ..setVector4('waterline', v..setValues(line.r, line.g, line.b, line.a))
-      ..setVector4(
-        'waterlineFoam',
-        v..setValues(
-          water.waterlinePhase,
-          water.waterlineLightFloor > 0 ? water.waterlineLightFloor : 0,
-          0,
-          0,
-        ),
+    if (off.plane >= 0) {
+      block.writeVec4ValuesAt(off.plane, up.x, up.y, up.z, water.level);
+    }
+    if (off.shallow >= 0) {
+      block.writeVec4ValuesAt(
+        off.shallow,
+        shallow.r,
+        shallow.g,
+        shallow.b,
+        math.max(0.0, water.absorption),
       );
+    }
+    if (off.deep >= 0) {
+      block.writeVec4ValuesAt(off.deep, deep.r, deep.g, deep.b, 1);
+    }
+    if (off.caustics >= 0) {
+      block.writeVec4ValuesAt(
+        off.caustics,
+        math.max(0.0, water.causticStrength),
+        scale > 0 ? 1 / scale : 0,
+        water.phase,
+        math.max(0.0, water.waterlineWidth),
+      );
+    }
+    if (off.causticColor >= 0) {
+      block.writeVec4ValuesAt(
+        off.causticColor,
+        caustic.r,
+        caustic.g,
+        caustic.b,
+        water.waterlineLightTint.clamp(0.0, 1.0),
+      );
+    }
+    if (off.waterline >= 0) {
+      block.writeVec4ValuesAt(
+        off.waterline,
+        line.r,
+        line.g,
+        line.b,
+        line.a,
+      );
+    }
+    if (off.waterlineFoam >= 0) {
+      block.writeVec4ValuesAt(
+        off.waterlineFoam,
+        water.waterlinePhase,
+        water.waterlineLightFloor > 0 ? water.waterlineLightFloor : 0,
+        0,
+        0,
+      );
+    }
     final bounds = water.bounds;
     if (bounds == null) {
-      block.setVector4('boundsMin', v..setZero());
+      if (off.boundsMin >= 0) {
+        block.writeVec4ValuesAt(off.boundsMin, 0, 0, 0, 0);
+      }
     } else {
       final lo = bounds.min;
       final hi = bounds.max;
-      block
-        ..setVector4('boundsMin', v..setValues(lo.x, lo.y, lo.z, 1))
-        ..setVector4('boundsMax', v..setValues(hi.x, hi.y, hi.z, 0));
+      if (off.boundsMin >= 0) {
+        block.writeVec4ValuesAt(off.boundsMin, lo.x, lo.y, lo.z, 1);
+      }
+      if (off.boundsMax >= 0) {
+        block.writeVec4ValuesAt(off.boundsMax, hi.x, hi.y, hi.z, 0);
+      }
     }
   }
 
+  int _syncedLightRev = -1;
+  int _syncedFogVer = -1;
+  int _syncedWaterVer = -1;
+  double _syncedProbeIntensity = -1.0;
+
+  @internal
+  bool needsSyncOptions({
+    required List<Light> lights,
+    required int lightsVersion,
+    required FogSettings? fog,
+    required WaterVolumeSettings? waterVolume,
+    required RenderDebugMode3D renderDebugMode,
+    required LightProbeGrid3D? lightProbeGrid,
+    required List<ReflectionProbeVolume3D> reflectionProbes,
+    required bool prioritizeNearestLights,
+    required LightGridSettings? lightGrid,
+    required Aabb3? lightGridBounds,
+    required bool hdrEnabled,
+  }) {
+    final fogVer = fog?.version ?? -1;
+    final waterVer = waterVolume?.version ?? -1;
+    final probeIntensity = lightProbeGrid?.intensity ?? -1.0;
+    if (_syncedLightRev == lightsVersion &&
+        identical(this.lights, lights) &&
+        identical(this.fog, fog) &&
+        _syncedFogVer == fogVer &&
+        identical(this.waterVolume, waterVolume) &&
+        _syncedWaterVer == waterVer &&
+        this.renderDebugMode == renderDebugMode &&
+        identical(this.lightProbeGrid, lightProbeGrid) &&
+        _syncedProbeIntensity == probeIntensity &&
+        identical(this.reflectionProbes, reflectionProbes) &&
+        this.prioritizeNearestLights == prioritizeNearestLights &&
+        identical(this.lightGrid, lightGrid) &&
+        this.lightGridBounds == lightGridBounds &&
+        this.hdrEnabled == hdrEnabled) {
+      return false;
+    }
+    _syncedLightRev = lightsVersion;
+    _syncedFogVer = fogVer;
+    _syncedWaterVer = waterVer;
+    _syncedProbeIntensity = probeIntensity;
+    return true;
+  }
+
   static final _scratchDirection = Vector3.zero();
-  static final _scratchVector4 = Vector4.zero();
 
   static final _defaultAmbientLight = AmbientLight();
 
@@ -2303,9 +3036,12 @@ class RenderContext3D(super.device) extends RenderContext {
   List<Surface?> _surfaces = [];
   List<Material?> _materials = [];
   List<DevicePipeline?> _pipelines = [];
+  List<Shader?> _vertexShaders = [];
+  List<Shader?> _fragmentShaders = [];
   List<List<Matrix4>?> _joints = [];
   List<Float32List?> _external = [];
   Int32List _externalCounts = Int32List(0);
+  Int32List _externalOffsets = Int32List(0);
   Float32List _instances = Float32List(0);
   Float64List _depths = Float64List(0);
   Float64List _groupKeys = Float64List(0);
@@ -2328,10 +3064,14 @@ class RenderContext3D(super.device) extends RenderContext {
     _surfaces = grow(_surfaces);
     _materials = grow(_materials);
     _pipelines = grow(_pipelines);
+    _vertexShaders = grow(_vertexShaders);
+    _fragmentShaders = grow(_fragmentShaders);
     _joints = grow(_joints);
     _external = grow(_external);
     _externalCounts = Int32List(capacity)
       ..setRange(0, _externalCounts.length, _externalCounts);
+    _externalOffsets = Int32List(capacity)
+      ..setRange(0, _externalOffsets.length, _externalOffsets);
     _instances = Float32List(capacity * VertexLayout.instanceStrideInFloats)
       ..setRange(0, _instances.length, _instances);
     _depths = Float64List(capacity)..setRange(0, _depths.length, _depths);
@@ -2440,24 +3180,166 @@ class RenderContext3D(super.device) extends RenderContext {
       list.setRange(0, length, source);
     }
   }
+}
 
-  static const _sampler = 0;
-  static const _material = 1;
-  static const _passBlock = 2;
-  static const _passSampler = 3;
-  static const _jointsBlock = 4;
+class _PassBlockEntry(
+  final GpuUniformSlot slot,
+  final UniformBlock block,
+  final PassUniformWriter writer,
+  final int passKind,
+  final int layoutSignature,
+) {
+  int writtenPass = -1;
+}
 
-  static const _passScope = 0;
-  static const _materialScope = 1;
-  static const _jointsScope = 2;
+class _PassSamplerEntry(
+  final GpuUniformSlot slot,
+  final PassTextureProvider provider,
+);
+
+class _MatBlockEntry(
+  final GpuUniformSlot slot,
+  final int blockIndex,
+);
+
+class _MatSamplerEntry(
+  final GpuUniformSlot slot,
+  final int samplerIndex,
+);
+
+class _JointsEntry(
+  final GpuUniformSlot slot,
+  final UniformBlock defaultBlock,
+  final int rowsOffset,
+  final int jointsOffset,
+  final int capacity,
+  final int layoutSignature,
+) {
+  bool get isRowMode => rowsOffset >= 0;
 }
 
 class _ShaderPlan({
   required final RenderContext3D context,
   required final int version,
   required final int generation,
-  required final List<String> names,
-  required final List<GpuUniformSlot> slots,
-  required final List<int> kinds,
-  required final List<PassUniformWriter?> writers,
+  required final List<_PassBlockEntry> passBlocks,
+  required final List<_PassSamplerEntry> passSamplers,
+  required final List<_MatBlockEntry> materialBlocks,
+  required final List<_MatSamplerEntry> materialSamplers,
+  required final _JointsEntry? jointsSlot,
 });
+
+class _JointUploadEntry() {
+  bool isRow = false;
+  int floatLen = 0;
+  int jointCount = 0;
+  int base = 0;
+  Float32List snapshot = Float32List(0);
+  late GpuBuffer buffer;
+  int offset = 0;
+
+  void store({
+    required bool isRow,
+    required int floatLen,
+    required int jointCount,
+    required int base,
+    required Float32List scratch,
+    required int written,
+    required GpuBuffer buffer,
+    required int offset,
+  }) {
+    this.isRow = isRow;
+    this.floatLen = floatLen;
+    this.jointCount = jointCount;
+    this.base = base;
+    this.buffer = buffer;
+    this.offset = offset;
+    if (snapshot.length < written) {
+      snapshot = Float32List(written);
+    }
+    snapshot.setRange(0, written, scratch, base);
+  }
+}
+
+class _CameraOffsets(final UniformBlock _b) {
+  late final int view = _b.resolveOffset('view');
+  late final int projection = _b.resolveOffset('projection');
+  late final int viewProjection = _b.resolveOffset('viewProjection');
+  late final int position = _b.resolveOffset('position');
+}
+
+class _AmbientOffsets(final UniformBlock _b) {
+  late final int color = _b.resolveOffset('color');
+  late final int intensity = _b.resolveOffset('intensity');
+}
+
+class _LightsOffsets(final UniformBlock _b) {
+  late final int positions = _b.resolveOffset('positions');
+  late final int colors = _b.resolveOffset('colors');
+  late final int intensities = _b.resolveOffset('intensities');
+  late final int ranges = _b.resolveOffset('ranges');
+  late final int numLights = _b.resolveOffset('numLights');
+}
+
+class _SpotLightsOffsets(final UniformBlock _b) {
+  late final int positions = _b.resolveOffset('positions');
+  late final int directions = _b.resolveOffset('directions');
+  late final int colors = _b.resolveOffset('colors');
+  late final int cones = _b.resolveOffset('cones');
+  late final int numLights = _b.resolveOffset('numLights');
+}
+
+class _DirLightsOffsets(final UniformBlock _b) {
+  late final int directions = _b.resolveOffset('directions');
+  late final int colors = _b.resolveOffset('colors');
+  late final int numLights = _b.resolveOffset('numLights');
+}
+
+class _HemiOffsets(final UniformBlock _b) {
+  late final int skyColor = _b.resolveOffset('skyColor');
+  late final int groundColor = _b.resolveOffset('groundColor');
+  late final int up = _b.resolveOffset('up');
+  late final int intensity = _b.resolveOffset('intensity');
+}
+
+class _LightGridOffsets(final UniformBlock _b) {
+  late final int origin = _b.resolveOffset('origin');
+  late final int cells = _b.resolveOffset('cells');
+  late final int data = _b.resolveOffset('data');
+  late final int counts = _b.resolveOffset('counts');
+}
+
+class _FogOffsets(final UniformBlock _b) {
+  late final int color = _b.resolveOffset('color');
+  late final int params = _b.resolveOffset('params');
+  late final int height = _b.resolveOffset('height');
+}
+
+class _WaterVolOffsets(final UniformBlock _b) {
+  late final int plane = _b.resolveOffset('plane');
+  late final int shallow = _b.resolveOffset('shallow');
+  late final int deep = _b.resolveOffset('deep');
+  late final int caustics = _b.resolveOffset('caustics');
+  late final int causticColor = _b.resolveOffset('causticColor');
+  late final int waterline = _b.resolveOffset('waterline');
+  late final int waterlineFoam = _b.resolveOffset('waterlineFoam');
+  late final int boundsMin = _b.resolveOffset('boundsMin');
+  late final int boundsMax = _b.resolveOffset('boundsMax');
+}
+
+class _PassOptionsOffsets(final UniformBlock _b) {
+  late final int flags = _b.resolveOffset('flags');
+  late final int gridBoundsMin = _b.resolveOffset('gridBoundsMin');
+  late final int gridInvSpan = _b.resolveOffset('gridInvSpan');
+  late final int gridRes = _b.resolveOffset('gridRes');
+}
+
+class _CameraSnapshot() {
+  final Matrix4 view = Matrix4.identity();
+  final Matrix4 projection = Matrix4.identity();
+  final Matrix4 viewProjection = Matrix4.identity();
+  final Vector3 cameraPosition = Vector3.zero();
+  final Float64List depthRow = Float64List(4);
+  final Frustum frustum = Frustum();
+  bool isMirrored = false;
+}

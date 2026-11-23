@@ -22,6 +22,13 @@ class PrefixedUniformBlock(
   final Map<String, int?> _offsets = {};
 
   @override
+  bool get isDirty => parent.isDirty;
+
+  @override
+  @pragma('vm:prefer-inline')
+  void markDirty() => parent.markDirty();
+
+  @override
   Float32List get data => parent.data;
 
   @override

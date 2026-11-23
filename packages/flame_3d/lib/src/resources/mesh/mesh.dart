@@ -38,6 +38,7 @@ class Mesh() extends Resource<void> {
     Color color = const Color(0xFFFFFFFF),
     Vector4? instanceData,
     Map<int, List<Matrix4>>? jointTransforms,
+    bool? mirrored,
   }) {
     for (var index = 0; index < _surfaces.length; index++) {
       context.drawSurface(
@@ -46,6 +47,7 @@ class Mesh() extends Resource<void> {
         color: color,
         instanceData: instanceData,
         jointTransforms: jointTransforms?[index],
+        mirrored: mirrored,
       );
     }
   }

@@ -975,6 +975,96 @@ class StylizedMaterial({
     return _lastShader!;
   }
 
+  int _appliedVersion = -1;
+  Shader? _appliedFrag;
+  int _appliedFragGen = -1;
+  int _appliedVertMask = 0;
+  int _appliedDeviceGen = -1;
+  final List<int> _appliedVarGens = List<int>.filled(6, -1);
+  Shader? _appliedCustomVert;
+  int _appliedCustomVertGen = -1;
+
+  int _variantSlot(Shader vert) {
+    if (identical(vert, super.vertexShader)) {
+      return 0;
+    }
+    if (identical(vert, _skinnedVertexShader)) {
+      return 1;
+    }
+    if (identical(vert, _standardVertexShader)) {
+      return 2;
+    }
+    if (identical(vert, _texturedVertexShader)) {
+      return 3;
+    }
+    if (identical(vert, _texturedSkinnedVertexShader)) {
+      return 4;
+    }
+    if (identical(vert, _texturedStandardVertexShader)) {
+      return 5;
+    }
+    return -1;
+  }
+
+  @override
+  bool get cachesApply => runtimeType == StylizedMaterial;
+
+  @override
+  void invalidateApplyCache() {
+    _appliedVersion = -1;
+    _appliedVertMask = 0;
+    _appliedCustomVert = null;
+  }
+
+  @override
+  bool isApplyCacheValid(
+    RenderContext context,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) {
+    if (_appliedVersion != version ||
+        !identical(_appliedFrag, fragmentShader) ||
+        _appliedFragGen != fragmentShader.generation ||
+        _appliedDeviceGen != GpuBackend.deviceGeneration) {
+      return false;
+    }
+    final slot = _variantSlot(vertexShader);
+    if (slot < 0) {
+      return identical(_appliedCustomVert, vertexShader) &&
+          _appliedCustomVertGen == vertexShader.generation;
+    }
+    return (_appliedVertMask & (1 << slot)) != 0 &&
+        _appliedVarGens[slot] == vertexShader.generation;
+  }
+
+  @override
+  void recordApplyCache(
+    RenderContext context,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) {
+    final deviceGen = GpuBackend.deviceGeneration;
+    if (_appliedVersion != version ||
+        !identical(_appliedFrag, fragmentShader) ||
+        _appliedFragGen != fragmentShader.generation ||
+        _appliedDeviceGen != deviceGen) {
+      _appliedVersion = version;
+      _appliedFrag = fragmentShader;
+      _appliedFragGen = fragmentShader.generation;
+      _appliedDeviceGen = deviceGen;
+      _appliedVertMask = 0;
+      _appliedCustomVert = null;
+    }
+    final slot = _variantSlot(vertexShader);
+    if (slot < 0) {
+      _appliedCustomVert = vertexShader;
+      _appliedCustomVertGen = vertexShader.generation;
+    } else {
+      _appliedVertMask |= 1 << slot;
+      _appliedVarGens[slot] = vertexShader.generation;
+    }
+  }
+
   @override
   void apply(RenderContext context) {
     final space = windSpace;
@@ -989,7 +1079,7 @@ class StylizedMaterial({
       _applyWind(_skinnedVertexShader, space);
     }
     if (_standardInUse) {
-      _standardVertexShader.setFloat('$_depthBlock.bias', depthBias);
+      _applyDepthBias(_standardVertexShader);
     }
     if (_texturedInUse) {
       _applyWind(_texturedVertexShader, space);
@@ -998,127 +1088,301 @@ class StylizedMaterial({
       _applyWind(_texturedSkinnedVertexShader, space);
     }
     if (_texturedStandardInUse) {
-      _texturedStandardVertexShader.setFloat('$_depthBlock.bias', depthBias);
+      _applyDepthBias(_texturedStandardVertexShader);
     }
+
+    final frag = fragmentShader;
+    frag.resource;
     final baseColor = baseColorTexture;
-    if (baseColor != null && _textured) {
-      _texturedFragment
-        ..setTexture('baseColorTexture', baseColor)
-        ..setFloat(
-          'Material.baseColorReplace',
-          baseColorTextureMode == BaseColorTextureMode.replace ? 1 : 0,
-        )
-        ..setFloat('Material.alphaCutoff', alphaCutoff);
-    }
+    final isTextured = baseColor != null && _textured;
     final matCap = matCapTexture;
     final gemMatCap = gemMatCapTexture;
-    final weight = skyFillWeight;
+    final samplers = _samplersFor(frag);
+    if (isTextured) {
+      if (samplers._baseColor >= 0) {
+        frag.setTextureAt(samplers._baseColor, baseColor);
+      } else {
+        frag.setTexture('baseColorTexture', baseColor);
+      }
+    }
+    if (samplers._matCap >= 0) {
+      frag.setTextureAt(samplers._matCap, matCap ?? Texture.empty);
+    } else {
+      frag.setTexture('matCapTexture', matCap ?? Texture.empty);
+    }
+    if (samplers._gemMatCap >= 0) {
+      frag.setTextureAt(samplers._gemMatCap, gemMatCap ?? Texture.empty);
+    } else {
+      frag.setTexture('gemMatCapTexture', gemMatCap ?? Texture.empty);
+    }
+
+    final matIdx = frag.blockIndexOf('Material');
+    if (matIdx < 0) {
+      return;
+    }
+    final matBlock = frag.blockAt(matIdx);
+    final off =
+        (matBlock.cachedWriterOffsets as _StylizedMaterialOffsets?) ??
+        (matBlock.cachedWriterOffsets = _StylizedMaterialOffsets(matBlock));
+
+    if (isTextured) {
+      if (off._baseColorReplace >= 0) {
+        matBlock.writeFloatAt(
+          off._baseColorReplace,
+          baseColorTextureMode == BaseColorTextureMode.replace ? 1 : 0,
+        );
+      }
+      if (off._alphaCutoff >= 0) {
+        matBlock.writeFloatAt(off._alphaCutoff, alphaCutoff);
+      }
+    }
+
     final paletteCount = accentPalette.length < maxAccentPaletteSize
         ? accentPalette.length
         : maxAccentPaletteSize;
-    final matBlock = fragmentShader.block('Material')
-      ..setFloat('accentPaletteCount', paletteCount.toDouble());
-    for (var i = 0; i < paletteCount; i++) {
-      matBlock.setColor('accentPalette', accentPalette[i], index: i);
+    if (off._accentPaletteCount >= 0) {
+      matBlock.writeFloatAt(off._accentPaletteCount, paletteCount.toDouble());
     }
-    // Fragment shaders of before (in tests) have no rim palette.
-    if (matBlock.hasMember('rimPaletteCount')) {
+    if (off._accentPalette >= 0) {
+      for (var i = 0; i < paletteCount; i++) {
+        matBlock.writeColorAt(off._accentPalette + i * 4, accentPalette[i]);
+      }
+    }
+    if (off._rimPaletteCount >= 0) {
       final rimCount = rimPalette.length < maxRimPaletteSize
           ? rimPalette.length
           : maxRimPaletteSize;
-      matBlock
-        ..setFloat('rimPaletteCount', rimCount.toDouble())
-        ..setFloat('rimPalettePower', rimPalettePower)
-        ..setFloat('rimPaletteStrength', rimPaletteStrength);
-      for (var i = 0; i < rimCount; i++) {
-        matBlock.setColor('rimPalette', rimPalette[i], index: i);
+      matBlock.writeFloatAt(off._rimPaletteCount, rimCount.toDouble());
+      if (off._rimPalettePower >= 0) {
+        matBlock.writeFloatAt(off._rimPalettePower, rimPalettePower);
+      }
+      if (off._rimPaletteStrength >= 0) {
+        matBlock.writeFloatAt(off._rimPaletteStrength, rimPaletteStrength);
+      }
+      if (off._rimPalette >= 0) {
+        for (var i = 0; i < rimCount; i++) {
+          matBlock.writeColorAt(off._rimPalette + i * 4, rimPalette[i]);
+        }
       }
     }
-    // Fragment shaders of before (in tests) have neither: writes to members
-    // a block does not have are ignored.
-    matBlock
-      ..setFloat(
-        'emissiveColorSource',
+
+    if (off._emissiveColorSource >= 0) {
+      matBlock.writeFloatAt(
+        off._emissiveColorSource,
         emissiveColorSource.index.toDouble(),
-      )
-      ..setFloat('emissiveBoostFollows', emissiveBoostColor == null ? 1 : 0);
-    fragmentShader
-      ..setTexture('matCapTexture', matCap ?? Texture.empty)
-      ..setTexture('gemMatCapTexture', gemMatCap ?? Texture.empty)
-      ..setColor('Material.albedoColor', albedoColor)
-      ..setColor('Material.accentColor', accentColor)
-      ..setColor('Material.emissiveColor', emissiveColor)
-      ..setColor(
-        'Material.emissiveBoostColor',
+      );
+    }
+    if (off._emissiveBoostFollows >= 0) {
+      matBlock.writeFloatAt(
+        off._emissiveBoostFollows,
+        emissiveBoostColor == null ? 1 : 0,
+      );
+    }
+
+    final weight = skyFillWeight;
+    if (off._albedoColor >= 0) {
+      matBlock.writeColorAt(off._albedoColor, albedoColor);
+    }
+    if (off._accentColor >= 0) {
+      matBlock.writeColorAt(off._accentColor, accentColor);
+    }
+    if (off._emissiveColor >= 0) {
+      matBlock.writeColorAt(off._emissiveColor, emissiveColor);
+    }
+    if (off._emissiveBoostColor >= 0) {
+      matBlock.writeColorAt(
+        off._emissiveBoostColor,
         emissiveBoostColor ?? emissiveColor,
-      )
-      ..setColor('Material.ambientBase', ambientBase)
-      ..setVector4(
-        'Material.skyFill',
-        _skyFillValue..setValues(
-          skyFill * weight.x,
-          skyFill * weight.y,
-          skyFill * weight.z,
-          0,
-        ),
-      )
-      ..setColor('Material.rimColor', rimColor)
-      ..setColor('Material.highlightColor', highlightColor)
-      ..setFloat('Material.emissiveStrength', emissiveStrength)
-      ..setFloat('Material.groundBounce', groundBounce)
-      ..setFloat('Material.pointLightWrap', pointLightWrap)
-      ..setFloat('Material.specularStrength', specularStrength)
-      ..setFloat('Material.specularPower', specularPower)
-      ..setFloat('Material.specularThreshold', specularThreshold)
-      ..setFloat('Material.rimStrength', rimStrength)
-      ..setFloat('Material.rimPower', rimPower)
-      ..setFloat(
-        'Material.matCapStrength',
+      );
+    }
+    if (off._ambientBase >= 0) {
+      matBlock.writeColorAt(off._ambientBase, ambientBase);
+    }
+    if (off._skyFill >= 0) {
+      matBlock.writeVec4ValuesAt(
+        off._skyFill,
+        skyFill * weight.x,
+        skyFill * weight.y,
+        skyFill * weight.z,
+        0,
+      );
+    }
+    if (off._rimColor >= 0) {
+      matBlock.writeColorAt(off._rimColor, rimColor);
+    }
+    if (off._highlightColor >= 0) {
+      matBlock.writeColorAt(off._highlightColor, highlightColor);
+    }
+    if (off._emissiveStrength >= 0) {
+      matBlock.writeFloatAt(off._emissiveStrength, emissiveStrength);
+    }
+    if (off._groundBounce >= 0) {
+      matBlock.writeFloatAt(off._groundBounce, groundBounce);
+    }
+    if (off._pointLightWrap >= 0) {
+      matBlock.writeFloatAt(off._pointLightWrap, pointLightWrap);
+    }
+    if (off._specularStrength >= 0) {
+      matBlock.writeFloatAt(off._specularStrength, specularStrength);
+    }
+    if (off._specularPower >= 0) {
+      matBlock.writeFloatAt(off._specularPower, specularPower);
+    }
+    if (off._specularThreshold >= 0) {
+      matBlock.writeFloatAt(off._specularThreshold, specularThreshold);
+    }
+    if (off._rimStrength >= 0) {
+      matBlock.writeFloatAt(off._rimStrength, rimStrength);
+    }
+    if (off._rimPower >= 0) {
+      matBlock.writeFloatAt(off._rimPower, rimPower);
+    }
+    if (off._matCapStrength >= 0) {
+      matBlock.writeFloatAt(
+        off._matCapStrength,
         matCap == null ? 0 : matCapStrength,
-      )
-      // Without a MatCap texture no vertex gets one: a metallic material
-      // then keeps the lit color instead of reflecting nothing.
-      ..setFloat(
-        'Material.matCapThreshold',
+      );
+    }
+    // Without a MatCap texture no vertex gets one: a metallic material
+    // then keeps the lit color instead of reflecting nothing.
+    if (off._matCapThreshold >= 0) {
+      matBlock.writeFloatAt(
+        off._matCapThreshold,
         matCap == null ? _never : matCapThreshold,
-      )
-      ..setFloat('Material.matCapGlossWeight', matCapGlossWeight)
-      ..setFloat(
-        'Material.gemMatCapStrength',
+      );
+    }
+    if (off._matCapGlossWeight >= 0) {
+      matBlock.writeFloatAt(off._matCapGlossWeight, matCapGlossWeight);
+    }
+    if (off._gemMatCapStrength >= 0) {
+      matBlock.writeFloatAt(
+        off._gemMatCapStrength,
         gemMatCap == null ? 0 : gemMatCapStrength,
-      )
-      // Without a gem texture no vertex is a gem: every glossy vertex gets
-      // the first MatCap texture.
-      ..setFloat(
-        'Material.gemThreshold',
+      );
+    }
+    // Without a gem texture no vertex is a gem: every glossy vertex gets
+    // the first MatCap texture.
+    if (off._gemThreshold >= 0) {
+      matBlock.writeFloatAt(
+        off._gemThreshold,
         gemMatCap == null ? _never : gemThreshold,
-      )
-      ..setFloat('Material.matCapMetallic', matCapMetallic)
-      ..setFloat('Material.saturation', saturation)
-      ..setColor('Material.overlayColor', overlayColor);
-    if (fragmentShader.slot('Material').getMemberOffsetInBytes('ditherFade') !=
-        null) {
-      fragmentShader.setFloat('Material.ditherFade', ditherFade ? 1.0 : 0.0);
+      );
+    }
+    if (off._matCapMetallic >= 0) {
+      matBlock.writeFloatAt(off._matCapMetallic, matCapMetallic);
+    }
+    if (off._saturation >= 0) {
+      matBlock.writeFloatAt(off._saturation, saturation);
+    }
+    if (off._overlayColor >= 0) {
+      matBlock.writeColorAt(off._overlayColor, overlayColor);
+    }
+    if (off._ditherFade >= 0) {
+      matBlock.writeFloatAt(off._ditherFade, ditherFade ? 1.0 : 0.0);
+    }
+  }
+
+  Shader? _samplerCacheFrag;
+  int _samplerCacheGen = -1;
+  _StylizedSamplerIndices? _samplerCache;
+
+  _StylizedSamplerIndices _samplersFor(Shader frag) {
+    if (!identical(_samplerCacheFrag, frag) ||
+        _samplerCacheGen != frag.generation) {
+      _samplerCacheFrag = frag;
+      _samplerCacheGen = frag.generation;
+      _samplerCache = _StylizedSamplerIndices(
+        frag.samplerIndexOf('matCapTexture'),
+        frag.samplerIndexOf('gemMatCapTexture'),
+        frag.samplerIndexOf('baseColorTexture'),
+      );
+    }
+    return _samplerCache!;
+  }
+
+  void _applyDepthBias(Shader shader) {
+    shader.resource;
+    final idx = shader.blockIndexOf(_depthBlock);
+    if (idx < 0) {
+      shader.setFloat('$_depthBlock.bias', depthBias);
+      return;
+    }
+    final block = shader.blockAt(idx);
+    final off =
+        (block.cachedWriterOffsets as int?) ??
+        (block.cachedWriterOffsets = block.resolveOffset('bias'));
+    if (off >= 0) {
+      block.writeFloatAt(off, depthBias);
     }
   }
 
   void _applyWind(Shader shader, WindSpace space) {
+    shader.resource;
+    final idx = shader.blockIndexOf('Wind');
+    if (idx < 0) {
+      return;
+    }
+    final block = shader.blockAt(idx);
+    final off =
+        (block.cachedWriterOffsets as _WindBlockOffsets?) ??
+        (block.cachedWriterOffsets = _WindBlockOffsets(block));
     final inModelSpace = space == WindSpace.model;
-    shader
-      ..setVector3('Wind.direction', inModelSpace ? _zero : windDirection)
-      ..setVector3('Wind.modelDirection', inModelSpace ? windDirection : _zero)
-      ..setFloat('Wind.amplitude', windAmplitude)
-      ..setVector3('Wind.phaseScale', windPhase)
-      ..setFloat('Wind.frequency', windFrequency)
-      ..setFloat('Wind.time', windTime)
-      // Zero, unless in WindSpace.worldScaled.
-      ..setVector3('Wind.upAxis', _upAxis)
-      ..setFloat('Wind.flutterAmplitude', windFlutterAmplitude)
-      ..setFloat('Wind.flutterFrequency', windFlutterFrequency)
-      ..setVector3('Wind.gustWave', _gustWave)
-      ..setFloat('Wind.gustAmplitude', windGustAmplitude)
-      ..setFloat('Wind.gustFrequency', windGustFrequency)
-      ..setFloat('Wind.depthBias', depthBias);
+    final dir = inModelSpace ? _zero : windDirection;
+    final modelDir = inModelSpace ? windDirection : _zero;
+    if (off._direction >= 0) {
+      block.writeVec3ValuesAt(off._direction, dir.x, dir.y, dir.z);
+    }
+    if (off._modelDirection >= 0) {
+      block.writeVec3ValuesAt(
+        off._modelDirection,
+        modelDir.x,
+        modelDir.y,
+        modelDir.z,
+      );
+    }
+    if (off._amplitude >= 0) {
+      block.writeFloatAt(off._amplitude, windAmplitude);
+    }
+    if (off._phaseScale >= 0) {
+      block.writeVec3ValuesAt(
+        off._phaseScale,
+        windPhase.x,
+        windPhase.y,
+        windPhase.z,
+      );
+    }
+    if (off._frequency >= 0) {
+      block.writeFloatAt(off._frequency, windFrequency);
+    }
+    if (off._time >= 0) {
+      block.writeFloatAt(off._time, windTime);
+    }
+    if (off._upAxis >= 0) {
+      block.writeVec3ValuesAt(off._upAxis, _upAxis.x, _upAxis.y, _upAxis.z);
+    }
+    if (off._flutterAmplitude >= 0) {
+      block.writeFloatAt(off._flutterAmplitude, windFlutterAmplitude);
+    }
+    if (off._flutterFrequency >= 0) {
+      block.writeFloatAt(off._flutterFrequency, windFlutterFrequency);
+    }
+    if (off._gustWave >= 0) {
+      block.writeVec3ValuesAt(
+        off._gustWave,
+        _gustWave.x,
+        _gustWave.y,
+        _gustWave.z,
+      );
+    }
+    if (off._gustAmplitude >= 0) {
+      block.writeFloatAt(off._gustAmplitude, windGustAmplitude);
+    }
+    if (off._gustFrequency >= 0) {
+      block.writeFloatAt(off._gustFrequency, windGustFrequency);
+    }
+    if (off._depthBias >= 0) {
+      block.writeFloatAt(off._depthBias, depthBias);
+    }
   }
 
   /// Sets [target] to [direction] normalized, times [scale], or to zero when
@@ -1134,7 +1398,6 @@ class StylizedMaterial({
     }
   }
 
-  final Vector4 _skyFillValue = Vector4.zero();
   final Vector3 _upAxis = Vector3.zero();
   final Vector3 _gustWave = Vector3.zero();
 
@@ -1358,5 +1621,68 @@ enum WindSpace() {
   /// space): whatever their orientation, objects sway the same world way,
   /// each in proportion to its height. An object scaled twice along its up
   /// axis sways twice as far.
+  /// The direction of the gusts travel in, in world space.
   worldScaled,
+}
+
+class _StylizedSamplerIndices(
+  final int _matCap,
+  final int _gemMatCap,
+  final int _baseColor,
+);
+
+class _StylizedMaterialOffsets(final UniformBlock _b) {
+  late final int _baseColorReplace = _b.resolveOffset('baseColorReplace');
+  late final int _alphaCutoff = _b.resolveOffset('alphaCutoff');
+  late final int _accentPaletteCount = _b.resolveOffset('accentPaletteCount');
+  late final int _accentPalette = _b.resolveOffset('accentPalette');
+  late final int _rimPaletteCount = _b.resolveOffset('rimPaletteCount');
+  late final int _rimPalettePower = _b.resolveOffset('rimPalettePower');
+  late final int _rimPaletteStrength = _b.resolveOffset('rimPaletteStrength');
+  late final int _rimPalette = _b.resolveOffset('rimPalette');
+  late final int _emissiveColorSource = _b.resolveOffset('emissiveColorSource');
+  late final int _emissiveBoostFollows = _b.resolveOffset(
+    'emissiveBoostFollows',
+  );
+  late final int _albedoColor = _b.resolveOffset('albedoColor');
+  late final int _accentColor = _b.resolveOffset('accentColor');
+  late final int _emissiveColor = _b.resolveOffset('emissiveColor');
+  late final int _emissiveBoostColor = _b.resolveOffset('emissiveBoostColor');
+  late final int _ambientBase = _b.resolveOffset('ambientBase');
+  late final int _skyFill = _b.resolveOffset('skyFill');
+  late final int _rimColor = _b.resolveOffset('rimColor');
+  late final int _highlightColor = _b.resolveOffset('highlightColor');
+  late final int _emissiveStrength = _b.resolveOffset('emissiveStrength');
+  late final int _groundBounce = _b.resolveOffset('groundBounce');
+  late final int _pointLightWrap = _b.resolveOffset('pointLightWrap');
+  late final int _specularStrength = _b.resolveOffset('specularStrength');
+  late final int _specularPower = _b.resolveOffset('specularPower');
+  late final int _specularThreshold = _b.resolveOffset('specularThreshold');
+  late final int _rimStrength = _b.resolveOffset('rimStrength');
+  late final int _rimPower = _b.resolveOffset('rimPower');
+  late final int _matCapStrength = _b.resolveOffset('matCapStrength');
+  late final int _matCapThreshold = _b.resolveOffset('matCapThreshold');
+  late final int _matCapGlossWeight = _b.resolveOffset('matCapGlossWeight');
+  late final int _gemMatCapStrength = _b.resolveOffset('gemMatCapStrength');
+  late final int _gemThreshold = _b.resolveOffset('gemThreshold');
+  late final int _matCapMetallic = _b.resolveOffset('matCapMetallic');
+  late final int _saturation = _b.resolveOffset('saturation');
+  late final int _overlayColor = _b.resolveOffset('overlayColor');
+  late final int _ditherFade = _b.resolveOffset('ditherFade');
+}
+
+class _WindBlockOffsets(final UniformBlock _b) {
+  late final int _direction = _b.resolveOffset('direction');
+  late final int _modelDirection = _b.resolveOffset('modelDirection');
+  late final int _amplitude = _b.resolveOffset('amplitude');
+  late final int _phaseScale = _b.resolveOffset('phaseScale');
+  late final int _frequency = _b.resolveOffset('frequency');
+  late final int _time = _b.resolveOffset('time');
+  late final int _upAxis = _b.resolveOffset('upAxis');
+  late final int _flutterAmplitude = _b.resolveOffset('flutterAmplitude');
+  late final int _flutterFrequency = _b.resolveOffset('flutterFrequency');
+  late final int _gustWave = _b.resolveOffset('gustWave');
+  late final int _gustAmplitude = _b.resolveOffset('gustAmplitude');
+  late final int _gustFrequency = _b.resolveOffset('gustFrequency');
+  late final int _depthBias = _b.resolveOffset('depthBias');
 }

@@ -171,6 +171,13 @@ class StrokeBatch3D({
       _worldSegments = null;
     }
 
+    final segsBuf = _segments;
+    final cr = color.r;
+    final cg = color.g;
+    final cb = color.b;
+    final ca = color.a;
+    final invSegs = 1.0 / segs;
+
     for (var i = 0; i < segs; i++) {
       final o0 = i * 5;
       final o1 = (i + 1) * 5;
@@ -193,9 +200,10 @@ class StrokeBatch3D({
       var t0z = z1 - pts[pPrev + 2];
       final l0 = math.sqrt(t0x * t0x + t0y * t0y + t0z * t0z);
       if (l0 > 1e-9) {
-        t0x /= l0;
-        t0y /= l0;
-        t0z /= l0;
+        final inv0 = 1.0 / l0;
+        t0x *= inv0;
+        t0y *= inv0;
+        t0z *= inv0;
       }
 
       var t1x = pts[pNext] - x0;
@@ -203,9 +211,10 @@ class StrokeBatch3D({
       var t1z = pts[pNext + 2] - z0;
       final l1 = math.sqrt(t1x * t1x + t1y * t1y + t1z * t1z);
       if (l1 > 1e-9) {
-        t1x /= l1;
-        t1y /= l1;
-        t1z /= l1;
+        final inv1 = 1.0 / l1;
+        t1x *= inv1;
+        t1y *= inv1;
+        t1z *= inv1;
       }
 
       final pad = math.max(w0, w1);
@@ -213,7 +222,7 @@ class StrokeBatch3D({
       _expandBounds(x1, y1, z1, pad);
 
       final b = (_segmentCount++) * _stride;
-      _segments
+      segsBuf
         ..[b] = x0
         ..[b + 1] = y0
         ..[b + 2] = z0
@@ -230,12 +239,12 @@ class StrokeBatch3D({
         ..[b + 13] = t1y
         ..[b + 14] = t1z
         ..[b + 15] = a1
-        ..[b + 16] = color.r
-        ..[b + 17] = color.g
-        ..[b + 18] = color.b
-        ..[b + 19] = color.a
-        ..[b + 20] = i / segs
-        ..[b + 21] = (i + 1) / segs
+        ..[b + 16] = cr
+        ..[b + 17] = cg
+        ..[b + 18] = cb
+        ..[b + 19] = ca
+        ..[b + 20] = i * invSegs
+        ..[b + 21] = (i + 1) * invSegs
         ..[b + 22] = 0.0
         ..[b + 23] = 0.0;
     }
@@ -494,8 +503,8 @@ class RibbonTrail3D({
       }
     }
 
-    _rebuildSegments(maxAge);
     if (hadPoints || _count >= 2) {
+      _rebuildSegments(maxAge);
       Game.notifyVisualMutation();
       worldOrNull?.markSceneDirty(shadows: false);
     }

@@ -58,10 +58,66 @@ class UnlitMaterial({
       _albedoTexture = noteChange(_albedoTexture, value);
   Texture _albedoTexture = albedoTexture ?? Texture.standard;
 
+  int _appliedVersion = -1;
+  Shader? _appliedFrag;
+  int _appliedFragGen = -1;
+  Shader? _cachedFrag;
+  int _cachedFragGen = -1;
+  int _texIdx = -1;
+  UniformBlock? _matBlock;
+  int _albedoColorOff = UniformBlock.missingOffset;
+
+  @override
+  bool get cachesApply => runtimeType == UnlitMaterial;
+
+  @override
+  void invalidateApplyCache() {
+    _appliedVersion = -1;
+  }
+
+  @override
+  bool isApplyCacheValid(
+    RenderContext context,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) {
+    return _appliedVersion == version &&
+        identical(_appliedFrag, fragmentShader) &&
+        _appliedFragGen == fragmentShader.generation;
+  }
+
+  @override
+  void recordApplyCache(
+    RenderContext context,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) {
+    _appliedVersion = version;
+    _appliedFrag = fragmentShader;
+    _appliedFragGen = fragmentShader.generation;
+  }
+
   @override
   void apply(RenderContext context) {
-    fragmentShader
-      ..setTexture('albedoTexture', albedoTexture)
-      ..setColor('Material.albedoColor', albedoColor);
+    final frag = fragmentShader;
+    frag.resource;
+    if (!identical(_cachedFrag, frag) || _cachedFragGen != frag.generation) {
+      _cachedFrag = frag;
+      _cachedFragGen = frag.generation;
+      _texIdx = frag.samplerIndexOf('albedoTexture');
+      final matIdx = frag.blockIndexOf('Material');
+      _matBlock = matIdx >= 0 ? frag.blockAt(matIdx) : null;
+      _albedoColorOff = _matBlock?.resolveOffset('albedoColor') ?? -1;
+    }
+    if (_texIdx >= 0) {
+      frag.setTextureAt(_texIdx, albedoTexture);
+    } else {
+      frag.setTexture('albedoTexture', albedoTexture);
+    }
+    if (_albedoColorOff >= 0) {
+      _matBlock!.writeColorAt(_albedoColorOff, albedoColor);
+    } else {
+      frag.setColor('Material.albedoColor', albedoColor);
+    }
   }
 }

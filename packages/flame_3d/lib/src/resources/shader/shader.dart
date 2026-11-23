@@ -86,8 +86,14 @@ class Shader._(
   }
 
   final Map<String, GpuUniformSlot> _slots = {};
-  final Map<String, UniformBlock> _blocks = {};
-  final Map<String, Texture> _textures = {};
+  final List<GpuUniformSlot> _orderedSlots = [];
+  final Map<String, int> _blockIndices = {};
+  final List<GpuUniformSlot> _blockSlots = [];
+  final List<UniformBlock?> _blockValues = [];
+  final List<UniformBlock> _boundBlocks = [];
+  final Map<String, int> _samplerIndices = {};
+  final List<GpuUniformSlot> _samplerSlots = [];
+  final List<Texture?> _samplerValues = [];
   final Map<String, _UniformField> _fields = {};
 
   /// Incremented every time the shader resource is created, so that state
@@ -99,6 +105,49 @@ class Shader._(
   /// State the render context derives from this shader's slots.
   @internal
   Object? renderCache;
+
+  /// Dense integer index of the uniform block [name] in this shader, or `-1`
+  /// when absent or not a uniform block.
+  @internal
+  int blockIndexOf(String name) {
+    resource;
+    return _blockIndices[name] ?? -1;
+  }
+
+  /// Dense integer index of the sampler [name] in this shader, or `-1` when
+  /// absent or not a sampler.
+  @internal
+  int samplerIndexOf(String name) {
+    resource;
+    return _samplerIndices[name] ?? -1;
+  }
+
+  /// The uniform block at dense [index] (from [blockIndexOf]).
+  @internal
+  UniformBlock blockAt(int index) {
+    return _blockValues[index] ??= () {
+      final created = UniformBlock(_blockSlots[index]);
+      _boundBlocks.add(created);
+      return created;
+    }();
+  }
+
+  /// The texture at dense [index] (from [samplerIndexOf]), or `null`.
+  @internal
+  Texture? textureAt(int index) => _samplerValues[index];
+
+  /// Sets the texture at dense [index] (from [samplerIndexOf]).
+  @internal
+  void setTextureAt(int index, Texture texture) {
+    _samplerValues[index] = texture;
+  }
+
+  /// The resolved GPU slot matching index `i` of [slots].
+  @internal
+  List<GpuUniformSlot> get resolvedSlots {
+    resource;
+    return _orderedSlots;
+  }
 
   /// The resolved slot named [name].
   ///
@@ -113,23 +162,41 @@ class Shader._(
   /// created the first time it is requested.
   UniformBlock block(String name) {
     resource;
-    return _blocks[name] ??= UniformBlock(slot(name));
+    final idx = _blockIndices[name];
+    if (idx == null) {
+      final s = slot(name);
+      if (s.sizeInBytes == null) {
+        throw StateError('Slot "$name" is a sampler block, not a uniform');
+      }
+      final created = UniformBlock(s);
+      _blockIndices[name] = _blockSlots.length;
+      _blockSlots.add(s);
+      _blockValues.add(created);
+      _boundBlocks.add(created);
+      return created;
+    }
+    return blockAt(idx);
   }
 
   /// The texture set for the sampler [name], or `null` when none was set.
-  Texture? texture(String name) => _textures[name];
+  Texture? texture(String name) {
+    final idx = _samplerIndices[name];
+    return idx == null ? null : _samplerValues[idx];
+  }
 
   /// Set a [Texture] at the given [key].
   void setTexture(String key, Texture texture) {
     resource;
+    final idx = _samplerIndices[key];
+    if (idx != null) {
+      _samplerValues[idx] = texture;
+      return;
+    }
     final slot = _slots[key];
     if (slot == null) {
       throw StateError('Shader "$entryPoint" has no slot "$key"');
     }
-    if (slot.sizeInBytes != null) {
-      throw StateError('Slot "$key" is a uniform block, not a sampler');
-    }
-    _textures[key] = texture;
+    throw StateError('Slot "$key" is a uniform block, not a sampler');
   }
 
   /// Set a [Vector2] at the given [key].
@@ -177,11 +244,14 @@ class Shader._(
   ///
   /// Unchanged blocks are not uploaded again within a frame.
   void bind(GraphicsDevice device) {
-    for (final block in _blocks.values) {
-      device.bindUniformBlock(block);
+    for (var i = 0; i < _boundBlocks.length; i++) {
+      device.bindUniformBlock(_boundBlocks[i]);
     }
-    for (final MapEntry(:key, value: texture) in _textures.entries) {
-      device.bindTexture(_slots[key]!, texture);
+    for (var i = 0; i < _samplerValues.length; i++) {
+      final texture = _samplerValues[i];
+      if (texture != null) {
+        device.bindTexture(_samplerSlots[i], texture);
+      }
     }
   }
 
@@ -189,8 +259,14 @@ class Shader._(
   GpuShader createResource() {
     // Always clear up old data to prevent memory leaks.
     _slots.clear();
-    _blocks.clear();
-    _textures.clear();
+    _orderedSlots.clear();
+    _blockIndices.clear();
+    _blockSlots.clear();
+    _blockValues.clear();
+    _boundBlocks.clear();
+    _samplerIndices.clear();
+    _samplerSlots.clear();
+    _samplerValues.clear();
     _fields.clear();
     _generation++;
     renderCache = null;
@@ -198,7 +274,18 @@ class Shader._(
     checkDeviceSupport();
     final shader = _getShader(entryPoint);
     for (final name in slots) {
-      _slots[name] = shader.getUniformSlot(name);
+      final s = shader.getUniformSlot(name);
+      _slots[name] = s;
+      _orderedSlots.add(s);
+      if (s.sizeInBytes == null) {
+        _samplerIndices[name] = _samplerSlots.length;
+        _samplerSlots.add(s);
+        _samplerValues.add(null);
+      } else {
+        _blockIndices[name] = _blockSlots.length;
+        _blockSlots.add(s);
+        _blockValues.add(null);
+      }
     }
     return shader;
   }
@@ -217,18 +304,18 @@ class Shader._(
     if (slot.sizeInBytes == null) {
       throw StateError('Slot "$key" is a sampler block, not a uniform');
     }
-    final block = _blocks[slotName] ??= UniformBlock(slot);
+    final uniformBlock = blockAt(_blockIndices[slotName]!);
 
     final int? offset;
     if (field != null) {
-      offset = block.memberOffset(field);
+      offset = uniformBlock.memberOffset(field);
       if (offset == null) {
         throw StateError('Field "$field" not found in uniform struct');
       }
     } else {
       offset = null;
     }
-    return _fields[key] = _UniformField(block, offset, index);
+    return _fields[key] = _UniformField(uniformBlock, offset, index);
   }
 
   /// Parse a uniform key into (structName, memberName, arrayIndex).

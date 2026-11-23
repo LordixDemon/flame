@@ -78,6 +78,7 @@ class Surface extends Resource<GpuBuffer> {
     }
     _setIndices(_indexList(indices, vertexCount));
     _aabb = _computeAabb(vertexData, _layout, vertexCount);
+    _updateAabbCenter();
   }
 
   /// {@macro surface}
@@ -122,6 +123,7 @@ class Surface extends Resource<GpuBuffer> {
     }
     _setIndices(indices);
     _aabb = aabb ?? _computeAabb(vertexData, _layout, vertexCount);
+    _updateAabbCenter();
   }
 
   static int _nextId = 0;
@@ -184,6 +186,18 @@ class Surface extends Resource<GpuBuffer> {
   /// The bounds of the surface's vertices.
   Aabb3 get aabb => _aabb;
   late final Aabb3 _aabb;
+
+  /// Cached local-space center of [aabb].
+  Vector3 get aabbCenter => _aabbCenter;
+  final Vector3 _aabbCenter = Vector3.zero();
+
+  void _updateAabbCenter() {
+    _aabbCenter.setValues(
+      (_aabb.min.x + _aabb.max.x) * 0.5,
+      (_aabb.min.y + _aabb.max.y) * 0.5,
+      (_aabb.min.z + _aabb.max.z) * 0.5,
+    );
+  }
 
   /// The number of vertices.
   late final int vertexCount;
@@ -526,6 +540,7 @@ class Surface extends Resource<GpuBuffer> {
       final recomputed = _computeAabb(vertexData, _layout, vertexCount);
       _aabb.setFrom(recomputed);
     }
+    _updateAabbCenter();
     if (_positions != null) {
       _fillPositions(_positions!);
     }

@@ -168,6 +168,10 @@ abstract base class GpuBackend() {
   /// [GpuPixelFormat.rgba8888] texture instead.
   bool get supportsFloatTextureTargets => false;
 
+  /// Whether [beginFrame]'s `beginRenderPass(target, keepContents: true)` can
+  /// natively preserve [target]'s color pixels without an external copy pass.
+  bool supportsNativeKeepContents(GpuTextureTarget target) => false;
+
   /// Creates a [GpuTextureTarget] of [width]x[height] whose passes render
   /// into a texture of [format] that later passes sample, cleared to
   /// [clearValue] (and its depth to the far plane) at the start of each pass.
@@ -512,10 +516,18 @@ class _LifecycleWatch() with WidgetsBindingObserver {
 abstract interface class GpuFrame() {
   /// Begins a render pass that draws into [target].
   ///
+  /// When [keepContents] is `true` and the backend supports native preservation
+  /// (`supportsNativeKeepContents(target)`), existing color contents of
+  /// [target] are loaded instead of cleared; the depth buffer is still
+  /// cleared to `1.0`.
+  ///
   /// Every pass starts with the default render state: no blending, depth test
   /// with [CompareFunction.less], depth writes on, no culling and
   /// [WindingOrder.counterClockwise] front faces.
-  GpuRenderPass beginRenderPass(GpuRenderTarget target);
+  GpuRenderPass beginRenderPass(
+    GpuRenderTarget target, {
+    bool keepContents = false,
+  });
 
   /// Finalizes the frame.
   void end();

@@ -203,7 +203,8 @@ class ModelComponent({
   }
 
   void _evaluateAnimatedMorphTargets() {
-    if (!_animation.hasActiveEvaluation && _animation.layers.isEmpty) {
+    if (_morphNodes.isEmpty ||
+        (!_animation.hasActiveEvaluation && _animation.layers.isEmpty)) {
       return;
     }
     for (var i = 0; i < _morphNodes.length; i++) {
@@ -352,17 +353,21 @@ class ModelComponent({
   void draw(covariant RenderContext3D context) {
     _drawnSinceLastUpdate = true;
     final workspace = evaluatePose();
+    final world = worldTransformMatrix;
+    final hasHidden = _hiddenNodes.isNotEmpty;
+    final nodes = workspace.orderedNodes;
     context.beginDepthPrepassGroup();
     try {
-      for (final node in workspace.orderedNodes) {
-        if (_hiddenNodes.contains(node.node.nodeIndex)) {
+      for (var i = 0; i < nodes.length; i++) {
+        final node = nodes[i];
+        if (hasHidden && _hiddenNodes.contains(node.node.nodeIndex)) {
           continue;
         }
 
         final mesh = _meshOf(node.node);
         if (mesh != null) {
           _nodeTransform
-            ..setFrom(worldTransformMatrix)
+            ..setFrom(world)
             ..multiply(node.combinedTransform);
           context.drawMesh(
             mesh,
@@ -385,10 +390,14 @@ class ModelComponent({
     CullMode? cullMode,
   }) {
     final workspace = evaluatePose();
+    final world = worldTransformMatrix;
+    final hasHidden = _hiddenNodes.isNotEmpty;
+    final nodes = workspace.orderedNodes;
     RayHit3D? best;
     var limit = maxDistance;
-    for (final node in workspace.orderedNodes) {
-      if (_hiddenNodes.contains(node.node.nodeIndex)) {
+    for (var i = 0; i < nodes.length; i++) {
+      final node = nodes[i];
+      if (hasHidden && _hiddenNodes.contains(node.node.nodeIndex)) {
         continue;
       }
       final mesh = _meshOf(node.node);
@@ -396,7 +405,7 @@ class ModelComponent({
         continue;
       }
       _nodeTransform
-        ..setFrom(worldTransformMatrix)
+        ..setFrom(world)
         ..multiply(node.combinedTransform);
       final hit = RayHit3D.intersectMesh(
         owner: this,
@@ -542,16 +551,25 @@ class ModelComponent({
     _markPoseChanged();
   }
 
+  ModelAnimation _animationByName(String name) {
+    final animations = model.animations;
+    for (var i = 0; i < animations.length; i++) {
+      final candidate = animations[i];
+      if (candidate.name == name) {
+        return candidate;
+      }
+    }
+    throw ArgumentError('No animation with name $name');
+  }
+
+  /// Plays the named animation clip on the base track.
   void playAnimationByName(
     String name, {
     bool resetClock = true,
     AnimationPlayMode mode = AnimationPlayMode.loop,
     VoidCallback? onComplete,
   }) {
-    final animation = model.animations.where((e) => e.name == name).firstOrNull;
-    if (animation == null) {
-      throw ArgumentError('No animation with name $name');
-    }
+    final animation = _animationByName(name);
     if (resetClock) {
       rootMotion?.reset();
     }
@@ -591,10 +609,7 @@ class ModelComponent({
     AnimationPlayMode mode = AnimationPlayMode.loop,
     VoidCallback? onComplete,
   }) {
-    final animation = model.animations.where((e) => e.name == name).firstOrNull;
-    if (animation == null) {
-      throw ArgumentError('No animation with name $name');
-    }
+    final animation = _animationByName(name);
     if (resetClock) {
       rootMotion?.reset();
     }

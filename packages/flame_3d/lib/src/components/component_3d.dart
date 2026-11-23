@@ -273,6 +273,27 @@ abstract class Component3D({
 
   final Matrix4 _worldTransformMatrix = Matrix4.identity();
   bool _worldTransformDirty = true;
+  bool _negativeScaleDirty = true;
+  bool _hasNegativeScale = false;
+
+  /// Whether this component's accumulated [worldTransformMatrix] reflects an
+  /// odd number of negative scale axes (mirroring front-face winding).
+  bool get hasNegativeScale {
+    if (!_negativeScaleDirty) {
+      return _hasNegativeScale;
+    }
+    _negativeScaleDirty = false;
+    final s = scale;
+    final prod = s.x * s.y * s.z;
+    if (prod == 0) {
+      return _hasNegativeScale = false;
+    }
+    final local = prod < 0;
+    final p = parent;
+    return _hasNegativeScale = p is Component3D
+        ? (p.hasNegativeScale != local)
+        : local;
+  }
 
   /// The position of this component's anchor on the screen.
   NotifyingVector3 get position => transform.position;
@@ -366,6 +387,7 @@ abstract class Component3D({
     final self = this;
     if (world != null && self is Object3D) {
       world.shadowCasters.added(self);
+      world.spatialIndex3D.onObjectAdded(self);
     }
     world?.markComponentDirty(shadows: this is! LightComponent);
   }
@@ -376,6 +398,7 @@ abstract class Component3D({
     final self = this;
     if (world != null && self is Object3D) {
       world.shadowCasters.removed(self);
+      world.spatialIndex3D.onObjectRemoved(self);
     }
     world?.markComponentDirty(shadows: this is! LightComponent);
     _cachedWorld = null;
@@ -424,6 +447,10 @@ abstract class Component3D({
       return;
     }
     _aabbDirty = true;
+    final self = this;
+    if (self is Object3D) {
+      _cachedWorld?.spatialIndex3D.onObjectMoved(self);
+    }
 
     if (parent case final Component3D parent) {
       parent.markAabbDirty();
@@ -495,6 +522,7 @@ abstract class Component3D({
           levels: List.of(self.levels),
           shadowMesh: self.shadowMesh,
           lowestLodInShadowPass: self.lowestLodInShadowPass,
+          hysteresis: self.hysteresis,
           color: self.color,
           instanceData: self.instanceData.clone(),
           castsShadows: self.castsShadows,
@@ -580,14 +608,16 @@ abstract class Component3D({
   void _markWorldTransformDirty([ShadowCasterTracker? casters]) {
     _worldTransformVersion++;
     _worldTransformDirty = true;
+    _negativeScaleDirty = true;
     _aabbDirty = true;
     final self = this;
     if (self is LightComponent) {
       // The worlds that borrow the light follow it, see
       // [World3D.lightsVersion].
       _cachedWorld?.markLightsDirty(shadows: _moveCanMoveShadows());
-    } else if (casters != null && self is Object3D) {
-      casters.changed(self);
+    } else if (self is Object3D) {
+      casters?.changed(self);
+      _cachedWorld?.spatialIndex3D.onObjectMoved(self);
     }
     for (final child in _childComponents) {
       child._markWorldTransformDirty(casters);
@@ -764,6 +794,45 @@ class ShadowCasterTracker() {
   int get alwaysMoving => _alwaysMoving;
   int _alwaysMoving = 0;
 
+  // Mounted casters that are not currently settled in the kept still layer,
+  // allowing ShadowCasterLayer.moving passes to iterate O(M) active movers.
+  final List<Object3D> _movers = [];
+  int _maxPrunedClock = -1;
+
+  /// Active non-still mounted casters in this world.
+  List<Object3D> get movers => _movers;
+
+  /// Whether [movers] is guaranteed to contain every mounted non-still
+  /// [Object3D] in the world.
+  bool get moversComplete => _cutoff >= _maxPrunedClock;
+
+  void _addMover(Object3D caster) {
+    if (caster.shadowMoverIndex >= 0 ||
+        caster.shadowMotion == ShadowCasterMotion.still) {
+      return;
+    }
+    caster.shadowMoverIndex = _movers.length;
+    _movers.add(caster);
+  }
+
+  void _removeMover(Object3D caster) {
+    final idx = caster.shadowMoverIndex;
+    if (idx < 0) {
+      return;
+    }
+    _removeMoverAt(idx);
+  }
+
+  void _removeMoverAt(int idx) {
+    final caster = _movers[idx];
+    final last = _movers.removeLast();
+    if (idx < _movers.length) {
+      _movers[idx] = last;
+      last.shadowMoverIndex = idx;
+    }
+    caster.shadowMoverIndex = -1;
+  }
+
   /// Whether [caster] is kept with the still casters.
   bool isStill(Object3D caster) {
     return switch (caster.shadowMotion) {
@@ -813,6 +882,7 @@ class ShadowCasterTracker() {
     if (caster.shadowMotion == ShadowCasterMotion.moving) {
       _alwaysMoving--;
     }
+    _removeMover(caster);
     caster._shadowChangeClock = _unmounted;
   }
 
@@ -830,7 +900,11 @@ class ShadowCasterTracker() {
       _alwaysMoving++;
     }
     caster._shadowChangeClock = _clock;
-    _noteMover(caster);
+    if (to == ShadowCasterMotion.still) {
+      _removeMover(caster);
+    } else {
+      _noteMover(caster);
+    }
     _version++;
   }
 
@@ -840,6 +914,7 @@ class ShadowCasterTracker() {
     if (caster.shadowMotion == ShadowCasterMotion.auto) {
       _lastChange = _clock;
     }
+    _addMover(caster);
   }
 
   /// Notes that [caster] is drawn as a moving caster: once it stayed
@@ -873,6 +948,16 @@ class ShadowCasterTracker() {
     if (_version != _cutoffVersion) {
       _cutoffVersion = _version;
       _cutoff = _clock - stillFrames;
+    }
+    for (var i = _movers.length - 1; i >= 0; i--) {
+      final caster = _movers[i];
+      if (caster.shadowMotion == ShadowCasterMotion.auto &&
+          caster._shadowChangeClock <= _cutoff) {
+        if (caster._shadowChangeClock > _maxPrunedClock) {
+          _maxPrunedClock = caster._shadowChangeClock;
+        }
+        _removeMoverAt(i);
+      }
     }
   }
 

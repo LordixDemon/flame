@@ -36,6 +36,7 @@ class UniformBlock(
 
   /// Marks the block as changed, so that it is uploaded again before its next
   /// use.
+  @pragma('vm:prefer-inline')
   void markDirty() => _dirty = true;
 
   // Where the block was last uploaded, managed by `GraphicsDevice`.
@@ -68,10 +69,91 @@ class UniformBlock(
     });
   }
 
+  /// Sentinel offset returned by [resolveOffset] when a member is absent.
+  static const int missingOffset = -1;
+
+  /// Cached offset lookup tables attached lazily by internal writers.
+  @internal
+  Object? cachedWriterOffsets;
+
+  /// Returns the float offset of [member] within this block, or
+  /// [missingOffset] (`-1`) if the block declares no such member.
+  int resolveOffset(String member) => memberOffset(member) ?? missingOffset;
+
   /// Writes [values] at [offset] floats into the block.
   void writeAt(int offset, Float32List values) {
+    if (offset < 0 || offset + values.length > data.length) {
+      return;
+    }
     data.setRange(offset, offset + values.length, values);
-    _dirty = true;
+    markDirty();
+  }
+
+  /// Writes a single float at [offset] (in floats) without string lookup.
+  void writeFloatAt(int offset, double value) {
+    if (offset < 0 || offset >= data.length) {
+      return;
+    }
+    data[offset] = value;
+    markDirty();
+  }
+
+  /// Writes two floats at [offset] (in floats).
+  void writeVec2ValuesAt(int offset, double x, double y) {
+    if (offset < 0 || offset + 2 > data.length) {
+      return;
+    }
+    data
+      ..[offset] = x
+      ..[offset + 1] = y;
+    markDirty();
+  }
+
+  /// Writes three floats at [offset] (in floats).
+  void writeVec3ValuesAt(int offset, double x, double y, double z) {
+    if (offset < 0 || offset + 3 > data.length) {
+      return;
+    }
+    data
+      ..[offset] = x
+      ..[offset + 1] = y
+      ..[offset + 2] = z;
+    markDirty();
+  }
+
+  /// Writes four floats at [offset] (in floats).
+  void writeVec4ValuesAt(int offset, double x, double y, double z, double w) {
+    if (offset < 0 || offset + 4 > data.length) {
+      return;
+    }
+    data
+      ..[offset] = x
+      ..[offset + 1] = y
+      ..[offset + 2] = z
+      ..[offset + 3] = w;
+    markDirty();
+  }
+
+  /// Writes RGBA components of [color] at [offset] (in floats).
+  void writeColorAt(int offset, Color color) {
+    if (offset < 0 || offset + 4 > data.length) {
+      return;
+    }
+    data
+      ..[offset] = color.r
+      ..[offset + 1] = color.g
+      ..[offset + 2] = color.b
+      ..[offset + 3] = color.a;
+    markDirty();
+  }
+
+  /// Writes 16 floats of [matrix] at [offset] (in floats).
+  void writeMatrix4At(int offset, Matrix4 matrix) {
+    if (offset < 0 || offset + 16 > data.length) {
+      return;
+    }
+    data.setRange(offset, offset + 16, matrix.storage);
+    markDirty();
   }
 
   /// Writes [values] into [member], or into its element [index] when the

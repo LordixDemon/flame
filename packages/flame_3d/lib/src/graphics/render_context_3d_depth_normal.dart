@@ -149,8 +149,52 @@ class _DepthNormalPass(final RenderContext3D _context) {
       _submit(order, start, end - start);
       start = end;
     }
-    for (var k = 0; k < ownCount; k++) {
-      _submitOwn(order, count - 1 - k);
+    if (ownCount > 0) {
+      final ownStart = count - ownCount;
+      if (ownCount > 1) {
+        for (var i = ownStart + 1; i < count; i++) {
+          final key = order[i];
+          final keyMat = context._materials[key]!.depthNormalMaterial!.id;
+          final keySurf = context._surfaces[key]!.id;
+          var j = i - 1;
+          while (j >= ownStart) {
+            final cur = order[j];
+            final curMat = context._materials[cur]!.depthNormalMaterial!.id;
+            final curSurf = context._surfaces[cur]!.id;
+            if (curMat < keyMat || (curMat == keyMat && curSurf <= keySurf)) {
+              break;
+            }
+            order[j + 1] = cur;
+            j--;
+          }
+          order[j + 1] = key;
+        }
+      }
+      var ownCursor = ownStart;
+      while (ownCursor < count) {
+        final first = order[ownCursor];
+        var ownEnd = ownCursor + 1;
+        if (context._joints[first] == null &&
+            context._external[first] == null) {
+          final firstMat = context._materials[first]!.depthNormalMaterial!;
+          final firstSurf = context._surfaces[first]!;
+          while (ownEnd < count) {
+            final other = order[ownEnd];
+            if (context._joints[other] != null ||
+                context._external[other] != null ||
+                !identical(
+                  context._materials[other]!.depthNormalMaterial,
+                  firstMat,
+                ) ||
+                !identical(context._surfaces[other], firstSurf)) {
+              break;
+            }
+            ownEnd++;
+          }
+        }
+        _submitOwnBatch(order, ownCursor, ownEnd - ownCursor);
+        ownCursor = ownEnd;
+      }
     }
 
     context
@@ -173,27 +217,33 @@ class _DepthNormalPass(final RenderContext3D _context) {
     final device = context.device;
     final first = order[start];
     final surface = context._surfaces[first]!;
-    final vertexShader = _pipelines[surface.layout]!.skinned
-        ? _skinnedVertexShader
-        : _vertexShader;
+    final vertexShader = _pipelines[surface.layout]!.vertexShader!;
 
+    final joints = context._joints[first];
     device.bindPipeline(context._pipelines[first]!);
     if (device.bindingEpoch != context._bindingEpoch) {
       context
         .._bindingEpoch = device.bindingEpoch
-        .._bindSlots(vertexShader, RenderContext3D._passScope);
+        .._bindPassPlan(
+          context._planFor(vertexShader),
+          skipJoints: joints != null,
+        );
     }
     device
       ..setRenderState(_renderState)
       ..setFrontFace(context.frontFace);
-    context._bindJoints(vertexShader, context._joints[first]);
+    context._bindJoints(vertexShader, joints);
     device.bindSurface(surface);
 
     final external = context._external[first];
     if (external != null) {
       final instanceCount = context._externalCounts[first];
       device
-        ..bindInstances(external, instanceCount)
+        ..bindInstances(
+          external,
+          instanceCount,
+          startFloat: context._externalOffsets[first],
+        )
         ..drawSurface(surface, instanceCount: instanceCount);
       return;
     }
@@ -202,9 +252,9 @@ class _DepthNormalPass(final RenderContext3D _context) {
       ..drawSurface(surface, instanceCount: count);
   }
 
-  /// Submits the draw at [position] in [order] with the depth-normal
-  /// material of its material ([Material.depthNormalMaterial]).
-  void _submitOwn(Int32List order, int position) {
+  /// Submits [batchCount] matching draws starting at [position] in [order] with
+  /// their custom [Material.depthNormalMaterial].
+  void _submitOwnBatch(Int32List order, int position, int batchCount) {
     final context = _context;
     final device = context.device;
     final draw = order[position];
@@ -218,12 +268,18 @@ class _DepthNormalPass(final RenderContext3D _context) {
       );
     }
     final vertexShader = material.vertexShaderFor(surface.layout);
+    final fragmentShader = material.fragmentShaderFor(context, surface.layout);
     final joints = context._joints[draw];
     device.bindPipeline(pipeline);
     context
-      .._bindPassSlots(material, vertexShader)
+      .._bindPassSlots(
+        material,
+        vertexShader,
+        fragmentShader: fragmentShader,
+        skipJoints: joints != null,
+      )
       .._jointTransforms = joints
-      .._applyMaterial(material, vertexShader)
+      .._applyMaterial(material, vertexShader, fragmentShader)
       .._bindJoints(vertexShader, joints)
       // The next draw binds its own slots again.
       .._bindingEpoch = -1
@@ -236,13 +292,17 @@ class _DepthNormalPass(final RenderContext3D _context) {
     if (external != null) {
       final instanceCount = context._externalCounts[draw];
       device
-        ..bindInstances(external, instanceCount)
+        ..bindInstances(
+          external,
+          instanceCount,
+          startFloat: context._externalOffsets[draw],
+        )
         ..drawSurface(surface, instanceCount: instanceCount);
       return;
     }
     device
-      ..bindInstancesOf(context._instances, order, position, 1)
-      ..drawSurface(surface);
+      ..bindInstancesOf(context._instances, order, position, batchCount)
+      ..drawSurface(surface, instanceCount: batchCount);
   }
 
   _CasterPipeline? _pipelineFor(VertexLayout layout) {
@@ -274,24 +334,27 @@ class _DepthNormalPass(final RenderContext3D _context) {
           layout,
         )
         .._vertexGeneration = vertexShader.generation
-        .._fragmentGeneration = fragmentShader.generation;
+        .._fragmentGeneration = fragmentShader.generation
+        ..vertexShader = vertexShader
+        ..fragmentShader = fragmentShader;
     }
     return entry;
   }
 
-  static final Vector4 _scratchParams = Vector4.zero();
-
   static void writeUniforms(RenderContext3D context, UniformBlock block) {
     final dn = context._depthNormal;
-    block.setVector4(
-      'params',
-      _scratchParams..setValues(
+    final off =
+        (block.cachedWriterOffsets as int?) ??
+        (block.cachedWriterOffsets = block.resolveOffset('params'));
+    if (off >= 0) {
+      block.writeVec4ValuesAt(
+        off,
         dn.active ? 1.0 : 0.0,
         1.0 / dn._width,
         1.0 / dn._height,
         0.0,
-      ),
-    );
+      );
+    }
   }
 
   static Texture passTexture(RenderContext3D context) {

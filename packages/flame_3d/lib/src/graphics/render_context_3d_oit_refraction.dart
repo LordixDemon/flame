@@ -264,22 +264,23 @@ class _OitAndGrabPass(final RenderContext3D _context) {
     depthWrite: false,
   );
 
-  static final Vector4 _scratchSceneColor = Vector4.zero();
-
   static void writeSceneColorUniforms(
     RenderContext3D context,
     UniformBlock block,
   ) {
     final g = context._oitGrab;
-    block.setVector4(
-      'params',
-      _scratchSceneColor..setValues(
+    final off =
+        (block.cachedWriterOffsets as int?) ??
+        (block.cachedWriterOffsets = block.resolveOffset('params'));
+    if (off >= 0) {
+      block.writeVec4ValuesAt(
+        off,
         g.grabActive ? 1.0 : 0.0,
         1.0 / g.grabWidth,
         1.0 / g.grabHeight,
         0.0,
-      ),
-    );
+      );
+    }
   }
 
   static Texture sceneColorPassTexture(RenderContext3D context) {

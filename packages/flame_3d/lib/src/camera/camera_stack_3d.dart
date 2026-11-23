@@ -2,6 +2,7 @@ import 'dart:collection' show UnmodifiableListView;
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flame/components.dart' show Component;
 import 'package:flame/game.dart' show Game;
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
@@ -200,6 +201,8 @@ class CameraStack3D({
   final List<_IndexedSlot> _entries = [];
   int _nextOrder = 0;
   int _lastRenderedSlotCount = 0;
+  final Map<World3D, Game?> _cachedSlotGames = Map.identity();
+  Game? _cachedFallbackGame;
 
   final Paint _compositePaint = Paint();
   final Paint _borderPaint = Paint()..style = PaintingStyle.stroke;
@@ -261,9 +264,36 @@ class CameraStack3D({
     return true;
   }
 
-  /// Removes all slots from this stack.
+  /// Removes all slots from this stack and clears cached game references.
   void clear() {
     _entries.clear();
+    _cachedSlotGames.clear();
+    _cachedFallbackGame = null;
+  }
+
+  /// Clears cached [Game] lookups held by this stack (call on detach/remove if
+  /// slots move between games).
+  void clearGameCache() {
+    _cachedSlotGames.clear();
+    _cachedFallbackGame = null;
+  }
+
+  Game? _gameFor(World3D world) {
+    final cached = _cachedSlotGames[world];
+    if (cached != null && world.isMounted) {
+      if (cached case final Component c when !c.isMounted) {
+        // Stale game is no longer mounted; resolve again below.
+      } else {
+        return cached;
+      }
+    }
+    final resolved = world.findGame();
+    if (resolved != null) {
+      _cachedSlotGames[world] = resolved;
+    } else {
+      _cachedSlotGames.remove(world);
+    }
+    return resolved;
   }
 
   /// Advances unmounted cameras in this stack by [dt].
@@ -415,6 +445,7 @@ class CameraStack3D({
     var openedDevice = false;
     EmbeddedRenderer? embedded;
     var openedEmbedded = false;
+    Game3D? openedGame3D;
 
     if (resolvedDevice != null) {
       resolvedContext ??= RenderContext3D(resolvedDevice);
@@ -424,9 +455,26 @@ class CameraStack3D({
       }
     }
 
+    GraphicsDevice? resolveDeviceFor(World3D w) {
+      if (resolvedDevice != null && resolvedContext != null) {
+        return resolvedDevice;
+      }
+      final sg = _gameFor(w);
+      if (sg case final Game3D game3d) {
+        return game3d.device;
+      }
+      return embedded?.device;
+    }
+
     try {
       var rendered = 0;
-      for (final entry in _entries) {
+      var chainAnchorIdx = -1;
+      var chainAnchorClear = const Color(0x00000000);
+      var chainClearMode = CameraClearMode3D.colorAndDepth;
+      Color? chainClearColor;
+      var chainRenderedBefore = 0;
+      for (var entryIdx = 0; entryIdx < _entries.length; entryIdx++) {
+        final entry = _entries[entryIdx];
         final slot = entry.slot;
         if (!slot.enabled) {
           continue;
@@ -442,24 +490,36 @@ class CameraStack3D({
 
         GraphicsDevice activeDevice;
         RenderContext3D activeContext;
-        var closeGameDevice = false;
         if (resolvedDevice != null && resolvedContext != null) {
           activeDevice = resolvedDevice;
           activeContext = resolvedContext;
-        } else if (slotWorld.findGame() case final Game3D game3d) {
-          activeDevice = game3d.device;
-          activeContext = game3d.context;
-          if (!game3d.isRenderingFrame) {
-            activeDevice.begin();
-            closeGameDevice = true;
-          }
         } else {
-          embedded ??= EmbeddedRenderer.of(slotWorld.findGame() ?? this);
-          if (!openedEmbedded) {
-            openedEmbedded = embedded.open();
+          final slotGame = _gameFor(slotWorld);
+          if (slotGame case final Game3D game3d) {
+            if (openedGame3D != null && !identical(openedGame3D, game3d)) {
+              openedGame3D.device.end();
+              openedGame3D = null;
+            }
+            activeDevice = game3d.device;
+            activeContext = game3d.context;
+            if (openedGame3D == null && !game3d.isRenderingFrame) {
+              activeDevice.begin();
+              openedGame3D = game3d;
+            }
+          } else {
+            if (openedGame3D != null) {
+              openedGame3D.device.end();
+              openedGame3D = null;
+            }
+            final fallbackHost = slotGame ?? _cachedFallbackGame ?? this;
+            _cachedFallbackGame = slotGame;
+            embedded ??= EmbeddedRenderer.of(fallbackHost);
+            if (!openedEmbedded) {
+              openedEmbedded = embedded.open();
+            }
+            activeDevice = embedded.device;
+            activeContext = embedded.context;
           }
-          activeDevice = embedded.device;
-          activeContext = embedded.context;
         }
 
         final scale = pixelRatio * slotWorld.renderScale;
@@ -475,76 +535,171 @@ class CameraStack3D({
           CameraClearMode3D.none => const Color(0x00000000),
         };
 
+        // Check if the next enabled slot can chain onto a shared native-keep
+        // GpuTextureTarget so consecutive compatible passes share one
+        // composite and avoid intermediate Flutter Image readbacks.
+        final chained = chainAnchorIdx >= 0;
+        final anchorIdx = chained ? chainAnchorIdx : entryIdx;
+        final anchorClear = chained ? chainAnchorClear : gpuClear;
+        var chainNext = false;
+        final canChain =
+            keepTargets &&
+            activeDevice.backend.supportsTextureTargets &&
+            !slotWorld.needsPostCompositePass(activeDevice) &&
+            slotWorld.oitMode == OitMode3D.none &&
+            !slotWorld.grabSceneColorEnabled &&
+            (slot.borderColor == null || slot.borderWidth <= 0);
+        if (canChain) {
+          for (
+            var nextIdx = entryIdx + 1;
+            nextIdx < _entries.length;
+            nextIdx++
+          ) {
+            final nextSlot = _entries[nextIdx].slot;
+            if (!nextSlot.enabled) {
+              continue;
+            }
+            final nextWorld =
+                nextSlot.world ?? nextSlot.camera.world ?? defaultWorld;
+            if (nextWorld == null) {
+              continue;
+            }
+            final nextRect = nextSlot.syncCameraViewport(canvasSize);
+            if (nextRect.width <= 0 || nextRect.height <= 0) {
+              continue;
+            }
+            final nextScale = pixelRatio * nextWorld.renderScale;
+            final nextPassSize = Size(
+              math.max(1.0, nextRect.width * nextScale),
+              math.max(1.0, nextRect.height * nextScale),
+            );
+            final nextDevice = resolveDeviceFor(nextWorld);
+            if (nextSlot.clearMode == CameraClearMode3D.depthOnly &&
+                identical(nextDevice, activeDevice) &&
+                nextRect == pixelRect &&
+                nextPassSize == passSize &&
+                !nextWorld.needsPostCompositePass(activeDevice) &&
+                nextWorld.oitMode == OitMode3D.none &&
+                !nextWorld.grabSceneColorEnabled) {
+              final sharedTarget = _entries[anchorIdx].chainTextureTargetFor(
+                activeDevice,
+                passSize,
+                anchorClear,
+              );
+              if (activeDevice.backend.supportsNativeKeepContents(
+                sharedTarget,
+              )) {
+                chainNext = true;
+              }
+            }
+            break;
+          }
+        }
+
         final prevMask = activeContext.cameraMask;
         activeContext.cameraMask = slot.camera.cameraMask;
         Image? image;
+        var effectiveClearMode = slot.clearMode;
+        var effectiveClearColor = slot.clearColor;
+        var effectiveRenderedBefore = rendered;
         try {
-          image = slotWorld.renderToImageInto(
-            passSize,
-            view: slot.camera.viewMatrix,
-            projection: slot.camera.projectionMatrix,
-            msaa: msaa,
-            clearValue: gpuClear,
-            device: activeDevice,
-            context: activeContext,
-            target: keepTargets
-                ? entry.targetFor(
-                    activeDevice,
-                    slotWorld,
-                    passSize,
-                    gpuClear,
-                    msaa,
-                  )
-                : null,
-          );
+          if (chained || chainNext) {
+            final sharedTarget = _entries[anchorIdx].chainTextureTargetFor(
+              activeDevice,
+              passSize,
+              anchorClear,
+            );
+            if (!chained && chainNext) {
+              chainAnchorIdx = entryIdx;
+              chainAnchorClear = gpuClear;
+              chainClearMode = slot.clearMode;
+              chainClearColor = slot.clearColor;
+              chainRenderedBefore = rendered;
+            }
+            slotWorld.renderChainedIntoTextureTarget(
+              size: passSize,
+              view: slot.camera.viewMatrix,
+              projection: slot.camera.projectionMatrix,
+              msaa: msaa,
+              device: activeDevice,
+              context: activeContext,
+              target: sharedTarget,
+              keepContents: chained,
+            );
+            if (!chainNext) {
+              image = sharedTarget.texture.asImage();
+              effectiveClearMode = chainClearMode;
+              effectiveClearColor = chainClearColor;
+              effectiveRenderedBefore = chainRenderedBefore;
+              chainAnchorIdx = -1;
+            }
+          } else {
+            image = slotWorld.renderToImageInto(
+              passSize,
+              view: slot.camera.viewMatrix,
+              projection: slot.camera.projectionMatrix,
+              msaa: msaa,
+              clearValue: gpuClear,
+              device: activeDevice,
+              context: activeContext,
+              target: keepTargets
+                  ? entry.targetFor(
+                      activeDevice,
+                      slotWorld,
+                      passSize,
+                      gpuClear,
+                      msaa,
+                    )
+                  : null,
+            );
+          }
         } finally {
           activeContext.cameraMask = prevMask;
-          if (closeGameDevice) {
-            activeDevice.end();
-          }
         }
 
-        canvas
-          ..save()
-          ..clipRect(pixelRect);
-        if (slot.clearMode == CameraClearMode3D.colorAndDepth) {
-          if (slot.clearColor case final bg?) {
-            _clearPaint
-              ..color = bg
-              ..blendMode = BlendMode.src;
-            canvas.drawRect(pixelRect, _clearPaint);
-          } else if (rendered > 0) {
-            _clearPaint
-              ..color = const Color(0x00000000)
-              ..blendMode = BlendMode.clear;
-            canvas.drawRect(pixelRect, _clearPaint);
+        if (image != null) {
+          canvas
+            ..save()
+            ..clipRect(pixelRect);
+          if (effectiveClearMode == CameraClearMode3D.colorAndDepth) {
+            if (effectiveClearColor case final bg?) {
+              _clearPaint
+                ..color = bg
+                ..blendMode = BlendMode.src;
+              canvas.drawRect(pixelRect, _clearPaint);
+            } else if (effectiveRenderedBefore > 0) {
+              _clearPaint
+                ..color = const Color(0x00000000)
+                ..blendMode = BlendMode.clear;
+              canvas.drawRect(pixelRect, _clearPaint);
+            }
           }
-        }
 
-        _compositePaint
-          ..blendMode = BlendMode.srcOver
-          ..filterQuality = slotWorld.renderScale == 1.0
-              ? FilterQuality.none
-              : slotWorld.scaledFilterQuality;
-        int? imgWidth;
-        int? imgHeight;
-        try {
-          imgWidth = image.width;
-          imgHeight = image.height;
-        } on Object {
-          imgWidth = null;
-          imgHeight = null;
+          _compositePaint
+            ..blendMode = BlendMode.srcOver
+            ..filterQuality = slotWorld.renderScale == 1.0
+                ? FilterQuality.none
+                : slotWorld.scaledFilterQuality;
+          int? imgWidth;
+          int? imgHeight;
+          try {
+            imgWidth = image.width;
+            imgHeight = image.height;
+          } on Object {
+            imgWidth = null;
+            imgHeight = null;
+          }
+          if (imgWidth != null && imgHeight != null) {
+            canvas.drawImageRect(
+              image,
+              Rect.fromLTWH(0, 0, imgWidth.toDouble(), imgHeight.toDouble()),
+              pixelRect,
+              _compositePaint,
+            );
+          }
+          canvas.restore();
+          image.dispose();
         }
-        if (imgWidth != null && imgHeight != null) {
-          canvas.drawImageRect(
-            image,
-            Rect.fromLTWH(0, 0, imgWidth.toDouble(), imgHeight.toDouble()),
-            pixelRect,
-            _compositePaint,
-          );
-        }
-        canvas.restore();
-        image.dispose();
 
         if (slot.borderColor case final border? when slot.borderWidth > 0) {
           _borderPaint
@@ -560,6 +715,9 @@ class CameraStack3D({
       _lastRenderedSlotCount = rendered;
       return rendered;
     } finally {
+      if (openedGame3D != null) {
+        openedGame3D.device.end();
+      }
       if (openedEmbedded) {
         embedded?.close();
       }
@@ -670,6 +828,41 @@ class _IndexedSlot(this.slot, this.order) {
       height: height,
       clearValue: Color(clear),
       msaaSampleCount: samples,
+    );
+  }
+
+  GpuTextureTarget? _chainTexTarget;
+  GpuBackend? _chainTexBackend;
+  int _chainTexW = 0;
+  int _chainTexH = 0;
+  int _chainTexClear = 0;
+
+  GpuTextureTarget chainTextureTargetFor(
+    GraphicsDevice device,
+    Size size,
+    Color clearValue,
+  ) {
+    final width = math.max(1, size.width.round());
+    final height = math.max(1, size.height.round());
+    final clear = clearValue.toARGB32();
+    final backend = device.backend;
+    final target = _chainTexTarget;
+    if (target != null &&
+        identical(backend, _chainTexBackend) &&
+        width == _chainTexW &&
+        height == _chainTexH &&
+        clear == _chainTexClear) {
+      return target;
+    }
+    _chainTexBackend = backend;
+    _chainTexW = width;
+    _chainTexH = height;
+    _chainTexClear = clear;
+    return _chainTexTarget = backend.createTextureTarget(
+      width: width,
+      height: height,
+      format: GpuPixelFormat.rgba8888,
+      clearValue: clearValue,
     );
   }
 }

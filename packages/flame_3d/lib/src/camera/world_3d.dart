@@ -1,5 +1,6 @@
 import 'dart:collection' show UnmodifiableListView;
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flame/components.dart' as flame;
@@ -11,6 +12,7 @@ import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/embedding/embedded_renderer.dart';
 import 'package:flame_3d/src/graphics/material_tracker.dart';
+import 'package:flame_3d/src/world_scale/occlusion_culler_3d.dart';
 import 'package:meta/meta.dart';
 
 part 'shadow_group.dart';
@@ -39,6 +41,7 @@ class World3D({
   bool prioritizeNearestLights = false,
   LightGridSettings? lightGrid,
   bool depthPrepassEnabled = false,
+  OcclusionCuller3D? occlusionCuller,
 }) extends flame.World {
   final List<Light> _lights = [];
   // Increases when a light joins or leaves [_lights], see [_passLights].
@@ -580,6 +583,48 @@ class World3D({
     markSceneDirty(shadows: false);
   }
 
+  /// Optional CPU Hi-Z [OcclusionCuller3D] rasterized once per unique main
+  /// camera view-projection before traversal to cull occluded [Object3D]s.
+  OcclusionCuller3D? get occlusionCuller => _occlusionCuller;
+  OcclusionCuller3D? _occlusionCuller = occlusionCuller;
+  set occlusionCuller(OcclusionCuller3D? value) {
+    if (identical(value, _occlusionCuller)) {
+      return;
+    }
+    _occlusionCuller = value;
+    _lastRasterizedCuller = null;
+    markSceneDirty(shadows: false);
+  }
+
+  OcclusionCuller3D? _lastRasterizedCuller;
+  int _occFrame = -1;
+  final Float32List _occVp = Float32List(16);
+
+  /// Rasterizes registered occluders of [occlusionCuller] once per unique
+  /// main-camera view-projection and frame before traversal.
+  @internal
+  void prepareOcclusionCuller(RenderContext3D ctx) {
+    final culler = _occlusionCuller;
+    if (culler == null ||
+        ctx.isShadowPass ||
+        (culler.boxes.isEmpty && culler.quads.isEmpty)) {
+      return;
+    }
+    final frame = ctx.device.frame;
+    final vp = ctx.viewProjection.storage;
+    if (identical(_lastRasterizedCuller, culler) &&
+        _occFrame == frame &&
+        _sameVp16(vp, _occVp)) {
+      return;
+    }
+    _lastRasterizedCuller = culler;
+    _occFrame = frame;
+    for (var i = 0; i < 16; i++) {
+      _occVp[i] = vp[i];
+    }
+    culler.rasterizeOccluders(ctx.viewProjection);
+  }
+
   /// Mounted local box-projected `ReflectionProbeVolume3D` components.
   List<ReflectionProbeVolume3D> get reflectionProbes =>
       List.unmodifiable(_reflectionProbes);
@@ -703,6 +748,40 @@ class World3D({
   void onRemove() {
     super.onRemove();
     _host = null;
+    _cachedGame = null;
+    _visibleObjects.clear();
+    _hasVisibleCache = false;
+  }
+
+  Game? _cachedGame;
+  final _SnapshotHost _snapshotHost = _SnapshotHost();
+  final List<Object3D> _visibleObjects = [];
+  bool _collectingVisible = false;
+  bool _hasVisibleCache = false;
+  RenderContext3D? _visibleCtx;
+  int _visibleCameraMask = 0;
+  int _visibleSceneVersion = -1;
+  final Float32List _visibleVp = Float32List(16);
+
+  /// Records [object] as visible during the current traversal when the world
+  /// is collecting visible objects for reuse in the main scene pass.
+  @internal
+  void recordVisibleObject(Object3D object) {
+    if (_collectingVisible) {
+      _visibleObjects.add(object);
+    }
+  }
+
+  Game? _resolveGame() {
+    if (!isMounted) {
+      _cachedGame = null;
+      return findGame();
+    }
+    final cached = _cachedGame;
+    if (cached != null) {
+      return cached;
+    }
+    return _cachedGame = findGame();
   }
 
   @override
@@ -819,6 +898,7 @@ class World3D({
     int height, {
     RenderContext3D? overrideContext,
   }) {
+    _hasVisibleCache = false;
     final ctx = overrideContext ?? context;
     final debugNeedsDn =
         _renderDebugMode3D == RenderDebugMode3D.depth ||
@@ -834,10 +914,32 @@ class World3D({
     if (!ctx.beginDepthNormalPass(width, height)) {
       return false;
     }
+    prepareOcclusionCuller(ctx);
+    _visibleObjects.clear();
+    _collectingVisible = true;
+    var onlyComponent3D = true;
     try {
-      _recordCasters(canvas);
+      _rendering = true;
+      try {
+        for (final child in children) {
+          if (child is! Component3D) {
+            onlyComponent3D = false;
+          }
+          child.renderTree(canvas);
+        }
+      } finally {
+        _rendering = false;
+      }
     } finally {
+      _collectingVisible = false;
       ctx.endDepthNormalPass();
+    }
+    if (onlyComponent3D) {
+      _hasVisibleCache = true;
+      _visibleCtx = ctx;
+      _visibleCameraMask = ctx.cameraMask;
+      _visibleSceneVersion = sceneVersion;
+      _visibleVp.setAll(0, ctx.viewProjection.storage);
     }
     return true;
   }
@@ -873,6 +975,14 @@ class World3D({
   static final Vector3 _keyDir = Vector3.zero();
 
   void _recordCasters(Canvas canvas) {
+    final ctx = context;
+    if (ctx.isShadowPass &&
+        ctx.shadowCasterLayer == ShadowCasterLayer.moving &&
+        _shadowCasters.moversComplete &&
+        _allRootChildrenComponent3D()) {
+      _recordMovingCasters(ctx);
+      return;
+    }
     _rendering = true;
     try {
       for (final child in children) {
@@ -883,12 +993,96 @@ class World3D({
     }
   }
 
+  bool _allRootChildrenComponent3D() {
+    for (final child in children) {
+      if (child is! Component3D) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void _recordMovingCasters(RenderContext3D ctx) {
+    final movers = _shadowCasters.movers;
+    if (movers.isEmpty) {
+      return;
+    }
+    final frustum = ctx.frustum;
+    final passMask = ctx.cameraMask;
+    _rendering = true;
+    try {
+      for (var i = 0; i < movers.length; i++) {
+        final obj = movers[i];
+        if (!obj.castsShadows ||
+            !obj.isEffectivelyVisible ||
+            !_passesCameraMaskHierarchy(obj, passMask)) {
+          continue;
+        }
+        final cull = obj.aabb.frustumCullTest(frustum);
+        if (cull == CullResult.outside) {
+          continue;
+        }
+        if (cull == CullResult.inside || obj.isVisible(frustum)) {
+          if (obj.shadowMotion == ShadowCasterMotion.auto) {
+            _shadowCasters.drawnMoving(obj);
+          }
+          obj.draw(ctx);
+        }
+      }
+    } finally {
+      _rendering = false;
+    }
+  }
+
+  static bool _passesCameraMaskHierarchy(Component3D node, int passMask) {
+    flame.Component? cur = node;
+    while (cur != null) {
+      if (cur is Component3D) {
+        if ((cur.cameraMask & passMask) == 0) {
+          return false;
+        }
+      } else if (cur is World3D) {
+        return true;
+      }
+      cur = cur.parent;
+    }
+    return true;
+  }
+
+  static bool _sameVp16(Float32List a, Float32List b) {
+    for (var i = 0; i < 16; i++) {
+      if (a[i] != b[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   /// Syncs world lighting, HDR, debug mode, `LightProbeGrid3D`, and
   /// `ReflectionProbeVolume3D` state onto [ctx].
   @internal
   void syncContextOptions(RenderContext3D ctx) {
+    final lights = _passLights;
+    final bounds = _lightGrid == null || hasUnboundedComponents
+        ? null
+        : sceneBounds;
+    if (!ctx.needsSyncOptions(
+      lights: lights,
+      lightsVersion: lightsVersion,
+      fog: _fog,
+      waterVolume: _waterVolume,
+      renderDebugMode: _renderDebugMode3D,
+      lightProbeGrid: _lightProbeGrid,
+      reflectionProbes: _reflectionProbes,
+      prioritizeNearestLights: _prioritizeNearestLights,
+      lightGrid: _lightGrid,
+      lightGridBounds: bounds,
+      hdrEnabled: false,
+    )) {
+      return;
+    }
     ctx
-      ..lights = _passLights
+      ..setWorldLights(lights, lightsVersion)
       ..fog = _fog
       ..waterVolume = _waterVolume
       // Only the passes into the HDR scene target encode for it, see
@@ -899,9 +1093,7 @@ class World3D({
       ..reflectionProbes = _reflectionProbes
       ..prioritizeNearestLights = _prioritizeNearestLights
       ..lightGrid = _lightGrid
-      ..lightGridBounds = _lightGrid == null || hasUnboundedComponents
-          ? null
-          : sceneBounds
+      ..lightGridBounds = bounds
       ..bumpPassUniforms();
   }
 
@@ -909,10 +1101,25 @@ class World3D({
   void renderScene(Canvas canvas, {RenderContext3D? overrideContext}) {
     final ctx = overrideContext ?? context;
     syncContextOptions(ctx);
+    prepareOcclusionCuller(ctx);
+    final reuseVisible =
+        _hasVisibleCache &&
+        identical(ctx, _visibleCtx) &&
+        ctx.cameraMask == _visibleCameraMask &&
+        sceneVersion == _visibleSceneVersion &&
+        _sameVp16(ctx.viewProjection.storage, _visibleVp);
+    _hasVisibleCache = false;
     _rendering = true;
     try {
-      for (final child in children) {
-        child.renderTree(canvas);
+      if (reuseVisible) {
+        final visible = _visibleObjects;
+        for (var i = 0; i < visible.length; i++) {
+          visible[i].draw(ctx);
+        }
+      } else {
+        for (final child in children) {
+          child.renderTree(canvas);
+        }
       }
     } finally {
       _rendering = false;
@@ -1033,9 +1240,12 @@ class World3D({
     final usePost = needsPostCompositePass(device);
     // The scene (and the targets composited into it) is the HDR target only
     // when the composite decodes it.
-    renderContext
-      ..hdrEnabled = _hdrEnabled && usePost
-      ..bumpPassUniforms();
+    final nextHdr = _hdrEnabled && usePost;
+    if (renderContext.hdrEnabled != nextHdr) {
+      renderContext
+        ..hdrEnabled = nextHdr
+        ..bumpPassUniforms();
+    }
     final runGrab =
         supportsTexTargets &&
         (_grabSceneColorEnabled || renderContext.hasRefractiveDraws);
@@ -1278,6 +1488,7 @@ class World3D({
     GraphicsDevice resolvedDevice;
     RenderContext3D resolvedContext;
     var closeFrame = false;
+    EmbeddedRenderer? resolvedEmbedded;
 
     if (device != null && context != null) {
       resolvedDevice = device;
@@ -1292,7 +1503,9 @@ class World3D({
           closeFrame = true;
         }
       } else {
-        final embedded = EmbeddedRenderer.of(findGame() ?? this);
+        final embedded = resolvedEmbedded = EmbeddedRenderer.of(
+          _resolveGame() ?? this,
+        );
         resolvedDevice = embedded.device;
         resolvedContext = embedded.context;
         closeFrame = embedded.open();
@@ -1304,10 +1517,7 @@ class World3D({
 
     try {
       return renderWithHost(resolvedDevice, resolvedContext, msaa: msaa, () {
-        resolvedContext
-          ..lights = _passLights
-          ..fog = _fog
-          ..setCamera(view, projection);
+        resolvedContext.setCamera(view, projection);
         syncContextOptions(resolvedContext);
         renderShadows(dummyCanvas, overrideContext: resolvedContext);
         renderDepthNormals(
@@ -1344,12 +1554,57 @@ class World3D({
     } finally {
       dummyRecorder.endRecording().dispose();
       if (closeFrame) {
-        if (_contextOrNull != null && host is Game3D) {
-          resolvedDevice.end();
+        if (resolvedEmbedded != null) {
+          resolvedEmbedded.close();
         } else {
-          EmbeddedRenderer.of(findGame() ?? this).close();
+          resolvedDevice.end();
         }
       }
+    }
+  }
+
+  /// Renders a non-post-processed pass directly into [target], preserving prior
+  /// contents when [keepContents] is `true`. Used by `CameraStack3D` to chain
+  /// compatible `depthOnly` slots onto a single native-keep texture target.
+  @internal
+  void renderChainedIntoTextureTarget({
+    required Size size,
+    required Matrix4 view,
+    required Matrix4 projection,
+    required GraphicsDevice device,
+    required RenderContext3D context,
+    required GpuTextureTarget target,
+    required bool keepContents,
+    Msaa msaa = Msaa.off,
+  }) {
+    final width = math.max(1, size.width.round());
+    final height = math.max(1, size.height.round());
+    final dummyRecorder = PictureRecorder();
+    final dummyCanvas = Canvas(dummyRecorder);
+    try {
+      renderWithHost(device, context, msaa: msaa, () {
+        context.setCamera(view, projection);
+        syncContextOptions(context);
+        renderShadows(dummyCanvas, overrideContext: context);
+        renderDepthNormals(
+          dummyCanvas,
+          width,
+          height,
+          overrideContext: context,
+        );
+        syncContextOptions(context);
+        renderScene(dummyCanvas, overrideContext: context);
+        device.beginTexturePass(
+          target,
+          frontFace: context.frontFace,
+          keepContents: keepContents,
+        );
+        context.flush();
+        device.endTexturePass();
+        context.clearActiveSceneColorTarget();
+      });
+    } finally {
+      dummyRecorder.endRecording().dispose();
     }
   }
 
@@ -1368,7 +1623,15 @@ class World3D({
     Msaa msaa = Msaa.off,
   }) {
     final previousHost = _host;
-    _host = _SnapshotHost(device, context, msaa);
+    final snap = _snapshotHost;
+    final prevDevice = snap._device;
+    final prevContext = snap._context;
+    final prevMsaa = snap.msaa;
+    snap
+      .._device = device
+      .._context = context
+      ..msaa = msaa;
+    _host = snap;
     final gatherLights = !isMounted && _lights.isEmpty;
     if (gatherLights) {
       _gatherLights(this);
@@ -1383,6 +1646,10 @@ class World3D({
       return body();
     } finally {
       _host = previousHost;
+      snap
+        .._device = prevDevice
+        .._context = prevContext
+        ..msaa = prevMsaa;
       if (gatherLights) {
         _lights.clear();
         _lightListRevision++;
@@ -1627,8 +1894,6 @@ class World3D({
     final renderSize = Size(size.x * scale, size.y * scale);
 
     final context = host.context
-      ..lights = _passLights
-      ..fog = _fog
       ..cameraMask = camera.cameraMask
       ..setCamera(camera.viewMatrix, camera.projectionMatrix);
     syncContextOptions(context);
@@ -1677,16 +1942,21 @@ class World3D({
   }
 }
 
-class _SnapshotHost(this.device, this.context, final Msaa _msaa)
-    implements Scene3DHost {
+class _SnapshotHost() implements Scene3DHost {
   @override
-  final GraphicsDevice device;
+  GraphicsDevice get device => _device!;
+  GraphicsDevice? _device;
+  set device(GraphicsDevice? value) => _device = value;
 
   @override
-  final RenderContext3D context;
+  RenderContext3D get context => _context!;
+  RenderContext3D? _context;
+  set context(RenderContext3D? value) => _context = value;
+
+  Msaa msaa = Msaa.off;
 
   @override
-  int get msaaSampleCount => _msaa.sampleCount;
+  int get msaaSampleCount => msaa.sampleCount;
 
   @override
   double get pixelRatio => 1.0;

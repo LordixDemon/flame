@@ -37,7 +37,12 @@ void main() {
     late Surface surface;
 
     setUp(() {
-      backend = FakeGpuBackend(blockSizes: {'JointMatrices': 4096});
+      backend = FakeGpuBackend(
+        blockSizes: {
+          'JointMatrices': 4096,
+          RenderContext3D.spatialPassBlock: 64 * 1024,
+        },
+      );
       device = GraphicsDevice(backend: backend);
       context = RenderContext3D(device);
       material = SpatialMaterial();
@@ -71,28 +76,36 @@ void main() {
       return backend.uniforms;
     }
 
-    int offsetOf(String block, String member) =>
-        material.fragmentShader.slot(block).getMemberOffsetInBytes(member)! ~/
-        Float32List.bytesPerElement;
+    int offsetOf(String block, String member) {
+      final shader = material.fragmentShaderFor(context, surface.layout);
+      final isSpatial =
+          block == 'Lights' || block == 'SpotLights' || block == 'LightGrid';
+      final actualBlock = isSpatial ? RenderContext3D.spatialPassBlock : block;
+      final actualMember = isSpatial ? '${block}_$member' : member;
+      return shader.slot(actualBlock).getMemberOffsetInBytes(actualMember)! ~/
+          Float32List.bytesPerElement;
+    }
 
     List<double> vec4(Map<String, Float32List> u, String block, String m) {
       final o = offsetOf(block, m);
-      return u[block]!.sublist(o, o + 4);
+      return u[RenderContext3D.spatialPassBlock]!.sublist(o, o + 4);
     }
 
-    List<double> pointXs(Map<String, Float32List> u) => [
-      for (var k = 0; k < u['Lights']![offsetOf('Lights', 'numLights')]; k++)
-        u['Lights']![offsetOf('Lights', 'positions') + k * 4],
-    ];
+    List<double> pointXs(Map<String, Float32List> u) {
+      final data = u[RenderContext3D.spatialPassBlock]!;
+      return [
+        for (var k = 0; k < data[offsetOf('Lights', 'numLights')]; k++)
+          data[offsetOf('Lights', 'positions') + k * 4],
+      ];
+    }
 
-    List<double> spotXs(Map<String, Float32List> u) => [
-      for (
-        var k = 0;
-        k < u['SpotLights']![offsetOf('SpotLights', 'numLights')];
-        k++
-      )
-        u['SpotLights']![offsetOf('SpotLights', 'positions') + k * 4],
-    ];
+    List<double> spotXs(Map<String, Float32List> u) {
+      final data = u[RenderContext3D.spatialPassBlock]!;
+      return [
+        for (var k = 0; k < data[offsetOf('SpotLights', 'numLights')]; k++)
+          data[offsetOf('SpotLights', 'positions') + k * 4],
+      ];
+    }
 
     FakeTexture? gridTexture() =>
         backend.textureBindings[RenderContext3D.lightGridSampler]?.$1;
@@ -115,8 +128,10 @@ void main() {
 
       // The blocks are those of a pass without a grid.
       final without = draw(lights);
-      expect(without['Lights'], withGrid['Lights']);
-      expect(without['SpotLights'], withGrid['SpotLights']);
+      expect(
+        without[RenderContext3D.spatialPassBlock],
+        withGrid[RenderContext3D.spatialPassBlock],
+      );
       expect(vec4(without, 'LightGrid', 'counts'), [8, 4, 0, 0]);
     });
 

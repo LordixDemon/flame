@@ -99,6 +99,7 @@ class MeshComponent({
       color: color,
       instanceData: instanceData,
       jointTransforms: jointTransforms,
+      mirrored: hasNegativeScale,
     );
   }
 

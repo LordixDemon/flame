@@ -587,6 +587,9 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
   bool get supportsFloatTextureTargets => capabilities.floatTextureTargets;
 
   @override
+  bool supportsNativeKeepContents(GpuTextureTarget target) => false;
+
+  @override
   GpuTextureTarget createTextureTarget({
     required int width,
     required int height,
@@ -807,6 +810,10 @@ class _FlutterGpuBuffer(
     }
     _generation = base.GpuBackend.deviceGeneration;
     _views.clear();
+    _view0 = null;
+    _view1 = null;
+    _viewOffset0 = -1;
+    _viewOffset1 = -1;
     return _raw = _create();
   }
 
@@ -815,25 +822,50 @@ class _FlutterGpuBuffer(
     raw.overwrite(data, destinationOffsetInBytes: destinationOffsetInBytes);
   }
 
-  // `flutter_gpu` takes buffer ranges as `BufferView` objects. Ranges recur
-  // from frame to frame (a surface's vertices, the same slices of a transient
-  // block), so their views are kept instead of allocated on every bind.
+  // `flutter_gpu` takes buffer ranges as `BufferView` objects. Static geometry
+  // buffers hit the two-entry fast path (vertex + index slice) without
+  // touching the hash map; transient buffers reuse offsets in `_views`.
+  gpu.BufferView? _view0;
+  int _viewOffset0 = -1;
+  int _viewLength0 = 0;
+  gpu.BufferView? _view1;
+  int _viewOffset1 = -1;
+  int _viewLength1 = 0;
   final Map<int, gpu.BufferView> _views = {};
 
   gpu.BufferView view(int offsetInBytes, int lengthInBytes) {
     final buffer = raw;
-    final view = _views[offsetInBytes];
-    if (view != null && view.lengthInBytes == lengthInBytes) {
-      return view;
+    if (_viewOffset0 == offsetInBytes &&
+        _viewLength0 == lengthInBytes &&
+        _view0 != null) {
+      return _view0!;
     }
-    if (_views.length >= _maxViews) {
-      _views.clear();
+    if (_viewOffset1 == offsetInBytes &&
+        _viewLength1 == lengthInBytes &&
+        _view1 != null) {
+      return _view1!;
     }
-    return _views[offsetInBytes] = gpu.BufferView(
-      buffer,
-      offsetInBytes: offsetInBytes,
-      lengthInBytes: lengthInBytes,
-    );
+    var view = _views[offsetInBytes];
+    if (view == null || view.lengthInBytes != lengthInBytes) {
+      if (_views.length >= _maxViews) {
+        _views.clear();
+      }
+      view = _views[offsetInBytes] = gpu.BufferView(
+        buffer,
+        offsetInBytes: offsetInBytes,
+        lengthInBytes: lengthInBytes,
+      );
+    }
+    if (_view0 == null) {
+      _view0 = view;
+      _viewOffset0 = offsetInBytes;
+      _viewLength0 = lengthInBytes;
+    } else if (_view1 == null) {
+      _view1 = view;
+      _viewOffset1 = offsetInBytes;
+      _viewLength1 = lengthInBytes;
+    }
+    return view;
   }
 
   static const _maxViews = 4096;
@@ -1071,7 +1103,7 @@ class _FlutterGpuTextureTarget(
   late gpu.RenderTarget _renderTarget;
   int _generation = -1;
 
-  /// The render target of the current device.
+  /// The render target of the current device, creating it when stale.
   gpu.RenderTarget get renderTarget {
     ensureCurrent();
     return _renderTarget;
@@ -1132,7 +1164,10 @@ class _FlutterGpuTextureTarget(
 class const _FlutterGpuFrame(final GpuBackend _backend)
     implements base.GpuFrame {
   @override
-  base.GpuRenderPass beginRenderPass(GpuRenderTarget target) {
+  base.GpuRenderPass beginRenderPass(
+    GpuRenderTarget target, {
+    bool keepContents = false,
+  }) {
     final commandBuffer = _backend._context.createCommandBuffer();
     if (target is _FlutterGpuTextureTarget) {
       return _FlutterGpuRenderPass(
@@ -1140,7 +1175,10 @@ class const _FlutterGpuFrame(final GpuBackend _backend)
         null,
         null,
         commandBuffer,
-        _begin(commandBuffer, target.renderTarget),
+        _begin(
+          commandBuffer,
+          target.renderTarget,
+        ),
       );
     }
     final renderTarget = target as _FlutterGpuRenderTarget;
@@ -1289,6 +1327,8 @@ class _FlutterGpuRenderPass(
     );
   }
 
+  static final Map<StencilState, gpu.StencilConfig> _stencilConfigs = {};
+
   @override
   void setStencil(StencilState? stencil) {
     if (stencil == null) {
@@ -1297,19 +1337,23 @@ class _FlutterGpuRenderPass(
         ..setStencilConfig(_disabledStencil);
       return;
     }
+    final config = _stencilConfigs.length >= 64
+        ? _createStencilConfig(stencil)
+        : (_stencilConfigs[stencil] ??= _createStencilConfig(stencil));
     _renderPass
       ..setStencilReference(stencil.referenceValue & 0xFF)
-      ..setStencilConfig(
-        gpu.StencilConfig(
-          compareFunction: _compareFunction(stencil.compare),
-          stencilFailureOperation: _stencilOp(stencil.stencilFail),
-          depthFailureOperation: _stencilOp(stencil.depthFail),
-          depthStencilPassOperation: _stencilOp(stencil.pass),
-          readMask: stencil.readMask & 0xFF,
-          writeMask: stencil.writeMask & 0xFF,
-        ),
-      );
+      ..setStencilConfig(config);
   }
+
+  static gpu.StencilConfig _createStencilConfig(StencilState stencil) =>
+      gpu.StencilConfig(
+        compareFunction: _compareFunction(stencil.compare),
+        stencilFailureOperation: _stencilOp(stencil.stencilFail),
+        depthFailureOperation: _stencilOp(stencil.depthFail),
+        depthStencilPassOperation: _stencilOp(stencil.pass),
+        readMask: stencil.readMask & 0xFF,
+        writeMask: stencil.writeMask & 0xFF,
+      );
 
   @override
   void setPolygonMode(PolygonFillMode mode) {

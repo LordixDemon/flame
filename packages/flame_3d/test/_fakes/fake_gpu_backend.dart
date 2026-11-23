@@ -422,7 +422,10 @@ class FakeTextureTarget(
 
 class FakeFrame(final FakeGpuBackend backend) implements GpuFrame {
   @override
-  GpuRenderPass beginRenderPass(GpuRenderTarget target) {
+  GpuRenderPass beginRenderPass(
+    GpuRenderTarget target, {
+    bool keepContents = false,
+  }) {
     backend.commands.add('beginRenderPass ${target.width}x${target.height}');
     return FakeRenderPass(backend);
   }

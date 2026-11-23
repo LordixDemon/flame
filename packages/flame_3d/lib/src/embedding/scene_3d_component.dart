@@ -10,7 +10,7 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/src/embedding/embedded_renderer.dart';
-import 'package:flutter/widgets.dart' show MediaQuery;
+import 'package:flutter/widgets.dart' show BuildContext, MediaQuery;
 import 'package:meta/meta.dart' show visibleForTesting;
 
 /// Caching strategy for a [Scene3DComponent]'s GPU render pass.
@@ -296,13 +296,47 @@ class Scene3DComponent({
   int get msaaSampleCount => msaa.sampleCount;
 
   @override
-  double get pixelRatio => _pixelRatioOf(findGame());
+  double get pixelRatio => _pixelRatioOfGame(_resolveGame());
 
-  static double _pixelRatioOf(Game? game) {
+  Game? _cachedGame;
+  BuildContext? _cachedDprContext;
+  double _cachedPixelRatio = 1.0;
+  bool _pixelRatioDirty = true;
+
+  Game? _resolveGame() {
+    if (!isMounted) {
+      return findGame();
+    }
+    return _cachedGame ??= findGame();
+  }
+
+  double _pixelRatioOfGame(Game? game) {
     final buildContext = game?.buildContext;
-    return buildContext == null
-        ? 1.0
-        : MediaQuery.devicePixelRatioOf(buildContext);
+    if (buildContext == null) {
+      return 1.0;
+    }
+    if (!isMounted) {
+      return MediaQuery.devicePixelRatioOf(buildContext);
+    }
+    if (!_pixelRatioDirty && identical(buildContext, _cachedDprContext)) {
+      return _cachedPixelRatio;
+    }
+    _cachedDprContext = buildContext;
+    _pixelRatioDirty = false;
+    return _cachedPixelRatio = MediaQuery.devicePixelRatioOf(buildContext);
+  }
+
+  @override
+  void onMount() {
+    super.onMount();
+    _cachedGame = findGame();
+    _pixelRatioDirty = true;
+  }
+
+  @override
+  void onGameResize(Vector2 size) {
+    super.onGameResize(size);
+    _pixelRatioDirty = true;
   }
 
   GraphicsDevice? _device;
@@ -466,6 +500,9 @@ class Scene3DComponent({
   void onRemove() {
     _disposeRetained();
     super.onRemove();
+    _cachedGame = null;
+    _cachedDprContext = null;
+    _pixelRatioDirty = true;
     _device = null;
     _context = null;
     _game3D = null;
@@ -503,7 +540,7 @@ class Scene3DComponent({
     }
 
     var visible = canvas.getDestinationClipBounds();
-    final game = findGame();
+    final game = _resolveGame();
     if (visible.width > _unclipped || visible.height > _unclipped) {
       if (game == null || !game.hasLayout) {
         return;
@@ -558,7 +595,9 @@ class Scene3DComponent({
     // On screen the canvas is in logical pixels; in an offscreen picture
     // that rasterizes at a scale of its own (a post process, a camera's
     // scaled world), its units are already the picture's pixels.
-    final canvasPixelRatio = RasterScale.isActive ? 1.0 : _pixelRatioOf(game);
+    final canvasPixelRatio = RasterScale.isActive
+        ? 1.0
+        : _pixelRatioOfGame(game);
     final fullScale = canvasPixelRatio * world.renderScale;
     var pixelScale = fullScale;
     var left = (visible.left * pixelScale).floor();
@@ -629,31 +668,66 @@ class Scene3DComponent({
 
     final isRetained = _cacheMode == Scene3DCacheMode.retained;
     if (isRetained) {
-      _writeKey(
-        left,
-        top,
-        pixelWidth,
-        pixelHeight,
-        targetWidth,
-        targetHeight,
-        pixelScale,
-        visibleFrame,
-      );
       final retainedImage = _retainedImage;
       final retainedTarget = _retainedImageTarget;
-      if (retainedImage != null &&
-          retainedTarget != null &&
-          _keyMatches() &&
-          _sameFloats(_viewMatrix.storage, _retainedView) &&
-          _sameFloats(_projectionMatrix.storage, _retainedProj)) {
+      var hit = false;
+      if (retainedImage != null && retainedTarget != null) {
+        final kept = _retainedNumbers;
+        final sceneMatch =
+            world.sceneVersion.toDouble() == kept[0] &&
+            _manualVersion.toDouble() == kept[1] &&
+            (group?.castersVersion ?? world.castersVersion).toDouble() ==
+                kept[2] &&
+            (group?.viewsVersion ?? 0).toDouble() == kept[38] &&
+            left.toDouble() == kept[3] &&
+            top.toDouble() == kept[4] &&
+            pixelWidth.toDouble() == kept[5] &&
+            pixelHeight.toDouble() == kept[6] &&
+            targetWidth.toDouble() == kept[7] &&
+            targetHeight.toDouble() == kept[8] &&
+            pixelScale == kept[9] &&
+            msaa.sampleCount.toDouble() == kept[10] &&
+            cameraMask.toDouble() == kept[11];
+        if (sceneMatch &&
+            _sameFloats(_viewMatrix.storage, _retainedView) &&
+            _sameFloats(_projectionMatrix.storage, _retainedProj)) {
+          final vignette = (world.postProcess?.vignetteIntensity ?? 0) > 0;
+          if (!vignette ||
+              (visibleFrame.left == kept[34] &&
+                  visibleFrame.top == kept[35] &&
+                  visibleFrame.right == kept[36] &&
+                  visibleFrame.bottom == kept[37])) {
+            hit = true;
+          }
+        }
+      }
+      if (!hit) {
+        _writeKey(
+          left,
+          top,
+          pixelWidth,
+          pixelHeight,
+          targetWidth,
+          targetHeight,
+          pixelScale,
+          visibleFrame,
+        );
+        hit =
+            retainedImage != null &&
+            retainedTarget != null &&
+            _keyMatches() &&
+            _sameFloats(_viewMatrix.storage, _retainedView) &&
+            _sameFloats(_projectionMatrix.storage, _retainedProj);
+      }
+      if (hit) {
         _cacheHitCount++;
         // The image is drawn again in this frame: its color texture must not
         // be rendered into before Flutter has finished drawing it.
         _resolveRenderer();
-        _device!.backend.representLastImage(retainedTarget);
+        _device!.backend.representLastImage(retainedTarget!);
         _compositeImage(
           canvas,
-          retainedImage,
+          retainedImage!,
           pixelWidth,
           pixelHeight,
           destination,

@@ -91,6 +91,12 @@ class SkinnedCrowdBatch3D({
   final List<int> _skinnedMeshSlots = [];
   final List<int> _staticMeshSlots = [];
   List<Float32List> _staticInstanceBuffers = const [];
+  List<Float32List> _skinnedInstanceBuffers = const [];
+  late final Int32List _clipBaseOffsets;
+  late final int _totalPoseCount;
+  late final Int32List _bucketHead;
+  late final Int32List _usedBuckets;
+  late Int32List _bucketNext;
 
   int _capacity = 64;
   int _length = 0;
@@ -113,6 +119,7 @@ class SkinnedCrowdBatch3D({
 
   int _lastInstancedSubNodeDraws = 0;
   int _lastSkinnedNodeDraws = 0;
+  int _lastSkinnedPoseBuckets = 0;
 
   /// Number of active crowd agents.
   int get length => _length;
@@ -127,8 +134,13 @@ class SkinnedCrowdBatch3D({
   /// during the most recent [draw] pass.
   int get lastInstancedSubNodeDraws => _lastInstancedSubNodeDraws;
 
-  /// Number of skinned node draws submitted during the most recent [draw] pass.
+  /// Number of skinned node agent draws submitted during the most recent [draw]
+  /// pass.
   int get lastSkinnedNodeDraws => _lastSkinnedNodeDraws;
+
+  /// Number of pose-bucketed GPU `drawInstances` submissions emitted for
+  /// skinned nodes during the most recent [draw] pass.
+  int get lastSkinnedPoseBuckets => _lastSkinnedPoseBuckets;
 
   static List<BakedClipPoseBank3D> _bakeModel(Model model, double fps) {
     final workspace = ModelPoseWorkspace.forModel(model);
@@ -233,6 +245,22 @@ class SkinnedCrowdBatch3D({
       (_) => Float32List(_capacity * _instanceStride),
       growable: false,
     );
+    _skinnedInstanceBuffers = List<Float32List>.generate(
+      _skinnedMeshSlots.length,
+      (_) => Float32List(_capacity * _instanceStride),
+      growable: false,
+    );
+    _clipBaseOffsets = Int32List(poseBanks.length);
+    var totalPoses = 0;
+    for (var i = 0; i < poseBanks.length; i++) {
+      _clipBaseOffsets[i] = totalPoses;
+      totalPoses += poseBanks[i].frameCount;
+    }
+    _totalPoseCount = math.max(1, totalPoses);
+    _bucketHead = Int32List(_totalPoseCount * 2)
+      ..fillRange(0, _totalPoseCount * 2, -1);
+    _usedBuckets = Int32List(_totalPoseCount * 2);
+    _bucketNext = Int32List(_capacity);
   }
 
   int _resolveClipIndex(int? clipIndex, String? clipName) {
@@ -516,6 +544,14 @@ class SkinnedCrowdBatch3D({
     if (_boundsDirty) {
       _boundsDirty = false;
       final modelBox = model.animatedAabb;
+      final cx = 0.5 * (modelBox.min.x + modelBox.max.x);
+      final cy = 0.5 * (modelBox.min.y + modelBox.max.y);
+      final cz = 0.5 * (modelBox.min.z + modelBox.max.z);
+      final hx = 0.5 * (modelBox.max.x - modelBox.min.x);
+      final hy = 0.5 * (modelBox.max.y - modelBox.min.y);
+      final hz = 0.5 * (modelBox.max.z - modelBox.min.z);
+      final transforms = _transforms;
+
       var minX = double.infinity;
       var minY = double.infinity;
       var minZ = double.infinity;
@@ -525,31 +561,41 @@ class SkinnedCrowdBatch3D({
 
       for (var idx = 0; idx < _length; idx++) {
         final b = idx * 16;
-        for (var corner = 0; corner < 8; corner++) {
-          final cx = (corner & 1) == 0 ? modelBox.min.x : modelBox.max.x;
-          final cy = (corner & 2) == 0 ? modelBox.min.y : modelBox.max.y;
-          final cz = (corner & 4) == 0 ? modelBox.min.z : modelBox.max.z;
-          final wx =
-              _transforms[b] * cx +
-              _transforms[b + 4] * cy +
-              _transforms[b + 8] * cz +
-              _transforms[b + 12];
-          final wy =
-              _transforms[b + 1] * cx +
-              _transforms[b + 5] * cy +
-              _transforms[b + 9] * cz +
-              _transforms[b + 13];
-          final wz =
-              _transforms[b + 2] * cx +
-              _transforms[b + 6] * cy +
-              _transforms[b + 10] * cz +
-              _transforms[b + 14];
-          minX = math.min(minX, wx);
-          minY = math.min(minY, wy);
-          minZ = math.min(minZ, wz);
-          maxX = math.max(maxX, wx);
-          maxY = math.max(maxY, wy);
-          maxZ = math.max(maxZ, wz);
+        final m0 = transforms[b];
+        final m1 = transforms[b + 1];
+        final m2 = transforms[b + 2];
+        final m4 = transforms[b + 4];
+        final m5 = transforms[b + 5];
+        final m6 = transforms[b + 6];
+        final m8 = transforms[b + 8];
+        final m9 = transforms[b + 9];
+        final m10 = transforms[b + 10];
+
+        final wx = m0 * cx + m4 * cy + m8 * cz + transforms[b + 12];
+        final wy = m1 * cx + m5 * cy + m9 * cz + transforms[b + 13];
+        final wz = m2 * cx + m6 * cy + m10 * cz + transforms[b + 14];
+
+        final ex = m0.abs() * hx + m4.abs() * hy + m8.abs() * hz;
+        final ey = m1.abs() * hx + m5.abs() * hy + m9.abs() * hz;
+        final ez = m2.abs() * hx + m6.abs() * hy + m10.abs() * hz;
+
+        if (wx - ex < minX) {
+          minX = wx - ex;
+        }
+        if (wy - ey < minY) {
+          minY = wy - ey;
+        }
+        if (wz - ez < minZ) {
+          minZ = wz - ez;
+        }
+        if (wx + ex > maxX) {
+          maxX = wx + ex;
+        }
+        if (wy + ey > maxY) {
+          maxY = wy + ey;
+        }
+        if (wz + ez > maxZ) {
+          maxZ = wz + ez;
         }
       }
       _localAabb
@@ -559,46 +605,137 @@ class SkinnedCrowdBatch3D({
     return _localAabb;
   }
 
+  static bool _isMirroredF32(Float32List m, int base) {
+    final m0 = m[base];
+    final m1 = m[base + 1];
+    final m2 = m[base + 2];
+    final m4 = m[base + 4];
+    final m5 = m[base + 5];
+    final m6 = m[base + 6];
+    final m8 = m[base + 8];
+    final m9 = m[base + 9];
+    final m10 = m[base + 10];
+    return (m0 * (m5 * m10 - m6 * m9) -
+            m4 * (m1 * m10 - m2 * m9) +
+            m8 * (m1 * m6 - m2 * m5)) <
+        0.0;
+  }
+
   @override
   void draw(covariant RenderContext3D context) {
     _lastInstancedSubNodeDraws = 0;
     _lastSkinnedNodeDraws = 0;
+    _lastSkinnedPoseBuckets = 0;
     if (_length == 0) {
       return;
     }
 
     final batchWorld = worldTransformMatrix;
+    final batchIsIdentity = batchWorld.isIdentity();
+    final batchMirrorBit =
+        !batchIsIdentity && _isMirroredF32(batchWorld.storage, 0) ? 1 : 0;
 
-    // 1. Skinned mesh nodes: O(1) baked joint palette lookup per agent.
+    // 1. Skinned mesh nodes: group agents sharing `(clipIndex, frameIndex)` and
+    //    handedness into contiguous pose buckets and submit 1 instanced draw
+    //    per bucket per surface.
     for (var s = 0; s < _skinnedMeshSlots.length; s++) {
       final slot = _skinnedMeshSlots[s];
-      for (var i = 0; i < _length; i++) {
-        final pose = poseBanks[_clipIndices[i]].frames[_frameIndices[i]][slot];
-        final mesh = pose.node.mesh;
-        if (mesh == null) {
-          continue;
-        }
-        _loadAgentWorldMatrix(batchWorld, i, _agentWorldScratch);
-        _drawMatrixScratch
-          ..setFrom(_agentWorldScratch)
-          ..multiply(pose.combinedTransform);
+      final samplePose = poseBanks.first.frames.first[slot];
+      final mesh = samplePose.node.mesh;
+      if (mesh == null) {
+        continue;
+      }
+      final instBuf = _skinnedInstanceBuffers[s];
 
-        final cb = i * 8;
-        final color = _colors[i];
-        _instanceDataScratch.setValues(
-          _colorsAndData[cb + 4],
-          _colorsAndData[cb + 5],
-          _colorsAndData[cb + 6],
-          _colorsAndData[cb + 7],
+      var usedBucketCount = 0;
+      for (var i = _length - 1; i >= 0; i--) {
+        final clipIdx = _clipIndices[i];
+        final frameIdx = _frameIndices[i];
+        final pose = poseBanks[clipIdx].frames[frameIdx][slot];
+        final poseMirrorBit = _isMirroredF32(pose.combinedTransform.storage, 0)
+            ? 1
+            : 0;
+        final agentMirrorBit = _isMirroredF32(_transforms, i * 16) ? 1 : 0;
+        final mirrorBit = batchMirrorBit ^ agentMirrorBit ^ poseMirrorBit;
+        final bucketId =
+            ((_clipBaseOffsets[clipIdx] + frameIdx) << 1) | mirrorBit;
+
+        final prevHead = _bucketHead[bucketId];
+        if (prevHead == -1) {
+          _usedBuckets[usedBucketCount++] = bucketId;
+        }
+        _bucketNext[i] = prevHead;
+        _bucketHead[bucketId] = i;
+      }
+
+      var cursor = 0;
+      for (var u = 0; u < usedBucketCount; u++) {
+        final bucketId = _usedBuckets[u];
+        var i = _bucketHead[bucketId];
+        _bucketHead[bucketId] = -1;
+
+        final firstAgent = i;
+        final firstPose = poseBanks[_clipIndices[firstAgent]]
+            .frames[_frameIndices[firstAgent]][slot];
+        final startAgent = cursor;
+        var sumX = 0.0;
+        var sumY = 0.0;
+        var sumZ = 0.0;
+
+        while (i != -1) {
+          final pose =
+              poseBanks[_clipIndices[i]].frames[_frameIndices[i]][slot];
+          _loadAgentWorldMatrix(
+            batchWorld,
+            i,
+            _agentWorldScratch,
+            batchIsIdentity: batchIsIdentity,
+          );
+          _drawMatrixScratch
+            ..setFrom(_agentWorldScratch)
+            ..multiply(pose.combinedTransform);
+
+          final outBase = cursor * _instanceStride;
+          final ms = _drawMatrixScratch.storage;
+          for (var k = 0; k < 16; k++) {
+            instBuf[outBase + k] = ms[k];
+          }
+          sumX += ms[12];
+          sumY += ms[13];
+          sumZ += ms[14];
+
+          final cb = i * 8;
+          for (var k = 0; k < 8; k++) {
+            instBuf[outBase + 16 + k] = _colorsAndData[cb + k];
+          }
+          cursor++;
+          _lastSkinnedNodeDraws++;
+          i = _bucketNext[i];
+        }
+
+        final bucketCount = cursor - startAgent;
+        final invCount = 1.0 / bucketCount;
+        _bucketCenterScratch.setValues(
+          sumX * invCount,
+          sumY * invCount,
+          sumZ * invCount,
         );
-        context.drawMesh(
-          mesh,
-          transform: _drawMatrixScratch,
-          color: color,
-          instanceData: _instanceDataScratch,
-          jointTransforms: pose.jointTransforms,
-        );
-        _lastSkinnedNodeDraws++;
+        final isMirroredBucket = (bucketId & 1) == 1;
+        final jointMap = firstPose.jointTransforms;
+        var surfaceIdx = 0;
+        for (final surface in mesh.surfaces) {
+          context.drawInstances(
+            surface,
+            instances: instBuf,
+            count: bucketCount,
+            instanceOffset: startAgent,
+            jointTransforms: jointMap[surfaceIdx],
+            center: _bucketCenterScratch,
+            mirrored: isMirroredBucket,
+          );
+          _lastSkinnedPoseBuckets++;
+          surfaceIdx++;
+        }
       }
     }
 
@@ -615,7 +752,12 @@ class SkinnedCrowdBatch3D({
       final instBuf = _staticInstanceBuffers[u];
       for (var i = 0; i < _length; i++) {
         final pose = poseBanks[_clipIndices[i]].frames[_frameIndices[i]][slot];
-        _loadAgentWorldMatrix(batchWorld, i, _agentWorldScratch);
+        _loadAgentWorldMatrix(
+          batchWorld,
+          i,
+          _agentWorldScratch,
+          batchIsIdentity: batchIsIdentity,
+        );
         _drawMatrixScratch
           ..setFrom(_agentWorldScratch)
           ..multiply(pose.combinedTransform);
@@ -686,12 +828,17 @@ class SkinnedCrowdBatch3D({
     return best?.onInstance(bestAgent);
   }
 
-  void _loadAgentWorldMatrix(Matrix4 batchWorld, int index, Matrix4 out) {
+  void _loadAgentWorldMatrix(
+    Matrix4 batchWorld,
+    int index,
+    Matrix4 out, {
+    bool? batchIsIdentity,
+  }) {
     final b = index * 16;
     for (var k = 0; k < 16; k++) {
       _agentLocalScratch.storage[k] = _transforms[b + k];
     }
-    if (batchWorld.isIdentity()) {
+    if (batchIsIdentity ?? batchWorld.isIdentity()) {
       out.setFrom(_agentLocalScratch);
     } else {
       out
@@ -724,6 +871,12 @@ class SkinnedCrowdBatch3D({
       (_) => Float32List(newCapacity * _instanceStride),
       growable: false,
     );
+    _skinnedInstanceBuffers = List<Float32List>.generate(
+      _skinnedMeshSlots.length,
+      (_) => Float32List(newCapacity * _instanceStride),
+      growable: false,
+    );
+    _bucketNext = Int32List(newCapacity);
     _capacity = newCapacity;
   }
 
@@ -740,5 +893,5 @@ class SkinnedCrowdBatch3D({
   static final Matrix4 _agentLocalScratch = Matrix4.identity();
   static final Matrix4 _agentWorldScratch = Matrix4.identity();
   static final Matrix4 _drawMatrixScratch = Matrix4.identity();
-  static final Vector4 _instanceDataScratch = Vector4.zero();
+  static final Vector3 _bucketCenterScratch = Vector3.zero();
 }

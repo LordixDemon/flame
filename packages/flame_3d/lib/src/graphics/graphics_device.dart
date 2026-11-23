@@ -57,11 +57,9 @@ class GraphicsDevice({
   late final _TransientArena _arena = _TransientArena(backend);
 
   // Render target pool: keyed by (width, height, MSAA sample count), each
-  // entry is a list of targets. _poolIndex tracks how many have been handed
-  // out this frame, _poolLastUsed the last frame a key was used in.
-  final _pool = <(int, int, int), List<GpuRenderTarget>>{};
-  final _poolIndex = <(int, int, int), int>{};
-  final _poolLastUsed = <(int, int, int), int>{};
+  // bucket holds targets and its usage counters for this frame.
+  final _pool = <(int, int, int), _PoolBucket>{};
+  final List<(int, int, int)> _evictPoolKeys = [];
 
   /// The number of frames a render target size that is no longer used stays
   /// pooled, so that a scene whose size changes back and forth, or that skips
@@ -84,6 +82,49 @@ class GraphicsDevice({
   PolygonFillMode _polygonMode = PolygonFillMode.fill;
   PrimitiveTopology _topology = PrimitiveTopology.triangles;
 
+  // Per-pass/pipeline descriptor deduplication (reset in `_startPass`,
+  // `clearBindings`, and when switching pipelines).
+  final List<GpuUniformSlot?> _boundUniformSlots = List.filled(
+    16,
+    null,
+    growable: true,
+  );
+  final List<GpuBuffer?> _boundUniformBuffers = List.filled(
+    16,
+    null,
+    growable: true,
+  );
+  Int32List _boundUniformOffsets = Int32List(16);
+  Int32List _boundUniformLengths = Int32List(16);
+  int _boundUniformCount = 0;
+
+  final List<GpuUniformSlot?> _boundTexSlots = List.filled(
+    16,
+    null,
+    growable: true,
+  );
+  final List<GpuTexture?> _boundTexHandles = List.filled(
+    16,
+    null,
+    growable: true,
+  );
+  Int32List _boundTexSamplerKeys = Int32List(16);
+  int _boundTexCount = 0;
+
+  bool _hasViewport = false;
+  int _vpX = 0;
+  int _vpY = 0;
+  int _vpW = 0;
+  int _vpH = 0;
+  double _vpZNear = 0.0;
+  double _vpZFar = 1.0;
+
+  bool _hasScissor = false;
+  int _scX = 0;
+  int _scY = 0;
+  int _scW = 0;
+  int _scH = 0;
+
   /// Incremented whenever the pass's bindings are cleared (by [clearBindings]
   /// or by binding a different pipeline), after which every resource of the
   /// next draw must be bound again.
@@ -102,11 +143,15 @@ class GraphicsDevice({
 
   /// Starts recording a pass into [target], or into nothing while the
   /// device is not ready.
-  GpuRenderPass _beginGpuPass(GpuFrame frame, GpuRenderTarget target) {
+  GpuRenderPass _beginGpuPass(
+    GpuFrame frame,
+    GpuRenderTarget target, {
+    bool keepContents = false,
+  }) {
     _suspended = !backend.isDeviceReady;
     return _suspended
         ? _SuspendedRenderPass.instance
-        : frame.beginRenderPass(target);
+        : frame.beginRenderPass(target, keepContents: keepContents);
   }
 
   /// Begin a new frame.
@@ -116,8 +161,9 @@ class GraphicsDevice({
   void begin() {
     _frame++;
     stats.reset();
-    // Reset the pool indices, each existing target becomes available again.
-    _poolIndex.updateAll((_, _) => 0);
+    for (final bucket in _pool.values) {
+      bucket.used = 0;
+    }
     _gpuFrame = backend.beginFrame();
   }
 
@@ -130,29 +176,38 @@ class GraphicsDevice({
 
     // Release the targets of sizes unused for a while, and the targets of a
     // size beyond how many were used in this frame.
-    _pool.removeWhere((key, targets) {
-      final used = _poolIndex[key] ?? 0;
-      if (used == 0) {
-        if (_frame - (_poolLastUsed[key] ?? _frame) < targetRetainFrames) {
-          return false;
+    if (_pool.isNotEmpty) {
+      _evictPoolKeys.clear();
+      for (final entry in _pool.entries) {
+        final bucket = entry.value;
+        final used = bucket.used;
+        if (used == 0) {
+          if (_frame - bucket.lastUsedFrame >= targetRetainFrames) {
+            _evictPoolKeys.add(entry.key);
+          }
+        } else {
+          bucket.lastUsedFrame = _frame;
+          final targets = bucket.targets;
+          if (used < targets.length) {
+            targets.removeRange(used, targets.length);
+          }
         }
-        _poolIndex.remove(key);
-        _poolLastUsed.remove(key);
-        return true;
       }
-      _poolLastUsed[key] = _frame;
-      if (used < targets.length) {
-        targets.removeRange(used, targets.length);
+      for (var i = 0; i < _evictPoolKeys.length; i++) {
+        _pool.remove(_evictPoolKeys[i]);
       }
-      return false;
-    });
-    _textureTargetsLastUsed.removeWhere((key, lastUsed) {
-      if (_frame - lastUsed < targetRetainFrames) {
-        return false;
+    }
+    if (_textureTargets.isNotEmpty) {
+      _evictTextureKeys.clear();
+      for (final entry in _textureTargets.entries) {
+        if (_frame - entry.value.lastUsedFrame >= targetRetainFrames) {
+          _evictTextureKeys.add(entry.key);
+        }
       }
-      _textureTargets.remove(key);
-      return true;
-    });
+      for (var i = 0; i < _evictTextureKeys.length; i++) {
+        _textureTargets.remove(_evictTextureKeys[i]);
+      }
+    }
   }
 
   /// Begin a render pass at the given [size], in physical pixels.
@@ -228,14 +283,10 @@ class GraphicsDevice({
       final (w, h, samples) = entry.key;
       // Triple-buffered color + depth-stencil estimate.
       final perTarget = w * h * 4 * (3 + samples);
-      total += perTarget * entry.value.length;
+      total += perTarget * entry.value.targets.length;
     }
-    for (final key in _textureTargets.keys) {
-      final (w, h, fmt, _, _, samples) = key;
-      total +=
-          w *
-          h *
-          (fmt.bytesPerBlock * (samples > 1 ? 1 + samples : 1) + 4 * samples);
+    for (final entry in _textureTargets.values) {
+      total += entry.estimatedBytes;
     }
     return total;
   }
@@ -252,6 +303,19 @@ class GraphicsDevice({
     return pipelineFor(vert, material.fragmentShader, resolvedLayout);
   }
 
+  void _clearPassBindings() {
+    if (_boundUniformCount > 0) {
+      _boundUniformSlots.fillRange(0, _boundUniformCount, null);
+      _boundUniformBuffers.fillRange(0, _boundUniformCount, null);
+      _boundUniformCount = 0;
+    }
+    if (_boundTexCount > 0) {
+      _boundTexSlots.fillRange(0, _boundTexCount, null);
+      _boundTexHandles.fillRange(0, _boundTexCount, null);
+      _boundTexCount = 0;
+    }
+  }
+
   void _startPass(GpuRenderPass renderPass, WindingOrder frontFace) {
     _renderPass = renderPass;
     stats.renderPasses++;
@@ -259,6 +323,9 @@ class GraphicsDevice({
     // The state every pass starts with, see `GpuFrame.beginRenderPass`.
     _pipeline = null;
     _surface = null;
+    _clearPassBindings();
+    _hasViewport = false;
+    _hasScissor = false;
     _bindingEpoch++;
     _blend = BlendState.opaque;
     _depthCompare = CompareFunction.less;
@@ -317,29 +384,44 @@ class GraphicsDevice({
     int msaaSampleCount = 1,
   }) {
     final key = (width, height, format, clearValue, role, msaaSampleCount);
-    final target = _textureTargets[key] ??= backend.createTextureTarget(
-      width: width,
-      height: height,
-      format: format,
-      clearValue: clearValue,
-      msaaSampleCount: msaaSampleCount,
-    );
-    _textureTargetsLastUsed[key] = _frame;
-    return target;
+    var entry = _textureTargets[key];
+    if (entry == null) {
+      final target = backend.createTextureTarget(
+        width: width,
+        height: height,
+        format: format,
+        clearValue: clearValue,
+        msaaSampleCount: msaaSampleCount,
+      );
+      final estimatedBytes =
+          width *
+          height *
+          (format.bytesPerBlock *
+                  (msaaSampleCount > 1 ? 1 + msaaSampleCount : 1) +
+              4 * msaaSampleCount);
+      entry = _textureTargets[key] = _TextureTargetEntry(
+        target,
+        _frame,
+        estimatedBytes,
+      );
+    } else {
+      entry.lastUsedFrame = _frame;
+    }
+    return entry.target;
   }
 
   final _textureTargets =
-      <(int, int, GpuPixelFormat, Color, Object?, int), GpuTextureTarget>{};
-  final _textureTargetsLastUsed =
-      <(int, int, GpuPixelFormat, Color, Object?, int), int>{};
+      <(int, int, GpuPixelFormat, Color, Object?, int), _TextureTargetEntry>{};
+  final List<(int, int, GpuPixelFormat, Color, Object?, int)>
+  _evictTextureKeys = [];
 
   /// Marks [target] as used in the current frame so [targetRetainFrames] does
   /// not evict a cached texture target (such as a static shadow map).
   @internal
   void touchTextureTarget(GpuTextureTarget target) {
-    for (final entry in _textureTargets.entries) {
-      if (identical(entry.value, target)) {
-        _textureTargetsLastUsed[entry.key] = _frame;
+    for (final entry in _textureTargets.values) {
+      if (identical(entry.target, target)) {
+        entry.lastUsedFrame = _frame;
         return;
       }
     }
@@ -365,6 +447,11 @@ class GraphicsDevice({
     final frame = _gpuFrame;
     if (frame == null) {
       throw StateError('beginTexturePass must be called between begin and end');
+    }
+    if (keepContents && backend.supportsNativeKeepContents(target)) {
+      _renderTarget = target;
+      _startPass(_beginGpuPass(frame, target, keepContents: true), frontFace);
+      return;
     }
     if (keepContents && backend.isDeviceReady) {
       final scratch = textureTarget(
@@ -488,6 +575,7 @@ class GraphicsDevice({
     final renderPass = _pass;
     if (_pipeline != null) {
       renderPass.clearBindings();
+      _clearPassBindings();
     }
     renderPass.bindPipeline(gpuPipeline);
     _pipeline = gpuPipeline;
@@ -543,12 +631,40 @@ class GraphicsDevice({
     double zNear = 0.0,
     double zFar = 1.0,
   }) {
+    if (_hasViewport &&
+        _vpX == x &&
+        _vpY == y &&
+        _vpW == width &&
+        _vpH == height &&
+        _vpZNear == zNear &&
+        _vpZFar == zFar) {
+      return;
+    }
+    _hasViewport = true;
+    _vpX = x;
+    _vpY = y;
+    _vpW = width;
+    _vpH = height;
+    _vpZNear = zNear;
+    _vpZFar = zFar;
     _pass.setViewport(x, y, width, height, zNear: zNear, zFar: zFar);
     stats.stateChanges++;
   }
 
   /// Sets the pixel scissor clip rectangle inside the current render pass.
   void setScissor(int x, int y, int width, int height) {
+    if (_hasScissor &&
+        _scX == x &&
+        _scY == y &&
+        _scW == width &&
+        _scH == height) {
+      return;
+    }
+    _hasScissor = true;
+    _scX = x;
+    _scY = y;
+    _scW = width;
+    _scH = height;
     _pass.setScissor(x, y, width, height);
     stats.stateChanges++;
   }
@@ -594,6 +710,7 @@ class GraphicsDevice({
   void clearBindings() {
     _pass.clearBindings();
     _surface = null;
+    _clearPassBindings();
     _bindingEpoch++;
   }
 
@@ -619,16 +736,25 @@ class GraphicsDevice({
     RenderProfile.lap(RenderPhase.binding);
   }
 
-  /// Upload the first [count] instances of [instances] and bind them as the
-  /// instance buffer.
-  void bindInstances(Float32List instances, int count) {
+  /// Upload [count] instances from [instances] starting at [startFloat] floats
+  /// and bind them as the instance buffer.
+  void bindInstances(
+    Float32List instances,
+    int count, {
+    int startFloat = 0,
+  }) {
     if (_suspended) {
       return;
     }
     final floats = count * VertexLayout.instanceStrideInFloats;
     final block = _arena.allocate(floats * 4, _instanceAlignment);
     final offset = block.lastOffset;
-    block.floats.setRange(offset ~/ 4, offset ~/ 4 + floats, instances);
+    block.floats.setRange(
+      offset ~/ 4,
+      offset ~/ 4 + floats,
+      instances,
+      startFloat,
+    );
     stats.uploadedBytes += floats * 4;
     RenderProfile.lap(RenderPhase.upload);
     _pass.bindVertexBuffer(
@@ -706,12 +832,38 @@ class GraphicsDevice({
     final block = _uploadUniform(
       data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
     );
-    _pass.bindUniform(
+    _bindUniformResolved(
       slot,
       block.buffer,
-      offsetInBytes: block.lastOffset,
-      lengthInBytes: data.lengthInBytes,
+      block.lastOffset,
+      data.lengthInBytes,
     );
+  }
+
+  /// Uploads [data] into this frame's transient arena without binding a slot,
+  /// returning `(buffer, offsetInBytes)` so several shaders with matching block
+  /// layouts can share one upload via [bindUniformSlice].
+  @internal
+  (GpuBuffer, int)? uploadUniformBytes(Uint8List data) {
+    if (_suspended) {
+      return null;
+    }
+    final block = _uploadUniform(data);
+    return (block.buffer, block.lastOffset);
+  }
+
+  /// Binds a previously uploaded uniform buffer slice to [slot].
+  @internal
+  void bindUniformSlice(
+    GpuUniformSlot slot,
+    GpuBuffer buffer, {
+    required int offsetInBytes,
+    required int lengthInBytes,
+  }) {
+    if (_suspended) {
+      return;
+    }
+    _bindUniformResolved(slot, buffer, offsetInBytes, lengthInBytes);
   }
 
   /// Bind [block] to its slot, uploading it first unless its current contents
@@ -726,13 +878,60 @@ class GraphicsDevice({
       block.markUploaded(_frame, upload.buffer, upload.lastOffset);
       RenderProfile.lap(RenderPhase.upload);
     }
-    _pass.bindUniform(
+    _bindUniformResolved(
       block.slot,
       block.uploadBuffer!,
-      offsetInBytes: block.uploadOffset,
-      lengthInBytes: block.bytes.lengthInBytes,
+      block.uploadOffset,
+      block.bytes.lengthInBytes,
     );
     RenderProfile.lap(RenderPhase.binding);
+  }
+
+  void _bindUniformResolved(
+    GpuUniformSlot slot,
+    GpuBuffer buffer,
+    int offsetInBytes,
+    int lengthInBytes,
+  ) {
+    for (var i = 0; i < _boundUniformCount; i++) {
+      if (identical(_boundUniformSlots[i], slot)) {
+        if (identical(_boundUniformBuffers[i], buffer) &&
+            _boundUniformOffsets[i] == offsetInBytes &&
+            _boundUniformLengths[i] == lengthInBytes) {
+          return;
+        }
+        _boundUniformBuffers[i] = buffer;
+        _boundUniformOffsets[i] = offsetInBytes;
+        _boundUniformLengths[i] = lengthInBytes;
+        _pass.bindUniform(
+          slot,
+          buffer,
+          offsetInBytes: offsetInBytes,
+          lengthInBytes: lengthInBytes,
+        );
+        return;
+      }
+    }
+    final idx = _boundUniformCount++;
+    if (idx == _boundUniformSlots.length) {
+      _boundUniformSlots.add(slot);
+      _boundUniformBuffers.add(buffer);
+      _boundUniformOffsets = Int32List(_boundUniformOffsets.length * 2)
+        ..setRange(0, _boundUniformOffsets.length, _boundUniformOffsets);
+      _boundUniformLengths = Int32List(_boundUniformLengths.length * 2)
+        ..setRange(0, _boundUniformLengths.length, _boundUniformLengths);
+    } else {
+      _boundUniformSlots[idx] = slot;
+      _boundUniformBuffers[idx] = buffer;
+    }
+    _boundUniformOffsets[idx] = offsetInBytes;
+    _boundUniformLengths[idx] = lengthInBytes;
+    _pass.bindUniform(
+      slot,
+      buffer,
+      offsetInBytes: offsetInBytes,
+      lengthInBytes: lengthInBytes,
+    );
   }
 
   /// Bind a uniform [slot] to the [texture], sampled with its
@@ -741,7 +940,34 @@ class GraphicsDevice({
     if (_suspended) {
       return;
     }
-    _pass.bindTexture(slot, texture.resource, sampler: texture.sampler);
+    final gpuTex = texture.resource;
+    final sampler = texture.sampler;
+    final samplerKey = sampler.key;
+    for (var i = 0; i < _boundTexCount; i++) {
+      if (identical(_boundTexSlots[i], slot)) {
+        if (identical(_boundTexHandles[i], gpuTex) &&
+            _boundTexSamplerKeys[i] == samplerKey) {
+          return;
+        }
+        _boundTexHandles[i] = gpuTex;
+        _boundTexSamplerKeys[i] = samplerKey;
+        _pass.bindTexture(slot, gpuTex, sampler: sampler);
+        RenderProfile.lap(RenderPhase.binding);
+        return;
+      }
+    }
+    final idx = _boundTexCount++;
+    if (idx == _boundTexSlots.length) {
+      _boundTexSlots.add(slot);
+      _boundTexHandles.add(gpuTex);
+      _boundTexSamplerKeys = Int32List(_boundTexSamplerKeys.length * 2)
+        ..setRange(0, _boundTexSamplerKeys.length, _boundTexSamplerKeys);
+    } else {
+      _boundTexSlots[idx] = slot;
+      _boundTexHandles[idx] = gpuTex;
+    }
+    _boundTexSamplerKeys[idx] = samplerKey;
+    _pass.bindTexture(slot, gpuTex, sampler: sampler);
     RenderProfile.lap(RenderPhase.binding);
   }
 
@@ -762,11 +988,11 @@ class GraphicsDevice({
       _pixels(size.height),
       msaaSampleCount,
     );
-    final targets = _pool.putIfAbsent(key, () => []);
-    final index = _poolIndex.putIfAbsent(key, () => 0);
-
+    final bucket = _pool[key] ??= _PoolBucket(_frame);
+    final index = bucket.used;
+    final targets = bucket.targets;
     if (index < targets.length) {
-      _poolIndex[key] = index + 1;
+      bucket.used = index + 1;
       return targets[index];
     }
 
@@ -778,7 +1004,7 @@ class GraphicsDevice({
     );
 
     targets.add(target);
-    _poolIndex[key] = index + 1;
+    bucket.used = index + 1;
     return target;
   }
 
@@ -790,6 +1016,18 @@ class GraphicsDevice({
   static const _instanceAlignment = 16;
 }
 
+class _PoolBucket(this.lastUsedFrame) {
+  final List<GpuRenderTarget> targets = [];
+  int used = 0;
+  int lastUsedFrame;
+}
+
+class _TextureTargetEntry(
+  final GpuTextureTarget target,
+  var int lastUsedFrame,
+  final int estimatedBytes,
+);
+
 /// {@template device_pipeline}
 /// A render pipeline built by a [GraphicsDevice] for one vertex shader,
 /// fragment shader and surface [VertexLayout], with what the device learned
@@ -798,6 +1036,12 @@ class GraphicsDevice({
 class DevicePipeline._(
   /// The backend pipeline.
   final GpuPipeline pipeline, {
+
+  /// The backend vertex shader linked into this pipeline.
+  required final GpuShader vertexShader,
+
+  /// The backend fragment shader linked into this pipeline.
+  required final GpuShader fragmentShader,
 
   /// A number identifying this pipeline within its device, usable to sort
   /// draws by pipeline.
@@ -911,6 +1155,8 @@ class DevicePipeline._(
     );
     return DevicePipeline._(
       pipeline,
+      vertexShader: vertexShader,
+      fragmentShader: fragmentShader,
       id: id,
       usesInstanceData: instanceAttributes.isNotEmpty,
       instanced: modelColumns == 4,
@@ -938,11 +1184,21 @@ class _TransientBlock(final GpuBuffer buffer, final int capacity) {
   }
 }
 
-/// The transient blocks used by one frame.
-class _FrameUploads() {
+/// The transient blocks used by one frame, pooled across completed frames so
+/// pass completion callbacks allocate zero closures per pass or frame.
+class _FrameUploads(final _TransientArena _arena) {
   final List<_TransientBlock> blocks = [];
   int pendingPasses = 0;
   bool ended = false;
+
+  late final void Function() completionCallback = _onCompleted;
+
+  void _onCompleted() {
+    pendingPasses--;
+    if (ended && pendingPasses == 0) {
+      _arena._release(this);
+    }
+  }
 }
 
 /// Sub-allocates the uniform and instance data of a frame from a pool of
@@ -951,9 +1207,11 @@ class _FrameUploads() {
 class _TransientArena(final GpuBackend _backend) {
   static const _blockSize = 256 * 1024;
   static const _maxFreeBlocks = 8;
+  static const _maxFreeFrames = 8;
 
   final List<_TransientBlock> _free = [];
-  _FrameUploads _frame = _FrameUploads();
+  final List<_FrameUploads> _freeFrames = [];
+  late _FrameUploads _frame = _FrameUploads(this);
   _TransientBlock? _current;
 
   _TransientBlock allocate(int size, int alignment) {
@@ -998,20 +1256,14 @@ class _TransientArena(final GpuBackend _backend) {
   }
 
   void flush() {
-    for (final block in _frame.blocks) {
-      block.flush();
+    for (var i = 0; i < _frame.blocks.length; i++) {
+      _frame.blocks[i].flush();
     }
   }
 
   void Function() passCompletion() {
-    final frame = _frame;
-    frame.pendingPasses++;
-    return () {
-      frame.pendingPasses--;
-      if (frame.ended && frame.pendingPasses == 0) {
-        _release(frame);
-      }
-    };
+    _frame.pendingPasses++;
+    return _frame.completionCallback;
   }
 
   void endFrame() {
@@ -1019,17 +1271,25 @@ class _TransientArena(final GpuBackend _backend) {
     if (frame.pendingPasses == 0) {
       _release(frame);
     }
-    _frame = _FrameUploads();
+    _frame = _freeFrames.isNotEmpty
+        ? _freeFrames.removeLast()
+        : _FrameUploads(this);
     _current = null;
   }
 
   void _release(_FrameUploads frame) {
-    for (final block in frame.blocks) {
+    for (var i = 0; i < frame.blocks.length; i++) {
       if (_free.length < _maxFreeBlocks) {
-        _free.add(block);
+        _free.add(frame.blocks[i]);
       }
     }
-    frame.blocks.clear();
+    frame
+      ..blocks.clear()
+      ..pendingPasses = 0
+      ..ended = false;
+    if (_freeFrames.length < _maxFreeFrames) {
+      _freeFrames.add(frame);
+    }
   }
 
   static int _align(int value, int alignment) {

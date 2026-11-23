@@ -36,11 +36,25 @@ class const RenderGraphResourceHandle3D._({
 
 /// Execution context supplied to each live [RenderGraphPass3D].
 class RenderGraphPassContext3D({
-  required final GraphicsDevice device,
-  required final RenderContext3D renderContext,
+  required GraphicsDevice device,
+  required RenderContext3D renderContext,
   required Map<int, GpuTextureTarget> resolvedTargets,
 }) {
+  /// The active [GraphicsDevice] for the executing graph.
+  GraphicsDevice get device => _device;
+  GraphicsDevice _device = device;
+
+  /// The active [RenderContext3D] for the executing graph.
+  RenderContext3D get renderContext => _renderContext;
+  RenderContext3D _renderContext = renderContext;
+
   final Map<int, GpuTextureTarget> _resolvedTargets = resolvedTargets;
+
+  static final Expando<Texture> _linearTextures = Expando<Texture>(
+    'RenderGraphLinearTextures',
+  );
+  static final Expando<Map<TextureSampler, Texture>> _samplerTextures =
+      Expando<Map<TextureSampler, Texture>>('RenderGraphSamplerTextures');
 
   /// Returns the physical [GpuTextureTarget] backing [handle].
   GpuTextureTarget targetOf(RenderGraphResourceHandle3D handle) {
@@ -61,7 +75,25 @@ class RenderGraphPassContext3D({
     TextureSampler sampler = TextureSampler.linear,
   }) {
     final t = targetOf(handle);
-    return Texture(
+    if (sampler == TextureSampler.linear) {
+      final cached = _linearTextures[t];
+      if (cached != null && identical(cached.gpuTexture, t.texture)) {
+        return cached;
+      }
+      return _linearTextures[t] = Texture(
+        null,
+        width: t.width,
+        height: t.height,
+        sampler: sampler,
+        gpuTexture: t.texture,
+      );
+    }
+    final map = _samplerTextures[t] ??= <TextureSampler, Texture>{};
+    final cached = map[sampler];
+    if (cached != null && identical(cached.gpuTexture, t.texture)) {
+      return cached;
+    }
+    return map[sampler] = Texture(
       null,
       width: t.width,
       height: t.height,
@@ -108,6 +140,19 @@ class RenderGraph3D() {
   final Map<RenderGraphTextureDesc3D, int> _targetLastUsed = {};
   int _executions = 0;
 
+  CompiledRenderGraph3D? _cachedPlan;
+  int _compileCount = 0;
+
+  // Scratch collections reused across `execute()` calls.
+  final Map<RenderGraphTextureDesc3D, int> _usedPerDesc = {};
+  final List<GpuTextureTarget> _slotTargets = [];
+  final Map<int, GpuTextureTarget> _resolvedTargets = {};
+  RenderGraphPassContext3D? _reusableContext;
+
+  /// Number of times [compile] has actually recomputed a plan rather than
+  /// returning a cached [CompiledRenderGraph3D].
+  int get compileCount => _compileCount;
+
   /// The number of [execute] calls a pooled target of a descriptor no graph
   /// used is kept for before it is released (a graph rebuilt at a new size
   /// does not keep the targets of the old size for ever).
@@ -120,6 +165,7 @@ class RenderGraph3D() {
     _importedTargets.clear();
     _outputs.clear();
     _passes.clear();
+    _cachedPlan = null;
   }
 
   /// Declares a transient virtual texture with [descriptor].
@@ -127,6 +173,7 @@ class RenderGraph3D() {
     String name,
     RenderGraphTextureDesc3D descriptor,
   ) {
+    _cachedPlan = null;
     final handle = RenderGraphResourceHandle3D._(
       id: _resources.length,
       name: name,
@@ -145,6 +192,7 @@ class RenderGraph3D() {
     String name,
     GpuTextureTarget target,
   ) {
+    _cachedPlan = null;
     final handle = RenderGraphResourceHandle3D._(
       id: _resources.length,
       name: name,
@@ -164,11 +212,14 @@ class RenderGraph3D() {
   /// Marks [handle] as a graph output so passes producing it are preserved by
   /// dead-pass elimination.
   void markOutput(RenderGraphResourceHandle3D handle) {
-    _outputs.add(handle.id);
+    if (_outputs.add(handle.id)) {
+      _cachedPlan = null;
+    }
   }
 
   /// Appends [pass] to this render graph.
   void addPass(RenderGraphPass3D pass) {
+    _cachedPlan = null;
     _passes.add(pass);
   }
 
@@ -180,6 +231,7 @@ class RenderGraph3D() {
     List<RenderGraphResourceHandle3D> writes = const [],
     bool hasSideEffects = false,
   }) {
+    _cachedPlan = null;
     final pass = RenderGraphPass3D(
       name: name,
       reads: reads,
@@ -196,9 +248,14 @@ class RenderGraph3D() {
   /// textures with identical [RenderGraphTextureDesc3D]s into minimal physical
   /// slots.
   CompiledRenderGraph3D compile() {
+    final cached = _cachedPlan;
+    if (cached != null) {
+      return cached;
+    }
+    _compileCount++;
     final n = _passes.length;
     if (n == 0) {
-      return CompiledRenderGraph3D(
+      return _cachedPlan = CompiledRenderGraph3D(
         executionOrder: const [],
         culledPasses: const [],
         virtualTextureCount: 0,
@@ -307,21 +364,14 @@ class RenderGraph3D() {
       }
     }
 
-    final executionOrder = <RenderGraphPass3D>[];
-    final culledPasses = <RenderGraphPass3D>[];
-    for (final idx in topoAll) {
-      if (live[idx]) {
-        executionOrder.add(_passes[idx]);
-      } else {
-        culledPasses.add(_passes[idx]);
-      }
-    }
-
-    for (var i = 0; i < n; i++) {
-      if (!live[i]) {
-        // Keep culledPasses in declaration order for predictable inspection.
-      }
-    }
+    final culledPasses = <RenderGraphPass3D>[
+      for (var i = 0; i < n; i++)
+        if (!live[i]) _passes[i],
+    ];
+    final executionOrder = <RenderGraphPass3D>[
+      for (final idx in topoAll)
+        if (live[idx]) _passes[idx],
+    ];
 
     // Compute live `[firstUse, lastUse]` pass intervals for transient textures.
     final firstUse = <int, int>{};
@@ -378,12 +428,9 @@ class RenderGraph3D() {
       }
     }
 
-    return CompiledRenderGraph3D(
+    return _cachedPlan = CompiledRenderGraph3D(
       executionOrder: List.unmodifiable(executionOrder),
-      culledPasses: List.unmodifiable([
-        for (var i = 0; i < n; i++)
-          if (!live[i]) _passes[i],
-      ]),
+      culledPasses: List.unmodifiable(culledPasses),
       virtualTextureCount: transientIds.length,
       physicalTargetCount: slotDescs.length,
       resourceToPhysicalSlot: Map.unmodifiable(resourceToSlot),
@@ -423,8 +470,8 @@ class RenderGraph3D() {
       return plan;
     }
 
-    final usedPerDesc = <RenderGraphTextureDesc3D, int>{};
-    final slotTargets = <GpuTextureTarget>[];
+    final usedPerDesc = _usedPerDesc..clear();
+    final slotTargets = _slotTargets..clear();
     for (final desc in plan.physicalSlotDescriptors) {
       final list = _targetPool.putIfAbsent(desc, () => <GpuTextureTarget>[]);
       final idx = usedPerDesc[desc] ?? 0;
@@ -444,19 +491,29 @@ class RenderGraph3D() {
     }
     _releaseUnusedTargets(usedPerDesc);
 
-    final resolved = <int, GpuTextureTarget>{
-      ..._importedTargets,
-      for (final MapEntry(:key, :value) in plan.resourceToPhysicalSlot.entries)
-        key: slotTargets[value],
-    };
+    final resolved = _resolvedTargets
+      ..clear()
+      ..addAll(_importedTargets);
+    for (final MapEntry(:key, :value) in plan.resourceToPhysicalSlot.entries) {
+      resolved[key] = slotTargets[value];
+    }
 
-    final ctx = RenderGraphPassContext3D(
-      device: device,
-      renderContext: renderContext,
-      resolvedTargets: resolved,
-    );
-    for (final pass in plan.executionOrder) {
-      pass.execute(ctx);
+    final ctx = _reusableContext;
+    final RenderGraphPassContext3D activeCtx;
+    if (ctx == null) {
+      activeCtx = _reusableContext = RenderGraphPassContext3D(
+        device: device,
+        renderContext: renderContext,
+        resolvedTargets: resolved,
+      );
+    } else {
+      ctx
+        .._device = device
+        .._renderContext = renderContext;
+      activeCtx = ctx;
+    }
+    for (var i = 0; i < plan.executionOrder.length; i++) {
+      plan.executionOrder[i].execute(activeCtx);
     }
     return plan;
   }

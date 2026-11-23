@@ -2,7 +2,6 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' show Color, Image, Rect, Size;
 
-import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:meta/meta.dart';
@@ -22,8 +21,14 @@ class BloomPass(final GraphicsDevice _device) {
       'packages/flame_3d/assets/shaders/bloom_prefilter.shaderbundle';
   static const String _blurBundle =
       'packages/flame_3d/assets/shaders/bloom_blur.shaderbundle';
+  static const String _downsampleBundle =
+      'packages/flame_3d/assets/shaders/bloom_downsample.shaderbundle';
+  static const String _upsampleBundle =
+      'packages/flame_3d/assets/shaders/bloom_upsample.shaderbundle';
   static const String _compositeBundle =
       'packages/flame_3d/assets/shaders/bloom_composite.shaderbundle';
+  static const String _compositeSimpleBundle =
+      'packages/flame_3d/assets/shaders/bloom_composite_simple.shaderbundle';
 
   static final Surface _fullscreenQuad = Surface.fromBuffers(
     vertices: Float32List.fromList(const [
@@ -55,6 +60,18 @@ class BloomPass(final GraphicsDevice _device) {
     slots: const ['BloomBlur', 'sourceTexture'],
   );
 
+  late final Shader _downsampleVert = VertexShader.fromAsset(_downsampleBundle);
+  late final Shader _downsampleFrag = FragmentShader.fromAsset(
+    _downsampleBundle,
+    slots: const ['BloomBlur', 'sourceTexture'],
+  );
+
+  late final Shader _upsampleVert = VertexShader.fromAsset(_upsampleBundle);
+  late final Shader _upsampleFrag = FragmentShader.fromAsset(
+    _upsampleBundle,
+    slots: const ['BloomBlur', 'sourceTexture'],
+  );
+
   late final Shader _compositeVert = VertexShader.fromAsset(_compositeBundle);
   late final Shader _compositeFrag = FragmentShader.fromAsset(
     _compositeBundle,
@@ -67,16 +84,13 @@ class BloomPass(final GraphicsDevice _device) {
     ],
   );
 
-  final Vector4 _curve = Vector4.zero();
-  final Vector4 _texel = Vector4.zero();
-  final Vector4 _offset = Vector4.zero();
-  final Vector4 _params = Vector4.zero();
-  final Vector4 _grading = Vector4.zero();
-  final Vector4 _tint = Vector4.zero();
-  final Vector4 _ssao = Vector4.zero();
-  final Vector4 _dof = Vector4.zero();
-  final Vector4 _lutParams = Vector4.zero();
-  final Vector4 _frame = Vector4.zero();
+  late final Shader _compositeSimpleVert = VertexShader.fromAsset(
+    _compositeSimpleBundle,
+  );
+  late final Shader _compositeSimpleFrag = FragmentShader.fromAsset(
+    _compositeSimpleBundle,
+    slots: const ['BloomComposite', 'sceneTexture', 'bloomTexture'],
+  );
 
   /// Applies optional [bloom] and optional [postProcess] to [sceneTarget]
   /// (into which the 3D scene pass has just ended via `endTexturePass`),
@@ -98,7 +112,7 @@ class BloomPass(final GraphicsDevice _device) {
   }) {
     final fullWidth = sceneTarget.width;
     final fullHeight = sceneTarget.height;
-    final sceneTexture = _textureOf(0, sceneTarget);
+    final sceneTexture = _textureFor(sceneTarget);
 
     Texture bloomReadTex = Texture.empty;
     final runBloom =
@@ -123,56 +137,161 @@ class BloomPass(final GraphicsDevice _device) {
         clearValue: const Color(0x00000000),
         role: _BloomTarget.ping,
       );
-      final pong = _device.textureTarget(
-        halfWidth,
-        halfHeight,
-        bloomFormat,
-        clearValue: const Color(0x00000000),
-        role: _BloomTarget.pong,
-      );
-
-      final pingTex = _textureOf(1, ping);
-      final pongTex = _textureOf(2, pong);
+      final pingTex = _textureFor(ping);
 
       final threshold = math.max(0.0, bloom.threshold);
       final knee = threshold * bloom.softKnee.clamp(0.0, 1.0) + 1e-4;
-      _curve.setValues(threshold, threshold - knee, 2.0 * knee, 0.25 / knee);
-      _texel.setValues(
-        1.0 / fullWidth,
-        1.0 / fullHeight,
-        hdrEnabled ? 1.0 : 0.0,
-        0,
-      );
-      _prefilterFrag
-        ..setTexture('sourceTexture', sceneTexture)
-        ..setVector4('BloomPrefilter.curve', _curve)
-        ..setVector4('BloomPrefilter.texel', _texel);
+
+      _prefilterFrag.resource;
+      final preOff =
+          (_prefilterFrag.renderCache as _PrefilterCache?) ??
+          (_prefilterFrag.renderCache = _PrefilterCache(_prefilterFrag));
+      if (preOff.generation != _prefilterFrag.generation) {
+        preOff.refresh(_prefilterFrag);
+      }
+      if (preOff.sourceIdx >= 0) {
+        _prefilterFrag.setTextureAt(preOff.sourceIdx, sceneTexture);
+      }
+      preOff.block
+        ..writeVec4ValuesAt(
+          preOff.curveOff,
+          threshold,
+          threshold - knee,
+          2.0 * knee,
+          0.25 / knee,
+        )
+        ..writeVec4ValuesAt(
+          preOff.texelOff,
+          1.0 / fullWidth,
+          1.0 / fullHeight,
+          hdrEnabled ? 1.0 : 0.0,
+          0,
+        );
 
       _device.beginTexturePass(ping);
-      _drawQuad(_prefilterVert, _prefilterFrag);
+      _drawQuad(_prefilterVert, _prefilterFrag, preOff);
       _device.endTexturePass();
 
-      var readTex = pingTex;
-      var writeTarget = pong;
-      for (var i = 0; i < bloom.passes; i++) {
-        final spread = (i + 0.5) * bloom.radius;
-        _offset.setValues(spread / halfWidth, spread / halfHeight, 0, 0);
-        _blurFrag
-          ..setTexture('sourceTexture', readTex)
-          ..setVector4('BloomBlur.offset', _offset);
-        _device.beginTexturePass(writeTarget);
-        _drawQuad(_blurVert, _blurFrag);
-        _device.endTexturePass();
-
-        if (identical(writeTarget, pong)) {
-          readTex = pongTex;
-          writeTarget = ping;
-        } else {
-          readTex = pingTex;
-          writeTarget = pong;
+      if (bloom.dualKawase && bloom.passes > 1) {
+        final passCount = bloom.passes;
+        _downsampleFrag.resource;
+        final downOff =
+            (_downsampleFrag.renderCache as _BlurCache?) ??
+            (_downsampleFrag.renderCache = _BlurCache(_downsampleFrag));
+        if (downOff.generation != _downsampleFrag.generation) {
+          downOff.refresh(_downsampleFrag);
         }
+        _upsampleFrag.resource;
+        final upOff =
+            (_upsampleFrag.renderCache as _BlurCache?) ??
+            (_upsampleFrag.renderCache = _BlurCache(_upsampleFrag));
+        if (upOff.generation != _upsampleFrag.generation) {
+          upOff.refresh(_upsampleFrag);
+        }
+
+        _mipTargets[0] = ping;
+        _mipTexs[0] = pingTex;
+        var curW = halfWidth;
+        var curH = halfHeight;
+        for (var i = 1; i <= passCount; i++) {
+          curW = math.max(1, curW >> 1);
+          curH = math.max(1, curH >> 1);
+          final dst = _device.textureTarget(
+            curW,
+            curH,
+            bloomFormat,
+            clearValue: const Color(0x00000000),
+            role: _dualDownRoles[i - 1],
+          );
+          if (downOff.sourceIdx >= 0) {
+            _downsampleFrag.setTextureAt(downOff.sourceIdx, _mipTexs[i - 1]!);
+          }
+          downOff.block.writeVec4ValuesAt(
+            downOff.offsetOff,
+            bloom.radius / curW,
+            bloom.radius / curH,
+            0,
+            0,
+          );
+          _device.beginTexturePass(dst);
+          _drawQuad(_downsampleVert, _downsampleFrag, downOff);
+          _device.endTexturePass();
+          _mipTargets[i] = dst;
+          _mipTexs[i] = _textureFor(dst);
+        }
+        var readTex = _mipTexs[passCount]!;
+        for (var i = passCount - 1; i >= 0; i--) {
+          final dst = i == 0
+              ? ping
+              : _device.textureTarget(
+                  _mipTargets[i]!.width,
+                  _mipTargets[i]!.height,
+                  bloomFormat,
+                  clearValue: const Color(0x00000000),
+                  role: _dualUpRoles[i - 1],
+                );
+          if (upOff.sourceIdx >= 0) {
+            _upsampleFrag.setTextureAt(upOff.sourceIdx, readTex);
+          }
+          upOff.block.writeVec4ValuesAt(
+            upOff.offsetOff,
+            bloom.radius / dst.width,
+            bloom.radius / dst.height,
+            0,
+            0,
+          );
+          _device.beginTexturePass(dst);
+          _drawQuad(_upsampleVert, _upsampleFrag, upOff);
+          _device.endTexturePass();
+          readTex = i == 0 ? pingTex : _textureFor(dst);
+        }
+        bloomReadTex = readTex;
+      } else {
+        final pong = _device.textureTarget(
+          halfWidth,
+          halfHeight,
+          bloomFormat,
+          clearValue: const Color(0x00000000),
+          role: _BloomTarget.pong,
+        );
+        final pongTex = _textureFor(pong);
+
+        _blurFrag.resource;
+        final blurOff =
+            (_blurFrag.renderCache as _BlurCache?) ??
+            (_blurFrag.renderCache = _BlurCache(_blurFrag));
+        if (blurOff.generation != _blurFrag.generation) {
+          blurOff.refresh(_blurFrag);
+        }
+
+        var readTex = pingTex;
+        var writeTarget = pong;
+        for (var i = 0; i < bloom.passes; i++) {
+          final spread = (i + 0.5) * bloom.radius;
+          if (blurOff.sourceIdx >= 0) {
+            _blurFrag.setTextureAt(blurOff.sourceIdx, readTex);
+          }
+          blurOff.block.writeVec4ValuesAt(
+            blurOff.offsetOff,
+            spread / halfWidth,
+            spread / halfHeight,
+            0,
+            0,
+          );
+          _device.beginTexturePass(writeTarget);
+          _drawQuad(_blurVert, _blurFrag, blurOff);
+          _device.endTexturePass();
+
+          if (identical(writeTarget, pong)) {
+            readTex = pongTex;
+            writeTarget = ping;
+          } else {
+            readTex = pingTex;
+            writeTarget = pong;
+          }
+        }
+        bloomReadTex = readTex;
       }
-      bloomReadTex = readTex;
     }
 
     final bloomIntensity = runBloom ? bloom.intensity : 0.0;
@@ -185,7 +304,8 @@ class BloomPass(final GraphicsDevice _device) {
     final toneMap = effectiveToneMap.index.toDouble();
     final vigIntensity = postProcess?.vignetteIntensity ?? 0.0;
     final vigSmooth = postProcess?.vignetteSmoothness ?? 0.5;
-    final fxaa = (postProcess?.fxaa ?? false) ? 1.0 : 0.0;
+    final fxaaEnabled = postProcess?.fxaa ?? false;
+    final fxaa = fxaaEnabled ? 1.0 : 0.0;
     final c = postProcess?.tint ?? const Color(0xFFFFFFFF);
 
     final ssaoIntensity = postProcess?.ssaoIntensity ?? 0.0;
@@ -202,90 +322,258 @@ class BloomPass(final GraphicsDevice _device) {
     final lutSize = lut?.size.toDouble() ?? 0.0;
     final lutTex = lut?.textureFor(_device.backend) ?? Texture.standard;
 
-    _params.setValues(bloomIntensity, exposure, contrast, saturation);
-    _grading.setValues(toneMap, vigIntensity, vigSmooth, fxaa);
-    _tint.setValues(c.r, c.g, c.b, 1.0);
-    _texel.setValues(1.0 / fullWidth, 1.0 / fullHeight, 0, 0);
-    _ssao.setValues(ssaoIntensity, ssaoRadius, hasDn, 0);
-    _dof.setValues(dofBlur, dofFocus, dofRange, 0);
-    _lutParams.setValues(
-      lutStrength,
-      lutSize,
-      hdrEnabled ? 1.0 : 0.0,
-      debugMode.index.toDouble(),
-    );
+    final double frameCx;
+    final double frameCy;
+    final double frameSx;
+    final double frameSy;
     if (visibleFrame == null ||
         !(visibleFrame.width > 0) ||
         !(visibleFrame.height > 0)) {
-      _frame.setValues(0.5, 0.5, 2, 2);
+      frameCx = 0.5;
+      frameCy = 0.5;
+      frameSx = 2.0;
+      frameSy = 2.0;
     } else {
-      _frame.setValues(
-        visibleFrame.center.dx / fullWidth,
-        visibleFrame.center.dy / fullHeight,
-        2 * fullWidth / visibleFrame.width,
-        2 * fullHeight / visibleFrame.height,
-      );
+      frameCx = visibleFrame.center.dx / fullWidth;
+      frameCy = visibleFrame.center.dy / fullHeight;
+      frameSx = 2 * fullWidth / visibleFrame.width;
+      frameSy = 2 * fullHeight / visibleFrame.height;
     }
 
-    _compositeFrag
-      ..setTexture('sceneTexture', sceneTexture)
-      ..setTexture('bloomTexture', bloomReadTex)
-      ..setTexture('depthNormalTexture', depthNormalTexture ?? Texture.standard)
-      ..setTexture('lutTexture', lutTex)
-      ..setVector4('BloomComposite.params', _params)
-      ..setVector4('BloomComposite.grading', _grading)
-      ..setVector4('BloomComposite.tint', _tint)
-      ..setVector4('BloomComposite.texel', _texel)
-      ..setVector4('BloomComposite.ssao', _ssao)
-      ..setVector4('BloomComposite.dof', _dof)
-      ..setVector4('BloomComposite.lutParams', _lutParams)
-      ..setVector4('BloomComposite.frame', _frame);
+    final useSimpleComposite =
+        debugMode == RenderDebugMode3D.none &&
+        depthNormalTexture == null &&
+        !fxaaEnabled &&
+        lut == null;
+    final compVert = useSimpleComposite ? _compositeSimpleVert : _compositeVert;
+    final compFrag = useSimpleComposite ? _compositeSimpleFrag : _compositeFrag;
+    compFrag.resource;
+    final compCache =
+        (compFrag.renderCache as _CompositeCache?) ??
+        (compFrag.renderCache = _CompositeCache(compFrag));
+    if (compCache.generation != compFrag.generation) {
+      compCache.refresh(compFrag);
+    }
+
+    if (compCache.sceneIdx >= 0) {
+      compFrag.setTextureAt(compCache.sceneIdx, sceneTexture);
+    }
+    if (compCache.bloomIdx >= 0) {
+      compFrag.setTextureAt(compCache.bloomIdx, bloomReadTex);
+    }
+    if (compCache.depthNormalIdx >= 0) {
+      compFrag.setTextureAt(
+        compCache.depthNormalIdx,
+        depthNormalTexture ?? Texture.standard,
+      );
+    }
+    if (compCache.lutIdx >= 0) {
+      compFrag.setTextureAt(compCache.lutIdx, lutTex);
+    }
+
+    compCache.block
+      ..writeVec4ValuesAt(
+        compCache.paramsOff,
+        bloomIntensity,
+        exposure,
+        contrast,
+        saturation,
+      )
+      ..writeVec4ValuesAt(
+        compCache.gradingOff,
+        toneMap,
+        vigIntensity,
+        vigSmooth,
+        fxaa,
+      )
+      ..writeVec4ValuesAt(compCache.tintOff, c.r, c.g, c.b, 1.0)
+      ..writeVec4ValuesAt(
+        compCache.texelOff,
+        1.0 / fullWidth,
+        1.0 / fullHeight,
+        0,
+        0,
+      )
+      ..writeVec4ValuesAt(
+        compCache.ssaoOff,
+        ssaoIntensity,
+        ssaoRadius,
+        hasDn,
+        0,
+      )
+      ..writeVec4ValuesAt(compCache.dofOff, dofBlur, dofFocus, dofRange, 0)
+      ..writeVec4ValuesAt(
+        compCache.lutParamsOff,
+        lutStrength,
+        lutSize,
+        hdrEnabled ? 1.0 : 0.0,
+        debugMode.index.toDouble(),
+      )
+      ..writeVec4ValuesAt(
+        compCache.frameOff,
+        frameCx,
+        frameCy,
+        frameSx,
+        frameSy,
+      );
 
     if (outputTarget != null) {
       _device.beginOwnedPass(outputTarget);
     } else {
       _device.beginPass(Size(fullWidth.toDouble(), fullHeight.toDouble()));
     }
-    _drawQuad(_compositeVert, _compositeFrag);
+    _drawQuad(compVert, compFrag, compCache);
     return _device.endPass();
   }
 
-  // The textures of the targets last used, rebuilt when a target changes.
-  final List<GpuTextureTarget?> _targets = List.filled(3, null);
-  final List<Texture> _textures = List.filled(3, Texture.standard);
+  final Expando<_TargetTex> _targetTextures = Expando();
+  final List<GpuTextureTarget?> _mipTargets = List.filled(5, null);
+  final List<Texture?> _mipTexs = List.filled(5, null);
+  static const List<Object> _dualDownRoles = [
+    #_bloomDualDown1,
+    #_bloomDualDown2,
+    #_bloomDualDown3,
+    #_bloomDualDown4,
+  ];
+  static const List<Object> _dualUpRoles = [
+    #_bloomDualUp1,
+    #_bloomDualUp2,
+    #_bloomDualUp3,
+    #_bloomDualUp4,
+  ];
 
-  Texture _textureOf(int index, GpuTextureTarget target) {
-    if (!identical(_targets[index], target)) {
-      _targets[index] = target;
-      _textures[index] = Texture(
-        null,
-        width: target.width,
-        height: target.height,
-        sampler: TextureSampler.linear,
-        gpuTexture: target.texture,
-      );
+  Texture _textureFor(GpuTextureTarget target) {
+    final existing = _targetTextures[target];
+    final gpuTex = target.texture;
+    if (existing != null && identical(existing.gpuTex, gpuTex)) {
+      return existing.tex;
     }
-    return _textures[index];
+    final tex = Texture(
+      null,
+      width: target.width,
+      height: target.height,
+      sampler: TextureSampler.linear,
+      gpuTexture: gpuTex,
+    );
+    _targetTextures[target] = _TargetTex(gpuTex, tex);
+    return tex;
   }
 
-  void _drawQuad(Shader vert, Shader frag) {
+  void _drawQuad(Shader vert, Shader frag, _BloomShaderCache cache) {
     vert.resource;
     frag.resource;
     final pipeline = _device.pipelineFor(vert, frag, _fullscreenQuad.layout);
     _device
       ..bindPipeline(pipeline)
-      ..setRenderState(_fullscreenState);
-    for (final slotName in frag.slots) {
-      final slot = frag.slot(slotName);
-      if (slot.sizeInBytes == null) {
-        _device.bindTexture(slot, frag.texture(slotName) ?? Texture.standard);
-      } else {
-        _device.bindUniformBlock(frag.block(slotName));
-      }
+      ..setRenderState(_fullscreenState)
+      ..bindUniformBlock(cache.block);
+    final slots = cache.samplerSlots;
+    final indices = cache.samplerIndices;
+    for (var i = 0; i < slots.length; i++) {
+      _device.bindTexture(
+        slots[i],
+        frag.textureAt(indices[i]) ?? Texture.standard,
+      );
     }
     _device
       ..bindSurface(_fullscreenQuad)
       ..drawSurface(_fullscreenQuad);
+  }
+}
+
+class _TargetTex(this.gpuTex, this.tex) {
+  final GpuTexture gpuTex;
+  final Texture tex;
+}
+
+abstract class _BloomShaderCache() {
+  int generation = -1;
+  late UniformBlock block;
+  late List<GpuUniformSlot> samplerSlots;
+  late List<int> samplerIndices;
+
+  void _initBase(Shader frag, String blockName) {
+    generation = frag.generation;
+    block = frag.block(blockName);
+    final slots = <GpuUniformSlot>[];
+    final indices = <int>[];
+    final slotNames = frag.slots;
+    final resolved = frag.resolvedSlots;
+    for (var i = 0; i < slotNames.length; i++) {
+      if (resolved[i].sizeInBytes == null) {
+        slots.add(resolved[i]);
+        indices.add(frag.samplerIndexOf(slotNames[i]));
+      }
+    }
+    samplerSlots = slots;
+    samplerIndices = indices;
+  }
+}
+
+class _PrefilterCache(Shader frag) extends _BloomShaderCache {
+  this {
+    refresh(frag);
+  }
+
+  late int sourceIdx;
+  late int curveOff;
+  late int texelOff;
+
+  void refresh(Shader frag) {
+    _initBase(frag, 'BloomPrefilter');
+    sourceIdx = frag.samplerIndexOf('sourceTexture');
+    curveOff = block.resolveOffset('curve');
+    texelOff = block.resolveOffset('texel');
+  }
+}
+
+class _BlurCache(Shader frag) extends _BloomShaderCache {
+  this {
+    refresh(frag);
+  }
+
+  late int sourceIdx;
+  late int offsetOff;
+
+  void refresh(Shader frag) {
+    _initBase(frag, 'BloomBlur');
+    sourceIdx = frag.samplerIndexOf('sourceTexture');
+    offsetOff = block.resolveOffset('offset');
+  }
+}
+
+class _CompositeCache(Shader frag) extends _BloomShaderCache {
+  this {
+    refresh(frag);
+  }
+
+  late int sceneIdx;
+  late int bloomIdx;
+  late int depthNormalIdx;
+  late int lutIdx;
+  late int paramsOff;
+  late int gradingOff;
+  late int tintOff;
+  late int texelOff;
+  late int ssaoOff;
+  late int dofOff;
+  late int lutParamsOff;
+  late int frameOff;
+
+  void refresh(Shader frag) {
+    _initBase(frag, 'BloomComposite');
+    sceneIdx = frag.samplerIndexOf('sceneTexture');
+    bloomIdx = frag.samplerIndexOf('bloomTexture');
+    depthNormalIdx = frag.samplerIndexOf('depthNormalTexture');
+    lutIdx = frag.samplerIndexOf('lutTexture');
+    paramsOff = block.resolveOffset('params');
+    gradingOff = block.resolveOffset('grading');
+    tintOff = block.resolveOffset('tint');
+    texelOff = block.resolveOffset('texel');
+    ssaoOff = block.resolveOffset('ssao');
+    dofOff = block.resolveOffset('dof');
+    lutParamsOff = block.resolveOffset('lutParams');
+    frameOff = block.resolveOffset('frame');
   }
 }
 

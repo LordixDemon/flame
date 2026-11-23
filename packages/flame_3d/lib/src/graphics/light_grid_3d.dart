@@ -201,6 +201,13 @@ class LightGrid3D() {
   final Matrix4 _inverse = Matrix4.zero();
   final Vector4 _corner = Vector4.zero();
 
+  int _lastRawCount = -1;
+  List<Light>? _lastLightsRef;
+  int? _lastLightsVersion;
+  int _lastCameraMask = 0;
+  bool _lastPoints = false;
+  bool _lastSpots = false;
+
   /// Builds the grid of the point lights (with [points]) and spot lights
   /// (with [spots]) of [lights] that a pass of [cameraMask] shades and that
   /// can go into a grid: those with a `range` above zero that cast no
@@ -210,6 +217,10 @@ class LightGrid3D() {
   /// only the part of it the lights reach. [viewProjection] is the
   /// `projection * view` of the camera of the pass: the grid is cut to what
   /// it sees when it would need more than `settings.maxCells` cells.
+  ///
+  /// Passing [lightsVersion] (such as `World3D.lightsVersion`) lets consecutive
+  /// builds skip light gathering in O(1) when the light list, mask, flags,
+  /// settings, bounds, and view have not changed.
   ///
   /// Returns whether the contents of [texels] changed. A build whose lights,
   /// settings, bounds and view are those of the previous one changes
@@ -222,8 +233,8 @@ class LightGrid3D() {
     required bool spots,
     Aabb3? bounds,
     Matrix4? viewProjection,
+    int? lightsVersion,
   }) {
-    _gather(lights, cameraMask, points: points, spots: spots);
     if (bounds == null) {
       _bounds.setAll(0, _noBounds);
     } else {
@@ -237,9 +248,32 @@ class LightGrid3D() {
         ..[4] = max.y
         ..[5] = max.z;
     }
-    if (_sameInputs(settings, viewProjection)) {
+    if (lightsVersion != null &&
+        lightsVersion == _lastLightsVersion &&
+        identical(lights, _lastLightsRef) &&
+        lights.length == _lastRawCount &&
+        cameraMask == _lastCameraMask &&
+        points == _lastPoints &&
+        spots == _lastSpots &&
+        _sameGridEnvelope(settings, viewProjection)) {
       return false;
     }
+    _gather(lights, cameraMask, points: points, spots: spots);
+    if (_sameInputs(settings, viewProjection)) {
+      _lastLightsVersion = lightsVersion;
+      _lastLightsRef = lights;
+      _lastRawCount = lights.length;
+      _lastCameraMask = cameraMask;
+      _lastPoints = points;
+      _lastSpots = spots;
+      return false;
+    }
+    _lastLightsVersion = lightsVersion;
+    _lastLightsRef = lights;
+    _lastRawCount = lights.length;
+    _lastCameraMask = cameraMask;
+    _lastPoints = points;
+    _lastSpots = spots;
     _keepInputs(settings, viewProjection);
     stats.builds++;
     _bin(settings, viewProjection);
@@ -358,8 +392,8 @@ class LightGrid3D() {
     double.infinity,
   ]);
 
-  bool _sameInputs(LightGridSettings settings, Matrix4? viewProjection) {
-    if (_lastCount != _lightCount || _lastSettings != settings) {
+  bool _sameGridEnvelope(LightGridSettings settings, Matrix4? viewProjection) {
+    if (_lastCount < 0 || _lastSettings != settings) {
       return false;
     }
     for (var i = 0; i < 6; i++) {
@@ -368,7 +402,6 @@ class LightGrid3D() {
       }
     }
     if (_lastViewUsed) {
-      // The grid of before was cut to its view: only the same view keeps it.
       if (viewProjection == null) {
         return false;
       }
@@ -378,6 +411,14 @@ class LightGrid3D() {
           return false;
         }
       }
+    }
+    return true;
+  }
+
+  bool _sameInputs(LightGridSettings settings, Matrix4? viewProjection) {
+    if (_lastCount != _lightCount ||
+        !_sameGridEnvelope(settings, viewProjection)) {
+      return false;
     }
     for (var i = 0; i < _lightCount; i++) {
       if (_lastIndex[i] != _lightIndex[i] || _lastKind[i] != _lightKind[i]) {

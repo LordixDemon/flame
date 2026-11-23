@@ -6,6 +6,8 @@ import 'package:flame_3d/camera.dart' show World3D;
 import 'package:flame_3d/collisions.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/physics.dart';
+import 'package:flame_3d/src/collisions/collision_manifold_3d.dart'
+    show MutableManifoldBuffer3D;
 import 'package:meta/meta.dart';
 
 /// Deterministic fixed-timestep Sequential Impulse 3D rigid-body physics world.
@@ -78,6 +80,7 @@ class PhysicsWorld3D({
   final List<Component> _walkStack = [];
   final List<RigidBody3D> _pairCandidates = [];
   final List<_ContactConstraint3D> _constraints = [];
+  final MutableManifoldBuffer3D _manifoldBuffer = MutableManifoldBuffer3D();
 
   // Persistent contact pairs (warm-start history), keyed by body A.
   final Map<RigidBody3D, List<_ContactPair3D>> _pairsByBodyA = {};
@@ -1118,17 +1121,19 @@ class PhysicsWorld3D({
 
       for (var j = 0; j < _pairCandidates.length; j++) {
         final bodyB = _pairCandidates[j];
-        final manifolds = Narrowphase3D.testAll(
+        _manifoldBuffer.clear();
+        Narrowphase3D.testAllInto(
           bodyA.shape,
           bodyA.bodyWorldMatrix,
           bodyB.shape,
           bodyB.bodyWorldMatrix,
+          _manifoldBuffer,
         );
-        if (manifolds.isEmpty) {
+        if (_manifoldBuffer.isEmpty) {
           continue;
         }
-        _wakeOnContact(bodyA, bodyB, manifolds, wakeVelThresh2);
-        _addPairConstraints(bodyA, bodyB, manifolds);
+        _wakeOnContactBuffer(bodyA, bodyB, _manifoldBuffer, wakeVelThresh2);
+        _addPairConstraintsFromBuffer(bodyA, bodyB, _manifoldBuffer);
       }
 
       // Static colliders hold up awake dynamic bodies.
@@ -1145,16 +1150,22 @@ class PhysicsWorld3D({
         }
         for (var k = 0; k < _colliderCandidates.length; k++) {
           final collider = _colliderCandidates[k];
-          final manifolds = Narrowphase3D.testAll(
+          _manifoldBuffer.clear();
+          Narrowphase3D.testAllInto(
             bodyA.shape,
             bodyA.bodyWorldMatrix,
             collider.shape,
             collider.colliderWorldMatrix,
+            _manifoldBuffer,
           );
-          if (manifolds.isEmpty) {
+          if (_manifoldBuffer.isEmpty) {
             continue;
           }
-          _addPairConstraints(bodyA, _colliderProxy(collider), manifolds);
+          _addPairConstraintsFromBuffer(
+            bodyA,
+            _colliderProxy(collider),
+            _manifoldBuffer,
+          );
         }
       }
     }
@@ -1162,10 +1173,10 @@ class PhysicsWorld3D({
     _sweepStalePairs();
   }
 
-  void _wakeOnContact(
+  void _wakeOnContactBuffer(
     RigidBody3D bodyA,
     RigidBody3D bodyB,
-    List<CollisionManifold3D> manifolds,
+    MutableManifoldBuffer3D buffer,
     double wakeVelThresh2,
   ) {
     final aSleeping = bodyA.bodyType == BodyType3D.dynamic && bodyA.isSleeping;
@@ -1183,10 +1194,7 @@ class PhysicsWorld3D({
     if (other.bodyType != BodyType3D.dynamic) {
       return;
     }
-    var deepest = 0.0;
-    for (var m = 0; m < manifolds.length; m++) {
-      deepest = math.max(deepest, manifolds[m].penetrationDepth);
-    }
+    final deepest = buffer.maxPenetrationDepth;
     final dvx = bodyB.linearVelocity.x - bodyA.linearVelocity.x;
     final dvy = bodyB.linearVelocity.y - bodyA.linearVelocity.y;
     final dvz = bodyB.linearVelocity.z - bodyA.linearVelocity.z;
@@ -1200,25 +1208,27 @@ class PhysicsWorld3D({
     }
   }
 
-  void _addPairConstraints(
+  void _addPairConstraintsFromBuffer(
     RigidBody3D bodyA,
     RigidBody3D bodyB,
-    List<CollisionManifold3D> manifolds,
+    MutableManifoldBuffer3D buffer,
   ) {
     final pair = _acquirePair(bodyA, bodyB)..lastTick = _tick;
-    for (var m = 0; m < manifolds.length; m++) {
+    final count = buffer.manifoldCount;
+    final matchDist = math.max(0.002, 2.0 * linearSlop);
+    for (var m = 0; m < count; m++) {
       final c = pair.constraintAt(m)
-        ..load(
+        ..loadFromBuffer(
           bodyA,
           bodyB,
-          manifolds[m],
+          buffer,
           m,
           restitutionVelocityThreshold,
-          math.max(0.002, 2.0 * linearSlop),
+          matchDist,
         );
       _constraints.add(c);
     }
-    pair.manifoldCount = manifolds.length;
+    pair.manifoldCount = count;
   }
 
   _ContactPair3D _acquirePair(RigidBody3D bodyA, RigidBody3D bodyB) {
@@ -1517,6 +1527,41 @@ class _ContactConstraint3D() {
       prevImpulses = Float64List(cap * historyStride)
         ..setRange(0, prevCount * historyStride, prevImpulses);
     }
+  }
+
+  void loadFromBuffer(
+    RigidBody3D a,
+    RigidBody3D b,
+    MutableManifoldBuffer3D buf,
+    int mIdx,
+    double threshold,
+    double matchDist,
+  ) {
+    matchDistance = matchDist;
+    _begin(
+      a,
+      b,
+      mIdx,
+      threshold,
+      buf.normalX(mIdx),
+      buf.normalY(mIdx),
+      buf.normalZ(mIdx),
+    );
+    final start = buf.contactStart(mIdx);
+    final end = start + buf.contactLength(mIdx);
+    for (var c = start; c < end; c++) {
+      _addPoint(
+        buf.pointAX(c),
+        buf.pointAY(c),
+        buf.pointAZ(c),
+        buf.pointBX(c),
+        buf.pointBY(c),
+        buf.pointBZ(c),
+        buf.pointDepth(c),
+        buf.featureId(c),
+      );
+    }
+    _matchHistory();
   }
 
   void load(

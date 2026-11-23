@@ -889,7 +889,10 @@ class _WebGpuColorTexture(final OffscreenCanvas _canvas, int width, int height)
 
 class const _WebGpuFrame(final GpuBackend _backend) implements base.GpuFrame {
   @override
-  base.GpuRenderPass beginRenderPass(GpuRenderTarget target) {
+  base.GpuRenderPass beginRenderPass(
+    GpuRenderTarget target, {
+    bool keepContents = false,
+  }) {
     final encoder = _backend._device.createCommandEncoder();
     if (target is _WebGpuTextureTarget) {
       final pass = encoder.beginRenderPass(

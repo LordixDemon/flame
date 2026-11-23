@@ -15,9 +15,15 @@ void main() {
     late GraphicsDevice device;
     late RenderContext3D context;
     late SpatialMaterial material;
+    late VertexLayout lastLayout;
 
     setUp(() {
-      backend = FakeGpuBackend(blockSizes: {'JointMatrices': 1024});
+      backend = FakeGpuBackend(
+        blockSizes: {
+          'JointMatrices': 1024,
+          RenderContext3D.spatialPassBlock: 64 * 1024,
+        },
+      );
       device = GraphicsDevice(backend: backend);
       context = RenderContext3D(device);
       material = SpatialMaterial();
@@ -35,6 +41,7 @@ void main() {
         indices: [0, 1, 2],
         material: material,
       );
+      lastLayout = surface.layout;
       device.begin();
       context
         ..lights = lights
@@ -50,9 +57,10 @@ void main() {
     }
 
     int offsetOf(String block, String member) {
-      return material.fragmentShader
-              .slot(block)
-              .getMemberOffsetInBytes(member)! ~/
+      return material
+              .fragmentShaderFor(context, lastLayout)
+              .slot(RenderContext3D.spatialPassBlock)
+              .getMemberOffsetInBytes('${block}_$member')! ~/
           Float32List.bytesPerElement;
     }
 
@@ -89,7 +97,7 @@ void main() {
           transform: rotated,
         ),
       ]);
-      final data = uniforms[RenderContext3D.directionalLightsBlock]!;
+      final data = uniforms[RenderContext3D.spatialPassBlock]!;
 
       expect(data[offsetOf('DirectionalLights', 'numLights')], 2);
       final directions = offsetOf('DirectionalLights', 'directions');
@@ -119,7 +127,7 @@ void main() {
             position: Vector3.zero(),
             source: DirectionalLight(direction: Vector3(0, -1, 0)),
           ),
-      ])[RenderContext3D.directionalLightsBlock]!;
+      ])[RenderContext3D.spatialPassBlock]!;
 
       expect(
         data[offsetOf('DirectionalLights', 'numLights')],
@@ -139,7 +147,7 @@ void main() {
           ),
         ),
       ]);
-      final data = uniforms[RenderContext3D.hemisphereLightBlock]!;
+      final data = uniforms[RenderContext3D.spatialPassBlock]!;
 
       expect(
         read(data, 'HemisphereLight', 'skyColor', 4),
@@ -157,7 +165,7 @@ void main() {
     });
 
     test('a scene without hemisphere light writes it dark', () {
-      final data = draw(const [])[RenderContext3D.hemisphereLightBlock]!;
+      final data = draw(const [])[RenderContext3D.spatialPassBlock]!;
 
       expect(read(data, 'HemisphereLight', 'intensity', 1), [0]);
       expect(read(data, 'HemisphereLight', 'up', 3), [0, 1, 0]);
@@ -185,7 +193,7 @@ void main() {
             range: -1,
           ),
         ),
-      ])[RenderContext3D.lightsBlock]!;
+      ])[RenderContext3D.spatialPassBlock]!;
 
       final ranges = offsetOf('Lights', 'ranges');
       expect(data[ranges], 4.5);
@@ -207,7 +215,7 @@ void main() {
         point(2, 2),
         point(3, 0),
         point(4, 0.5),
-      ])[RenderContext3D.lightsBlock]!;
+      ])[RenderContext3D.spatialPassBlock]!;
 
       expect(data[offsetOf('Lights', 'numLights')], 2);
       final positions = offsetOf('Lights', 'positions');
@@ -233,7 +241,7 @@ void main() {
           position: Vector3(9, 0, 0),
           source: PointLight(color: const Color(0xFFFFFFFF), intensity: 1),
         ),
-      ])[RenderContext3D.lightsBlock]!;
+      ])[RenderContext3D.spatialPassBlock]!;
 
       expect(
         data[offsetOf('Lights', 'numLights')],
@@ -248,7 +256,7 @@ void main() {
 
     group('ambient light', () {
       test('defaults to white 0.2 without any ambient light', () {
-        final data = draw(const [])[RenderContext3D.ambientLightBlock]!;
+        final data = draw(const [])[RenderContext3D.spatialPassBlock]!;
 
         expect(read(data, 'AmbientLight', 'color', 4), [1, 1, 1, 1]);
         expect(
@@ -260,7 +268,7 @@ void main() {
       test('is dark when a hemisphere light replaces the default', () {
         final data = draw([
           Light(position: Vector3.zero(), source: HemisphereLight()),
-        ])[RenderContext3D.ambientLightBlock]!;
+        ])[RenderContext3D.spatialPassBlock]!;
 
         expect(read(data, 'AmbientLight', 'intensity', 1), [0]);
       });
@@ -272,7 +280,7 @@ void main() {
             position: Vector3.zero(),
             source: AmbientLight(intensity: 0.3),
           ),
-        ])[RenderContext3D.ambientLightBlock]!;
+        ])[RenderContext3D.spatialPassBlock]!;
 
         expect(
           read(data, 'AmbientLight', 'intensity', 1),
@@ -289,7 +297,7 @@ void main() {
       sun
         ..intensity = 0.25
         ..direction!.setValues(1, 0, 0);
-      final data = draw(lights)[RenderContext3D.directionalLightsBlock]!;
+      final data = draw(lights)[RenderContext3D.spatialPassBlock]!;
 
       final directions = offsetOf('DirectionalLights', 'directions');
       final colors = offsetOf('DirectionalLights', 'colors');

@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' show Color;
 
@@ -181,39 +180,58 @@ class InstancedGroup3D({
     if (_localBoundsDirty) {
       _localBoundsDirty = false;
       final meshBox = mesh.aabb;
+      final cx = 0.5 * (meshBox.min.x + meshBox.max.x);
+      final cy = 0.5 * (meshBox.min.y + meshBox.max.y);
+      final cz = 0.5 * (meshBox.min.z + meshBox.max.z);
+      final hx = 0.5 * (meshBox.max.x - meshBox.min.x);
+      final hy = 0.5 * (meshBox.max.y - meshBox.min.y);
+      final hz = 0.5 * (meshBox.max.z - meshBox.min.z);
+      final instances = _instances;
+
       var minX = double.infinity;
       var minY = double.infinity;
       var minZ = double.infinity;
       var maxX = double.negativeInfinity;
       var maxY = double.negativeInfinity;
       var maxZ = double.negativeInfinity;
+
       for (var idx = 0; idx < _length; idx++) {
         final b = idx * _stride;
-        for (var corner = 0; corner < 8; corner++) {
-          final cx = (corner & 1) == 0 ? meshBox.min.x : meshBox.max.x;
-          final cy = (corner & 2) == 0 ? meshBox.min.y : meshBox.max.y;
-          final cz = (corner & 4) == 0 ? meshBox.min.z : meshBox.max.z;
-          final wx =
-              _instances[b] * cx +
-              _instances[b + 4] * cy +
-              _instances[b + 8] * cz +
-              _instances[b + 12];
-          final wy =
-              _instances[b + 1] * cx +
-              _instances[b + 5] * cy +
-              _instances[b + 9] * cz +
-              _instances[b + 13];
-          final wz =
-              _instances[b + 2] * cx +
-              _instances[b + 6] * cy +
-              _instances[b + 10] * cz +
-              _instances[b + 14];
-          minX = math.min(minX, wx);
-          minY = math.min(minY, wy);
-          minZ = math.min(minZ, wz);
-          maxX = math.max(maxX, wx);
-          maxY = math.max(maxY, wy);
-          maxZ = math.max(maxZ, wz);
+        final m0 = instances[b];
+        final m1 = instances[b + 1];
+        final m2 = instances[b + 2];
+        final m4 = instances[b + 4];
+        final m5 = instances[b + 5];
+        final m6 = instances[b + 6];
+        final m8 = instances[b + 8];
+        final m9 = instances[b + 9];
+        final m10 = instances[b + 10];
+
+        final wx = m0 * cx + m4 * cy + m8 * cz + instances[b + 12];
+        final wy = m1 * cx + m5 * cy + m9 * cz + instances[b + 13];
+        final wz = m2 * cx + m6 * cy + m10 * cz + instances[b + 14];
+
+        final ex = m0.abs() * hx + m4.abs() * hy + m8.abs() * hz;
+        final ey = m1.abs() * hx + m5.abs() * hy + m9.abs() * hz;
+        final ez = m2.abs() * hx + m6.abs() * hy + m10.abs() * hz;
+
+        if (wx - ex < minX) {
+          minX = wx - ex;
+        }
+        if (wy - ey < minY) {
+          minY = wy - ey;
+        }
+        if (wz - ez < minZ) {
+          minZ = wz - ez;
+        }
+        if (wx + ex > maxX) {
+          maxX = wx + ex;
+        }
+        if (wy + ey > maxY) {
+          maxY = wy + ey;
+        }
+        if (wz + ez > maxZ) {
+          maxZ = wz + ez;
         }
       }
       _localAabb
@@ -228,8 +246,9 @@ class InstancedGroup3D({
     if (_length == 0) {
       return;
     }
-    final buffer = _resolvedBuffer();
-    _updateMirroring(buffer);
+    final world = worldTransformMatrix;
+    final buffer = _resolvedBuffer(world);
+    _updateMirroring(buffer, world);
     final mirrored = _mirroredCount;
     if (mirrored == 0 || mirrored == _length) {
       for (final surface in mesh.surfaces) {
@@ -268,8 +287,8 @@ class InstancedGroup3D({
   Float32List? _partitioned;
   Float32List? _mirroredView;
 
-  void _updateMirroring(Float32List buffer) {
-    final world = worldTransformMatrix;
+  void _updateMirroring(Float32List buffer, [Matrix4? worldMatrix]) {
+    final world = worldMatrix ?? worldTransformMatrix;
     if (identical(buffer, _mirroringBuffer) &&
         _mirroringVersion == _localVersion &&
         _mirroringWorld == world) {
@@ -368,8 +387,8 @@ class InstancedGroup3D({
     return best;
   }
 
-  Float32List _resolvedBuffer() {
-    final world = worldTransformMatrix;
+  Float32List _resolvedBuffer([Matrix4? worldMatrix]) {
+    final world = worldMatrix ?? worldTransformMatrix;
     if (world.isIdentity()) {
       return _instances;
     }

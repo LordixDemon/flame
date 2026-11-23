@@ -77,6 +77,7 @@ class _ShadowPass(final RenderContext3D _context) {
   final Vector4 _paraboloidPosInvRange = Vector4.zero();
   final Vector4 _paraboloidParams = Vector4(1, 0, 0, 0);
   bool _recordingParaboloidTile = false;
+  int _paraboloidTileEpoch = 0;
 
   // The spot lights (two at most) and the point light that cast shadows in
   // the pass, with their indices in their blocks, found by [begin].
@@ -152,8 +153,7 @@ class _ShadowPass(final RenderContext3D _context) {
   int _atlasSignatureLength = 0;
 
   // The camera of the main pass, set back when the shadow pass ends.
-  final Matrix4 _mainView = Matrix4.identity();
-  final Matrix4 _mainProjection = Matrix4.identity();
+  final _CameraSnapshot _mainCamera = _CameraSnapshot();
 
   // The view the casters of a point light's tile are culled with: a box
   // around the hemisphere the tile covers.
@@ -165,9 +165,6 @@ class _ShadowPass(final RenderContext3D _context) {
   static final Vector3 _direction = Vector3.zero();
   static final Vector3 _spotDirScratch = Vector3.zero();
   static final Vector4 _noShadows = Vector4(0, 0, 0, -1);
-  static final Vector4 _noAtlas = Vector4(0, 0, 0, -1);
-  static final Vector4 _oneCascade = Vector4(1, 0, 0, 0);
-  static final Vector4 _vec4Scratch = Vector4.zero();
   static final Matrix4 _identityMat = Matrix4.identity();
   static final Float64List _splits = Float64List(ShadowSettings.maxCascades);
   static final Int32List _selection = Int32List(RenderContext3D.maxPointLights);
@@ -566,8 +563,7 @@ class _ShadowPass(final RenderContext3D _context) {
     }
     _writeSingleMap(direction, index, settings, texelWorldSize, float);
 
-    _mainView.setFrom(context._viewMatrix);
-    _mainProjection.setFrom(context._projectionMatrix);
+    context._saveCameraSnapshot(_mainCamera);
     context.setCamera(activeLightView, activeLightProj);
     recording = true;
     _drawCallsBefore = device.stats.drawCalls;
@@ -919,8 +915,7 @@ class _ShadowPass(final RenderContext3D _context) {
 
     version++;
     _mapIsAtlas = true;
-    _mainView.setFrom(context._viewMatrix);
-    _mainProjection.setFrom(context._projectionMatrix);
+    context._saveCameraSnapshot(_mainCamera);
     atlasActive = true;
     recording = true;
     _currentTileIndex = 0;
@@ -1099,8 +1094,7 @@ class _ShadowPass(final RenderContext3D _context) {
     _target = live;
     _texture = layers.liveTexture;
     _mapIsAtlas = atlasPath;
-    _mainView.setFrom(context._viewMatrix);
-    _mainProjection.setFrom(context._projectionMatrix);
+    context._saveCameraSnapshot(_mainCamera);
     _split = layers;
     recording = true;
     _drawCallsBefore = stats.drawCalls;
@@ -1529,6 +1523,7 @@ class _ShadowPass(final RenderContext3D _context) {
     if (tile.kind == ShadowAtlasTileKind3D.pointParaboloidFront ||
         tile.kind == ShadowAtlasTileKind3D.pointParaboloidBack) {
       _recordingParaboloidTile = true;
+      _paraboloidTileEpoch++;
       final pos = tile.lightPosition!;
       _paraboloidPosInvRange.setValues(
         pos.x,
@@ -1668,9 +1663,11 @@ class _ShadowPass(final RenderContext3D _context) {
       recording = false;
       _recordingParaboloidTile = false;
       RenderProfile.switchPass(RenderPhase.passEnd, shadow: false);
-      context.setCamera(_mainView, _mainProjection);
-      active = true;
-      atlasActive = wasAtlas;
+      context._restoreCameraSnapshot(
+        _mainCamera,
+        active: true,
+        atlasActive: wasAtlas,
+      );
       RenderProfile.lap(RenderPhase.setup);
     }
   }
@@ -1716,9 +1713,11 @@ class _ShadowPass(final RenderContext3D _context) {
       _stillTexture = null;
       layer = ShadowCasterLayer.all;
       RenderProfile.switchPass(RenderPhase.passEnd, shadow: false);
-      context.setCamera(_mainView, _mainProjection);
-      active = true;
-      atlasActive = _splitAtlas;
+      context._restoreCameraSnapshot(
+        _mainCamera,
+        active: true,
+        atlasActive: _splitAtlas,
+      );
       RenderProfile.lap(RenderPhase.setup);
     }
   }
@@ -1799,34 +1798,65 @@ class _ShadowPass(final RenderContext3D _context) {
     final caster = _activeCasters[surface.layout]!;
     final vertexShader = caster.vertexShader!;
     final fragmentShader = caster.fragmentShader!;
+    UniformBlock? paraboloidBlock;
     if (_recordingParaboloidTile) {
-      vertexShader
-        ..setVector4('ParaboloidLight.posInvRange', _paraboloidPosInvRange)
-        ..setVector4('ParaboloidLight.params', _paraboloidParams);
+      final pb = paraboloidBlock = vertexShader.block('ParaboloidLight');
+      final pOff =
+          (pb.cachedWriterOffsets as _ParaboloidOffsets?) ??
+          (pb.cachedWriterOffsets = _ParaboloidOffsets(pb));
+      if (pOff.tileEpoch != _paraboloidTileEpoch) {
+        pOff.tileEpoch = _paraboloidTileEpoch;
+        if (pOff.posInvRange >= 0) {
+          pb.writeVec4ValuesAt(
+            pOff.posInvRange,
+            _paraboloidPosInvRange.x,
+            _paraboloidPosInvRange.y,
+            _paraboloidPosInvRange.z,
+            _paraboloidPosInvRange.w,
+          );
+        }
+        if (pOff.params >= 0) {
+          pb.writeVec4ValuesAt(
+            pOff.params,
+            _paraboloidParams.x,
+            _paraboloidParams.y,
+            _paraboloidParams.z,
+            _paraboloidParams.w,
+          );
+        }
+      }
     }
     RenderProfile.lap(RenderPhase.batch);
 
+    final joints = context._joints[first];
     device.bindPipeline(context._pipelines[first]!);
     if (device.bindingEpoch != context._bindingEpoch) {
       context
         .._bindingEpoch = device.bindingEpoch
-        .._bindSlots(vertexShader, RenderContext3D._passScope)
-        .._bindSlots(fragmentShader, RenderContext3D._passScope);
+        .._bindPassPlan(
+          context._planFor(vertexShader),
+          skipJoints: joints != null,
+        )
+        .._bindPassPlan(context._planFor(fragmentShader), skipJoints: true);
     }
-    if (_recordingParaboloidTile) {
-      device.bindUniformBlock(vertexShader.block('ParaboloidLight'));
+    if (paraboloidBlock != null) {
+      device.bindUniformBlock(paraboloidBlock);
     }
     device
       ..setRenderState(_renderState)
       ..setFrontFace(WindingOrder.counterClockwise);
     RenderProfile.lap(RenderPhase.state);
-    context._bindJoints(vertexShader, context._joints[first]);
+    context._bindJoints(vertexShader, joints);
     device.bindSurface(surface);
     final external = context._external[first];
     if (external != null) {
       final instanceCount = context._externalCounts[first];
       device
-        ..bindInstances(external, instanceCount)
+        ..bindInstances(
+          external,
+          instanceCount,
+          startFloat: context._externalOffsets[first],
+        )
         ..drawSurface(surface, instanceCount: instanceCount);
       RenderProfile.lap(RenderPhase.draw);
       return;
@@ -1929,64 +1959,144 @@ class _ShadowPass(final RenderContext3D _context) {
   }
 
   void writeShadows(UniformBlock block) {
+    final off =
+        (block.cachedWriterOffsets as _ShadowsOffsets?) ??
+        (block.cachedWriterOffsets = _ShadowsOffsets(block));
     if (!active) {
-      block
-        ..setVector4('toLight', _noShadows)
-        ..setVector4('atlas', _noAtlas);
+      if (off.toLight >= 0) {
+        block.writeVec4ValuesAt(off.toLight, 0, 0, 0, -1);
+      }
+      if (off.atlas >= 0) {
+        block.writeVec4ValuesAt(off.atlas, 0, 0, 0, -1);
+      }
       return;
     }
-    block
-      ..setMatrix4('lightViewProjection', _lightViewProjection)
-      ..setMatrix4('cascadeViewProjection', _identityMat)
-      ..setVector4('toLight', _toLight)
-      ..setVector4('color', _color)
-      ..setVector4('map', _map)
-      ..setVector4('bias', _bias)
-      ..setVector4('decode', _decode)
-      ..setVector4('cascadeParams', _oneCascade);
+    if (off.lightViewProjection >= 0) {
+      block.writeMatrix4At(off.lightViewProjection, _lightViewProjection);
+    }
+    if (off.cascadeViewProjection >= 0) {
+      block.writeMatrix4At(off.cascadeViewProjection, _identityMat);
+    }
+    if (off.toLight >= 0) {
+      block.writeVec4ValuesAt(
+        off.toLight,
+        _toLight.x,
+        _toLight.y,
+        _toLight.z,
+        _toLight.w,
+      );
+    }
+    if (off.color >= 0) {
+      block.writeVec4ValuesAt(
+        off.color,
+        _color.x,
+        _color.y,
+        _color.z,
+        _color.w,
+      );
+    }
+    if (off.map >= 0) {
+      block.writeVec4ValuesAt(off.map, _map.x, _map.y, _map.z, _map.w);
+    }
+    if (off.bias >= 0) {
+      block.writeVec4ValuesAt(off.bias, _bias.x, _bias.y, _bias.z, _bias.w);
+    }
+    if (off.decode >= 0) {
+      block.writeVec4ValuesAt(
+        off.decode,
+        _decode.x,
+        _decode.y,
+        _decode.z,
+        _decode.w,
+      );
+    }
+    if (off.cascadeParams >= 0) {
+      block.writeVec4ValuesAt(off.cascadeParams, 1, 0, 0, 0);
+    }
     if (!atlasActive) {
-      block.setVector4('atlas', _noAtlas);
+      if (off.atlas >= 0) {
+        block.writeVec4ValuesAt(off.atlas, 0, 0, 0, -1);
+      }
       return;
     }
-    final scratch = _vec4Scratch;
+    final dataLen = block.data.length;
     for (var c = 0; c < _csmTiles.length; c++) {
       final t = _csmTiles[c];
-      block
-        ..setMatrix4('atlasCascadeViewProjections', t.viewProjection!, index: c)
-        ..setVector4('atlasCascadeRects', t.uvRect, index: c)
-        ..setVector4(
-          'atlasCascadeParams',
-          scratch..setValues(t.texelWorldSize, t.blendRange, 0, 0),
-          index: c,
+      if (off.atlasCascadeViewProjections >= 0 &&
+          off.atlasCascadeViewProjections + c * 16 + 16 <= dataLen) {
+        block.writeMatrix4At(
+          off.atlasCascadeViewProjections + c * 16,
+          t.viewProjection!,
         );
+      }
+      if (off.atlasCascadeRects >= 0 &&
+          off.atlasCascadeRects + c * 4 + 4 <= dataLen) {
+        final r = t.uvRect;
+        block.writeVec4ValuesAt(
+          off.atlasCascadeRects + c * 4,
+          r.x,
+          r.y,
+          r.z,
+          r.w,
+        );
+      }
+      if (off.atlasCascadeParams >= 0 &&
+          off.atlasCascadeParams + c * 4 + 4 <= dataLen) {
+        block.writeVec4ValuesAt(
+          off.atlasCascadeParams + c * 4,
+          t.texelWorldSize,
+          t.blendRange,
+          0,
+          0,
+        );
+      }
     }
     for (var s = 0; s < _spotTiles.length; s++) {
       final t = _spotTiles[s];
       final position = t.lightPosition!;
       final color = t.color;
-      block
-        ..setMatrix4('atlasSpotViewProjections', t.viewProjection!, index: s)
-        ..setVector4('atlasSpotRects', t.uvRect, index: s)
-        ..setVector4(
-          'atlasSpotParams',
-          scratch..setValues(
-            t.lightIndex.toDouble(),
-            t.texelWorldSize,
-            t.depthBias,
-            t.strength,
-          ),
-          index: s,
-        )
-        ..setVector4(
-          'atlasSpotPositions',
-          scratch..setValues(position.x, position.y, position.z, t.softness),
-          index: s,
-        )
-        ..setVector4(
-          'atlasSpotColors',
-          scratch..setValues(color.r, color.g, color.b, 1),
-          index: s,
+      if (off.atlasSpotViewProjections >= 0 &&
+          off.atlasSpotViewProjections + s * 16 + 16 <= dataLen) {
+        block.writeMatrix4At(
+          off.atlasSpotViewProjections + s * 16,
+          t.viewProjection!,
         );
+      }
+      if (off.atlasSpotRects >= 0 &&
+          off.atlasSpotRects + s * 4 + 4 <= dataLen) {
+        final r = t.uvRect;
+        block.writeVec4ValuesAt(off.atlasSpotRects + s * 4, r.x, r.y, r.z, r.w);
+      }
+      if (off.atlasSpotParams >= 0 &&
+          off.atlasSpotParams + s * 4 + 4 <= dataLen) {
+        block.writeVec4ValuesAt(
+          off.atlasSpotParams + s * 4,
+          t.lightIndex.toDouble(),
+          t.texelWorldSize,
+          t.depthBias,
+          t.strength,
+        );
+      }
+      if (off.atlasSpotPositions >= 0 &&
+          off.atlasSpotPositions + s * 4 + 4 <= dataLen) {
+        block.writeVec4ValuesAt(
+          off.atlasSpotPositions + s * 4,
+          position.x,
+          position.y,
+          position.z,
+          t.softness,
+        );
+      }
+      if (off.atlasSpotColors >= 0 &&
+          off.atlasSpotColors + s * 4 + 4 <= dataLen) {
+        block.writeVec4ValuesAt(
+          off.atlasSpotColors + s * 4,
+          color.r,
+          color.g,
+          color.b,
+          1,
+        );
+      }
     }
     final front = _pointFrontTile;
     final back = _pointBackTile;
@@ -1995,64 +2105,105 @@ class _ShadowPass(final RenderContext3D _context) {
       pointIndex = front.lightIndex.toDouble();
       final position = front.lightPosition!;
       final color = front.color;
-      block
-        ..setVector4(
-          'atlasPointPosition',
-          scratch..setValues(
-            position.x,
-            position.y,
-            position.z,
-            1.0 / math.max(1e-3, front.lightRange),
-          ),
-        )
-        ..setVector4('atlasPointRects', front.uvRect, index: 0)
-        ..setVector4('atlasPointRects', back.uvRect, index: 1)
-        ..setVector4(
-          'atlasPointParams',
-          scratch
-            ..setValues(front.depthBias, front.softness, front.strength, 0),
-        )
-        ..setVector4(
-          'atlasPointColor',
-          scratch..setValues(color.r, color.g, color.b, 1),
+      if (off.atlasPointPosition >= 0) {
+        block.writeVec4ValuesAt(
+          off.atlasPointPosition,
+          position.x,
+          position.y,
+          position.z,
+          1.0 / math.max(1e-3, front.lightRange),
         );
+      }
+      if (off.atlasPointRects >= 0 && off.atlasPointRects + 8 <= dataLen) {
+        final fr = front.uvRect;
+        final br = back.uvRect;
+        block
+          ..writeVec4ValuesAt(
+            off.atlasPointRects,
+            fr.x,
+            fr.y,
+            fr.z,
+            fr.w,
+          )
+          ..writeVec4ValuesAt(
+            off.atlasPointRects + 4,
+            br.x,
+            br.y,
+            br.z,
+            br.w,
+          );
+      }
+      if (off.atlasPointParams >= 0) {
+        block.writeVec4ValuesAt(
+          off.atlasPointParams,
+          front.depthBias,
+          front.softness,
+          front.strength,
+          0,
+        );
+      }
+      if (off.atlasPointColor >= 0) {
+        block.writeVec4ValuesAt(
+          off.atlasPointColor,
+          color.r,
+          color.g,
+          color.b,
+          1,
+        );
+      }
     }
-    block.setVector4(
-      'atlas',
-      scratch..setValues(
+    if (off.atlas >= 0) {
+      block.writeVec4ValuesAt(
+        off.atlas,
         1,
         _csmTiles.length.toDouble(),
         _spotTiles.length.toDouble(),
         pointIndex,
-      ),
-    );
+      );
+    }
   }
 
   void writeShadowAtlas(UniformBlock block) {
+    final off =
+        (block.cachedWriterOffsets as _ShadowAtlasOffsets?) ??
+        (block.cachedWriterOffsets = _ShadowAtlasOffsets(block));
     if (!active || !atlasActive) {
-      block.setVector4(
-        'header',
-        _vec4Scratch..setValues(0, 0, -1, 0),
-      );
+      if (off.header >= 0) {
+        block.writeVec4ValuesAt(off.header, 0, 0, -1, 0);
+      }
       return;
     }
 
+    final dataLen = block.data.length;
     for (var c = 0; c < 4; c++) {
       if (c < _csmTiles.length) {
         final t = _csmTiles[c];
-        block
-          ..setMatrix4('csmViewProj', t.viewProjection!, index: c)
-          ..setVector4('csmUvRect', t.uvRect, index: c)
-          ..setVector4(
-            'csmMeta',
-            _vec4Scratch..setValues(t.texelWorldSize, 0, t.blendRange, 1.0),
-            index: c,
+        if (off.csmViewProj >= 0 && off.csmViewProj + c * 16 + 16 <= dataLen) {
+          block.writeMatrix4At(off.csmViewProj + c * 16, t.viewProjection!);
+        }
+        if (off.csmUvRect >= 0 && off.csmUvRect + c * 4 + 4 <= dataLen) {
+          final r = t.uvRect;
+          block.writeVec4ValuesAt(off.csmUvRect + c * 4, r.x, r.y, r.z, r.w);
+        }
+        if (off.csmMeta >= 0 && off.csmMeta + c * 4 + 4 <= dataLen) {
+          block.writeVec4ValuesAt(
+            off.csmMeta + c * 4,
+            t.texelWorldSize,
+            0,
+            t.blendRange,
+            1.0,
           );
+        }
       } else {
-        block
-          ..setMatrix4('csmViewProj', _identityMat, index: c)
-          ..setVector4('csmUvRect', _vec4Scratch..setZero(), index: c)
-          ..setVector4('csmMeta', _vec4Scratch, index: c);
+        if (off.csmViewProj >= 0 && off.csmViewProj + c * 16 + 16 <= dataLen) {
+          block.writeMatrix4At(off.csmViewProj + c * 16, _identityMat);
+        }
+        if (off.csmUvRect >= 0 && off.csmUvRect + c * 4 + 4 <= dataLen) {
+          block.writeVec4ValuesAt(off.csmUvRect + c * 4, 0, 0, 0, 0);
+        }
+        if (off.csmMeta >= 0 && off.csmMeta + c * 4 + 4 <= dataLen) {
+          block.writeVec4ValuesAt(off.csmMeta + c * 4, 0, 0, 0, 0);
+        }
       }
     }
 
@@ -2060,34 +2211,46 @@ class _ShadowPass(final RenderContext3D _context) {
       if (s < _spotTiles.length) {
         final t = _spotTiles[s];
         final col = t.color;
-        block
-          ..setMatrix4('spotViewProj', t.viewProjection!, index: s)
-          ..setVector4('spotUvRect', t.uvRect, index: s)
-          ..setVector4(
-            'spotMeta',
-            _vec4Scratch..setValues(
-              t.lightIndex.toDouble(),
-              t.texelWorldSize,
-              t.depthBias,
-              t.strength,
-            ),
-            index: s,
-          )
-          ..setVector4(
-            'spotColor',
-            _vec4Scratch..setValues(col.r, col.g, col.b, 1.0),
-            index: s,
+        if (off.spotViewProj >= 0 &&
+            off.spotViewProj + s * 16 + 16 <= dataLen) {
+          block.writeMatrix4At(off.spotViewProj + s * 16, t.viewProjection!);
+        }
+        if (off.spotUvRect >= 0 && off.spotUvRect + s * 4 + 4 <= dataLen) {
+          final r = t.uvRect;
+          block.writeVec4ValuesAt(off.spotUvRect + s * 4, r.x, r.y, r.z, r.w);
+        }
+        if (off.spotMeta >= 0 && off.spotMeta + s * 4 + 4 <= dataLen) {
+          block.writeVec4ValuesAt(
+            off.spotMeta + s * 4,
+            t.lightIndex.toDouble(),
+            t.texelWorldSize,
+            t.depthBias,
+            t.strength,
           );
+        }
+        if (off.spotColor >= 0 && off.spotColor + s * 4 + 4 <= dataLen) {
+          block.writeVec4ValuesAt(
+            off.spotColor + s * 4,
+            col.r,
+            col.g,
+            col.b,
+            1.0,
+          );
+        }
       } else {
-        block
-          ..setMatrix4('spotViewProj', _identityMat, index: s)
-          ..setVector4('spotUvRect', _vec4Scratch..setZero(), index: s)
-          ..setVector4(
-            'spotMeta',
-            _vec4Scratch..setValues(-1, 0, 0, 0),
-            index: s,
-          )
-          ..setVector4('spotColor', _vec4Scratch..setZero(), index: s);
+        if (off.spotViewProj >= 0 &&
+            off.spotViewProj + s * 16 + 16 <= dataLen) {
+          block.writeMatrix4At(off.spotViewProj + s * 16, _identityMat);
+        }
+        if (off.spotUvRect >= 0 && off.spotUvRect + s * 4 + 4 <= dataLen) {
+          block.writeVec4ValuesAt(off.spotUvRect + s * 4, 0, 0, 0, 0);
+        }
+        if (off.spotMeta >= 0 && off.spotMeta + s * 4 + 4 <= dataLen) {
+          block.writeVec4ValuesAt(off.spotMeta + s * 4, -1, 0, 0, 0);
+        }
+        if (off.spotColor >= 0 && off.spotColor + s * 4 + 4 <= dataLen) {
+          block.writeVec4ValuesAt(off.spotColor + s * 4, 0, 0, 0, 0);
+        }
       }
     }
 
@@ -2096,54 +2259,60 @@ class _ShadowPass(final RenderContext3D _context) {
     if (ptFront != null && ptBack != null) {
       final pos = ptFront.lightPosition!;
       final col = ptFront.color;
-      block
-        ..setVector4(
-          'pointPosRange',
-          _vec4Scratch..setValues(
-            pos.x,
-            pos.y,
-            pos.z,
-            1.0 / math.max(1e-3, ptFront.lightRange),
-          ),
-        )
-        ..setVector4('pointFrontUvRect', ptFront.uvRect)
-        ..setVector4('pointBackUvRect', ptBack.uvRect)
-        ..setVector4(
-          'pointMeta',
-          _vec4Scratch..setValues(
-            ptFront.lightIndex.toDouble(),
-            ptFront.depthBias,
-            ptFront.softness,
-            ptFront.strength,
-          ),
-        )
-        ..setVector4(
-          'pointColor',
-          _vec4Scratch..setValues(col.r, col.g, col.b, 1.0),
+      if (off.pointPosRange >= 0) {
+        block.writeVec4ValuesAt(
+          off.pointPosRange,
+          pos.x,
+          pos.y,
+          pos.z,
+          1.0 / math.max(1e-3, ptFront.lightRange),
         );
-    } else {
-      block.setVector4(
-        'pointMeta',
-        _vec4Scratch..setValues(-1, 0, 0, 0),
-      );
+      }
+      if (off.pointFrontUvRect >= 0) {
+        final fr = ptFront.uvRect;
+        block.writeVec4ValuesAt(off.pointFrontUvRect, fr.x, fr.y, fr.z, fr.w);
+      }
+      if (off.pointBackUvRect >= 0) {
+        final br = ptBack.uvRect;
+        block.writeVec4ValuesAt(off.pointBackUvRect, br.x, br.y, br.z, br.w);
+      }
+      if (off.pointMeta >= 0) {
+        block.writeVec4ValuesAt(
+          off.pointMeta,
+          ptFront.lightIndex.toDouble(),
+          ptFront.depthBias,
+          ptFront.softness,
+          ptFront.strength,
+        );
+      }
+      if (off.pointColor >= 0) {
+        block.writeVec4ValuesAt(off.pointColor, col.r, col.g, col.b, 1.0);
+      }
+    } else if (off.pointMeta >= 0) {
+      block.writeVec4ValuesAt(off.pointMeta, -1, 0, 0, 0);
     }
 
-    block.setVector4(
-      'header',
-      _vec4Scratch..setValues(
+    if (off.header >= 0) {
+      block.writeVec4ValuesAt(
+        off.header,
         1.0,
         _atlasCascadeCount.toDouble(),
         _atlasDirLightIndex.toDouble(),
         _atlasSpotShadowCount.toDouble(),
-      ),
-    );
+      );
+    }
   }
 
   static void writeCasterUniforms(
     RenderContext3D context,
     UniformBlock block,
   ) {
-    block.setFloat('packDepth', context._shadows._packDepth ? 1 : 0);
+    final off =
+        (block.cachedWriterOffsets as int?) ??
+        (block.cachedWriterOffsets = block.resolveOffset('packDepth'));
+    if (off >= 0) {
+      block.writeFloatAt(off, context._shadows._packDepth ? 1 : 0);
+    }
   }
 
   static void writeAtlasUniforms(
@@ -2325,4 +2494,56 @@ class _StillView() {
     last.setRange(0, values.length, values);
     hasLast = true;
   }
+}
+
+class _ShadowsOffsets(final UniformBlock _b) {
+  late final int lightViewProjection = _b.resolveOffset('lightViewProjection');
+  late final int cascadeViewProjection = _b.resolveOffset(
+    'cascadeViewProjection',
+  );
+  late final int toLight = _b.resolveOffset('toLight');
+  late final int color = _b.resolveOffset('color');
+  late final int map = _b.resolveOffset('map');
+  late final int bias = _b.resolveOffset('bias');
+  late final int decode = _b.resolveOffset('decode');
+  late final int cascadeParams = _b.resolveOffset('cascadeParams');
+  late final int atlasCascadeViewProjections = _b.resolveOffset(
+    'atlasCascadeViewProjections',
+  );
+  late final int atlasCascadeRects = _b.resolveOffset('atlasCascadeRects');
+  late final int atlasCascadeParams = _b.resolveOffset('atlasCascadeParams');
+  late final int atlasSpotViewProjections = _b.resolveOffset(
+    'atlasSpotViewProjections',
+  );
+  late final int atlasSpotRects = _b.resolveOffset('atlasSpotRects');
+  late final int atlasSpotParams = _b.resolveOffset('atlasSpotParams');
+  late final int atlasSpotPositions = _b.resolveOffset('atlasSpotPositions');
+  late final int atlasSpotColors = _b.resolveOffset('atlasSpotColors');
+  late final int atlasPointPosition = _b.resolveOffset('atlasPointPosition');
+  late final int atlasPointRects = _b.resolveOffset('atlasPointRects');
+  late final int atlasPointParams = _b.resolveOffset('atlasPointParams');
+  late final int atlasPointColor = _b.resolveOffset('atlasPointColor');
+  late final int atlas = _b.resolveOffset('atlas');
+}
+
+class _ShadowAtlasOffsets(final UniformBlock _b) {
+  late final int header = _b.resolveOffset('header');
+  late final int csmViewProj = _b.resolveOffset('csmViewProj');
+  late final int csmUvRect = _b.resolveOffset('csmUvRect');
+  late final int csmMeta = _b.resolveOffset('csmMeta');
+  late final int spotViewProj = _b.resolveOffset('spotViewProj');
+  late final int spotUvRect = _b.resolveOffset('spotUvRect');
+  late final int spotMeta = _b.resolveOffset('spotMeta');
+  late final int spotColor = _b.resolveOffset('spotColor');
+  late final int pointPosRange = _b.resolveOffset('pointPosRange');
+  late final int pointFrontUvRect = _b.resolveOffset('pointFrontUvRect');
+  late final int pointBackUvRect = _b.resolveOffset('pointBackUvRect');
+  late final int pointMeta = _b.resolveOffset('pointMeta');
+  late final int pointColor = _b.resolveOffset('pointColor');
+}
+
+class _ParaboloidOffsets(final UniformBlock _b) {
+  late final int posInvRange = _b.resolveOffset('posInvRange');
+  late final int params = _b.resolveOffset('params');
+  int tileEpoch = -1;
 }

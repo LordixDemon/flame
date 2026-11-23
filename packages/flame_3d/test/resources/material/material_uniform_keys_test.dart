@@ -13,13 +13,20 @@ void main() {
     late FakeGpuBackend backend;
     late GraphicsDevice device;
     late RenderContext3D context;
+    VertexLayout? lastLayout;
 
     setUp(() {
       // Joint matrix blocks hold the top three rows of 64 matrices, like the
       // built-in shaders.
-      backend = FakeGpuBackend(blockSizes: {'JointMatrices': 3072});
+      backend = FakeGpuBackend(
+        blockSizes: {
+          'JointMatrices': 3072,
+          RenderContext3D.spatialPassBlock: 64 * 1024,
+        },
+      );
       device = GraphicsDevice(backend: backend);
       context = RenderContext3D(device);
+      lastLayout = null;
     });
 
     /// Draws a triangle with [material] in a pass and returns the data bound
@@ -37,6 +44,7 @@ void main() {
         indices: [0, 1, 2],
         material: material,
       );
+      lastLayout = surface.layout;
       device.begin();
       context.setCamera(Matrix4.identity(), Matrix4.identity());
       device.beginPass(const Size(8, 8));
@@ -50,10 +58,22 @@ void main() {
     }
 
     int offsetOf(Material material, String block, String member) {
-      final shader = block == RenderContext3D.jointMatricesBlock
-          ? material.vertexShader
-          : material.fragmentShader;
-      return shader.slot(block).getMemberOffsetInBytes(member)! ~/
+      final Shader shader;
+      var actualBlock = block;
+      var actualMember = member;
+      if (block == RenderContext3D.jointMatricesBlock) {
+        shader = material.vertexShader;
+      } else {
+        shader = lastLayout == null
+            ? material.fragmentShader
+            : material.fragmentShaderFor(context, lastLayout!);
+        if (material is SpatialMaterial &&
+            (block == 'Lights' || block == 'AmbientLight')) {
+          actualBlock = RenderContext3D.spatialPassBlock;
+          actualMember = '${block}_$member';
+        }
+      }
+      return shader.slot(actualBlock).getMemberOffsetInBytes(actualMember)! ~/
           Float32List.bytesPerElement;
     }
 
@@ -130,7 +150,7 @@ void main() {
       final material = SpatialMaterial();
 
       final uniforms = draw(material);
-      final data = uniforms['Lights']!;
+      final data = uniforms[RenderContext3D.spatialPassBlock]!;
       final positions = offsetOf(material, 'Lights', 'positions');
       final colors = offsetOf(material, 'Lights', 'colors');
       final intensities = offsetOf(material, 'Lights', 'intensities');
@@ -153,7 +173,7 @@ void main() {
         );
       }
 
-      final ambient = uniforms['AmbientLight']!;
+      final ambient = uniforms[RenderContext3D.spatialPassBlock]!;
       final ambientColor = offsetOf(material, 'AmbientLight', 'color');
       expect(
         ambient.sublist(ambientColor, ambientColor + 4),
@@ -175,7 +195,7 @@ void main() {
       ];
       final material = SpatialMaterial();
 
-      final data = draw(material)['Lights']!;
+      final data = draw(material)[RenderContext3D.spatialPassBlock]!;
 
       expect(
         data[offsetOf(material, 'Lights', 'numLights')],

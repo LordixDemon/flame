@@ -1,61 +1,142 @@
-import 'dart:math' as math;
-import 'dart:typed_data';
+import 'dart:collection' show UnmodifiableListView;
 
 import 'package:flame_3d/camera.dart';
+import 'package:flame_3d/collisions.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
+import 'package:meta/meta.dart';
 
-/// Allocation-free flat median-split AABB Bounding Volume Hierarchy (BVH) over
-/// the [Object3D]s of a [World3D].
+/// Incremental dynamic AABB Bounding Volume Hierarchy (BVH) over the
+/// [Object3D]s of a [World3D], backed by [DynamicAabbTree3D].
 ///
-/// Accelerates world-space AABB queries, camera frustum queries, and front-to-
-/// back distance-pruned `World3D.raycast` / `raycastAll` from `O(N)` to
-/// `O(log N)`.
+/// Updates incrementally via [onObjectAdded], [onObjectRemoved], and
+/// [onObjectMoved] hooks from [Component3D], accelerating world-space AABB
+/// queries, camera frustum queries, and front-to-back distance-pruned
+/// `World3D.raycast` / `raycastAll` from `O(N)` to `O(log N)`.
 class SceneSpatialIndex3D() {
-  static const int _maxLeafSize = 4;
+  final DynamicAabbTree3D<Object3D> _tree = DynamicAabbTree3D<Object3D>();
+  final Map<Object3D, int> _proxies = Map.identity();
+  final List<Object3D> _dirtyObjects = <Object3D>[];
+  final List<Object3D> _candidateScratch = <Object3D>[];
 
-  final List<Object3D> _objects = [];
-  Int32List _indices = Int32List(0);
-  Float32List _objBounds = Float32List(0);
-  Float32List _nodeBounds = Float32List(0);
-  Int32List _nodeData = Int32List(0);
-  Int32List _stack = Int32List(64);
-  Float64List _stackDist = Float64List(64);
+  World3D? _boundWorld;
+  bool _initialized = false;
+  int _builtComponentsVersion = -1;
+  int _fullRebuildCount = 0;
+  int _incrementalUpdateCount = 0;
 
-  int _nodeCount = 0;
-  int _builtSceneVersion = -1;
+  /// Number of indexed [Object3D]s currently registered in this BVH.
+  int get indexedObjectCount => _proxies.length;
 
-  /// Number of indexed [Object3D]s in the most recent build.
-  int get indexedObjectCount => _objects.length;
+  /// Number of active BVH nodes in the underlying [DynamicAabbTree3D].
+  int get nodeCount => _tree.nodeCount;
 
-  /// Number of BVH nodes in the most recent build.
-  int get nodeCount => _nodeCount;
+  /// Number of full scene tree rebuilds performed since creation.
+  int get fullRebuildCount => _fullRebuildCount;
+
+  /// Number of incremental add, remove, or move operations applied without a
+  /// full scene rebuild.
+  int get incrementalUpdateCount => _incrementalUpdateCount;
 
   /// Number of narrowphase `Object3D.raycast` tests executed by the last
   /// [raycast] or [raycastAll] call.
   int lastRaycastCandidatesTested = 0;
 
-  /// Marks the index out of date so the next query rebuilds it lazily.
+  /// Marks the index out of date so the next query rebuilds it from scratch.
   void invalidate() {
-    _builtSceneVersion = -1;
+    _initialized = false;
+    _boundWorld = null;
+    _builtComponentsVersion = -1;
+    for (var i = 0; i < _dirtyObjects.length; i++) {
+      _dirtyObjects[i].spatialIndexDirty = false;
+    }
+    _dirtyObjects.clear();
+  }
+
+  /// Incrementally inserts [object] when this index has already been built.
+  @internal
+  void onObjectAdded(Object3D object) {
+    if (!_initialized) {
+      return;
+    }
+    object.spatialIndexDirty = false;
+    final existing = _proxies[object];
+    if (existing != null) {
+      _tree.update(existing, object.aabb);
+    } else {
+      _proxies[object] = _tree.insert(object, object.aabb);
+    }
+    _incrementalUpdateCount++;
+  }
+
+  /// Incrementally removes [object] when this index has already been built.
+  @internal
+  void onObjectRemoved(Object3D object) {
+    object.spatialIndexDirty = false;
+    if (!_initialized) {
+      return;
+    }
+    final proxyId = _proxies.remove(object);
+    if (proxyId != null) {
+      _tree.remove(proxyId);
+      _incrementalUpdateCount++;
+    }
+  }
+
+  /// Queues [object] for an incremental fat-AABB update before the next query.
+  @internal
+  void onObjectMoved(Object3D object) {
+    if (!_initialized ||
+        object.spatialIndexDirty ||
+        !_proxies.containsKey(object)) {
+      return;
+    }
+    object.spatialIndexDirty = true;
+    _dirtyObjects.add(object);
   }
 
   /// Ensures the BVH is up to date for [world].
   void ensureBuilt(World3D world) {
-    if (_builtSceneVersion == world.componentsVersion) {
+    if (!_initialized ||
+        !identical(_boundWorld, world) ||
+        (!world.isMounted &&
+            _builtComponentsVersion != world.componentsVersion)) {
+      _rebuild(world);
+      _initialized = true;
+      _boundWorld = world;
+      _builtComponentsVersion = world.componentsVersion;
+      _fullRebuildCount++;
       return;
     }
-    _builtSceneVersion = world.componentsVersion;
-    _rebuild(world);
+
+    if (_dirtyObjects.isNotEmpty) {
+      for (var i = 0; i < _dirtyObjects.length; i++) {
+        final obj = _dirtyObjects[i];
+        obj.spatialIndexDirty = false;
+        final proxyId = _proxies[obj];
+        if (proxyId != null && obj.isMounted) {
+          _tree.update(proxyId, obj.aabb);
+          _incrementalUpdateCount++;
+        }
+      }
+      _dirtyObjects.clear();
+    }
+    _builtComponentsVersion = world.componentsVersion;
   }
 
   void _rebuild(World3D world) {
-    _objects.clear();
+    _tree.clear();
+    _proxies.clear();
+    for (var i = 0; i < _dirtyObjects.length; i++) {
+      _dirtyObjects[i].spatialIndexDirty = false;
+    }
+    _dirtyObjects.clear();
+
     void collect(Component3D parent) {
       for (final child in parent.children) {
         if (child is Object3D) {
-          _objects.add(child);
+          _proxies[child] = _tree.insert(child, child.aabb);
         }
         if (child is Component3D) {
           collect(child);
@@ -65,173 +146,16 @@ class SceneSpatialIndex3D() {
 
     for (final child in world.children) {
       if (child is Object3D) {
-        _objects.add(child);
+        _proxies[child] = _tree.insert(child, child.aabb);
       }
       if (child is Component3D) {
         collect(child);
       }
     }
-
-    final n = _objects.length;
-    if (n == 0) {
-      _nodeCount = 0;
-      return;
-    }
-
-    if (_indices.length < n) {
-      final cap = _nextPow2(n);
-      _indices = Int32List(cap);
-      _objBounds = Float32List(cap * 9);
-      final maxNodes = math.max(4, cap * 2);
-      _nodeBounds = Float32List(maxNodes * 6);
-      _nodeData = Int32List(maxNodes * 2);
-    }
-
-    for (var i = 0; i < n; i++) {
-      _indices[i] = i;
-      final b = _objects[i].aabb;
-      final min = b.min;
-      final max = b.max;
-      final o = i * 9;
-      _objBounds[o] = min.x;
-      _objBounds[o + 1] = min.y;
-      _objBounds[o + 2] = min.z;
-      _objBounds[o + 3] = max.x;
-      _objBounds[o + 4] = max.y;
-      _objBounds[o + 5] = max.z;
-      _objBounds[o + 6] = 0.5 * (min.x + max.x);
-      _objBounds[o + 7] = 0.5 * (min.y + max.y);
-      _objBounds[o + 8] = 0.5 * (min.z + max.z);
-    }
-
-    _nodeCount = 0;
-    _buildNode(0, n);
   }
 
-  int _buildNode(int start, int end) {
-    final node = _nodeCount++;
-    if (_nodeCount * 6 > _nodeBounds.length) {
-      final nextNodes = _nodeBounds.length ~/ 3;
-      _nodeBounds = Float32List(nextNodes * 6)..setAll(0, _nodeBounds);
-      _nodeData = Int32List(nextNodes * 2)..setAll(0, _nodeData);
-    }
-
-    var minX = double.infinity;
-    var minY = double.infinity;
-    var minZ = double.infinity;
-    var maxX = double.negativeInfinity;
-    var maxY = double.negativeInfinity;
-    var maxZ = double.negativeInfinity;
-    var cMinX = double.infinity;
-    var cMinY = double.infinity;
-    var cMinZ = double.infinity;
-    var cMaxX = double.negativeInfinity;
-    var cMaxY = double.negativeInfinity;
-    var cMaxZ = double.negativeInfinity;
-
-    for (var i = start; i < end; i++) {
-      final idx = _indices[i] * 9;
-      final x0 = _objBounds[idx];
-      final y0 = _objBounds[idx + 1];
-      final z0 = _objBounds[idx + 2];
-      final x1 = _objBounds[idx + 3];
-      final y1 = _objBounds[idx + 4];
-      final z1 = _objBounds[idx + 5];
-      final cx = _objBounds[idx + 6];
-      final cy = _objBounds[idx + 7];
-      final cz = _objBounds[idx + 8];
-      if (x0 < minX) {
-        minX = x0;
-      }
-      if (y0 < minY) {
-        minY = y0;
-      }
-      if (z0 < minZ) {
-        minZ = z0;
-      }
-      if (x1 > maxX) {
-        maxX = x1;
-      }
-      if (y1 > maxY) {
-        maxY = y1;
-      }
-      if (z1 > maxZ) {
-        maxZ = z1;
-      }
-      if (cx < cMinX) {
-        cMinX = cx;
-      }
-      if (cy < cMinY) {
-        cMinY = cy;
-      }
-      if (cz < cMinZ) {
-        cMinZ = cz;
-      }
-      if (cx > cMaxX) {
-        cMaxX = cx;
-      }
-      if (cy > cMaxY) {
-        cMaxY = cy;
-      }
-      if (cz > cMaxZ) {
-        cMaxZ = cz;
-      }
-    }
-
-    final nb = node * 6;
-    _nodeBounds[nb] = minX;
-    _nodeBounds[nb + 1] = minY;
-    _nodeBounds[nb + 2] = minZ;
-    _nodeBounds[nb + 3] = maxX;
-    _nodeBounds[nb + 4] = maxY;
-    _nodeBounds[nb + 5] = maxZ;
-
-    final count = end - start;
-    if (count <= _maxLeafSize) {
-      _nodeData[node * 2] = start;
-      _nodeData[node * 2 + 1] = count;
-      return node;
-    }
-
-    final ex = cMaxX - cMinX;
-    final ey = cMaxY - cMinY;
-    final ez = cMaxZ - cMinZ;
-    final int axis;
-    final double split;
-    if (ex >= ey && ex >= ez) {
-      axis = 6;
-      split = 0.5 * (cMinX + cMaxX);
-    } else if (ey >= ez) {
-      axis = 7;
-      split = 0.5 * (cMinY + cMaxY);
-    } else {
-      axis = 8;
-      split = 0.5 * (cMinZ + cMaxZ);
-    }
-
-    var mid = start;
-    for (var i = start; i < end; i++) {
-      final id = _indices[i];
-      if (_objBounds[id * 9 + axis] < split) {
-        final tmp = _indices[mid];
-        _indices[mid] = id;
-        _indices[i] = tmp;
-        mid++;
-      }
-    }
-    if (mid == start || mid == end) {
-      mid = (start + end) >> 1;
-    }
-
-    final left = _buildNode(start, mid);
-    final right = _buildNode(mid, end);
-    // Internal node convention: `count <= 0` stores `-right`, `data0` = `left`.
-    _nodeData[node * 2] = left;
-    _nodeData[node * 2 + 1] = -right;
-    return node;
-  }
-
-  /// Appends every [Object3D] whose world AABB overlaps [bounds] into [out].
+  /// Appends every [Object3D] whose tight world AABB overlaps [bounds] into
+  /// [out].
   List<Object3D> queryAabb(
     World3D world,
     Aabb3 bounds, {
@@ -239,55 +163,30 @@ class SceneSpatialIndex3D() {
   }) {
     final result = out ?? <Object3D>[];
     ensureBuilt(world);
-    if (_nodeCount == 0) {
+    if (_proxies.isEmpty) {
       return result;
     }
-    final qMinX = bounds.min.x;
-    final qMinY = bounds.min.y;
-    final qMinZ = bounds.min.z;
-    final qMaxX = bounds.max.x;
-    final qMaxY = bounds.max.y;
-    final qMaxZ = bounds.max.z;
-
-    var sp = 0;
-    _pushNode(sp++, 0, 0);
-    while (sp > 0) {
-      final node = _stack[--sp];
-      final nb = node * 6;
-      if (_nodeBounds[nb + 3] < qMinX ||
-          _nodeBounds[nb] > qMaxX ||
-          _nodeBounds[nb + 4] < qMinY ||
-          _nodeBounds[nb + 1] > qMaxY ||
-          _nodeBounds[nb + 5] < qMinZ ||
-          _nodeBounds[nb + 2] > qMaxZ) {
-        continue;
-      }
-      final d0 = _nodeData[node * 2];
-      final d1 = _nodeData[node * 2 + 1];
-      if (d1 > 0) {
-        for (var i = d0; i < d0 + d1; i++) {
-          final id = _indices[i];
-          final ob = id * 9;
-          if (_objBounds[ob + 3] >= qMinX &&
-              _objBounds[ob] <= qMaxX &&
-              _objBounds[ob + 4] >= qMinY &&
-              _objBounds[ob + 1] <= qMaxY &&
-              _objBounds[ob + 5] >= qMinZ &&
-              _objBounds[ob + 2] <= qMaxZ) {
-            result.add(_objects[id]);
-          }
-        }
-      } else {
-        _pushNode(sp++, -d1, 0);
-        _pushNode(sp++, d0, 0);
+    _candidateScratch.clear();
+    _tree.queryAabb(bounds, out: _candidateScratch);
+    final qMin = bounds.min;
+    final qMax = bounds.max;
+    for (var i = 0; i < _candidateScratch.length; i++) {
+      final obj = _candidateScratch[i];
+      final b = obj.aabb;
+      if (b.max.x >= qMin.x &&
+          b.min.x <= qMax.x &&
+          b.max.y >= qMin.y &&
+          b.min.y <= qMax.y &&
+          b.max.z >= qMin.z &&
+          b.min.z <= qMax.z) {
+        result.add(obj);
       }
     }
     return result;
   }
 
-  final Aabb3 _scratchAabb = Aabb3();
-
-  /// Appends every [Object3D] whose world AABB intersects [frustum] into [out].
+  /// Appends every [Object3D] whose tight world AABB intersects [frustum] into
+  /// [out].
   List<Object3D> queryFrustum(
     World3D world,
     Frustum frustum, {
@@ -295,43 +194,82 @@ class SceneSpatialIndex3D() {
   }) {
     final result = out ?? <Object3D>[];
     ensureBuilt(world);
-    if (_nodeCount == 0) {
+    if (_proxies.isEmpty) {
       return result;
     }
-
-    var sp = 0;
-    _pushNode(sp++, 0, 0);
-    while (sp > 0) {
-      final node = _stack[--sp];
-      final nb = node * 6;
-      _scratchAabb.min.setValues(
-        _nodeBounds[nb],
-        _nodeBounds[nb + 1],
-        _nodeBounds[nb + 2],
-      );
-      _scratchAabb.max.setValues(
-        _nodeBounds[nb + 3],
-        _nodeBounds[nb + 4],
-        _nodeBounds[nb + 5],
-      );
-      if (!frustum.intersectsWithAabb3(_scratchAabb)) {
-        continue;
-      }
-      final d0 = _nodeData[node * 2];
-      final d1 = _nodeData[node * 2 + 1];
-      if (d1 > 0) {
-        for (var i = d0; i < d0 + d1; i++) {
-          final obj = _objects[_indices[i]];
-          if (frustum.intersectsWithAabb3(obj.aabb)) {
-            result.add(obj);
-          }
-        }
-      } else {
-        _pushNode(sp++, -d1, 0);
-        _pushNode(sp++, d0, 0);
+    _candidateScratch.clear();
+    _tree.queryFrustum(frustum, out: _candidateScratch);
+    for (var i = 0; i < _candidateScratch.length; i++) {
+      final obj = _candidateScratch[i];
+      if (frustum.intersectsWithAabb3(obj.aabb)) {
+        result.add(obj);
       }
     }
     return result;
+  }
+
+  CullMode? _activeCullMode;
+  bool Function(Object3D object)? _activeUserFilter;
+  double _bestHitDistance = double.infinity;
+  RayHit3D? _bestRayHit;
+  List<RayHit3D>? _activeHitsOut;
+  double _activeInvDx = 0.0;
+  double _activeInvDy = 0.0;
+  double _activeInvDz = 0.0;
+  double _activeOx = 0.0;
+  double _activeOy = 0.0;
+  double _activeOz = 0.0;
+
+  late final (double, Vector3?)? Function(Object3D, Ray, double)
+  _raycastNarrowphaseCb = _onRaycastLeaf;
+  late final (double, Vector3?)? Function(Object3D, Ray, double)
+  _raycastAllNarrowphaseCb = _onRaycastAllLeaf;
+  late final bool Function(Object3D) _filterCb = _onFilterLeaf;
+
+  bool _onFilterLeaf(Object3D obj) => _activeUserFilter!(obj);
+
+  (double, Vector3?)? _onRaycastLeaf(
+    Object3D obj,
+    Ray unitRay,
+    double maxDist,
+  ) {
+    final tObj = _intersectTightAabb(obj.aabb, maxDist);
+    if (!tObj.isFinite || tObj > maxDist) {
+      return null;
+    }
+    lastRaycastCandidatesTested++;
+    final hit = obj.raycast(
+      unitRay,
+      maxDistance: maxDist,
+      cullMode: _activeCullMode,
+    );
+    if (hit != null && hit.distance < _bestHitDistance) {
+      _bestHitDistance = hit.distance;
+      _bestRayHit = hit;
+      return (hit.distance, null);
+    }
+    return null;
+  }
+
+  (double, Vector3?)? _onRaycastAllLeaf(
+    Object3D obj,
+    Ray unitRay,
+    double maxDist,
+  ) {
+    final tObj = _intersectTightAabb(obj.aabb, maxDist);
+    if (!tObj.isFinite || tObj > maxDist) {
+      return null;
+    }
+    lastRaycastCandidatesTested++;
+    final hit = obj.raycast(
+      unitRay,
+      maxDistance: maxDist,
+      cullMode: _activeCullMode,
+    );
+    if (hit != null) {
+      _activeHitsOut!.add(hit);
+    }
+    return null;
   }
 
   /// Closest narrowphase triangle hit along [worldRay], traversing BVH nodes
@@ -345,121 +283,36 @@ class SceneSpatialIndex3D() {
   }) {
     lastRaycastCandidatesTested = 0;
     ensureBuilt(world);
-    if (_nodeCount == 0) {
+    if (_proxies.isEmpty) {
       return null;
     }
 
-    final ox = worldRay.origin.x;
-    final oy = worldRay.origin.y;
-    final oz = worldRay.origin.z;
-    final invDx = 1.0 / worldRay.direction.x;
-    final invDy = 1.0 / worldRay.direction.y;
-    final invDz = 1.0 / worldRay.direction.z;
+    final dirLen = worldRay.direction.length;
+    if (dirLen <= 1e-12) {
+      return null;
+    }
+    final invLen = 1.0 / dirLen;
+    _activeOx = worldRay.origin.x;
+    _activeOy = worldRay.origin.y;
+    _activeOz = worldRay.origin.z;
+    _activeInvDx = 1.0 / (worldRay.direction.x * invLen);
+    _activeInvDy = 1.0 / (worldRay.direction.y * invLen);
+    _activeInvDz = 1.0 / (worldRay.direction.z * invLen);
+    _activeCullMode = cullMode;
+    _activeUserFilter = filter;
+    _bestHitDistance = maxDistance;
+    _bestRayHit = null;
 
-    var limit = maxDistance;
-    final rootT = _intersectAabb(
-      _nodeBounds,
-      0,
-      ox,
-      oy,
-      oz,
-      invDx,
-      invDy,
-      invDz,
-      limit,
+    _tree.raycast(
+      worldRay,
+      maxDistance: maxDistance,
+      narrowphase: _raycastNarrowphaseCb,
+      filter: filter != null ? _filterCb : null,
     );
-    if (!rootT.isFinite || rootT > limit) {
-      return null;
-    }
-
-    RayHit3D? best;
-    var sp = 0;
-    _pushNode(sp++, 0, rootT);
-
-    while (sp > 0) {
-      sp--;
-      final node = _stack[sp];
-      if (!_stackDist[sp].isFinite || _stackDist[sp] > limit) {
-        continue;
-      }
-
-      final d0 = _nodeData[node * 2];
-      final d1 = _nodeData[node * 2 + 1];
-      if (d1 > 0) {
-        for (var i = d0; i < d0 + d1; i++) {
-          final id = _indices[i];
-          final obj = _objects[id];
-          if (filter != null && !filter(obj)) {
-            continue;
-          }
-          final tObj = _intersectAabb(
-            _objBounds,
-            id * 9,
-            ox,
-            oy,
-            oz,
-            invDx,
-            invDy,
-            invDz,
-            limit,
-          );
-          if (!tObj.isFinite || tObj > limit) {
-            continue;
-          }
-          lastRaycastCandidatesTested++;
-          final hit = obj.raycast(
-            worldRay,
-            maxDistance: limit,
-            cullMode: cullMode,
-          );
-          if (hit != null && hit.distance < limit) {
-            limit = hit.distance;
-            best = hit;
-          }
-        }
-      } else {
-        final left = d0;
-        final right = -d1;
-        final tL = _intersectAabb(
-          _nodeBounds,
-          left * 6,
-          ox,
-          oy,
-          oz,
-          invDx,
-          invDy,
-          invDz,
-          limit,
-        );
-        final tR = _intersectAabb(
-          _nodeBounds,
-          right * 6,
-          ox,
-          oy,
-          oz,
-          invDx,
-          invDy,
-          invDz,
-          limit,
-        );
-        final hitL = tL.isFinite && tL <= limit;
-        final hitR = tR.isFinite && tR <= limit;
-        if (hitL && hitR) {
-          if (tL <= tR) {
-            _pushNode(sp++, right, tR);
-            _pushNode(sp++, left, tL);
-          } else {
-            _pushNode(sp++, left, tL);
-            _pushNode(sp++, right, tR);
-          }
-        } else if (hitL) {
-          _pushNode(sp++, left, tL);
-        } else if (hitR) {
-          _pushNode(sp++, right, tR);
-        }
-      }
-    }
-    return best;
+    final result = _bestRayHit;
+    _bestRayHit = null;
+    _activeUserFilter = null;
+    return result;
   }
 
   /// All narrowphase hits along [worldRay] up to [maxDistance], sorted by
@@ -474,139 +327,53 @@ class SceneSpatialIndex3D() {
     lastRaycastCandidatesTested = 0;
     final hits = <RayHit3D>[];
     ensureBuilt(world);
-    if (_nodeCount == 0) {
+    if (_proxies.isEmpty) {
       return hits;
     }
 
-    final ox = worldRay.origin.x;
-    final oy = worldRay.origin.y;
-    final oz = worldRay.origin.z;
-    final invDx = 1.0 / worldRay.direction.x;
-    final invDy = 1.0 / worldRay.direction.y;
-    final invDz = 1.0 / worldRay.direction.z;
+    final dirLen = worldRay.direction.length;
+    if (dirLen <= 1e-12) {
+      return hits;
+    }
+    final invLen = 1.0 / dirLen;
+    _activeOx = worldRay.origin.x;
+    _activeOy = worldRay.origin.y;
+    _activeOz = worldRay.origin.z;
+    _activeInvDx = 1.0 / (worldRay.direction.x * invLen);
+    _activeInvDy = 1.0 / (worldRay.direction.y * invLen);
+    _activeInvDz = 1.0 / (worldRay.direction.z * invLen);
+    _activeCullMode = cullMode;
+    _activeUserFilter = filter;
+    _activeHitsOut = hits;
 
-    final rootT = _intersectAabb(
-      _nodeBounds,
-      0,
-      ox,
-      oy,
-      oz,
-      invDx,
-      invDy,
-      invDz,
-      maxDistance,
+    _tree.raycastAll(
+      worldRay,
+      maxDistance: maxDistance,
+      narrowphase: _raycastAllNarrowphaseCb,
+      filter: filter != null ? _filterCb : null,
     );
-    if (!rootT.isFinite || rootT > maxDistance) {
-      return hits;
-    }
-
-    var sp = 0;
-    _pushNode(sp++, 0, rootT);
-    while (sp > 0) {
-      sp--;
-      final node = _stack[sp];
-      final d0 = _nodeData[node * 2];
-      final d1 = _nodeData[node * 2 + 1];
-      if (d1 > 0) {
-        for (var i = d0; i < d0 + d1; i++) {
-          final id = _indices[i];
-          final obj = _objects[id];
-          if (filter != null && !filter(obj)) {
-            continue;
-          }
-          final tObj = _intersectAabb(
-            _objBounds,
-            id * 9,
-            ox,
-            oy,
-            oz,
-            invDx,
-            invDy,
-            invDz,
-            maxDistance,
-          );
-          if (!tObj.isFinite || tObj > maxDistance) {
-            continue;
-          }
-          lastRaycastCandidatesTested++;
-          final hit = obj.raycast(
-            worldRay,
-            maxDistance: maxDistance,
-            cullMode: cullMode,
-          );
-          if (hit != null) {
-            hits.add(hit);
-          }
-        }
-      } else {
-        final left = d0;
-        final right = -d1;
-        final tL = _intersectAabb(
-          _nodeBounds,
-          left * 6,
-          ox,
-          oy,
-          oz,
-          invDx,
-          invDy,
-          invDz,
-          maxDistance,
-        );
-        final tR = _intersectAabb(
-          _nodeBounds,
-          right * 6,
-          ox,
-          oy,
-          oz,
-          invDx,
-          invDy,
-          invDz,
-          maxDistance,
-        );
-        if (tL.isFinite && tL <= maxDistance) {
-          _pushNode(sp++, left, tL);
-        }
-        if (tR.isFinite && tR <= maxDistance) {
-          _pushNode(sp++, right, tR);
-        }
-      }
-    }
+    _activeHitsOut = null;
+    _activeUserFilter = null;
     hits.sort((a, b) => a.distance.compareTo(b.distance));
-    return hits;
+    return UnmodifiableListView<RayHit3D>(hits);
   }
 
-  void _pushNode(int sp, int node, double dist) {
-    if (sp >= _stack.length) {
-      final next = _stack.length * 2;
-      _stack = Int32List(next)..setAll(0, _stack);
-      _stackDist = Float64List(next)..setAll(0, _stackDist);
-    }
-    _stack[sp] = node;
-    _stackDist[sp] = dist;
-  }
-
-  static double _intersectAabb(
-    Float32List b,
-    int o,
-    double ox,
-    double oy,
-    double oz,
-    double invDx,
-    double invDy,
-    double invDz,
-    double maxDist,
-  ) {
-    // Bounds are padded like the tree walk of `World3D.raycast`, and an
-    // axis the ray does not move along is a range test: `0 * infinity` would
-    // be NaN for a ray starting exactly on a face.
+  double _intersectTightAabb(Aabb3 box, double maxDist) {
     const pad = 1e-5;
+    final min = box.min;
+    final max = box.max;
     var tMin = double.negativeInfinity;
     var tMax = double.infinity;
+
     for (var axis = 0; axis < 3; axis++) {
-      final origin = axis == 0 ? ox : (axis == 1 ? oy : oz);
-      final inv = axis == 0 ? invDx : (axis == 1 ? invDy : invDz);
-      final lo = b[o + axis] - pad;
-      final hi = b[o + 3 + axis] + pad;
+      final origin = axis == 0
+          ? _activeOx
+          : (axis == 1 ? _activeOy : _activeOz);
+      final inv = axis == 0
+          ? _activeInvDx
+          : (axis == 1 ? _activeInvDy : _activeInvDz);
+      final lo = (axis == 0 ? min.x : (axis == 1 ? min.y : min.z)) - pad;
+      final hi = (axis == 0 ? max.x : (axis == 1 ? max.y : max.z)) + pad;
       if (inv.isInfinite) {
         if (origin < lo || origin > hi) {
           return double.infinity;
@@ -629,13 +396,5 @@ class SceneSpatialIndex3D() {
       return double.infinity;
     }
     return tMin < 0 ? 0.0 : tMin;
-  }
-
-  static int _nextPow2(int v) {
-    var cap = 16;
-    while (cap < v) {
-      cap *= 2;
-    }
-    return cap;
   }
 }

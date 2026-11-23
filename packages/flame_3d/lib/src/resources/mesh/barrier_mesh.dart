@@ -400,6 +400,7 @@ class BarrierMesh._(
     Color color = const Color(0xFFFFFFFF),
     Vector4? instanceData,
     Map<int, List<Matrix4>>? jointTransforms,
+    bool? mirrored,
   }) {
     super.draw(
       context,
@@ -407,6 +408,7 @@ class BarrierMesh._(
       color: color,
       instanceData: instanceData,
       jointTransforms: jointTransforms,
+      mirrored: mirrored,
     );
     if (context.isShadowPass || context.isDepthNormalPass) {
       return;
@@ -422,6 +424,7 @@ class BarrierMesh._(
           color: color,
           instanceData: instanceData,
           material: material.reactionInFrontMaterial,
+          mirrored: mirrored,
         );
       }
     }

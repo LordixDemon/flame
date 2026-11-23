@@ -482,21 +482,10 @@ class WaterMaterial({
     return _lastShader!;
   }
 
-  static final Vector4 _waveParams = Vector4.zero();
-  static final Vector4 _upSteep = Vector4.zero();
-  static final Vector4 _surface = Vector4.zero();
-  static final Vector4 _fragParams = Vector4.zero();
-  static final Vector4 _fragParams2 = Vector4.zero();
-  static final Vector4 _shoreVec = Vector4.zero();
-  static final Vector4 _upVec = Vector4.zero();
-  static final Vector4 _pattern = Vector4.zero();
-  static final Vector4 _detail = Vector4.zero();
-  static final Vector4 _ramp = Vector4.zero();
   static final Vector3 _up = Vector3.zero();
   static final Vector3 _uAxis = Vector3.zero();
   static final Vector3 _vAxis = Vector3.zero();
   static final Vector3 _cross = Vector3.zero();
-  static final Vector4 _causticColorValue = Vector4.zero();
   static final List<Vector4> _ripplePositions = List.generate(
     WaterRipples.capacity,
     (_) => Vector4.zero(),
@@ -518,6 +507,75 @@ class WaterMaterial({
     (_) => Vector4.zero(),
   );
   static final Vector2 _foamSourceOrigin = Vector2.zero();
+
+  int _appliedVersion = -1;
+  Shader? _appliedFrag;
+  int _appliedFragGen = -1;
+  int _appliedVertMask = 0;
+  int _appliedVertGen0 = -1;
+  int _appliedVertGen1 = -1;
+  Shader? _appliedCustomVert;
+  int _appliedCustomVertGen = -1;
+
+  @override
+  bool get cachesApply => runtimeType == WaterMaterial;
+
+  @override
+  void invalidateApplyCache() {
+    _appliedVersion = -1;
+    _appliedVertMask = 0;
+    _appliedCustomVert = null;
+  }
+
+  @override
+  bool isApplyCacheValid(
+    RenderContext context,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) {
+    if (_appliedVersion != version ||
+        !identical(_appliedFrag, fragmentShader) ||
+        _appliedFragGen != fragmentShader.generation) {
+      return false;
+    }
+    if (identical(vertexShader, super.vertexShader)) {
+      return (_appliedVertMask & 1) != 0 &&
+          _appliedVertGen0 == vertexShader.generation;
+    }
+    if (identical(vertexShader, _maskedVertexShader)) {
+      return (_appliedVertMask & 2) != 0 &&
+          _appliedVertGen1 == vertexShader.generation;
+    }
+    return identical(_appliedCustomVert, vertexShader) &&
+        _appliedCustomVertGen == vertexShader.generation;
+  }
+
+  @override
+  void recordApplyCache(
+    RenderContext context,
+    Shader vertexShader,
+    Shader fragmentShader,
+  ) {
+    if (_appliedVersion != version ||
+        !identical(_appliedFrag, fragmentShader) ||
+        _appliedFragGen != fragmentShader.generation) {
+      _appliedVersion = version;
+      _appliedFrag = fragmentShader;
+      _appliedFragGen = fragmentShader.generation;
+      _appliedVertMask = 0;
+      _appliedCustomVert = null;
+    }
+    if (identical(vertexShader, super.vertexShader)) {
+      _appliedVertMask |= 1;
+      _appliedVertGen0 = vertexShader.generation;
+    } else if (identical(vertexShader, _maskedVertexShader)) {
+      _appliedVertMask |= 2;
+      _appliedVertGen1 = vertexShader.generation;
+    } else {
+      _appliedCustomVert = vertexShader;
+      _appliedCustomVertGen = vertexShader.generation;
+    }
+  }
 
   @override
   void apply(RenderContext context) {
@@ -552,47 +610,63 @@ class WaterMaterial({
     // The members of the options are written through the block, which
     // ignores members a shader does not have (the shaders of before, in
     // tests).
-    final block = fragmentShader.block(_fragmentBlock)
-      ..setColor('shallowColor', shallowColor)
-      ..setColor('deepColor', deepColor)
-      ..setColor('foamColor', foamColor)
-      ..setVector4(
-        'params',
-        _fragParams..setValues(
-          time,
-          rippleStrength,
-          foamThreshold,
-          specularPower,
-        ),
-      )
-      ..setVector4(
-        'params2',
-        _fragParams2..setValues(
-          fresnelPower,
-          specularStrength,
-          opacity,
-          rippleScale,
-        ),
-      )
-      ..setVector4(
-        'shoreParams',
-        _shoreVec..setValues(
-          shoreFoamDepth,
-          refractionStrength,
-          edgeFoamPhase(time, animationPeriod, edgeFoamMotion),
-          foamLightTint.clamp(0.0, 1.0),
-        ),
-      )
-      ..setVector4(
-        'upAxis',
-        _upVec..setValues(
-          upAxis.x,
-          upAxis.y,
-          upAxis.z,
-          foamLightFloor > 0 ? foamLightFloor : 0,
-        ),
+    final frag = fragmentShader;
+    frag.resource;
+    final blockIdx = frag.blockIndexOf(_fragmentBlock);
+    if (blockIdx < 0) {
+      return;
+    }
+    final block = frag.blockAt(blockIdx);
+    final off =
+        (block.cachedWriterOffsets as _WaterFragOffsets?) ??
+        (block.cachedWriterOffsets = _WaterFragOffsets(block));
+
+    if (off._shallowColor >= 0) {
+      block.writeColorAt(off._shallowColor, shallowColor);
+    }
+    if (off._deepColor >= 0) {
+      block.writeColorAt(off._deepColor, deepColor);
+    }
+    if (off._foamColor >= 0) {
+      block.writeColorAt(off._foamColor, foamColor);
+    }
+    if (off._params >= 0) {
+      block.writeVec4ValuesAt(
+        off._params,
+        time,
+        rippleStrength,
+        foamThreshold,
+        specularPower,
       );
-    if (!block.hasMember('pattern')) {
+    }
+    if (off._params2 >= 0) {
+      block.writeVec4ValuesAt(
+        off._params2,
+        fresnelPower,
+        specularStrength,
+        opacity,
+        rippleScale,
+      );
+    }
+    if (off._shoreParams >= 0) {
+      block.writeVec4ValuesAt(
+        off._shoreParams,
+        shoreFoamDepth,
+        refractionStrength,
+        edgeFoamPhase(time, animationPeriod, edgeFoamMotion),
+        foamLightTint.clamp(0.0, 1.0),
+      );
+    }
+    if (off._upAxis >= 0) {
+      block.writeVec4ValuesAt(
+        off._upAxis,
+        upAxis.x,
+        upAxis.y,
+        upAxis.z,
+        foamLightFloor > 0 ? foamLightFloor : 0,
+      );
+    }
+    if (off._pattern < 0) {
       return;
     }
 
@@ -606,63 +680,92 @@ class WaterMaterial({
         _rippleShapes,
       );
       for (var i = 0; i < rippleCount; i++) {
-        block
-          ..setVector4('ripplePositions', _ripplePositions[i], index: i)
-          ..setVector4('rippleShapes', _rippleShapes[i], index: i);
+        final rp = _ripplePositions[i];
+        final rs = _rippleShapes[i];
+        if (off._ripplePositions >= 0) {
+          block.writeVec4ValuesAt(
+            off._ripplePositions + i * 4,
+            rp.x,
+            rp.y,
+            rp.z,
+            rp.w,
+          );
+        }
+        if (off._rippleShapes >= 0) {
+          block.writeVec4ValuesAt(
+            off._rippleShapes + i * 4,
+            rs.x,
+            rs.y,
+            rs.z,
+            rs.w,
+          );
+        }
       }
     }
     for (var i = 0; i < foamSourceCount; i++) {
-      block
-        ..setVector4(
-          'foamSourcePositions',
-          _foamSourcePositions[i],
-          index: i,
-        )
-        ..setVector4('foamSourceShapes', _foamSourceShapes[i], index: i);
+      final fp = _foamSourcePositions[i];
+      final fs = _foamSourceShapes[i];
+      if (off._foamSourcePositions >= 0 &&
+          off._foamSourcePositions + i * 4 + 4 <= block.data.length) {
+        block.writeVec4ValuesAt(
+          off._foamSourcePositions + i * 4,
+          fp.x,
+          fp.y,
+          fp.z,
+          fp.w,
+        );
+      }
+      if (off._foamSourceShapes >= 0 &&
+          off._foamSourceShapes + i * 4 + 4 <= block.data.length) {
+        block.writeVec4ValuesAt(
+          off._foamSourceShapes + i * 4,
+          fs.x,
+          fs.y,
+          fs.z,
+          fs.w,
+        );
+      }
     }
     final caustics = math.max(0.0, causticStrength);
     final sparkles = math.max(0.0, sparkleStrength);
     final addsLight = caustics > 0 || sparkles > 0 || rippleCount > 0;
-    block
-      ..setVector4(
-        'causticColor',
-        _causticColorValue..setValues(
-          causticColor.r,
-          causticColor.g,
-          causticColor.b,
-          caustics,
-        ),
-      )
-      ..setVector4(
-        'pattern',
-        _pattern..setValues(
-          patternPhase(time, animationPeriod),
-          _inverse(causticScale),
-          sparkles,
-          _inverse(sparkleScale),
-        ),
-      )
-      ..setVector4(
-        'detail',
-        _detail..setValues(
-          math.max(0.0, detailStrength),
-          _inverse(detailScale),
-          _inverse(edgeFoamScale),
-          addsLight ? 1 : 0,
-        ),
-      )
-      ..setVector4(
-        'ramp',
-        _ramp..setValues(
-          depthRange > 0 ? 1 / depthRange : 0,
-          shallowOpacity,
-          // Negative when a source carries its pattern.
-          _carriesPattern(foamSourceCount)
-              ? -foamSourceCount.toDouble()
-              : foamSourceCount.toDouble(),
-          rippleCount.toDouble(),
-        ),
+    if (off._causticColor >= 0) {
+      block.writeVec4ValuesAt(
+        off._causticColor,
+        causticColor.r,
+        causticColor.g,
+        causticColor.b,
+        caustics,
       );
+    }
+    block.writeVec4ValuesAt(
+      off._pattern,
+      patternPhase(time, animationPeriod),
+      _inverse(causticScale),
+      sparkles,
+      _inverse(sparkleScale),
+    );
+    if (off._detail >= 0) {
+      block.writeVec4ValuesAt(
+        off._detail,
+        math.max(0.0, detailStrength),
+        _inverse(detailScale),
+        _inverse(edgeFoamScale),
+        addsLight ? 1 : 0,
+      );
+    }
+    if (off._ramp >= 0) {
+      block.writeVec4ValuesAt(
+        off._ramp,
+        depthRange > 0 ? 1 / depthRange : 0,
+        shallowOpacity,
+        // Negative when a source carries its pattern.
+        _carriesPattern(foamSourceCount)
+            ? -foamSourceCount.toDouble()
+            : foamSourceCount.toDouble(),
+        rippleCount.toDouble(),
+      );
+    }
   }
 
   /// Writes the vertex stage's values, with the circles of the
@@ -670,28 +773,59 @@ class WaterMaterial({
   /// fragments where none reaches, so that they skip them).
   void _applyVertex(Shader shader, int foamSourceCount) {
     final origin = _foamSourceOrigin;
-    final block = shader.block(_vertexBlock)
-      ..setVector4(
-        'waveParams',
-        _waveParams..setValues(time, waveAmplitude, waveFrequency, waveSpeed),
-      )
-      ..setVector4(
-        'upAndSteepness',
-        _upSteep..setValues(upAxis.x, upAxis.y, upAxis.z, steepness),
-      )
-      ..setVector4(
-        'surface',
-        foamSourceCount > 0
-            ? (_surface..setValues(
-                defaultDepth,
-                foamSourceCount.toDouble(),
-                origin.x,
-                origin.y,
-              ))
-            : (_surface..setValues(defaultDepth, 0, 0, 0)),
+    shader.resource;
+    final idx = shader.blockIndexOf(_vertexBlock);
+    if (idx < 0) {
+      return;
+    }
+    final block = shader.blockAt(idx);
+    final off =
+        (block.cachedWriterOffsets as _WaterVertOffsets?) ??
+        (block.cachedWriterOffsets = _WaterVertOffsets(block));
+    if (off._waveParams >= 0) {
+      block.writeVec4ValuesAt(
+        off._waveParams,
+        time,
+        waveAmplitude,
+        waveFrequency,
+        waveSpeed,
       );
-    for (var i = 0; i < foamSourceCount; i++) {
-      block.setVector4('foamSourceBounds', _foamSourceBounds[i], index: i);
+    }
+    if (off._upAndSteepness >= 0) {
+      block.writeVec4ValuesAt(
+        off._upAndSteepness,
+        upAxis.x,
+        upAxis.y,
+        upAxis.z,
+        steepness,
+      );
+    }
+    if (off._surface >= 0) {
+      if (foamSourceCount > 0) {
+        block.writeVec4ValuesAt(
+          off._surface,
+          defaultDepth,
+          foamSourceCount.toDouble(),
+          origin.x,
+          origin.y,
+        );
+      } else {
+        block.writeVec4ValuesAt(off._surface, defaultDepth, 0, 0, 0);
+      }
+    }
+    if (off._foamSourceBounds >= 0) {
+      for (var i = 0; i < foamSourceCount; i++) {
+        final fb = _foamSourceBounds[i];
+        if (off._foamSourceBounds + i * 4 + 4 <= block.data.length) {
+          block.writeVec4ValuesAt(
+            off._foamSourceBounds + i * 4,
+            fb.x,
+            fb.y,
+            fb.z,
+            fb.w,
+          );
+        }
+      }
     }
   }
 
@@ -825,4 +959,29 @@ class WaterMaterial({
       aabb: aabb,
     );
   }
+}
+
+class _WaterFragOffsets(final UniformBlock _b) {
+  late final int _shallowColor = _b.resolveOffset('shallowColor');
+  late final int _deepColor = _b.resolveOffset('deepColor');
+  late final int _foamColor = _b.resolveOffset('foamColor');
+  late final int _params = _b.resolveOffset('params');
+  late final int _params2 = _b.resolveOffset('params2');
+  late final int _shoreParams = _b.resolveOffset('shoreParams');
+  late final int _upAxis = _b.resolveOffset('upAxis');
+  late final int _pattern = _b.resolveOffset('pattern');
+  late final int _ripplePositions = _b.resolveOffset('ripplePositions');
+  late final int _rippleShapes = _b.resolveOffset('rippleShapes');
+  late final int _foamSourcePositions = _b.resolveOffset('foamSourcePositions');
+  late final int _foamSourceShapes = _b.resolveOffset('foamSourceShapes');
+  late final int _causticColor = _b.resolveOffset('causticColor');
+  late final int _detail = _b.resolveOffset('detail');
+  late final int _ramp = _b.resolveOffset('ramp');
+}
+
+class _WaterVertOffsets(final UniformBlock _b) {
+  late final int _waveParams = _b.resolveOffset('waveParams');
+  late final int _upAndSteepness = _b.resolveOffset('upAndSteepness');
+  late final int _surface = _b.resolveOffset('surface');
+  late final int _foamSourceBounds = _b.resolveOffset('foamSourceBounds');
 }

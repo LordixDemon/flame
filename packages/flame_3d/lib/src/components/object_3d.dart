@@ -6,6 +6,7 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/extensions.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:meta/meta.dart';
 
 /// {@template object_3d}
 /// [Object3D]s are the basic building blocks for a 3D [FlameGame].
@@ -81,6 +82,15 @@ abstract class Object3D({
 
   ShadowCasterMotion _shadowMotion = ShadowCasterMotion.auto;
 
+  /// Index inside [ShadowCasterTracker]'s active movers list, or `-1`.
+  @internal
+  int shadowMoverIndex = -1;
+
+  /// Whether [SceneSpatialIndex3D] has queued a pending transform/bounds update
+  /// for this object.
+  @internal
+  bool spatialIndexDirty = false;
+
   /// Whether an ancestor's AABB was fully inside the frustum, meaning
   /// children can skip their own frustum tests.
   static bool _ancestorFullyInside = false;
@@ -99,14 +109,16 @@ abstract class Object3D({
     if ((cameraMask & context.cameraMask) == 0) {
       return;
     }
-    // A recording of one layer of casters (ShadowSettings.cacheStillCasters)
-    // skips the objects of the other layer before testing their bounds,
-    // when they have no children that could be of its layer.
-    if (context.isShadowPass && !hasChildren) {
+    final isShadowPass = context.isShadowPass;
+    var drawSelf = true;
+    if (isShadowPass) {
       final layer = context.shadowCasterLayer;
-      if (layer != ShadowCasterLayer.all &&
-          (!castsShadows || !_inShadowLayer(layer))) {
-        return;
+      if (!castsShadows ||
+          (layer != ShadowCasterLayer.all && !_inShadowLayer(layer))) {
+        if (!hasChildren) {
+          return;
+        }
+        drawSelf = false;
       }
     }
     // The frustum of the pass, computed once by the context.
@@ -124,19 +136,33 @@ abstract class Object3D({
       return;
     }
 
-    // Render children. If fully inside, children can skip frustum tests.
-    final wasAncestorFullyInside = _ancestorFullyInside;
-    if (cullResult == CullResult.inside) {
-      _ancestorFullyInside = true;
+    if (!isShadowPass) {
+      final culler = world.occlusionCuller;
+      if (culler != null &&
+          culler.rasterizedOccluderCount > 0 &&
+          !culler.isAabbVisible(aabb, context.viewProjection)) {
+        return;
+      }
     }
-    super.renderTree(canvas);
-    _ancestorFullyInside = wasAncestorFullyInside;
-    RenderProfile.lap(RenderPhase.traversal);
 
-    final inFrustum = cullResult == CullResult.inside || isVisible(frustum);
+    if (hasChildren) {
+      final wasAncestorFullyInside = _ancestorFullyInside;
+      if (cullResult == CullResult.inside) {
+        _ancestorFullyInside = true;
+      }
+      super.renderTree(canvas);
+      _ancestorFullyInside = wasAncestorFullyInside;
+      RenderProfile.lap(RenderPhase.traversal);
+    }
+
+    final inFrustum =
+        drawSelf && (cullResult == CullResult.inside || isVisible(frustum));
     RenderProfile.lap(RenderPhase.culling);
     if (inFrustum) {
-      bind(context);
+      world.recordVisibleObject(this);
+      if (!hasChildren || isEffectivelyVisible) {
+        draw(context);
+      }
     }
   }
 

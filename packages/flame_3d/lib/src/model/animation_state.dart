@@ -56,6 +56,17 @@ class AnimationState() {
   AnimationEventCallback3D? onEvent;
 
   final List<AnimationEventCallback3D> _eventListeners = [];
+  AnimationEventCallback3D? _activeParentSink;
+  late final AnimationEventCallback3D _dispatchCallback =
+      _dispatchEventCallback;
+
+  void _dispatchEventCallback(AnimationEvent3D event) {
+    onEvent?.call(event);
+    for (var i = 0; i < _eventListeners.length; i++) {
+      _eventListeners[i](event);
+    }
+    _activeParentSink?.call(event);
+  }
 
   bool _completed = false;
   int _pingPongDirection = 1;
@@ -564,86 +575,75 @@ class AnimationState() {
     }
     final scaledDt = dt * speed;
     var changed = paramChanged;
-
-    void fire(AnimationEvent3D event) {
-      onEvent?.call(event);
-      for (var i = 0; i < _eventListeners.length; i++) {
-        _eventListeners[i](event);
-      }
-      parentSink?.call(event);
-    }
-
-    if (isCrossFading) {
-      final nested = _outgoing;
-      if (nested != null) {
-        // The outgoing state fires no events and calls no callbacks.
-        nested
-          ..speed = speed
-          .._updateInternal(dt);
-      } else if (_previousRef case final prev?) {
-        final step = _advanceClip(
-          prev,
-          _previousClock,
-          scaledDt,
-          _previousMode,
-          _previousPingPongDir,
-          atStart: false,
-          onEvent: null,
-        );
-        _previousClock = step.clock;
-        _previousPingPongDir = step.direction;
-      }
-      _blendElapsed += dt.abs();
-      if (_blendElapsed >= _blendDuration) {
-        _cancelCrossFade();
-      }
-      changed = true;
-    }
-
-    final space1D = _blendSpace1D;
-    final space2D = _blendSpace2D;
-    if (space1D != null) {
-      _advanceBlendSpace1D(space1D, scaledDt, fire);
-      changed = true;
-    } else if (space2D != null) {
-      _advanceBlendSpace2D(space2D, scaledDt, fire);
-      changed = true;
-    } else if (animationRef case final animation? when !_completed) {
-      final wasAtStart = _atInitialStart;
-      _atInitialStart = false;
-      final step = _advanceClip(
-        animation,
-        clock,
-        scaledDt,
-        mode,
-        _pingPongDirection,
-        atStart: wasAtStart,
-        onEvent: animation.events.isNotEmpty ? fire : null,
-      );
-      clock = step.clock;
-      _pingPongDirection = step.direction;
-      _lastLoopWrapCount = step.wraps;
-      changed = true;
-      if (step.completed && !_completed) {
-        _completed = true;
-        onComplete?.call();
-      }
-    }
-
-    void bubbleFromLayer(AnimationEvent3D event) {
-      onEvent?.call(event);
-      for (var i = 0; i < _eventListeners.length; i++) {
-        _eventListeners[i](event);
-      }
-      parentSink?.call(event);
-    }
-
-    for (var i = 0; i < layers.length; i++) {
-      final layer = layers[i];
-      if (layer.weight > 0.0 &&
-          layer.state._updateInternal(dt, parentSink: bubbleFromLayer)) {
+    final prevSink = _activeParentSink;
+    _activeParentSink = parentSink;
+    try {
+      if (isCrossFading) {
+        final nested = _outgoing;
+        if (nested != null) {
+          // The outgoing state fires no events and calls no callbacks.
+          nested
+            ..speed = speed
+            .._updateInternal(dt);
+        } else if (_previousRef case final prev?) {
+          final step = _advanceClip(
+            prev,
+            _previousClock,
+            scaledDt,
+            _previousMode,
+            _previousPingPongDir,
+            atStart: false,
+            onEvent: null,
+          );
+          _previousClock = step.clock;
+          _previousPingPongDir = step.direction;
+        }
+        _blendElapsed += dt.abs();
+        if (_blendElapsed >= _blendDuration) {
+          _cancelCrossFade();
+        }
         changed = true;
       }
+
+      final space1D = _blendSpace1D;
+      final space2D = _blendSpace2D;
+      if (space1D != null) {
+        _advanceBlendSpace1D(space1D, scaledDt, _dispatchCallback);
+        changed = true;
+      } else if (space2D != null) {
+        _advanceBlendSpace2D(space2D, scaledDt, _dispatchCallback);
+        changed = true;
+      } else if (animationRef case final animation? when !_completed) {
+        final wasAtStart = _atInitialStart;
+        _atInitialStart = false;
+        final step = _advanceClip(
+          animation,
+          clock,
+          scaledDt,
+          mode,
+          _pingPongDirection,
+          atStart: wasAtStart,
+          onEvent: animation.events.isNotEmpty ? _dispatchCallback : null,
+        );
+        clock = step.clock;
+        _pingPongDirection = step.direction;
+        _lastLoopWrapCount = step.wraps;
+        changed = true;
+        if (step.completed && !_completed) {
+          _completed = true;
+          onComplete?.call();
+        }
+      }
+
+      for (var i = 0; i < layers.length; i++) {
+        final layer = layers[i];
+        if (layer.weight > 0.0 &&
+            layer.state._updateInternal(dt, parentSink: _dispatchCallback)) {
+          changed = true;
+        }
+      }
+    } finally {
+      _activeParentSink = prevSink;
     }
 
     return changed;

@@ -11,6 +11,7 @@
 
 // The first ambient light of the scene, `color.rgb * intensity`. Its
 // intensity is 0 when a hemisphere light replaces the default ambient light.
+#ifndef FLAME_LIGHTS
 uniform AmbientLight {
   vec4 color;
   float intensity;
@@ -57,5 +58,6 @@ uniform HemisphereLight {
   vec3 up;
   float intensity;
 } hemisphereLight;
+#endif
 
 #endif
