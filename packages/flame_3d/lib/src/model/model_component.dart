@@ -14,6 +14,8 @@ import 'package:flame_3d/src/model/model_node.dart';
 import 'package:flame_3d/src/model/procedural_rigging_3d.dart';
 import 'package:flame_3d/src/model/root_motion_3d.dart';
 
+part 'model_component_pose_3d.dart';
+
 /// Controls how [ModelComponent] advances clocks and evaluates skeletal poses
 /// when culled outside the camera frustum.
 enum OffscreenAnimationPolicy() {
@@ -95,6 +97,8 @@ class ModelComponent({
 
   final Matrix4 _invWorld = Matrix4.identity();
   final Matrix4 _collisionNodeMat = Matrix4.identity();
+  final Quaternion _yawDeltaQ = Quaternion.identity();
+  final Vector3 _rootMotionStep = Vector3.zero();
   final List<double> _morphScratch = [];
 
   /// The nodes whose mesh has at least one surface with morph targets.
@@ -205,23 +209,6 @@ class ModelComponent({
     return _workspace;
   }
 
-  void _evaluateAnimatedMorphTargets() {
-    if (_morphNodes.isEmpty ||
-        (!_animation.hasActiveEvaluation && _animation.layers.isEmpty)) {
-      return;
-    }
-    for (var i = 0; i < _morphNodes.length; i++) {
-      final node = _morphNodes[i];
-      final targetCount = _animation.sampleNodeMorphWeights(
-        node.nodeIndex,
-        _morphScratch,
-      );
-      if (targetCount > 0) {
-        _applyMorphWeights(node, _morphScratch, targetCount);
-      }
-    }
-  }
-
   /// Applies [weights] directly to all morph-enabled surfaces of [nodeName]
   /// (or to every morph-enabled surface in the model when [nodeName] is
   /// `null`).
@@ -238,50 +225,6 @@ class ModelComponent({
       _applyMorphWeights(node, weights, weights.length);
     }
     markDrawDirty(shadows: castsShadows);
-  }
-
-  void _applyMorphWeights(ModelNode node, List<double> weights, int count) {
-    final applied = _appliedMorphWeights[node.nodeIndex];
-    if (applied != null && applied.length == count) {
-      var same = true;
-      for (var k = 0; k < count; k++) {
-        if (applied[k] != weights[k]) {
-          same = false;
-          break;
-        }
-      }
-      if (same) {
-        return;
-      }
-    }
-    final mesh = _ownMeshes[node.nodeIndex] ??= _copyMorphedSurfaces(
-      node.mesh!,
-    );
-    for (final surface in mesh.surfaces) {
-      if (surface.morphTargets.isNotEmpty) {
-        surface.applyMorphWeights(weights, targetCount: count);
-      }
-    }
-    mesh.updateBounds();
-    final store = applied != null && applied.length == count
-        ? applied
-        : (_appliedMorphWeights[node.nodeIndex] = List<double>.filled(
-            count,
-            0.0,
-          ));
-    for (var k = 0; k < count; k++) {
-      store[k] = weights[k];
-    }
-  }
-
-  static Mesh _copyMorphedSurfaces(Mesh shared) {
-    final mesh = Mesh();
-    for (final surface in shared.surfaces) {
-      mesh.addSurface(
-        surface.morphTargets.isEmpty ? surface : surface.copyWithOwnVertices(),
-      );
-    }
-    return mesh;
   }
 
   /// The mesh this component draws for [node]: its own copy when the node is
@@ -317,27 +260,11 @@ class ModelComponent({
     required Set<String> boneNames,
     bool includeDescendants = true,
     double weight = 1.0,
-  }) {
-    final indices = <int>{};
-    for (final name in boneNames) {
-      final idx = model.nodeIndexByName(name);
-      if (idx != null) {
-        indices.add(idx);
-      }
-    }
-    if (includeDescendants && indices.isNotEmpty) {
-      for (final node in model.processingOrder) {
-        final p = node.parentNodeIndex;
-        if (p != null && indices.contains(p)) {
-          indices.add(node.nodeIndex);
-        }
-      }
-    }
-    final layer = AnimationLayer3D(nodeIndices: indices, weight: weight);
-    _animation.layers.add(layer);
-    _markPoseChanged();
-    return layer;
-  }
+  }) => _addOverlayLayerImpl(
+    boneNames: boneNames,
+    includeDescendants: includeDescendants,
+    weight: weight,
+  );
 
   /// Combined model-space transform of [nodeIndex] in the current pose, or
   /// `null` if no such node exists.
@@ -391,40 +318,7 @@ class ModelComponent({
     Ray worldRay, {
     double maxDistance = double.infinity,
     CullMode? cullMode,
-  }) {
-    final workspace = evaluatePose();
-    final world = worldTransformMatrix;
-    final hasHidden = _hiddenNodes.isNotEmpty;
-    final nodes = workspace.orderedNodes;
-    RayHit3D? best;
-    var limit = maxDistance;
-    for (var i = 0; i < nodes.length; i++) {
-      final node = nodes[i];
-      if (hasHidden && _hiddenNodes.contains(node.node.nodeIndex)) {
-        continue;
-      }
-      final mesh = _meshOf(node.node);
-      if (mesh == null) {
-        continue;
-      }
-      _nodeTransform
-        ..setFrom(world)
-        ..multiply(node.combinedTransform);
-      final hit = RayHit3D.intersectMesh(
-        owner: this,
-        mesh: mesh,
-        modelMatrix: _nodeTransform,
-        worldRay: worldRay,
-        maxDistance: limit,
-        cullMode: cullMode,
-      );
-      if (hit != null && hit.distance < limit) {
-        limit = hit.distance;
-        best = hit;
-      }
-    }
-    return best;
-  }
+  }) => _raycastImpl(worldRay, maxDistance: maxDistance, cullMode: cullMode);
 
   @override
   void update(double dt) {
@@ -457,51 +351,7 @@ class ModelComponent({
       if (animChanged) {
         extractor.extractStep(model, _animation, worldTransformMatrix);
         if (extractor.applyToComponentTransform) {
-          // The deltas are in the model's space: `position` and `rotation`
-          // are in the parent's, so the step goes through this component's
-          // own rotation and scale (right under any parent transform), and
-          // the turn applies about the model's up axis.
-          final step = _rootMotionStep
-            ..setFrom(extractor.deltaPositionLocal)
-            ..multiply(scale);
-          // `rotation * step * conjugate(rotation)`, as the component's
-          // matrix turns it (vector_math's `Quaternion.rotate` turns by the
-          // inverse).
-          final qx = rotation.x;
-          final qy = rotation.y;
-          final qz = rotation.z;
-          final qw = rotation.w;
-          final tx = 2.0 * (qy * step.z - qz * step.y);
-          final ty = 2.0 * (qz * step.x - qx * step.z);
-          final tz = 2.0 * (qx * step.y - qy * step.x);
-          step.setValues(
-            step.x + qw * tx + (qy * tz - qz * ty),
-            step.y + qw * ty + (qz * tx - qx * tz),
-            step.z + qw * tz + (qx * ty - qy * tx),
-          );
-          position.add(step);
-          if (extractor.deltaYawRad.abs() > 1e-9) {
-            final up = extractor.horizontalPlane == RootMotionPlane3D.xz
-                ? _upY
-                : _upZ;
-            _yawDeltaQ.setAxisAngle(up, extractor.deltaYawRad);
-            final x = rotation.x;
-            final y = rotation.y;
-            final z = rotation.z;
-            final w = rotation.w;
-            final ox = _yawDeltaQ.x;
-            final oy = _yawDeltaQ.y;
-            final oz = _yawDeltaQ.z;
-            final ow = _yawDeltaQ.w;
-            rotation
-              ..setValues(
-                w * ox + x * ow + y * oz - z * oy,
-                w * oy + y * ow + z * ox - x * oz,
-                w * oz + z * ow + x * oy - y * ox,
-                w * ow - x * ox - y * oy - z * oz,
-              )
-              ..normalize();
-          }
+          _applyRootMotionStep(extractor);
         }
       } else {
         extractor.clearStepDeltas();
@@ -565,14 +415,12 @@ class ModelComponent({
     throw ArgumentError('No animation with name $name');
   }
 
-  /// Plays the named animation clip on the base track.
-  void playAnimationByName(
-    String name, {
-    bool resetClock = true,
-    AnimationPlayMode mode = AnimationPlayMode.loop,
-    VoidCallback? onComplete,
+  void _startClip(
+    ModelAnimation animation, {
+    required bool resetClock,
+    required AnimationPlayMode mode,
+    required VoidCallback? onComplete,
   }) {
-    final animation = _animationByName(name);
     if (resetClock) {
       rootMotion?.reset();
     }
@@ -585,24 +433,50 @@ class ModelComponent({
     _markPoseChanged();
   }
 
-  void playAnimationByIndex(
-    int index, {
-    bool resetClock = true,
-    AnimationPlayMode mode = AnimationPlayMode.loop,
-    VoidCallback? onComplete,
+  void _crossFadeClip(
+    ModelAnimation animation, {
+    required double duration,
+    required bool resetClock,
+    required AnimationPlayMode mode,
+    required VoidCallback? onComplete,
   }) {
-    final animation = model.animations[index];
     if (resetClock) {
       rootMotion?.reset();
     }
-    _animation.startAnimation(
+    _animation.crossFadeTo(
       animation,
+      duration: duration,
       resetClock: resetClock,
       mode: mode,
       onComplete: onComplete,
     );
     _markPoseChanged();
   }
+
+  /// Plays the named animation clip on the base track.
+  void playAnimationByName(
+    String name, {
+    bool resetClock = true,
+    AnimationPlayMode mode = AnimationPlayMode.loop,
+    VoidCallback? onComplete,
+  }) => _startClip(
+    _animationByName(name),
+    resetClock: resetClock,
+    mode: mode,
+    onComplete: onComplete,
+  );
+
+  void playAnimationByIndex(
+    int index, {
+    bool resetClock = true,
+    AnimationPlayMode mode = AnimationPlayMode.loop,
+    VoidCallback? onComplete,
+  }) => _startClip(
+    model.animations[index],
+    resetClock: resetClock,
+    mode: mode,
+    onComplete: onComplete,
+  );
 
   /// Smoothly crossfades to the animation named [name] over [duration] seconds.
   void crossFadeToByName(
@@ -611,20 +485,13 @@ class ModelComponent({
     bool resetClock = true,
     AnimationPlayMode mode = AnimationPlayMode.loop,
     VoidCallback? onComplete,
-  }) {
-    final animation = _animationByName(name);
-    if (resetClock) {
-      rootMotion?.reset();
-    }
-    _animation.crossFadeTo(
-      animation,
-      duration: duration,
-      resetClock: resetClock,
-      mode: mode,
-      onComplete: onComplete,
-    );
-    _markPoseChanged();
-  }
+  }) => _crossFadeClip(
+    _animationByName(name),
+    duration: duration,
+    resetClock: resetClock,
+    mode: mode,
+    onComplete: onComplete,
+  );
 
   /// Smoothly crossfades to the animation at [index] over [duration] seconds.
   void crossFadeToByIndex(
@@ -633,20 +500,13 @@ class ModelComponent({
     bool resetClock = true,
     AnimationPlayMode mode = AnimationPlayMode.loop,
     VoidCallback? onComplete,
-  }) {
-    final animation = model.animations[index];
-    if (resetClock) {
-      rootMotion?.reset();
-    }
-    _animation.crossFadeTo(
-      animation,
-      duration: duration,
-      resetClock: resetClock,
-      mode: mode,
-      onComplete: onComplete,
-    );
-    _markPoseChanged();
-  }
+  }) => _crossFadeClip(
+    model.animations[index],
+    duration: duration,
+    resetClock: resetClock,
+    mode: mode,
+    onComplete: onComplete,
+  );
 
   void stopAnimation() {
     rootMotion?.reset();
@@ -732,6 +592,4 @@ class ModelComponent({
 
   static final Vector3 _upY = Vector3(0, 1, 0);
   static final Vector3 _upZ = Vector3(0, 0, 1);
-  static final Quaternion _yawDeltaQ = Quaternion.identity();
-  static final Vector3 _rootMotionStep = Vector3.zero();
 }

@@ -93,8 +93,10 @@ class AnimationState() {
   /// the pose is the smallest).
   static const int maxNestedCrossFades = 4;
 
-  // Instance scratch for the outgoing side, so nested states can be evaluated
-  // while the caller's results live in the shared static scratch.
+  // Instance scratch for the outgoing side and per-state evaluation buffers so
+  // nested states never alias each other's temporary TRS/morph storage.
+  final _AnimationEvalScratch _evalScratch = _AnimationEvalScratch();
+  final List<AnimationState> _spareStates = [];
   final Vector3 _fadeT = Vector3.zero();
   final Quaternion _fadeR = Quaternion.identity();
   final Vector3 _fadeS = Vector3.all(1.0);

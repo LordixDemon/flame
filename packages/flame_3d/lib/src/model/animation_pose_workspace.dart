@@ -1,17 +1,18 @@
 part of 'animation_state.dart';
 
-final Vector3 _t0 = Vector3.zero();
-final Quaternion _r0 = Quaternion.identity();
-final Vector3 _s0 = Vector3.all(1.0);
-final Vector3 _t1 = Vector3.zero();
-final Quaternion _r1 = Quaternion.identity();
-final Vector3 _s1 = Vector3.all(1.0);
-final Vector3 _lt = Vector3.zero();
-final Quaternion _lr = Quaternion.identity();
-final Vector3 _ls = Vector3.all(1.0);
-final List<double> _morphBlendScratch = [];
-final List<double> _morphLayerScratch = [];
-final List<AnimationState> _spareStates = [];
+class _AnimationEvalScratch() {
+  final Vector3 t0 = Vector3.zero();
+  final Quaternion r0 = Quaternion.identity();
+  final Vector3 s0 = Vector3.all(1.0);
+  final Vector3 t1 = Vector3.zero();
+  final Quaternion r1 = Quaternion.identity();
+  final Vector3 s1 = Vector3.all(1.0);
+  final Vector3 lt = Vector3.zero();
+  final Quaternion lr = Quaternion.identity();
+  final Vector3 ls = Vector3.all(1.0);
+  final List<double> morphBlend = [];
+  final List<double> morphLayer = [];
+}
 
 extension _AnimationStatePlayback on AnimationState {
   void _ensureSampleClocks(int length, {required bool reset}) {
@@ -27,14 +28,15 @@ extension _AnimationStatePlayback on AnimationState {
   }
 
   /// Ends any crossfade at once, dropping its outgoing side.
-  void _cancelCrossFade() {
+  void _cancelCrossFade({List<AnimationState>? pool}) {
     _previousRef = null;
-    _releaseOutgoing();
+    _releaseOutgoing(pool: pool);
     _blendDuration = 0.0;
     _blendElapsed = 0.0;
   }
 
-  void _releaseOutgoing() {
+  void _releaseOutgoing({List<AnimationState>? pool}) {
+    final targetPool = pool ?? _spareStates;
     var nested = _outgoing;
     _outgoing = null;
     while (nested != null) {
@@ -52,8 +54,8 @@ extension _AnimationStatePlayback on AnimationState {
         .._cached2DY = double.nan
         .._blendDuration = 0.0
         .._blendElapsed = 0.0;
-      if (_spareStates.length < 32) {
-        _spareStates.add(nested);
+      if (targetPool.length < 32) {
+        targetPool.add(nested);
       }
       nested = deeper;
     }
@@ -101,7 +103,7 @@ extension _AnimationStatePlayback on AnimationState {
       depth++;
     }
     if (level._outgoing != null) {
-      level._cancelCrossFade();
+      level._cancelCrossFade(pool: _spareStates);
     }
     return true;
   }

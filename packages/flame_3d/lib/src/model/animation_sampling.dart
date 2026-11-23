@@ -112,23 +112,24 @@ extension _AnimationStateSampling on AnimationState {
       nodeA?.sampleTrsInto(timeA, outT, outR, outS);
 
       if (idxA != idxB && w > 0.0) {
+        final s = _evalScratch;
         final timeB = synced
             ? phase * sampleB.animation.lastTime
             : _sampleClocks[idxB];
-        _t0.setFrom(restTranslation);
-        _r0.setFrom(restRotation);
-        _s0.setFrom(restScale);
-        nodeB?.sampleTrsInto(timeB, _t0, _r0, _s0);
+        s.t0.setFrom(restTranslation);
+        s.r0.setFrom(restRotation);
+        s.s0.setFrom(restScale);
+        nodeB?.sampleTrsInto(timeB, s.t0, s.r0, s.s0);
         outT.setValues(
-          outT.x + (_t0.x - outT.x) * w,
-          outT.y + (_t0.y - outT.y) * w,
-          outT.z + (_t0.z - outT.z) * w,
+          outT.x + (s.t0.x - outT.x) * w,
+          outT.y + (s.t0.y - outT.y) * w,
+          outT.z + (s.t0.z - outT.z) * w,
         );
-        AnimationInterpolation.slerpQuaternionsInto(outR, _r0, w, outR);
+        AnimationInterpolation.slerpQuaternionsInto(outR, s.r0, w, outR);
         outS.setValues(
-          outS.x + (_s0.x - outS.x) * w,
-          outS.y + (_s0.y - outS.y) * w,
-          outS.z + (_s0.z - outS.z) * w,
+          outS.x + (s.s0.x - outS.x) * w,
+          outS.y + (s.s0.y - outS.y) * w,
+          outS.z + (s.s0.z - outS.z) * w,
         );
       }
       return true;
@@ -151,6 +152,7 @@ extension _AnimationStateSampling on AnimationState {
       final phase = overrideNormalizedPhase ?? _normalizedPhase;
       final synced =
           space2D.syncNormalizedPhase || overrideNormalizedPhase != null;
+      final s = _evalScratch;
       var cumW = 0.0;
       for (var k = 0; k < count; k++) {
         final w = _active2DWeights[k];
@@ -162,33 +164,33 @@ extension _AnimationStateSampling on AnimationState {
         final timeK = synced
             ? phase * sample.animation.lastTime
             : _sampleClocks[idx];
-        _t0.setFrom(restTranslation);
-        _r0.setFrom(restRotation);
-        _s0.setFrom(restScale);
+        s.t0.setFrom(restTranslation);
+        s.r0.setFrom(restRotation);
+        s.s0.setFrom(restScale);
         sample.animation.nodes[nodeIndex]?.sampleTrsInto(
           timeK,
-          _t0,
-          _r0,
-          _s0,
+          s.t0,
+          s.r0,
+          s.s0,
         );
         if (cumW == 0.0) {
-          outT.setFrom(_t0);
-          outR.setFrom(_r0);
-          outS.setFrom(_s0);
+          outT.setFrom(s.t0);
+          outR.setFrom(s.r0);
+          outS.setFrom(s.s0);
           cumW = w;
         } else {
           cumW += w;
           final alpha = w / cumW;
           outT.setValues(
-            outT.x + (_t0.x - outT.x) * alpha,
-            outT.y + (_t0.y - outT.y) * alpha,
-            outT.z + (_t0.z - outT.z) * alpha,
+            outT.x + (s.t0.x - outT.x) * alpha,
+            outT.y + (s.t0.y - outT.y) * alpha,
+            outT.z + (s.t0.z - outT.z) * alpha,
           );
-          AnimationInterpolation.slerpQuaternionsInto(outR, _r0, alpha, outR);
+          AnimationInterpolation.slerpQuaternionsInto(outR, s.r0, alpha, outR);
           outS.setValues(
-            outS.x + (_s0.x - outS.x) * alpha,
-            outS.y + (_s0.y - outS.y) * alpha,
-            outS.z + (_s0.z - outS.z) * alpha,
+            outS.x + (s.s0.x - outS.x) * alpha,
+            outS.y + (s.s0.y - outS.y) * alpha,
+            outS.z + (s.s0.z - outS.z) * alpha,
           );
         }
       }
@@ -220,14 +222,15 @@ extension _AnimationStateSampling on AnimationState {
     double? overrideNormalizedPhase,
     double? overrideClipClock,
   }) {
+    final s = _evalScratch;
     final baseChanged = _evaluateBaseNodeTrs(
       nodeIndex,
       restTranslation,
       restRotation,
       restScale,
-      _t1,
-      _r1,
-      _s1,
+      s.t1,
+      s.r1,
+      s.s1,
       overrideNormalizedPhase: overrideNormalizedPhase,
       overrideClipClock: overrideClipClock,
     );
@@ -250,9 +253,9 @@ extension _AnimationStateSampling on AnimationState {
       return;
     }
     if (!baseChanged) {
-      _t1.setFrom(restTranslation);
-      _r1.setFrom(restRotation);
-      _s1.setFrom(restScale);
+      s.t1.setFrom(restTranslation);
+      s.r1.setFrom(restRotation);
+      s.s1.setFrom(restScale);
     }
 
     if (hasActiveLayer) {
@@ -268,28 +271,28 @@ extension _AnimationStateSampling on AnimationState {
           restTranslation,
           restRotation,
           restScale,
-          _lt,
-          _lr,
-          _ls,
+          s.lt,
+          s.lr,
+          s.ls,
         );
         if (!layerAnimated) {
           continue;
         }
-        _t1.setValues(
-          _t1.x + (_lt.x - _t1.x) * lw,
-          _t1.y + (_lt.y - _t1.y) * lw,
-          _t1.z + (_lt.z - _t1.z) * lw,
+        s.t1.setValues(
+          s.t1.x + (s.lt.x - s.t1.x) * lw,
+          s.t1.y + (s.lt.y - s.t1.y) * lw,
+          s.t1.z + (s.lt.z - s.t1.z) * lw,
         );
-        AnimationInterpolation.slerpQuaternionsInto(_r1, _lr, lw, _r1);
-        _s1.setValues(
-          _s1.x + (_ls.x - _s1.x) * lw,
-          _s1.y + (_ls.y - _s1.y) * lw,
-          _s1.z + (_ls.z - _s1.z) * lw,
+        AnimationInterpolation.slerpQuaternionsInto(s.r1, s.lr, lw, s.r1);
+        s.s1.setValues(
+          s.s1.x + (s.ls.x - s.s1.x) * lw,
+          s.s1.y + (s.ls.y - s.s1.y) * lw,
+          s.s1.z + (s.ls.z - s.s1.z) * lw,
         );
       }
     }
 
-    out.setFromTranslationRotationScale(_t1, _r1, _s1);
+    out.setFromTranslationRotationScale(s.t1, s.r1, s.s1);
   }
 
   /// Samples active morph-target weights for [nodeIndex] (across single clips,
@@ -298,6 +301,7 @@ extension _AnimationStateSampling on AnimationState {
   int _sampleNodeMorphWeightsImpl(int nodeIndex, List<double> out) {
     final baseCount = _sampleBaseMorphWeights(nodeIndex, out);
     var totalTargets = baseCount;
+    final morphLayerScratch = _evalScratch.morphLayer;
 
     for (var li = 0; li < layers.length; li++) {
       final layer = layers[li];
@@ -307,7 +311,7 @@ extension _AnimationStateSampling on AnimationState {
       }
       final layerCount = layer.state._sampleBaseMorphWeights(
         nodeIndex,
-        _morphLayerScratch,
+        morphLayerScratch,
       );
       if (layerCount <= 0) {
         continue;
@@ -322,7 +326,7 @@ extension _AnimationStateSampling on AnimationState {
         totalTargets = layerCount;
       }
       for (var k = 0; k < layerCount; k++) {
-        out[k] += (_morphLayerScratch[k] - out[k]) * lw;
+        out[k] += (morphLayerScratch[k] - out[k]) * lw;
       }
     }
     return totalTargets;
@@ -399,15 +403,16 @@ extension _AnimationStateSampling on AnimationState {
         morphA.sampleInto(timeA, out);
       }
       if (idxA != idxB && w > 0.0) {
-        _ensureZeroedList(_morphBlendScratch, targetCount);
+        final blendScratch = _evalScratch.morphBlend;
+        _ensureZeroedList(blendScratch, targetCount);
         if (morphB != null) {
           final timeB = space1D.syncNormalizedPhase
               ? _normalizedPhase * sampleB.animation.lastTime
               : _sampleClocks[idxB];
-          morphB.sampleInto(timeB, _morphBlendScratch);
+          morphB.sampleInto(timeB, blendScratch);
         }
         for (var k = 0; k < targetCount; k++) {
-          out[k] += (_morphBlendScratch[k] - out[k]) * w;
+          out[k] += (blendScratch[k] - out[k]) * w;
         }
       }
       return targetCount;
@@ -431,6 +436,7 @@ extension _AnimationStateSampling on AnimationState {
         return 0;
       }
       _ensureZeroedList(out, targetCount);
+      final blendScratch = _evalScratch.morphBlend;
       for (var k = 0; k < count; k++) {
         final w = _active2DWeights[k];
         if (w <= 0.0) {
@@ -442,13 +448,13 @@ extension _AnimationStateSampling on AnimationState {
         if (m == null) {
           continue;
         }
-        _ensureZeroedList(_morphBlendScratch, m.targetCount);
+        _ensureZeroedList(blendScratch, m.targetCount);
         final timeK = space2D.syncNormalizedPhase
             ? _normalizedPhase * s.animation.lastTime
             : _sampleClocks[idx];
-        m.sampleInto(timeK, _morphBlendScratch);
+        m.sampleInto(timeK, blendScratch);
         for (var j = 0; j < m.targetCount; j++) {
-          out[j] += _morphBlendScratch[j] * w;
+          out[j] += blendScratch[j] * w;
         }
       }
       return targetCount;
