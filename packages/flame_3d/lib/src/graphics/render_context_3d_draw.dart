@@ -14,6 +14,12 @@ class _PipelineResolutionCache() {
   final Map<RenderState, RenderState> _depthOnlyStates = {};
   final Map<RenderState, RenderState> _prepassShadedStates = {};
   final Map<RenderState, RenderState> _wireframeStates = {};
+  RenderState? _lastDepthOnlyIn;
+  RenderState? _lastDepthOnlyOut;
+  RenderState? _lastPrepassIn;
+  RenderState? _lastPrepassOut;
+  RenderState? _lastWireframeIn;
+  RenderState? _lastWireframeOut;
 
   void resolve(
     RenderContext3D context,
@@ -75,24 +81,44 @@ class _PipelineResolutionCache() {
     lastDev = pipeline;
   }
 
-  RenderState depthOnlyState(RenderState baseState) =>
-      _depthOnlyStates[baseState] ??= RenderState(
-        blend: BlendState.depthOnly,
-        depthTest: baseState.depthTest,
-        cullMode: baseState.cullMode,
-        stencil: baseState.stencil,
-      );
+  RenderState depthOnlyState(RenderState baseState) {
+    if (identical(baseState, _lastDepthOnlyIn)) {
+      return _lastDepthOnlyOut!;
+    }
+    final resolved = _depthOnlyStates[baseState] ??= RenderState(
+      blend: BlendState.depthOnly,
+      depthTest: baseState.depthTest,
+      cullMode: baseState.cullMode,
+      stencil: baseState.stencil,
+    );
+    _lastDepthOnlyIn = baseState;
+    _lastDepthOnlyOut = resolved;
+    return resolved;
+  }
 
-  RenderState prepassShadedState(RenderState baseState) =>
-      _prepassShadedStates[baseState] ??= baseState.copyWith(
-        depthCompare: CompareFunction.lessEqual,
-        depthWrite: false,
-      );
+  RenderState prepassShadedState(RenderState baseState) {
+    if (identical(baseState, _lastPrepassIn)) {
+      return _lastPrepassOut!;
+    }
+    final resolved = _prepassShadedStates[baseState] ??= baseState.copyWith(
+      depthCompare: CompareFunction.lessEqual,
+      depthWrite: false,
+    );
+    _lastPrepassIn = baseState;
+    _lastPrepassOut = resolved;
+    return resolved;
+  }
 
-  RenderState wireframeState(RenderState effectiveState) =>
-      _wireframeStates[effectiveState] ??= effectiveState.copyWith(
-        polygonMode: PolygonFillMode.wireframe,
-      );
+  RenderState wireframeState(RenderState effectiveState) {
+    if (identical(effectiveState, _lastWireframeIn)) {
+      return _lastWireframeOut!;
+    }
+    final resolved = _wireframeStates[effectiveState] ??= effectiveState
+        .copyWith(polygonMode: PolygonFillMode.wireframe);
+    _lastWireframeIn = effectiveState;
+    _lastWireframeOut = resolved;
+    return resolved;
+  }
 }
 
 extension _RenderContext3DDraw on RenderContext3D {
@@ -108,10 +134,8 @@ extension _RenderContext3DDraw on RenderContext3D {
       final material = queue.materials[i]!;
       if (!material.renderState.translucent) {
         queue.opaque[opaqueCount++] = i;
-        queue.groupKeys[i] =
-            queue.pipelines[i]!.id * 8589934592.0 +
-            material.id * 2.0 +
-            queue.mirrored[i];
+        queue.groupKeysHi[i] = queue.pipelines[i]!.id;
+        queue.groupKeysLo[i] = (material.id << 1) | queue.mirrored[i];
         queue.surfaceKeys[i] =
             queue.surfaces[i]!.id * 2 + (queue.joints[i] == null ? 0 : 1);
         queue.sortDepths[i] = queue.depths[i];
@@ -137,7 +161,8 @@ extension _RenderContext3DDraw on RenderContext3D {
     }
     final queue = _queue;
     final count = queue.count;
-    final groupKeys = queue.groupKeys;
+    final groupKeysHi = queue.groupKeysHi;
+    final groupKeysLo = queue.groupKeysLo;
     final surfaceKeys = queue.surfaceKeys;
     final sortDepths = queue.sortDepths;
     final int opaqueCount;
@@ -149,7 +174,8 @@ extension _RenderContext3DDraw on RenderContext3D {
           final material = queue.materials[i]!;
           if (material.renderState.translucent) {
             queue.translucent[translucentCount++] = i;
-            groupKeys[i] = material.translucentOrder.toDouble();
+            groupKeysHi[i] = material.translucentOrder;
+            groupKeysLo[i] = 0;
             surfaceKeys[i] = 0;
             sortDepths[i] = -queue.depths[i];
           }
@@ -162,15 +188,14 @@ extension _RenderContext3DDraw on RenderContext3D {
         final material = queue.materials[i]!;
         if (material.renderState.translucent) {
           queue.translucent[translucentCount++] = i;
-          groupKeys[i] = material.translucentOrder.toDouble();
+          groupKeysHi[i] = material.translucentOrder;
+          groupKeysLo[i] = 0;
           surfaceKeys[i] = 0;
           sortDepths[i] = -queue.depths[i];
         } else {
           queue.opaque[oCount++] = i;
-          groupKeys[i] =
-              queue.pipelines[i]!.id * 8589934592.0 +
-              material.id * 2.0 +
-              queue.mirrored[i];
+          groupKeysHi[i] = queue.pipelines[i]!.id;
+          groupKeysLo[i] = (material.id << 1) | queue.mirrored[i];
           surfaceKeys[i] =
               queue.surfaces[i]!.id * 2 + (queue.joints[i] == null ? 0 : 1);
           sortDepths[i] = queue.depths[i];

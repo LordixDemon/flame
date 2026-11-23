@@ -1,45 +1,115 @@
 part of 'stylized_material.dart';
 
 extension _StylizedUniforms on StylizedMaterial {
+  void _recordVertexFull(Shader shader, int nonTimeVersion, int deviceGen) {
+    if (_vertFullNonTimeVersion != nonTimeVersion ||
+        _vertFullDeviceGen != deviceGen) {
+      _vertFullNonTimeVersion = nonTimeVersion;
+      _vertFullDeviceGen = deviceGen;
+      _vertFullMask = 0;
+      _vertFullCustomShader = null;
+    }
+    final slot = _variantSlot(shader);
+    if (slot < 0) {
+      _vertFullCustomShader = shader;
+      _vertFullCustomGen = shader.generation;
+    } else {
+      _vertFullMask |= 1 << slot;
+      _vertFullVarGens[slot] = shader.generation;
+    }
+  }
+
   void _applyUniforms(RenderContext context) {
-    final space = windSpace;
-    _unitOrZero(
-      _upAxis,
-      space == WindSpace.worldScaled ? windUpAxis : StylizedMaterial._zero,
-      1,
-    );
-    _unitOrZero(_gustWave, windGustDirection, windGustPhaseScale);
+    final nonTimeVersion = version - animationVersion;
+    final deviceGen = GpuBackend.deviceGeneration;
+    final frag = fragmentShader;
+    frag.resource;
+    final fragClean =
+        _fragAppliedNonTimeVersion == nonTimeVersion &&
+        identical(_fragAppliedShader, frag) &&
+        _fragAppliedGen == frag.generation &&
+        _fragAppliedDeviceGen == deviceGen;
     final activeVert = context is RenderContext3D
         ? context.activeApplyVertexShader
         : null;
+    if (activeVert != null && fragClean) {
+      activeVert.resource;
+      final slot = _variantSlot(activeVert);
+      final vertGen = activeVert.generation;
+      final vertClean =
+          _vertFullNonTimeVersion == nonTimeVersion &&
+          _vertFullDeviceGen == deviceGen &&
+          (slot < 0
+              ? (identical(_vertFullCustomShader, activeVert) &&
+                    _vertFullCustomGen == vertGen)
+              : ((_vertFullMask & (1 << slot)) != 0 &&
+                    _vertFullVarGens[slot] == vertGen));
+      if (vertClean) {
+        if (!identical(activeVert, _standardVertexShader) &&
+            !identical(activeVert, _texturedStandardVertexShader)) {
+          _applyWindTimeOnly(activeVert);
+        }
+        return;
+      }
+    }
+
+    final space = windSpace;
     if (activeVert != null) {
       if (identical(activeVert, _standardVertexShader) ||
           identical(activeVert, _texturedStandardVertexShader)) {
         _applyDepthBias(activeVert);
       } else {
+        _unitOrZero(
+          _upAxis,
+          space == WindSpace.worldScaled ? windUpAxis : StylizedMaterial._zero,
+          1,
+        );
+        _unitOrZero(_gustWave, windGustDirection, windGustPhaseScale);
         _applyWind(activeVert, space);
       }
+      _recordVertexFull(activeVert, nonTimeVersion, deviceGen);
     } else {
+      _unitOrZero(
+        _upAxis,
+        space == WindSpace.worldScaled ? windUpAxis : StylizedMaterial._zero,
+        1,
+      );
+      _unitOrZero(_gustWave, windGustDirection, windGustPhaseScale);
       _applyWind(vertexShader, space);
+      _recordVertexFull(vertexShader, nonTimeVersion, deviceGen);
       if (_skinnedInUse) {
         _applyWind(_skinnedVertexShader, space);
+        _recordVertexFull(_skinnedVertexShader, nonTimeVersion, deviceGen);
       }
       if (_standardInUse) {
         _applyDepthBias(_standardVertexShader);
+        _recordVertexFull(_standardVertexShader, nonTimeVersion, deviceGen);
       }
       if (_texturedInUse) {
         _applyWind(_texturedVertexShader, space);
+        _recordVertexFull(_texturedVertexShader, nonTimeVersion, deviceGen);
       }
       if (_texturedSkinnedInUse) {
         _applyWind(_texturedSkinnedVertexShader, space);
+        _recordVertexFull(
+          _texturedSkinnedVertexShader,
+          nonTimeVersion,
+          deviceGen,
+        );
       }
       if (_texturedStandardInUse) {
         _applyDepthBias(_texturedStandardVertexShader);
+        _recordVertexFull(
+          _texturedStandardVertexShader,
+          nonTimeVersion,
+          deviceGen,
+        );
       }
     }
 
-    final frag = fragmentShader;
-    frag.resource;
+    if (fragClean) {
+      return;
+    }
     final baseColor = baseColorTexture;
     final isTextured = baseColor != null && _textured;
     final matCap = matCapTexture;
@@ -228,6 +298,10 @@ extension _StylizedUniforms on StylizedMaterial {
     if (off._ditherFade >= 0) {
       matBlock.writeFloatAt(off._ditherFade, ditherFade ? 1.0 : 0.0);
     }
+    _fragAppliedNonTimeVersion = nonTimeVersion;
+    _fragAppliedShader = frag;
+    _fragAppliedGen = frag.generation;
+    _fragAppliedDeviceGen = deviceGen;
   }
 
   _StylizedSamplerIndices _samplersFor(Shader frag) {
@@ -257,6 +331,21 @@ extension _StylizedUniforms on StylizedMaterial {
         (block.cachedWriterOffsets = block.resolveOffset('bias'));
     if (off >= 0) {
       block.writeFloatAt(off, depthBias);
+    }
+  }
+
+  void _applyWindTimeOnly(Shader shader) {
+    shader.resource;
+    final idx = shader.blockIndexOf('Wind');
+    if (idx < 0) {
+      return;
+    }
+    final block = shader.blockAt(idx);
+    final off =
+        (block.cachedWriterOffsets as _WindBlockOffsets?) ??
+        (block.cachedWriterOffsets = _WindBlockOffsets(block));
+    if (off._time >= 0) {
+      block.writeFloatAt(off._time, windTime);
     }
   }
 

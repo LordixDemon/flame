@@ -124,7 +124,8 @@ class _OitAndGrabPass(final RenderContext3D _context) {
         final mat = queue.materials[i]!;
         if (!mat.renderState.translucent && mat.renderState.depthWrite) {
           queue.opaque[opaqueCount++] = i;
-          queue.groupKeys[i] = queue.pipelines[i]!.id.toDouble();
+          queue.groupKeysHi[i] = queue.pipelines[i]!.id;
+          queue.groupKeysLo[i] = 0;
           queue.surfaceKeys[i] =
               queue.surfaces[i]!.id * 2 + (queue.joints[i] == null ? 0 : 1);
           queue.sortDepths[i] = queue.depths[i];
@@ -165,10 +166,8 @@ class _OitAndGrabPass(final RenderContext3D _context) {
         final material = queue.materials[i]!;
         if (accumulates(material.renderState)) {
           order[oitCount++] = i;
-          queue.groupKeys[i] =
-              queue.pipelines[i]!.id * 8589934592.0 +
-              material.id * 2.0 +
-              queue.mirrored[i];
+          queue.groupKeysHi[i] = queue.pipelines[i]!.id;
+          queue.groupKeysLo[i] = (material.id << 1) | queue.mirrored[i];
           queue.surfaceKeys[i] =
               queue.surfaces[i]!.id * 2 + (queue.joints[i] == null ? 0 : 1);
           queue.sortDepths[i] = queue.depths[i];
@@ -242,7 +241,8 @@ class _OitAndGrabPass(final RenderContext3D _context) {
       final state = queue.materials[i]!.renderState;
       if (state.translucent && !accumulates(state)) {
         order[sortedCount++] = i;
-        queue.groupKeys[i] = 0;
+        queue.groupKeysHi[i] = 0;
+        queue.groupKeysLo[i] = 0;
         queue.surfaceKeys[i] = 0;
         queue.sortDepths[i] = -queue.depths[i];
       }

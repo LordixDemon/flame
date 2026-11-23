@@ -32,7 +32,8 @@ class _DrawQueue() {
   Int32List externalCacheSpans = Int32List(0);
   Float32List instances = Float32List(0);
   Float64List depths = Float64List(0);
-  Float64List groupKeys = Float64List(0);
+  Int32List groupKeysHi = Int32List(0);
+  Int32List groupKeysLo = Int32List(0);
   Uint8List mirrored = Uint8List(0);
   Int32List surfaceKeys = Int32List(0);
   Int32List prepassGroups = Int32List(0);
@@ -113,7 +114,8 @@ class _DrawQueue() {
       ..setRange(0, instances.length, instances);
     depths = Float64List(nextCapacity)..setRange(0, depths.length, depths);
     mirrored = Uint8List(nextCapacity)..setRange(0, mirrored.length, mirrored);
-    groupKeys = Float64List(nextCapacity);
+    groupKeysHi = Int32List(nextCapacity);
+    groupKeysLo = Int32List(nextCapacity);
     surfaceKeys = Int32List(nextCapacity);
     prepassGroups = Int32List(nextCapacity)
       ..setRange(0, prepassGroups.length, prepassGroups);
@@ -155,10 +157,15 @@ class _DrawQueue() {
   @pragma('vm:prefer-inline')
   @pragma('dart2js:prefer-inline')
   int _compareDraws(int a, int b) {
-    final groupA = groupKeys[a];
-    final groupB = groupKeys[b];
-    if (groupA != groupB) {
-      return groupA < groupB ? -1 : 1;
+    final hiA = groupKeysHi[a];
+    final hiB = groupKeysHi[b];
+    if (hiA != hiB) {
+      return hiA < hiB ? -1 : 1;
+    }
+    final loA = groupKeysLo[a];
+    final loB = groupKeysLo[b];
+    if (loA != loB) {
+      return loA < loB ? -1 : 1;
     }
     final surfaceA = surfaceKeys[a];
     final surfaceB = surfaceKeys[b];

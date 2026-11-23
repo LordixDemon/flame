@@ -986,6 +986,21 @@ class StylizedMaterial({
     trackDeviceGeneration: true,
   );
 
+  // Fragment and vertex uniform tracking split from [animationVersion] so
+  // advancing [windTime] alone updates only the `'Wind'` time scalar without
+  // re-writing the fragment `'Material'` uniform block or textures.
+  int _fragAppliedNonTimeVersion = -1;
+  Shader? _fragAppliedShader;
+  int _fragAppliedGen = -1;
+  int _fragAppliedDeviceGen = -1;
+
+  int _vertFullNonTimeVersion = -1;
+  int _vertFullMask = 0;
+  int _vertFullDeviceGen = -1;
+  final List<int> _vertFullVarGens = List<int>.filled(6, -1);
+  Shader? _vertFullCustomShader;
+  int _vertFullCustomGen = -1;
+
   int _variantSlot(Shader vert) {
     if (identical(vert, super.vertexShader)) {
       return 0;
@@ -1015,7 +1030,14 @@ class StylizedMaterial({
   bool get cachesApply => runtimeType == StylizedMaterial;
 
   @override
-  void invalidateApplyCache() => _applyCache.invalidate();
+  void invalidateApplyCache() {
+    _applyCache.invalidate();
+    _fragAppliedNonTimeVersion = -1;
+    _fragAppliedShader = null;
+    _vertFullNonTimeVersion = -1;
+    _vertFullMask = 0;
+    _vertFullCustomShader = null;
+  }
 
   @override
   bool isApplyCacheValid(

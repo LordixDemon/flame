@@ -528,5 +528,62 @@ void main() {
         expect(uploaded[base + 12 + 3], closeTo(7.0, 1e-5));
       },
     );
+
+    test(
+      'StylizedMaterial windTime advance updates Wind without rewriting '
+      'fragment Material block',
+      () {
+        final backend = FakeGpuBackend();
+        final device = GraphicsDevice(backend: backend);
+        final context = RenderContext3D(device)
+          ..setCamera(Matrix4.identity(), Matrix4.identity());
+        final mat = StylizedMaterial(windAmplitude: 0.05);
+        final surface = StylizedMaterial.buildSurface(
+          positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+          normals: [0, 0, 1, 0, 0, 1, 0, 0, 1],
+          indices: [0, 1, 2],
+          material: mat,
+        );
+        final fragBlock = mat.fragmentShader.block('Material');
+        final windBlock = mat.vertexShader.block('Wind');
+
+        device.begin();
+        device.beginPass(const Size(16, 16));
+        context
+          ..drawSurface(surface)
+          ..flush();
+        expect(fragBlock.isDirty, isFalse);
+        expect(windBlock.isDirty, isFalse);
+        final uploadsAfterInitial = device.stats.uniformUploads;
+
+        // Advancing only windTime inside the same frame dirties only Wind,
+        // leaving the fragment Material block untouched (1 upload, not 2).
+        mat.windTime = 2.5;
+        context
+          ..drawSurface(surface)
+          ..flush();
+        expect(device.stats.uniformUploads, uploadsAfterInitial + 1);
+        expect(fragBlock.isDirty, isFalse);
+        final timeOff = windBlock.resolveOffset('time');
+        expect(windBlock.data[timeOff], closeTo(2.5, 1e-5));
+
+        // Mutating a fragment property re-writes and uploads Material too.
+        final uploadsBeforeAlbedo = device.stats.uniformUploads;
+        mat.albedoColor = const Color(0xFF336699);
+        context
+          ..drawSurface(surface)
+          ..flush();
+        expect(
+          device.stats.uniformUploads,
+          greaterThan(uploadsBeforeAlbedo + 1),
+        );
+        final albedoOff = fragBlock.resolveOffset('albedoColor');
+        expect(fragBlock.data[albedoOff], closeTo(0x33 / 255.0, 1e-4));
+
+        device
+          ..endPass()
+          ..end();
+      },
+    );
   });
 }

@@ -96,7 +96,8 @@ class _DepthNormalPass(final RenderContext3D _context) {
     final count = queue.count;
     final order = queue.opaque;
     final ownOrder = queue.translucent;
-    final groupKeys = queue.groupKeys;
+    final groupKeysHi = queue.groupKeysHi;
+    final groupKeysLo = queue.groupKeysLo;
     final surfaceKeys = queue.surfaceKeys;
     final sortDepths = queue.sortDepths;
     var opaqueCount = 0;
@@ -112,7 +113,8 @@ class _DepthNormalPass(final RenderContext3D _context) {
       final surface = queue.surfaces[i]!;
       final depthNormalMat = mat.depthNormalMaterial;
       if (depthNormalMat != null) {
-        groupKeys[i] = depthNormalMat.id.toDouble();
+        groupKeysHi[i] = depthNormalMat.id;
+        groupKeysLo[i] = 0;
         surfaceKeys[i] = surface.id * 2 + (queue.joints[i] == null ? 0 : 1);
         sortDepths[i] = queue.depths[i];
         ownOrder[ownCount++] = i;
@@ -131,7 +133,8 @@ class _DepthNormalPass(final RenderContext3D _context) {
       }
       final pipeline = pipe.pipeline;
       queue.pipelines[i] = pipeline;
-      groupKeys[i] = pipeline.id.toDouble();
+      groupKeysHi[i] = pipeline.id;
+      groupKeysLo[i] = 0;
       surfaceKeys[i] = surface.id * 2 + (queue.joints[i] == null ? 0 : 1);
       sortDepths[i] = queue.depths[i];
       order[opaqueCount++] = i;

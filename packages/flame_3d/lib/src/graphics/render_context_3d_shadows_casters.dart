@@ -6,7 +6,8 @@ extension _ShadowPassCasters on _ShadowPass {
     final queue = context._queue;
     final count = queue.count;
     final order = queue.opaque;
-    final groupKeys = queue.groupKeys;
+    final groupKeysHi = queue.groupKeysHi;
+    final groupKeysLo = queue.groupKeysLo;
     final surfaceKeys = queue.surfaceKeys;
     final sortDepths = queue.sortDepths;
     var casters = 0;
@@ -31,7 +32,8 @@ extension _ShadowPassCasters on _ShadowPass {
       }
       final pipeline = caster.pipeline;
       queue.pipelines[i] = pipeline;
-      groupKeys[i] = pipeline.id.toDouble();
+      groupKeysHi[i] = pipeline.id;
+      groupKeysLo[i] = 0;
       surfaceKeys[i] = surface.id * 2 + (queue.joints[i] == null ? 0 : 1);
       sortDepths[i] = queue.depths[i];
       order[casters++] = i;

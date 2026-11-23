@@ -11,6 +11,27 @@ class _FlutterGpuRenderPass(
   final gpu.CommandBuffer _commandBuffer,
   final gpu.RenderPass _renderPass,
 ) implements base.GpuRenderPass {
+  BlendState? _lastBlend;
+
+  static int _cachedVpX = -1;
+  static int _cachedVpY = -1;
+  static int _cachedVpW = -1;
+  static int _cachedVpH = -1;
+  static double _cachedVpZNear = double.nan;
+  static double _cachedVpZFar = double.nan;
+  static gpu.Viewport? _cachedViewport;
+
+  static int _cachedScX = -1;
+  static int _cachedScY = -1;
+  static int _cachedScW = -1;
+  static int _cachedScH = -1;
+  static gpu.Scissor? _cachedScissor;
+
+  static final gpu.DepthRange _defaultDepthRange = gpu.DepthRange();
+
+  static StencilState? _lastStencilKey;
+  static gpu.StencilConfig? _lastStencilConfig;
+
   @override
   void bindPipeline(GpuPipeline pipeline) {
     _renderPass.bindPipeline((pipeline as _FlutterGpuPipeline).raw);
@@ -22,11 +43,14 @@ class _FlutterGpuRenderPass(
       // Disabling blending alone keeps the effect of an equation that keeps
       // the target (a depth-only draw): the color of the next draw would be
       // lost.
-      _renderPass
-        ..setColorBlendEquation(_replace)
-        ..setColorBlendEnable(false);
+      if (_lastBlend == null || _lastBlend == BlendState.depthOnly) {
+        _renderPass.setColorBlendEquation(_replace);
+      }
+      _renderPass.setColorBlendEnable(false);
+      _lastBlend = blend;
       return;
     }
+    _lastBlend = blend;
     _renderPass
       ..setColorBlendEnable(true)
       ..setColorBlendEquation(switch (blend) {
@@ -102,22 +126,53 @@ class _FlutterGpuRenderPass(
     double zNear = 0.0,
     double zFar = 1.0,
   }) {
-    _renderPass.setViewport(
-      gpu.Viewport(
+    var vp = _cachedViewport;
+    if (vp == null ||
+        _cachedVpX != x ||
+        _cachedVpY != y ||
+        _cachedVpW != width ||
+        _cachedVpH != height ||
+        _cachedVpZNear != zNear ||
+        _cachedVpZFar != zFar) {
+      _cachedVpX = x;
+      _cachedVpY = y;
+      _cachedVpW = width;
+      _cachedVpH = height;
+      _cachedVpZNear = zNear;
+      _cachedVpZFar = zFar;
+      vp = _cachedViewport = gpu.Viewport(
         x: x,
         y: y,
         width: width,
         height: height,
-        depthRange: gpu.DepthRange(zNear: zNear, zFar: zFar),
-      ),
-    );
+        depthRange: zNear == 0.0 && zFar == 1.0
+            ? _defaultDepthRange
+            : gpu.DepthRange(zNear: zNear, zFar: zFar),
+      );
+    }
+    _renderPass.setViewport(vp);
   }
 
   @override
   void setScissor(int x, int y, int width, int height) {
-    _renderPass.setScissor(
-      gpu.Scissor(x: x, y: y, width: width, height: height),
-    );
+    var sc = _cachedScissor;
+    if (sc == null ||
+        _cachedScX != x ||
+        _cachedScY != y ||
+        _cachedScW != width ||
+        _cachedScH != height) {
+      _cachedScX = x;
+      _cachedScY = y;
+      _cachedScW = width;
+      _cachedScH = height;
+      sc = _cachedScissor = gpu.Scissor(
+        x: x,
+        y: y,
+        width: width,
+        height: height,
+      );
+    }
+    _renderPass.setScissor(sc);
   }
 
   static final Map<StencilState, gpu.StencilConfig> _stencilConfigs = {};
@@ -130,9 +185,16 @@ class _FlutterGpuRenderPass(
         ..setStencilConfig(_disabledStencil);
       return;
     }
-    final config = _stencilConfigs.length >= 64
-        ? _createStencilConfig(stencil)
-        : (_stencilConfigs[stencil] ??= _createStencilConfig(stencil));
+    final gpu.StencilConfig config;
+    if (stencil == _lastStencilKey) {
+      config = _lastStencilConfig!;
+    } else {
+      config = _stencilConfigs.length >= 64
+          ? _createStencilConfig(stencil)
+          : (_stencilConfigs[stencil] ??= _createStencilConfig(stencil));
+      _lastStencilKey = stencil;
+      _lastStencilConfig = config;
+    }
     _renderPass
       ..setStencilReference(stencil.referenceValue & 0xFF)
       ..setStencilConfig(config);
