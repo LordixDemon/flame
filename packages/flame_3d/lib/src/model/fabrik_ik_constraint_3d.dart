@@ -1,4 +1,9 @@
-part of 'foot_ik_and_ragdoll_3d.dart';
+import 'dart:math' as math;
+import 'dart:typed_data';
+
+import 'package:flame_3d/core.dart';
+import 'package:flame_3d/src/model/model.dart';
+import 'package:flame_3d/src/model/procedural_rigging_3d.dart';
 
 /// Forward-And-Backward Reaching Inverse Kinematics (`FABRIK`) solver for
 /// arbitrary `N`-bone chains (`chainNodeIndices.length >= 2`) with optional

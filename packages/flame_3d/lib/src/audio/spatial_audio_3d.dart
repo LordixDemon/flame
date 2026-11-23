@@ -1,11 +1,64 @@
 import 'dart:math' as math;
 
 import 'package:flame/components.dart' show Component;
-import 'package:flame_3d/camera.dart' show CameraComponent3D, Ray, World3D;
+import 'package:flame_3d/camera.dart' show CameraComponent3D, World3D;
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
-import 'package:flame_3d/src/audio/spatial_audio_registry_3d.dart';
 import 'package:meta/meta.dart';
+
+/// Per-[World3D] registry of mounted spatial audio listeners and emitters.
+/// Not exported.
+@internal
+class SpatialAudioWorldRegistry3D._() {
+  /// The registry of [world], created on first use.
+  factory SpatialAudioWorldRegistry3D.of(World3D world) {
+    return _byWorld[world] ??= SpatialAudioWorldRegistry3D._();
+  }
+
+  static final Expando<SpatialAudioWorldRegistry3D> _byWorld = Expando();
+
+  /// The registry of [world], or `null` when nothing was registered in it.
+  static SpatialAudioWorldRegistry3D? maybeOf(World3D? world) {
+    return world == null ? null : _byWorld[world];
+  }
+
+  /// Mounted listeners, in mount order.
+  final List<SpatialAudioListener3D> listeners = [];
+
+  /// Mounted emitters, in mount order.
+  final List<SpatialAudioEmitter3D> emitters = [];
+
+  final List<void Function(SpatialAudioEmitter3D)> _emitterRemovedListeners =
+      [];
+
+  /// The first mounted listener, or `null`.
+  SpatialAudioListener3D? get firstListener =>
+      listeners.isEmpty ? null : listeners.first;
+
+  /// Subscribes [listener] to be notified when an emitter leaves this world.
+  void addEmitterRemovedListener(
+    void Function(SpatialAudioEmitter3D) listener,
+  ) {
+    if (!_emitterRemovedListeners.contains(listener)) {
+      _emitterRemovedListeners.add(listener);
+    }
+  }
+
+  /// Unsubscribes [listener] from emitter removal notifications.
+  void removeEmitterRemovedListener(
+    void Function(SpatialAudioEmitter3D) listener,
+  ) {
+    _emitterRemovedListeners.remove(listener);
+  }
+
+  /// Removes [emitter] and notifies subscribed removal listeners.
+  void removeEmitter(SpatialAudioEmitter3D emitter) {
+    emitters.remove(emitter);
+    for (var i = 0; i < _emitterRemovedListeners.length; i++) {
+      _emitterRemovedListeners[i](emitter);
+    }
+  }
+}
 
 /// Distance-based volume rolloff curve for [SpatialAudioEmitter3D].
 enum AudioAttenuationModel3D() {
@@ -162,13 +215,13 @@ class SpatialAudioListener3D({
   void onMount() {
     super.onMount();
     if (worldOrNull case final world?) {
-      SpatialAudioRegistry3D.of(world).listeners.add(this);
+      SpatialAudioWorldRegistry3D.of(world).listeners.add(this);
     }
   }
 
   @override
   void onRemove() {
-    SpatialAudioRegistry3D.maybeOf(worldOrNull)?.listeners.remove(this);
+    SpatialAudioWorldRegistry3D.maybeOf(worldOrNull)?.listeners.remove(this);
     super.onRemove();
   }
 
@@ -296,13 +349,13 @@ class SpatialAudioEmitter3D({
   void onMount() {
     super.onMount();
     if (worldOrNull case final world?) {
-      SpatialAudioRegistry3D.of(world).emitters.add(this);
+      SpatialAudioWorldRegistry3D.of(world).emitters.add(this);
     }
   }
 
   @override
   void onRemove() {
-    SpatialAudioRegistry3D.maybeOf(worldOrNull)?.removeEmitter(this);
+    SpatialAudioWorldRegistry3D.maybeOf(worldOrNull)?.removeEmitter(this);
     super.onRemove();
   }
 
@@ -508,7 +561,7 @@ class SpatialAudioEmitter3D({
   SpatialAudioListener3D? _findListenerInWorld() {
     final world = worldOrNull;
     if (world != null) {
-      return SpatialAudioRegistry3D.maybeOf(world)?.firstListener;
+      return SpatialAudioWorldRegistry3D.maybeOf(world)?.firstListener;
     }
     // Not mounted (a tree updated by hand): search the enclosing world.
     final enclosing = _enclosingWorld();

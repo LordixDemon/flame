@@ -1,3 +1,4 @@
+export 'src/parser/asset_scope_3d.dart';
 export 'src/parser/async_model_loader_3d.dart';
 export 'src/parser/glb_parser.dart';
 export 'src/parser/gltf/buffer_view.dart' show ExtMeshoptCompression;

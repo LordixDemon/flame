@@ -1,6 +1,5 @@
 import 'dart:ui' show Color;
 
-import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/world_scale.dart';

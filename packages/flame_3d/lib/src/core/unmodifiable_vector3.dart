@@ -1,5 +1,5 @@
-import 'package:flame_3d/game.dart';
 import 'package:flutter/foundation.dart';
+import 'package:vector_math/vector_math.dart';
 
 /// {@template unmodifiable_vector_3}
 /// Extension of the standard [Vector3] class, but fully unmodifiable.

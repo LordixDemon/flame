@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flame/geometry.dart';
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart';
 import 'package:flame_3d/resources.dart';
 
 /// {@template cylinder_mesh}

@@ -3,7 +3,6 @@ import 'dart:ui';
 import 'package:flame/game.dart' show Game;
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
-import 'package:flame_3d/src/graphics/material_pipeline_cache.dart';
 import 'package:meta/meta.dart';
 
 /// {@template material}
@@ -289,7 +288,7 @@ abstract class Material({
   /// The pipeline this material drew with last, managed by the
   /// [RenderContext3D].
   @internal
-  MaterialPipelineCache? pipelineCache;
+  Object? pipelineCache;
 
   /// The vertex shader that draws surfaces whose vertices are laid out as
   /// [layout]: [vertexShader] unless overridden.

@@ -1,9 +1,9 @@
 import 'dart:math' as math;
 import 'dart:ui' show Color;
 
-import 'package:flame_3d/camera.dart' show Ray, RayHit3D, World3D;
+import 'package:flame_3d/camera.dart' show RayHit3D, World3D;
 import 'package:flame_3d/components.dart';
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 
@@ -292,5 +292,21 @@ class LodMeshComponent({
     }
     _lodCacheEpoch = viewerEpoch;
     return selected;
+  }
+
+  @override
+  Component3D cloneSelf() {
+    if (runtimeType != LodMeshComponent) {
+      return super.cloneSelf();
+    }
+    return LodMeshComponent(
+      levels: List.of(levels),
+      shadowMesh: shadowMesh,
+      lowestLodInShadowPass: lowestLodInShadowPass,
+      hysteresis: hysteresis,
+      color: color,
+      instanceData: instanceData.clone(),
+      castsShadows: castsShadows,
+    );
   }
 }

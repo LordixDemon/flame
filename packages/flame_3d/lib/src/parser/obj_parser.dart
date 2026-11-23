@@ -1,7 +1,7 @@
 import 'dart:ui';
 
 import 'package:flame/flame.dart';
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/model/model.dart';
 import 'package:flame_3d/src/parser/model_parser.dart';

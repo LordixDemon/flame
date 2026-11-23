@@ -1,8 +1,9 @@
 import 'dart:typed_data';
 import 'dart:ui';
 
+import 'package:flame_3d/camera.dart' show World3D;
 import 'package:flame_3d/components.dart';
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart';
 import 'package:flame_3d/resources.dart';
 
 /// {@template light_component}
@@ -167,6 +168,116 @@ class LightComponent({
 
   void _onSourceChanged({required bool shadows}) {
     worldOrNull?.markLightsDirty(shadows: shadows);
+  }
+
+  @override
+  bool get affectsShadowPass => false;
+
+  @override
+  bool get isShadowDirtyOnMove => switch (source) {
+    final DirectionalLight light => light.shadows != null,
+    final SpotLight light => light.shadows != null,
+    final PointLight light => light.shadows != null,
+    _ => false,
+  };
+
+  @override
+  void onVisibilityChanged(World3D world, {required bool visible}) {
+    world.markSceneDirty(shadows: false);
+  }
+
+  @override
+  void onWorldTransformDirtied(
+    World3D? world, {
+    required bool recordShadowMove,
+  }) {
+    world?.markLightsDirty(shadows: isShadowDirtyOnMove);
+  }
+
+  @override
+  Component3D cloneSelf() {
+    if (runtimeType != LightComponent) {
+      return super.cloneSelf();
+    }
+    return LightComponent(
+      source: _cloneLightSource(source),
+      lightMask: lightMask,
+    );
+  }
+
+  static LightSource _cloneLightSource(LightSource source) {
+    switch (source) {
+      case final AmbientLight s:
+        return AmbientLight(color: s.color, intensity: s.intensity);
+      case final HemisphereLight s:
+        return HemisphereLight(
+          skyColor: s.skyColor,
+          groundColor: s.groundColor,
+          intensity: s.intensity,
+          up: s.up.clone(),
+        );
+      case final DirectionalLight s:
+        return DirectionalLight(
+          color: s.color,
+          intensity: s.intensity,
+          direction: s.direction?.clone(),
+          specular: s.specular,
+          shadows: _cloneShadows(s.shadows),
+        );
+      case final PointLight s:
+        return PointLight(
+          color: s.color,
+          intensity: s.intensity,
+          range: s.range,
+          shadows: _cloneShadows(s.shadows),
+        );
+      case final SpotLight s:
+        return SpotLight(
+          color: s.color,
+          intensity: s.intensity,
+          direction: s.direction?.clone(),
+          innerConeAngle: s.innerConeAngle,
+          outerConeAngle: s.outerConeAngle,
+          range: s.range,
+          specular: s.specular,
+          shadows: _cloneShadows(s.shadows),
+        );
+      case _:
+        throw UnsupportedError(
+          'A LightComponent with a ${source.runtimeType} cannot be cloned.',
+        );
+    }
+  }
+
+  static ShadowSettings? _cloneShadows(ShadowSettings? shadows) {
+    if (shadows == null) {
+      return null;
+    }
+    return ShadowSettings(
+      resolution: shadows.resolution,
+      fit: shadows.fit,
+      bounds: shadows.bounds == null ? null : Aabb3.copy(shadows.bounds!),
+      casterBounds: shadows.casterBounds == null
+          ? null
+          : Aabb3.copy(shadows.casterBounds!),
+      maxDistance: shadows.maxDistance,
+      strength: shadows.strength,
+      color: shadows.color,
+      softness: shadows.softness,
+      depthBias: shadows.depthBias,
+      normalBias: shadows.normalBias,
+      encoding: shadows.encoding,
+      stabilize: shadows.stabilize,
+      cacheWhenStatic: shadows.cacheWhenStatic,
+      cacheStillCasters: shadows.cacheStillCasters,
+      stillCasterFrames: shadows.stillCasterFrames,
+      cascades: shadows.cascades,
+      cascadeSplitRatio: shadows.cascadeSplitRatio,
+      cascadeSplits: shadows.cascadeSplits == null
+          ? null
+          : List.of(shadows.cascadeSplits!),
+      cascadeBlendRange: shadows.cascadeBlendRange,
+    );
   }
 
   @override

@@ -1,4 +1,4 @@
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart';
 import 'package:flame_3d/resources.dart';
 
 /// {@template plane_mesh}

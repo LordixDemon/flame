@@ -1,6 +1,5 @@
-import 'package:flame_3d/game.dart';
 import 'package:flame_3d/src/extensions/clip_space.dart';
-import 'package:vector_math/vector_math.dart' show Frustum;
+import 'package:vector_math/vector_math.dart' show Frustum, Matrix4;
 
 extension FrustumExtension on Frustum {
   /// Set the six planes from a [viewProjection] matrix whose clip space has

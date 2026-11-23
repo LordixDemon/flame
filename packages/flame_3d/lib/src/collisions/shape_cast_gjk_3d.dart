@@ -486,7 +486,6 @@ final Quaternion _identityQuat = Quaternion.identity();
 final Vector3 _unitScale = Vector3.all(1.0);
 final Matrix4 _startMat = Matrix4.identity();
 final Matrix4 _endMat = Matrix4.identity();
-final Matrix4 _nodeMat = Matrix4.identity();
 final Matrix4 _invMesh = Matrix4.identity();
 final Aabb3 _aabbStart = Aabb3();
 final Aabb3 _aabbEnd = Aabb3();

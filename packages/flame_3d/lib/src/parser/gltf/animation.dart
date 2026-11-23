@@ -1,6 +1,6 @@
+import 'package:flame_3d/core.dart' show AnimationInterpolation;
 import 'package:flame_3d/src/model/model_animation.dart';
 import 'package:flame_3d/src/parser/gltf/animation_channel.dart';
-import 'package:flame_3d/src/parser/gltf/animation_interpolation.dart';
 import 'package:flame_3d/src/parser/gltf/animation_path.dart';
 import 'package:flame_3d/src/parser/gltf/animation_sampler.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_node.dart';

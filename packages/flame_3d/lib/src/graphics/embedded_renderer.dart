@@ -1,5 +1,6 @@
 import 'package:flame_3d/graphics.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:meta/meta.dart';
 
 /// The device and render context shared by the `Scene3DComponent`s of a game
 /// that is not a `Game3D`, and the device frames around their render passes.
@@ -10,6 +11,7 @@ import 'package:flutter/scheduler.dart';
 /// frame and the device's statistics cover all of them. A pass rendered
 /// outside the painting of a frame (an offscreen capture, for example) gets a
 /// device frame of its own.
+@internal
 class EmbeddedRenderer._() {
   /// The shared device.
   final GraphicsDevice device = GraphicsDevice();

@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 import 'dart:ui' show Color;
 
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart';
 import 'package:meta/meta.dart';
 
 /// {@template vertex}

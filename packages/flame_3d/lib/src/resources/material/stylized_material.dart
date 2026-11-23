@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 import 'dart:ui' hide FragmentShader;
 
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/resources/material/material_apply_cache.dart';

@@ -2,10 +2,10 @@ import 'dart:convert' show ascii;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:flame_3d/camera.dart' show Ray;
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/core/crc32.dart';
 import 'package:flame_3d/src/extensions/geometry_math.dart';
 import 'package:flame_3d/world_scale.dart';
 import 'package:flutter_test/flutter_test.dart';

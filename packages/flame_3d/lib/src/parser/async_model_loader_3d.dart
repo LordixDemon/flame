@@ -9,11 +9,11 @@ import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/model.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/parser/asset_scope_3d.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_warnings.dart';
 import 'package:flame_3d/src/parser/meshopt_decoder_3d.dart';
 import 'package:flame_3d/src/resources/texture/mipmaps.dart';
 
-part 'asset_scope_3d.dart';
 part 'async_model_loader_prepared_3d.dart';
 part 'async_model_loader_workers_3d.dart';
 

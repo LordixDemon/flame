@@ -9,8 +9,8 @@ import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
-import 'package:flame_3d/src/embedding/embedded_renderer.dart';
 import 'package:flame_3d/src/extensions/clip_space.dart';
+import 'package:flame_3d/src/graphics/embedded_renderer.dart';
 import 'package:flutter/widgets.dart' show BuildContext, MediaQuery;
 import 'package:meta/meta.dart' show visibleForTesting;
 

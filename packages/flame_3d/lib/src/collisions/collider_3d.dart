@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flame/components.dart' show Component, HasWorldRef;
-import 'package:flame_3d/camera.dart' show Frustum, Plane, Ray, World3D;
+import 'package:flame_3d/camera.dart' show World3D;
 import 'package:flame_3d/collisions.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';

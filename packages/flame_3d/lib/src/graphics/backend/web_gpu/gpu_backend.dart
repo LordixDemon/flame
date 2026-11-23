@@ -5,10 +5,10 @@ import 'dart:ui_web';
 import 'package:flame_3d/src/graphics/backend/gpu_backend.dart' as base;
 import 'package:flame_3d/src/graphics/backend/gpu_enums.dart';
 import 'package:flame_3d/src/graphics/backend/gpu_handles.dart';
+import 'package:flame_3d/src/graphics/backend/texture_sampler.dart';
 import 'package:flame_3d/src/graphics/backend/web_gpu/shader_bundle.dart';
 import 'package:flame_3d/src/graphics/backend/web_gpu/web_gpu_interop.dart';
 import 'package:flame_3d/src/graphics/render_state.dart';
-import 'package:flame_3d/src/resources/texture/texture_sampler.dart';
 import 'package:flutter/services.dart';
 
 /// {@template web_gpu_backend}

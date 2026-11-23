@@ -3,7 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flame/game.dart' show DirtyVersionSource, Game;
 import 'package:flame_3d/camera.dart';
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart';
 import 'package:flame_3d/src/extensions/clip_space.dart';
 
 /// The projection a [CameraComponent3D] builds when it has no

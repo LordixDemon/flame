@@ -1,9 +1,8 @@
 import 'dart:math' as math;
 
-import 'package:flame_3d/core.dart';
-import 'package:flame_3d/src/parser/gltf/gltf_node.dart';
+import 'package:vector_math/vector_math.dart';
 
-/// Interpolation algorithm.
+/// Interpolation algorithm for keyframed vectors and quaternions.
 enum AnimationInterpolation(final String value) {
   /// The animated values are linearly interpolated between keyframes.
   linear('LINEAR'),
@@ -18,10 +17,6 @@ enum AnimationInterpolation(final String value) {
 
   static AnimationInterpolation valueOf(String value) {
     return values.firstWhere((e) => e.value == value);
-  }
-
-  static AnimationInterpolation? parse(Map<String, Object?> map, String key) {
-    return Parser.stringEnum(map, key, valueOf);
   }
 
   Vector3 lerp(Vector3 a, Vector3 b, double t) {

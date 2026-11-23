@@ -1,7 +1,6 @@
 import 'dart:ui' show Color;
 
-import 'package:flame_3d/game.dart';
-import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/core.dart';
 
 /// {@template fog_settings}
 /// Atmospheric distance and height fog applied to a `World3D` scene.

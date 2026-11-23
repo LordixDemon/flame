@@ -1,8 +1,8 @@
 import 'dart:ui';
 
-import 'package:flame_3d/camera.dart' show Ray, RayHit3D, World3D;
+import 'package:flame_3d/camera.dart' show RayHit3D, World3D;
 import 'package:flame_3d/components.dart';
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 
@@ -119,6 +119,32 @@ class MeshComponent({
       worldRay: worldRay,
       maxDistance: maxDistance,
       cullMode: cullMode,
+    );
+  }
+
+  @override
+  void visitCollisionMeshes(
+    bool Function(Mesh mesh, Matrix4 worldMatrix) visitor,
+  ) {
+    visitor(mesh, worldTransformMatrix);
+  }
+
+  @override
+  Component3D cloneSelf() {
+    if (runtimeType != MeshComponent) {
+      return super.cloneSelf();
+    }
+    return MeshComponent(
+      mesh: mesh,
+      castsShadows: castsShadows,
+      color: color,
+      instanceData: instanceData.clone(),
+      jointTransforms: jointTransforms == null
+          ? null
+          : {
+              for (final entry in jointTransforms!.entries)
+                entry.key: [for (final m in entry.value) m.clone()],
+            },
     );
   }
 }

@@ -1,6 +1,5 @@
 import 'dart:math';
 
-import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_test/flame_test.dart';
 import 'package:flutter_test/flutter_test.dart';

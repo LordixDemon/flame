@@ -1,7 +1,6 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:flame_3d/camera.dart' show Frustum, Ray;
 import 'package:flame_3d/core.dart';
 
 /// Ray hit result returned by [DynamicAabbTree3D.raycast] and

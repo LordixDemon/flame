@@ -1,6 +1,6 @@
 import 'dart:ui';
 
-import 'package:flame_3d/game.dart';
+import 'package:vector_math/vector_math.dart';
 
 /// Represents an immutable [Vector3].
 typedef ImmutableVector4 = ({double x, double y, double z, double w});

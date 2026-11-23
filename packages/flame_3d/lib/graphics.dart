@@ -3,6 +3,7 @@ export 'src/graphics/backend/gpu_device.dart';
 export 'src/graphics/backend/gpu_enums.dart';
 export 'src/graphics/backend/gpu_handles.dart';
 export 'src/graphics/bloom_settings.dart';
+export 'src/graphics/custom_render_pass_3d.dart';
 export 'src/graphics/graphics_device.dart';
 export 'src/graphics/light_grid_3d.dart';
 export 'src/graphics/msaa.dart';

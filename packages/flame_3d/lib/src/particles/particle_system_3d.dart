@@ -5,7 +5,7 @@ import 'dart:ui' show Color;
 import 'package:flame/game.dart' show Game;
 import 'package:flame/math.dart' show SeededRng;
 import 'package:flame_3d/components.dart';
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/particles.dart';
 import 'package:flame_3d/resources.dart';

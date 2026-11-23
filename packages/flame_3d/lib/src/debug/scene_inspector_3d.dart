@@ -2,7 +2,7 @@ import 'dart:math' as math;
 import 'dart:ui' show Color;
 
 import 'package:flame/components.dart' show Component;
-import 'package:flame_3d/camera.dart' show Ray, World3D;
+import 'package:flame_3d/camera.dart' show World3D;
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/resources.dart';

@@ -3,7 +3,6 @@ import 'dart:ui' show Color, VoidCallback;
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
-import 'package:flame_3d/game.dart' show NotifyingVector4;
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/model/animation_state.dart';
@@ -95,6 +94,7 @@ class ModelComponent({
   final List<BoneModifier3D> boneModifiers = [];
 
   final Matrix4 _invWorld = Matrix4.identity();
+  final Matrix4 _collisionNodeMat = Matrix4.identity();
   final List<double> _morphScratch = [];
 
   /// The nodes whose mesh has at least one surface with morph targets.
@@ -709,6 +709,25 @@ class ModelComponent({
   void _markPoseChanged() {
     _poseDirty = true;
     markDrawDirty(shadows: castsShadows);
+  }
+
+  @override
+  void visitCollisionMeshes(
+    bool Function(Mesh mesh, Matrix4 worldMatrix) visitor,
+  ) {
+    final ws = evaluatePose();
+    for (final node in ws.orderedNodes) {
+      final mesh = node.node.mesh;
+      if (mesh == null) {
+        continue;
+      }
+      _collisionNodeMat
+        ..setFrom(worldTransformMatrix)
+        ..multiply(node.combinedTransform);
+      if (!visitor(mesh, _collisionNodeMat)) {
+        return;
+      }
+    }
   }
 
   static final Vector3 _upY = Vector3(0, 1, 0);

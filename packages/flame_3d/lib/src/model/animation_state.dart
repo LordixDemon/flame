@@ -5,7 +5,6 @@ import 'dart:ui' show VoidCallback;
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/src/model/blend_space_3d.dart';
 import 'package:flame_3d/src/model/model_animation.dart';
-import 'package:flame_3d/src/parser/gltf/animation_interpolation.dart';
 
 part 'animation_pose_workspace.dart';
 part 'animation_sampling.dart';

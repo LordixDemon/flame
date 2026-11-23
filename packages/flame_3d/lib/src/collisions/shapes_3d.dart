@@ -1,7 +1,6 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:flame_3d/camera.dart' show Ray;
 import 'package:flame_3d/core.dart';
 import 'package:meta/meta.dart';
 

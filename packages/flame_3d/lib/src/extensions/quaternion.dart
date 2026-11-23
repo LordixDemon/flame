@@ -1,6 +1,6 @@
 import 'dart:math';
 
-import 'package:flame_3d/core.dart';
+import 'package:vector_math/vector_math.dart' show Quaternion;
 
 extension QuaternionExtension on Quaternion {
   List<double> get storage => [x, y, z, w];

@@ -4,7 +4,6 @@ import 'dart:typed_data';
 import 'package:flame_3d/collisions.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
-import 'package:flame_3d/game.dart' show NotifyingQuaternion, NotifyingVector3;
 import 'package:flame_3d/physics.dart' show PhysicsWorld3D;
 import 'package:flame_3d/src/extensions/geometry_math.dart';
 import 'package:meta/meta.dart';

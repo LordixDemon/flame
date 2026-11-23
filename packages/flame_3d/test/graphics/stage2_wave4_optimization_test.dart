@@ -3,7 +3,6 @@ import 'dart:typed_data';
 import 'dart:ui' show Color, Rect, Size;
 
 import 'package:flame_3d/audio.dart';
-import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';

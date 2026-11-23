@@ -1,6 +1,6 @@
 import 'dart:math' as math;
 
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart';
 
 /// {@template emitter_shape_3d}
 /// The volume or surface, relative to its emitter, in which particles spawn,

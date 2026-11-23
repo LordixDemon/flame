@@ -1,7 +1,6 @@
 import 'dart:math';
 
 import 'package:flame_3d/core.dart';
-import 'package:flame_3d/src/parser/gltf/animation_interpolation.dart';
 
 /// A single keyframe inside an animation; [T] is the type of value being
 /// animated.

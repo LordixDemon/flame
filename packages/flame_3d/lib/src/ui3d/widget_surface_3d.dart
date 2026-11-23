@@ -8,7 +8,7 @@ import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/input.dart';
 import 'package:flame_3d/resources.dart';
-import 'package:flame_3d/src/ui3d/picture_texture.dart';
+import 'package:flame_3d/src/resources/texture/picture_texture.dart';
 import 'package:flutter/foundation.dart' show ValueChanged;
 import 'package:flutter/painting.dart'
     show TextDirection, TextPainter, TextSpan, TextStyle;
@@ -325,11 +325,15 @@ class WidgetSurface3D({
   late final UnlitMaterial _material;
   late final Mesh _panelMesh;
 
-  ImageTexture? _surfaceTexture;
   ByteData? _fallbackRgba;
   bool _dirty = false;
   int _uploadCount = 0;
   double _sinceLastUpload = double.infinity;
+
+  late final PictureTextureSlot _pictureSlot = PictureTextureSlot(
+    owner: 'WidgetSurface3D',
+    onDeviceRecovered: markDirty,
+  );
 
   SurfaceControl2D? _pressedControl;
   SurfaceControl2D? _draggedControl;
@@ -346,7 +350,7 @@ class WidgetSurface3D({
       List<SurfaceControl2D>.unmodifiable(_controls);
 
   /// Current [ImageTexture] mapped onto this 3D panel.
-  ImageTexture get surfaceTexture => _surfaceTexture!;
+  ImageTexture get surfaceTexture => _pictureSlot.texture!;
 
   /// Backing [UnlitMaterial] rendering [surfaceTexture].
   UnlitMaterial get material => _material;
@@ -418,33 +422,22 @@ class WidgetSurface3D({
   @override
   Aabb3? computeLocalAabb() => _panelMesh.aabb;
 
-  // Whether the texture was disposed when the panel was removed.
-  bool _textureReleased = false;
-
   @override
   void onMount() {
     super.onMount();
-    GpuBackend.addDeviceListener(_deviceListener);
-    if (_textureReleased) {
-      _textureReleased = false;
+    if (_pictureSlot.attach()) {
       _refreshTextureNow();
     }
   }
 
   @override
   void onRemove() {
-    GpuBackend.removeDeviceListener(_deviceListener);
-    ++_rasterRequest;
-    final texture = _surfaceTexture;
-    if (texture != null && texture.hasResource) {
-      texture.dispose();
-    }
-    _surfaceTexture = null;
-    _material.albedoTexture = Texture.empty;
+    _pictureSlot.detach(
+      clearMaterialTexture: () => _material.albedoTexture = Texture.empty,
+    );
     for (var i = 0; i < _controls.length; i++) {
       _controls[i].dispose();
     }
-    _textureReleased = true;
     super.onRemove();
   }
 
@@ -724,60 +717,21 @@ class WidgetSurface3D({
     }
 
     final picture = recorder.endRecording();
-    final request = ++_rasterRequest;
-    final ready = rasterizePictureTexture(
+    _pictureSlot.rasterize(
       picture,
-      pixelWidth,
-      pixelHeight,
-      'WidgetSurface3D',
-      (gpuTex) {
-        // A later refresh, or the panel's removal, replaced this request.
-        if (request == _rasterRequest && !_textureReleased) {
-          _useTexture(gpuTex);
-        }
+      width: pixelWidth,
+      height: pixelHeight,
+      createFallbackTexture: (width, height) => ImageTexture(
+        _fallbackRgba ??= ByteData(width * height * 4),
+        width: width,
+        height: height,
+        sampler: TextureSampler.linear,
+      ),
+      applyTexture: (texture) {
+        _material.albedoTexture = texture;
+        worldOrNull?.markSceneDirty(shadows: false);
       },
     );
-    if (!ready && _surfaceTexture == null) {
-      // Nothing to show until the picture is rasterized (on devices).
-      _material.albedoTexture = Texture.empty;
-    }
-  }
-
-  // The number of texture refreshes requested, so that a rasterization that
-  // completes after a newer request is dropped.
-  int _rasterRequest = 0;
-
-  // Rasterizes the panel again after a GPU device loss: its texture wrapped
-  // an image of the lost device.
-  late final GpuDeviceListener _deviceListener = GpuDeviceListener(
-    onRecovered: (_) => markDirty(),
-  );
-
-  void _useTexture(GpuTexture? gpuTex) {
-    final prevTex = _surfaceTexture;
-    if (gpuTex != null) {
-      _surfaceTexture = ImageTexture(
-        null,
-        width: pixelWidth,
-        height: pixelHeight,
-        sampler: TextureSampler.linear,
-        gpuTexture: gpuTex,
-      );
-    } else {
-      // Without a GPU (a plain `flutter test`) nothing is drawn.
-      final fallback = _fallbackRgba ??= ByteData(pixelWidth * pixelHeight * 4);
-      _surfaceTexture = ImageTexture(
-        fallback,
-        width: pixelWidth,
-        height: pixelHeight,
-        sampler: TextureSampler.linear,
-      );
-    }
-    _material.albedoTexture = _surfaceTexture!;
-    if (prevTex != null && prevTex.hasResource) {
-      prevTex.dispose();
-    }
-    worldOrNull?.markSceneDirty(shadows: false);
   }
 
   static Mesh _buildPanelMesh(

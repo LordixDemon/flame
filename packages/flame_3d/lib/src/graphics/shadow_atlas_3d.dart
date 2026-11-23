@@ -2,7 +2,7 @@ import 'dart:collection' show UnmodifiableListView;
 import 'dart:math' as math;
 import 'dart:ui' show Color;
 
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart';
 
 /// Kind of shadow tile packed inside a [ShadowAtlas3D].
 enum ShadowAtlasTileKind3D() {

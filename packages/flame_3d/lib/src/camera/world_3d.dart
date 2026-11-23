@@ -12,11 +12,10 @@ import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/components/component_3d.dart'
     show ComponentBounds, ShadowCasterTracker;
-import 'package:flame_3d/src/embedding/embedded_renderer.dart';
 import 'package:flame_3d/src/extensions/clip_space.dart';
 import 'package:flame_3d/src/extensions/geometry_math.dart';
+import 'package:flame_3d/src/graphics/embedded_renderer.dart';
 import 'package:flame_3d/src/graphics/material_tracker.dart';
-import 'package:flame_3d/src/world_scale/occlusion_culler_3d.dart';
 import 'package:meta/meta.dart';
 
 part 'shadow_group.dart';
@@ -48,7 +47,7 @@ class World3D({
   bool prioritizeNearestLights = false,
   LightGridSettings? lightGrid,
   bool depthPrepassEnabled = false,
-  OcclusionCuller3D? occlusionCuller,
+  SceneOcclusionCuller3D? occlusionCuller,
 }) extends flame.World {
   final List<Light> _lights = [];
   // Increases when a light joins or leaves [_lights], see [_passLights].
@@ -581,11 +580,11 @@ class World3D({
     markSceneDirty(shadows: false);
   }
 
-  /// Optional CPU Hi-Z [OcclusionCuller3D] rasterized once per unique main
+  /// Optional [SceneOcclusionCuller3D] rasterized once per unique main
   /// camera view-projection before traversal to cull occluded [Object3D]s.
-  OcclusionCuller3D? get occlusionCuller => _occlusionCuller;
-  OcclusionCuller3D? _occlusionCuller = occlusionCuller;
-  set occlusionCuller(OcclusionCuller3D? value) {
+  SceneOcclusionCuller3D? get occlusionCuller => _occlusionCuller;
+  SceneOcclusionCuller3D? _occlusionCuller = occlusionCuller;
+  set occlusionCuller(SceneOcclusionCuller3D? value) {
     if (identical(value, _occlusionCuller)) {
       return;
     }
@@ -594,7 +593,7 @@ class World3D({
     markSceneDirty(shadows: false);
   }
 
-  OcclusionCuller3D? _lastRasterizedCuller;
+  SceneOcclusionCuller3D? _lastRasterizedCuller;
   int _occFrame = -1;
   final Float32List _occVp = Float32List(16);
 

@@ -1,6 +1,5 @@
 import 'dart:typed_data';
 
-import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/model.dart';
 import 'package:flame_3d/parser.dart';

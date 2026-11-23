@@ -5,7 +5,6 @@ import 'package:flame_3d/src/extensions/geometry_math.dart';
 import 'package:flame_3d/src/model/animation_state.dart';
 import 'package:flame_3d/src/model/model.dart';
 import 'package:flame_3d/src/model/model_animation.dart';
-import 'package:flame_3d/src/parser/gltf/animation_interpolation.dart';
 
 /// Canonical humanoid skeleton bone slots used by [HumanoidProfile3D] and
 /// [AnimationRetargeter3D].

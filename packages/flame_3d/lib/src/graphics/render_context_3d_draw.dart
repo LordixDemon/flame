@@ -49,7 +49,7 @@ extension _RenderContext3DDraw on RenderContext3D {
     final fragmentShader = material.fragmentShaderFor(this, layout);
     vertexShader.resource;
     fragmentShader.resource;
-    final cache = material.pipelineCache;
+    final cache = material.pipelineCache as MaterialPipelineCache?;
     DevicePipeline pipeline;
     if (cache != null &&
         identical(cache.device, device) &&

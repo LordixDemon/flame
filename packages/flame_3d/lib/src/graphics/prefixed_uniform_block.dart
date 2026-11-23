@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flame_3d/resources.dart';
+import 'package:meta/meta.dart';
 
 /// A view of the members of [parent] whose names start with [prefix], under
 /// their names without it: writing `numLights` into a view of prefix
@@ -9,6 +10,7 @@ import 'package:flame_3d/resources.dart';
 /// It lets a pass uniform writer fill the part of a block that holds the
 /// members of another block. Its values are those of [parent], and writing
 /// into it marks [parent] as changed.
+@internal
 class PrefixedUniformBlock(
   /// The block whose members the view writes.
   final UniformBlock parent,

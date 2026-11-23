@@ -6,7 +6,6 @@ import 'package:flame_3d/camera.dart' show World3D;
 import 'package:flame_3d/collisions.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
-import 'package:flame_3d/model.dart' show ModelComponent;
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/extensions/geometry_math.dart';
 
@@ -24,7 +23,7 @@ class ShapeCastHit3D({
 
 /// Continuous swept 3D shape-casting (`sphereCast`, `capsuleCast`, and
 /// `convexCast`) against [CollisionSystem3D] colliders and static
-/// [MeshComponent] / [TerrainMesh3D] / [ModelComponent] surfaces.
+/// [MeshComponent] / [TerrainMesh3D] / `ModelComponent` surfaces.
 abstract final class ShapeCast3D._() {
   /// Sweeps a sphere of [radius] from [origin] along [delta], returning the
   /// earliest [ShapeCastHit3D] (`toi` in `[0..1]`) or `null` when clear.
@@ -205,47 +204,23 @@ abstract final class ShapeCast3D._() {
       if (!aabbOverlaps(_sweptAabb, obj.aabb)) {
         return;
       }
-      if (obj is MeshComponent) {
+      obj.visitCollisionMeshes((mesh, matrix) {
         final hit = _sweepShapeAgainstMesh(
           shape,
           startTransform,
           delta,
           sweepLen,
           obj,
-          obj.mesh,
-          obj.worldTransformMatrix,
+          mesh,
+          matrix,
           maxToi,
         );
         if (hit != null && hit.toi <= maxToi) {
           maxToi = hit.toi;
           best = hit;
         }
-      } else if (obj is ModelComponent) {
-        final ws = obj.evaluatePose();
-        for (final node in ws.orderedNodes) {
-          final mesh = node.node.mesh;
-          if (mesh == null) {
-            continue;
-          }
-          _nodeMat
-            ..setFrom(obj.worldTransformMatrix)
-            ..multiply(node.combinedTransform);
-          final hit = _sweepShapeAgainstMesh(
-            shape,
-            startTransform,
-            delta,
-            sweepLen,
-            obj,
-            mesh,
-            _nodeMat,
-            maxToi,
-          );
-          if (hit != null && hit.toi <= maxToi) {
-            maxToi = hit.toi;
-            best = hit;
-          }
-        }
-      }
+        return true;
+      });
     }
 
     if (staticGeometry != null) {

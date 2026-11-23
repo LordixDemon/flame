@@ -2,8 +2,109 @@ import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flame_3d/graphics.dart';
+import 'package:flame_3d/src/graphics/backend/texture_sampler.dart';
+import 'package:flame_3d/src/resources/texture/image_texture.dart';
+import 'package:flame_3d/src/resources/texture/texture.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:meta/meta.dart';
+
+/// Shared picture-to-[ImageTexture] slot managing async rasterization,
+/// request invalidation, GPU device-loss recovery, and safe unmount/remount
+/// lifecycle across 3D text/UI surfaces.
+@internal
+final class PictureTextureSlot({
+  required final String owner,
+  required final void Function() onDeviceRecovered,
+}) {
+  ImageTexture? _texture;
+  int _rasterRequest = 0;
+  bool _released = false;
+
+  late final GpuDeviceListener _deviceListener = GpuDeviceListener(
+    onRecovered: (_) {
+      if (!_released) {
+        onDeviceRecovered();
+      }
+    },
+  );
+
+  /// Currently active rasterized [ImageTexture], or `null` before first upload
+  /// or after [detach].
+  ImageTexture? get texture => _texture;
+
+  /// Attaches this slot's device-loss listener. Returns `true` when resuming
+  /// after a previous [detach], signaling the caller to re-rasterize.
+  bool attach() {
+    GpuBackend.addDeviceListener(_deviceListener);
+    if (_released) {
+      _released = false;
+      return true;
+    }
+    return false;
+  }
+
+  /// Cancels in-flight rasterization requests, detaches the device listener,
+  /// disposes any owned texture, and clears the material binding.
+  void detach({required void Function() clearMaterialTexture}) {
+    GpuBackend.removeDeviceListener(_deviceListener);
+    ++_rasterRequest;
+    final current = _texture;
+    if (current != null && current.hasResource) {
+      current.dispose();
+    }
+    _texture = null;
+    clearMaterialTexture();
+    _released = true;
+  }
+
+  /// Rasterizes [picture] into a GPU texture (or fallback texture in headless
+  /// tests), replacing any prior texture once completed.
+  bool rasterize(
+    ui.Picture picture, {
+    required int width,
+    required int height,
+    required Texture Function(int width, int height) createFallbackTexture,
+    required void Function(Texture texture) applyTexture,
+  }) {
+    final request = ++_rasterRequest;
+    final ready = rasterizePictureTexture(
+      picture,
+      width,
+      height,
+      owner,
+      (gpuTex) {
+        if (request != _rasterRequest || _released) {
+          return;
+        }
+        final prev = _texture;
+        final Texture applied;
+        if (gpuTex != null) {
+          final next = ImageTexture(
+            null,
+            width: width,
+            height: height,
+            sampler: TextureSampler.linear,
+            gpuTexture: gpuTex,
+          );
+          _texture = next;
+          applied = next;
+        } else {
+          final fallback = createFallbackTexture(width, height);
+          _texture = fallback is ImageTexture ? fallback : null;
+          applied = fallback;
+        }
+        applyTexture(applied);
+        if (prev != null && prev.hasResource) {
+          prev.dispose();
+        }
+      },
+    );
+    if (!ready && _texture == null) {
+      applyTexture(Texture.empty);
+    }
+    return ready;
+  }
+}
 
 GpuBackend? _preferAsyncBackend;
 int _preferAsyncGeneration = -1;

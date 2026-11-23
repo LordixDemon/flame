@@ -1,5 +1,5 @@
-import 'package:flame_3d/game.dart';
 import 'package:flutter/foundation.dart';
+import 'package:vector_math/vector_math.dart';
 
 /// {@template notifying_vector_4}
 /// Extension of the standard [Vector4] class, implementing the [ChangeNotifier]

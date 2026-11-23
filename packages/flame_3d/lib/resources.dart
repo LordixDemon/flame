@@ -1,16 +1,8 @@
-import 'package:flame/cache.dart';
-import 'package:flame_3d/resources.dart';
-
+export 'src/core/versioned.dart';
 export 'src/resources/light.dart';
 export 'src/resources/material.dart';
 export 'src/resources/mesh.dart';
 export 'src/resources/resource.dart';
 export 'src/resources/shader.dart';
 export 'src/resources/texture.dart';
-export 'src/resources/versioned.dart';
-
-extension TextureCache on Images {
-  Future<Texture> loadTexture(String path) {
-    return load(path).then(ImageTexture.create);
-  }
-}
+export 'src/resources/texture/texture_cache.dart';

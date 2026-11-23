@@ -1,4 +1,5 @@
-part of 'async_model_loader_3d.dart';
+import 'package:flame_3d/model.dart' show Model;
+import 'package:flame_3d/resources.dart' show Mesh, Resource, Surface, Texture;
 
 /// Reference-counted GPU asset container for [Model]s, [Mesh]es, [Surface]s,
 /// and [Texture]s.
@@ -119,16 +120,3 @@ class AssetScope3D() {
     return out;
   }
 }
-
-/// Flat median-split Bounding Volume Hierarchy buffers prepared on a background
-/// isolate by [AsyncModelLoader3D.buildSurfaceBvhsInIsolate].
-class PreparedSurfaceBvh3D({
-  required final int surfaceIndex,
-  required final int nodeCount,
-  required final int triangleCount,
-  required final Float32List bounds,
-  required final Int32List leftOrFirst,
-  required final Int32List rightChild,
-  required final Int32List counts,
-  required final Int32List triangles,
-});

@@ -1,7 +1,7 @@
 import 'dart:math';
 
-import 'package:flame_3d/game.dart';
 import 'package:flutter/foundation.dart';
+import 'package:vector_math/vector_math.dart';
 
 /// {@template notifying_quaternion}
 /// Extension of the standard [Quaternion] class, implementing the

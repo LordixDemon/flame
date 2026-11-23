@@ -1,5 +1,6 @@
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart' show NotifyingQuaternion, NotifyingVector3;
 import 'package:flutter/foundation.dart' show ChangeNotifier;
+import 'package:vector_math/vector_math.dart' show Matrix4, Quaternion, Vector3;
 
 /// {@template transform_3d}
 /// This class describes a generic 3D transform, which is a combination of

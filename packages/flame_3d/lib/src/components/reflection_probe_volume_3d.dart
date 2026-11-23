@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flame_3d/components.dart';
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart';
 import 'package:flame_3d/resources.dart';
 
 /// {@template reflection_probe_volume_3d}
@@ -22,15 +22,15 @@ import 'package:flame_3d/resources.dart';
 /// instead of infinite-distance skybox reflections.
 /// {@endtemplate}
 class ReflectionProbeVolume3D({
-  required var EnvironmentProbe3D probe,
+  @override required var EnvironmentProbe3D probe,
   Vector3? extents,
   var double blendDistance = 1.0,
-  var bool boxProjection = true,
+  @override var bool boxProjection = true,
   int priority = 0,
   super.position,
   super.rotation,
   super.scale,
-}) extends Component3D {
+}) extends Component3D implements ReflectionProbeSource3D {
   this {
     this.priority = priority;
   }
@@ -42,6 +42,7 @@ class ReflectionProbeVolume3D({
   final Aabb3 _worldBox = Aabb3();
 
   /// Current world-space center of this reflection probe volume.
+  @override
   Vector3 get worldCenter {
     final m = worldTransformMatrix.storage;
     return _worldCenter..setValues(m[12], m[13], m[14]);
@@ -49,6 +50,7 @@ class ReflectionProbeVolume3D({
 
   /// Current world-space AABB
   /// `[worldCenter - scaledExtents, worldCenter + scaledExtents]`.
+  @override
   Aabb3 get worldBounds {
     final c = worldCenter;
     final m = worldTransformMatrix.storage;

@@ -1,7 +1,6 @@
 import 'dart:math' as math;
 import 'dart:ui' show Color;
 
-import 'package:flame_3d/camera.dart' show Ray;
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/src/debug/debug_renderer_3d.dart';

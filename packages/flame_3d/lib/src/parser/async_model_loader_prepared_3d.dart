@@ -1,5 +1,18 @@
 part of 'async_model_loader_3d.dart';
 
+/// Flat median-split Bounding Volume Hierarchy buffers prepared on a background
+/// isolate by [AsyncModelLoader3D.buildSurfaceBvhsInIsolate].
+class PreparedSurfaceBvh3D({
+  required final int surfaceIndex,
+  required final int nodeCount,
+  required final int triangleCount,
+  required final Float32List bounds,
+  required final Int32List leftOrFirst,
+  required final Int32List rightChild,
+  required final Int32List counts,
+  required final Int32List triangles,
+});
+
 class _BvhSurfaceInput({
   required final int surfaceIndex,
   required final int stride,

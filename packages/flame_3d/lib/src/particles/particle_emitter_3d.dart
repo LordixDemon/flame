@@ -1,6 +1,6 @@
 import 'dart:ui' show Color;
 
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart';
 import 'package:flame_3d/particles.dart';
 
 /// {@template particle_emitter_3d}

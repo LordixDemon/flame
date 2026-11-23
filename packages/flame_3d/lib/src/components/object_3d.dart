@@ -3,7 +3,7 @@ import 'dart:ui';
 import 'package:flame/game.dart' show FlameGame;
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
-import 'package:flame_3d/extensions.dart';
+import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:meta/meta.dart';
@@ -287,4 +287,69 @@ abstract class Object3D({
     double maxDistance = double.infinity,
     CullMode? cullMode,
   }) => null;
+
+  @override
+  bool get isShadowDirtyOnMove => castsShadows;
+
+  @override
+  void onShadowSubtreeShown(World3D world) {
+    world.shadowCasters.shown(this);
+  }
+
+  @override
+  void onShadowSubtreeHidden(World3D world) {
+    world.shadowCasters.changed(this);
+  }
+
+  @override
+  void onMarkDrawDirty(World3D world, {required bool shadows}) {
+    if (shadows) {
+      world.shadowCasters.changed(this);
+    }
+    world.markComponentDirty(shadows: shadows);
+  }
+
+  @override
+  void onWorldTransformDirtied(
+    World3D? world, {
+    required bool recordShadowMove,
+  }) {
+    if (world == null) {
+      return;
+    }
+    if (recordShadowMove) {
+      world.shadowCasters.changed(this);
+    }
+    world.spatialIndex3D.onObjectMoved(this);
+  }
+
+  @override
+  void onWorldMounted(World3D world) {
+    world.shadowCasters.added(this);
+    world.spatialIndex3D.onObjectAdded(this);
+  }
+
+  @override
+  void onWorldRemoved(World3D world) {
+    world.shadowCasters.removed(this);
+    world.spatialIndex3D.onObjectRemoved(this);
+  }
+
+  @override
+  void onAabbDirtied() {
+    worldOrNull?.spatialIndex3D.onObjectMoved(this);
+  }
+
+  @override
+  void copySubtypeStateTo(Component3D copy) {
+    if (copy is Object3D) {
+      copy.shadowMotion = shadowMotion;
+    }
+  }
+
+  /// Visits every `(mesh, worldMatrix)` pair contributing to this object's
+  /// collision geometry. Return `false` from [visitor] to stop early.
+  void visitCollisionMeshes(
+    bool Function(Mesh mesh, Matrix4 worldMatrix) visitor,
+  ) {}
 }

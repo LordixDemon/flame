@@ -3,7 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' hide FragmentShader;
 
 import 'package:flame_3d/components.dart';
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 
@@ -217,5 +217,13 @@ class SkyboxComponent3D({
       return;
     }
     context.drawSurface(_clipQuad, material: material);
+  }
+
+  @override
+  Component3D cloneSelf() {
+    if (runtimeType != SkyboxComponent3D) {
+      return super.cloneSelf();
+    }
+    return SkyboxComponent3D(material: material);
   }
 }

@@ -5,7 +5,7 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
-import 'package:flame_3d/src/ui3d/picture_texture.dart';
+import 'package:flame_3d/src/resources/texture/picture_texture.dart';
 import 'package:flutter/painting.dart'
     show EdgeInsets, TextPainter, TextSpan, TextStyle;
 
@@ -145,8 +145,6 @@ class Text3DComponent({
     worldOrNull?.markSceneDirty(shadows: false);
   }
 
-  ImageTexture? _texture;
-
   late Vector3 _upAxis;
 
   late final BillboardMaterial3D _material = BillboardMaterial3D(
@@ -205,79 +203,36 @@ class Text3DComponent({
     painter.dispose();
 
     final picture = recorder.endRecording();
-    final request = ++_rasterRequest;
-    final ready = rasterizePictureTexture(
+    _pictureSlot.rasterize(
       picture,
-      texW,
-      texH,
-      'Text3DComponent',
-      (gpuTex) {
-        // A later rebuild, or the label's removal, replaced this request.
-        if (request != _rasterRequest || _textureReleased) {
-          return;
-        }
-        _disposeTexture();
-        if (gpuTex != null) {
-          _material.albedoTexture = _texture = ImageTexture(
-            null,
-            width: texW,
-            height: texH,
-            sampler: TextureSampler.linear,
-            gpuTexture: gpuTex,
-          );
-        } else {
-          // Without a GPU (a plain `flutter test`) nothing is drawn.
-          _material.albedoTexture = ColorTexture(const ui.Color(0xFFFFFFFF));
-        }
+      width: texW,
+      height: texH,
+      createFallbackTexture: (_, _) => ColorTexture(const ui.Color(0xFFFFFFFF)),
+      applyTexture: (texture) {
+        _material.albedoTexture = texture;
         worldOrNull?.markSceneDirty(shadows: false);
       },
     );
-    if (!ready && _texture == null) {
-      // Nothing to show until the picture is rasterized (on devices).
-      _material.albedoTexture = Texture.empty;
-    }
   }
 
-  // The number of texture rebuilds requested, so that a rasterization that
-  // completes after a newer request is dropped.
-  int _rasterRequest = 0;
-
-  // Rebuilds the texture after a GPU device loss: it wrapped an image of the
-  // lost device.
-  late final GpuDeviceListener _deviceListener = GpuDeviceListener(
-    onRecovered: (_) {
-      if (!_textureReleased) {
-        _rebuildTexture();
-      }
-    },
+  late final PictureTextureSlot _pictureSlot = PictureTextureSlot(
+    owner: 'Text3DComponent',
+    onDeviceRecovered: _rebuildTexture,
   );
-
-  void _disposeTexture() {
-    final texture = _texture;
-    _texture = null;
-    if (texture != null && texture.hasResource) {
-      texture.dispose();
-    }
-  }
 
   @override
   void onMount() {
     super.onMount();
-    GpuBackend.addDeviceListener(_deviceListener);
-    if (_textureReleased) {
-      _textureReleased = false;
+    if (_pictureSlot.attach()) {
       _rebuildTexture();
     }
   }
 
-  // Whether the texture was disposed when the label was removed.
-  bool _textureReleased = false;
-
   @override
   void onRemove() {
-    GpuBackend.removeDeviceListener(_deviceListener);
-    _disposeTexture();
-    _textureReleased = true;
+    _pictureSlot.detach(
+      clearMaterialTexture: () => _material.albedoTexture = Texture.empty,
+    );
     super.onRemove();
   }
 
@@ -332,5 +287,22 @@ class Text3DComponent({
       _syncedVisualVersion = _visualVersion;
     }
     _batch.draw(context);
+  }
+
+  @override
+  Component3D cloneSelf() {
+    if (runtimeType != Text3DComponent) {
+      return super.cloneSelf();
+    }
+    return Text3DComponent(
+      text: text,
+      style: style,
+      worldHeight: worldHeight,
+      backgroundColor: backgroundColor,
+      borderColor: borderColor,
+      cornerRadius: cornerRadius,
+      padding: padding,
+      orientation: orientation,
+    );
   }
 }

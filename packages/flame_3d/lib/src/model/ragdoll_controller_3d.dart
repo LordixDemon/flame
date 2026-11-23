@@ -1,4 +1,13 @@
-part of 'foot_ik_and_ragdoll_3d.dart';
+import 'dart:math' as math;
+
+import 'package:flame_3d/collisions.dart';
+import 'package:flame_3d/core.dart';
+import 'package:flame_3d/physics.dart';
+import 'package:flame_3d/src/extensions/geometry_math.dart';
+import 'package:flame_3d/src/model/animation_state.dart';
+import 'package:flame_3d/src/model/model.dart';
+import 'package:flame_3d/src/model/model_component.dart';
+import 'package:flame_3d/src/model/procedural_rigging_3d.dart';
 
 /// Active simulation state of a [RagdollController3D].
 enum RagdollMode3D() {
@@ -616,7 +625,10 @@ class RagdollController3D({
     // Connect each limb to its nearest ragdoll ancestor limb via HingeJoint3D
     // or BallSocketJoint3D anchored at the child bone's world pivot.
     for (final limb in _limbs) {
-      final node = model.nodes[limb.config.nodeIndex]!;
+      final node = model.nodes[limb.config.nodeIndex];
+      if (node == null) {
+        continue;
+      }
       var pIdx = node.parentNodeIndex;
       _RagdollLimb? parentLimb;
       while (pIdx != null) {

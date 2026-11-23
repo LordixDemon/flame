@@ -1,8 +1,7 @@
 import 'dart:math' as math;
 import 'dart:ui' show Color;
 
-import 'package:flame_3d/game.dart';
-import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/core.dart';
 
 /// {@template water_volume_settings}
 /// A body of water in a `World3D`: the surfaces of a `StylizedMaterial`

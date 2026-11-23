@@ -8,8 +8,8 @@ import 'package:flame_3d/src/graphics/backend/flutter_gpu/gpu_backend.dart'
 import 'package:flame_3d/src/graphics/backend/gpu_device.dart';
 import 'package:flame_3d/src/graphics/backend/gpu_enums.dart';
 import 'package:flame_3d/src/graphics/backend/gpu_handles.dart';
+import 'package:flame_3d/src/graphics/backend/texture_sampler.dart';
 import 'package:flame_3d/src/graphics/render_state.dart';
-import 'package:flame_3d/src/resources/texture/texture_sampler.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/widgets.dart'
     show AppLifecycleState, WidgetsBinding, WidgetsBindingObserver;

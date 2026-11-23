@@ -416,7 +416,7 @@ class SpatialMaterial({
   double _appliedEnvProbeIntensity = -1.0;
   int _appliedProbeSlot = -1;
   double _appliedProbeWeight = -1.0;
-  ReflectionProbeVolume3D? _appliedVolume;
+  ReflectionProbeSource3D? _appliedVolume;
   bool _appliedVolumeBoxProj = false;
   bool _appliedEnvHadRes = false;
 
@@ -511,7 +511,7 @@ class SpatialMaterial({
     // Without an environment of its own, the material uses the volume the
     // render context chose for the drawn object, faded by its weight there.
     var probe = environmentProbe;
-    ReflectionProbeVolume3D? volume;
+    ReflectionProbeSource3D? volume;
     var volumeWeight = 1.0;
     if (probe == null &&
         environmentTexture == null &&

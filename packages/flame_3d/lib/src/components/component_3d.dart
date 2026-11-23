@@ -5,12 +5,13 @@ import 'dart:ui' show Canvas;
 
 import 'package:flame/components.dart'
     show ChildrenChangeType, Component, HasWorldRef;
-import 'package:flame/extensions.dart' show Matrix4Extension;
-import 'package:flame_3d/camera.dart';
-import 'package:flame_3d/components.dart';
-import 'package:flame_3d/game.dart';
-import 'package:flame_3d/graphics.dart';
-import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/camera.dart' show World3D;
+import 'package:flame_3d/core.dart';
+import 'package:flame_3d/src/components/object_3d.dart' show Object3D;
+import 'package:flame_3d/src/graphics/render_context_3d.dart'
+    show RenderContext3D;
+import 'package:flame_3d/src/resources/light/shadow_settings.dart'
+    show ShadowCasterMotion;
 import 'package:meta/meta.dart';
 
 part 'component_bounds.dart';
@@ -29,7 +30,7 @@ part 'shadow_caster_tracker.dart';
 /// It is typically not used directly, but rather use one of the following
 /// implementations:
 /// - [Object3D] for a 3D object that can be bound and rendered by the GPU
-/// - [LightComponent] for a light source that affects how objects are rendered
+/// - `LightComponent` for a light source that affects how objects are rendered
 ///
 /// If you want to have a pure group for several components, you have two
 /// options:
@@ -119,54 +120,68 @@ abstract class Component3D({
     if (world == null) {
       return;
     }
-    if (this is LightComponent) {
-      world.markSceneDirty(shadows: false);
-      return;
-    }
+    onVisibilityChanged(world, visible: value);
+  }
+
+  /// Whether changing [visible], [cameraMask], or mounting/removing this
+  /// component invalidates the enclosing world's shadow pass.
+  @protected
+  bool get affectsShadowPass => true;
+
+  /// Whether moving this component can affect shadow maps on its own (without
+  /// counting child [Component3D]s).
+  @protected
+  bool get isShadowDirtyOnMove => false;
+
+  /// Handles world invalidation when [visible] toggles while mounted in
+  /// [world].
+  @protected
+  void onVisibilityChanged(World3D world, {required bool visible}) {
     // The casters of the subtree leave the kept layer of still casters, or
     // join the casters drawn in every frame (they were not in the layer).
-    final casters = world.shadowCasters;
-    if (value) {
-      _noteShadowSubtreeShown(casters);
+    if (visible) {
+      _noteShadowSubtreeShown(world);
     } else {
-      _noteShadowSubtreeHidden(casters);
+      _noteShadowSubtreeHidden(world);
     }
     world.markComponentDirty(shadows: true);
   }
 
-  void _noteShadowSubtreeShown(ShadowCasterTracker casters) {
-    final self = this;
-    if (self is Object3D) {
-      casters.shown(self);
-    }
+  /// Hook invoked when this subtree becomes visible so casters can register.
+  @protected
+  void onShadowSubtreeShown(World3D world) {}
+
+  /// Hook invoked when this subtree becomes hidden so casters can update.
+  @protected
+  void onShadowSubtreeHidden(World3D world) {}
+
+  void _noteShadowSubtreeShown(World3D world) {
+    onShadowSubtreeShown(world);
     final list = _childComponents3D;
     if (list != null && list.isNotEmpty) {
       for (var i = 0; i < list.length; i++) {
-        list[i]._noteShadowSubtreeShown(casters);
+        list[i]._noteShadowSubtreeShown(world);
       }
     } else if (!isMounted && hasChildren) {
       for (final child in children) {
         if (child is Component3D) {
-          child._noteShadowSubtreeShown(casters);
+          child._noteShadowSubtreeShown(world);
         }
       }
     }
   }
 
-  void _noteShadowSubtreeHidden(ShadowCasterTracker casters) {
-    final self = this;
-    if (self is Object3D) {
-      casters.changed(self);
-    }
+  void _noteShadowSubtreeHidden(World3D world) {
+    onShadowSubtreeHidden(world);
     final list = _childComponents3D;
     if (list != null && list.isNotEmpty) {
       for (var i = 0; i < list.length; i++) {
-        list[i]._noteShadowSubtreeHidden(casters);
+        list[i]._noteShadowSubtreeHidden(world);
       }
     } else if (!isMounted && hasChildren) {
       for (final child in children) {
         if (child is Component3D) {
-          child._noteShadowSubtreeHidden(casters);
+          child._noteShadowSubtreeHidden(world);
         }
       }
     }
@@ -182,13 +197,13 @@ abstract class Component3D({
       return;
     }
     super.cameraMask = value;
-    _cachedWorld?.markSceneDirty(shadows: this is! LightComponent);
+    _cachedWorld?.markSceneDirty(shadows: affectsShadowPass);
   }
 
   /// Reports that what this component draws changed in a way the engine
   /// cannot see: data changed in place, such as joint matrices written into
   /// an existing list, a field of a material or of a light source's vector,
-  /// or the buffers of a custom [Object3D.draw].
+  /// or the buffers of a custom `Object3D.draw`.
   ///
   /// Changes made through the setters of the engine's components (transform,
   /// [visible], [cameraMask], `MeshComponent.color`, `instanceData`, ...) are
@@ -197,15 +212,15 @@ abstract class Component3D({
   /// It bumps the enclosing [World3D]'s [World3D.sceneVersion], and its
   /// [World3D.castersVersion] unless [shadows] is `false`, so that
   /// `Scene3DCacheMode.retained` layers and a cached static shadow map
-  /// ([ShadowSettings.cacheWhenStatic]) render again, and wakes a game whose
+  /// (`ShadowSettings.cacheWhenStatic`) render again, and wakes a game whose
   /// `idleRenderMode` skips unchanged frames. Pass `shadows: false` when the
   /// change cannot reach a shadow map (a color, a value only the fragment
   /// shader reads). It costs two integer increments; it does nothing for a
   /// component outside a [World3D].
   ///
-  /// With [ShadowSettings.cacheStillCasters], an [Object3D] that reports a
+  /// With `ShadowSettings.cacheStillCasters`, an [Object3D] that reports a
   /// change that can reach the shadows is drawn in every frame until it
-  /// stays unchanged for [ShadowSettings.stillCasterFrames] renders of the
+  /// stays unchanged for `ShadowSettings.stillCasterFrames` renders of the
   /// shadows; the kept layer of still casters is rendered again only when
   /// the object was part of it. For any other component, the layer is
   /// rendered again.
@@ -214,15 +229,17 @@ abstract class Component3D({
     if (world == null) {
       return;
     }
-    final self = this;
-    if (shadows && self is! Object3D) {
+    onMarkDrawDirty(world, shadows: shadows);
+  }
+
+  /// Records a programmatic draw invalidation in [world].
+  @protected
+  void onMarkDrawDirty(World3D world, {required bool shadows}) {
+    if (shadows) {
       world.markSceneDirty();
       return;
     }
-    if (shadows && self is Object3D) {
-      world.shadowCasters.changed(self);
-    }
-    world.markComponentDirty(shadows: shadows);
+    world.markComponentDirty(shadows: false);
   }
 
   bool _includeInSceneBounds = true;
@@ -275,7 +292,7 @@ abstract class Component3D({
   /// [transform] or an ancestor [Component3D]'s transform invalidates
   /// [worldTransformMatrix].
   ///
-  /// Downstream caches (`Collider3D`, [SceneSpatialIndex3D], `SpatialAudio3D`)
+  /// Downstream caches (`Collider3D`, `SceneSpatialIndex3D`, `SpatialAudio3D`)
   /// can compare [worldTransformVersion] against a previously recorded integer
   /// in `O(1)` to skip unchanged world transforms.
   int get worldTransformVersion => _worldTransformVersion;
@@ -367,7 +384,7 @@ abstract class Component3D({
 
   /// The rotation of this component.
   NotifyingQuaternion get rotation => transform.rotation;
-  set rotation(NotifyingQuaternion rotation) => transform.rotation = rotation;
+  set rotation(Quaternion rotation) => transform.rotation = rotation;
 
   /// The scale factor of this component. The scale can be different along
   /// the X, Y and Z dimensions. A scale greater than 1 makes the component
@@ -384,7 +401,7 @@ abstract class Component3D({
   /// The world-space axis-aligned bounding box for this component and all its
   /// [Component3D] children.
   ///
-  /// Subclasses with geometry (e.g. [MeshComponent]) override
+  /// Subclasses with geometry (e.g. `MeshComponent`) override
   /// [computeLocalAabb] to include their own mesh bounds.
   Aabb3 get aabb {
     if (_aabbDirty) {
@@ -443,29 +460,33 @@ abstract class Component3D({
       parent.markAabbDirty();
     }
     final world = _cachedWorld;
-    final self = this;
-    if (world != null && self is Object3D) {
-      world.shadowCasters.added(self);
-      world.spatialIndex3D.onObjectAdded(self);
+    if (world != null) {
+      onWorldMounted(world);
     }
-    world?.markComponentDirty(shadows: this is! LightComponent);
+    world?.markComponentDirty(shadows: affectsShadowPass);
   }
+
+  /// Hook invoked when this component mounts inside [world].
+  @protected
+  void onWorldMounted(World3D world) {}
 
   @override
   void onRemove() {
     final world = _cachedWorld;
-    final self = this;
-    if (world != null && self is Object3D) {
-      world.shadowCasters.removed(self);
-      world.spatialIndex3D.onObjectRemoved(self);
+    if (world != null) {
+      onWorldRemoved(world);
     }
-    world?.markComponentDirty(shadows: this is! LightComponent);
+    world?.markComponentDirty(shadows: affectsShadowPass);
     _cachedWorld = null;
     if (parent case final Component3D parent) {
       parent.markAabbDirty();
     }
     super.onRemove();
   }
+
+  /// Hook invoked when this component leaves [world].
+  @protected
+  void onWorldRemoved(World3D world) {}
 
   void _recomputeAabb() {
     final localAabb = computeLocalAabb();
@@ -506,10 +527,10 @@ abstract class Component3D({
     if (!initialized) {
       // No geometry and no children, so degenerate to point at the world
       // position.
-      final world = worldTransformMatrix;
+      final s = worldTransformMatrix.storage;
       _cachedAabb
-        ..min.setValues(world.m41, world.m42, world.m43)
-        ..max.setValues(world.m41, world.m42, world.m43);
+        ..min.setValues(s[12], s[13], s[14])
+        ..max.setValues(s[12], s[13], s[14]);
     }
   }
 
@@ -522,10 +543,7 @@ abstract class Component3D({
       return;
     }
     _aabbDirty = true;
-    final self = this;
-    if (self is Object3D) {
-      _cachedWorld?.spatialIndex3D.onObjectMoved(self);
-    }
+    onAabbDirtied();
 
     if (parent case final Component3D parent) {
       parent.markAabbDirty();
@@ -533,6 +551,10 @@ abstract class Component3D({
       _boundsOwner?._changed(this);
     }
   }
+
+  /// Hook invoked when this component's bounds are marked dirty.
+  @protected
+  void onAabbDirtied() {}
 
   @override
   void renderTree(Canvas canvas) {
@@ -594,90 +616,32 @@ abstract class Component3D({
   /// [cameraMask], [priority], [prefabId], [tags3D], and (when requested)
   /// descendant [Component3D]s.
   ///
-  /// The built-in implementation copies [Group3D], [MeshComponent],
-  /// [LightComponent], [LodMeshComponent], [InstancedGroup3D] (with the
-  /// colors and instance data of its instances), [SkyboxComponent3D] and
-  /// [Text3DComponent]; `ModelComponent` overrides it. Meshes, materials and
-  /// models are shared with the copy, not copied. Any other type, a subclass
-  /// of these types included, throws an [UnsupportedError] unless it
+  /// The built-in leaf components override [cloneSelf] (`Group3D`,
+  /// `MeshComponent`, `LightComponent`, `LodMeshComponent`, `InstancedGroup3D`,
+  /// `SkyboxComponent3D`, `Text3DComponent`, and `ModelComponent`). Meshes,
+  /// materials and models are shared with the copy, not copied. Any other
+  /// type, a subclass included, throws an [UnsupportedError] unless it
   /// overrides [cloneSelf] to copy its own state: a copy of another type
   /// would silently lose it.
   @protected
   Component3D cloneSelf() {
-    final type = runtimeType;
-    switch (this) {
-      case _ when type == Group3D:
-        return Group3D();
-      case final MeshComponent self when type == MeshComponent:
-        return MeshComponent(
-          mesh: self.mesh,
-          castsShadows: self.castsShadows,
-          color: self.color,
-          instanceData: self.instanceData.clone(),
-          jointTransforms: self.jointTransforms == null
-              ? null
-              : {
-                  for (final entry in self.jointTransforms!.entries)
-                    entry.key: [for (final m in entry.value) m.clone()],
-                },
-        );
-      case final LightComponent self when type == LightComponent:
-        return LightComponent(
-          source: _cloneLightSource(self.source),
-          lightMask: self.lightMask,
-        );
-      case final LodMeshComponent self when type == LodMeshComponent:
-        return LodMeshComponent(
-          levels: List.of(self.levels),
-          shadowMesh: self.shadowMesh,
-          lowestLodInShadowPass: self.lowestLodInShadowPass,
-          hysteresis: self.hysteresis,
-          color: self.color,
-          instanceData: self.instanceData.clone(),
-          castsShadows: self.castsShadows,
-        );
-      case final InstancedGroup3D self when type == InstancedGroup3D:
-        final copy = InstancedGroup3D(
-          mesh: self.mesh,
-          initialCapacity: math.max(1, self.length),
-          castsShadows: self.castsShadows,
-        );
-        final transform = Matrix4.zero();
-        final data = Vector4.zero();
-        for (var i = 0; i < self.length; i++) {
-          copy.addInstance(
-            transform: self.instanceTransform(i, out: transform),
-            color: self.instanceColor(i),
-            instanceData: self.instanceDataAt(i, out: data),
-          );
-        }
-        return copy;
-      case final SkyboxComponent3D self when type == SkyboxComponent3D:
-        return SkyboxComponent3D(material: self.material);
-      case final Text3DComponent self when type == Text3DComponent:
-        return Text3DComponent(
-          text: self.text,
-          style: self.style,
-          worldHeight: self.worldHeight,
-          backgroundColor: self.backgroundColor,
-          borderColor: self.borderColor,
-          cornerRadius: self.cornerRadius,
-          padding: self.padding,
-          orientation: self.orientation,
-        );
-      case _:
-        throw UnsupportedError(
-          '$type cannot be cloned: it does not override Component3D.cloneSelf '
-          'to copy its own state. Override cloneSelf, or register a builder '
-          'prefab (PrefabRegistry3D.registerBuilder) instead of a prototype.',
-        );
-    }
+    throw UnsupportedError(
+      '$runtimeType cannot be cloned: it does not override '
+      'Component3D.cloneSelf to copy its own state. Override cloneSelf, or '
+      'register a builder prefab (PrefabRegistry3D.registerBuilder) instead of '
+      'a prototype.',
+    );
   }
+
+  /// Hook allowing intermediate base classes (such as `Object3D`) to copy
+  /// base-layer state onto [copy] during [clone].
+  @protected
+  void copySubtypeStateTo(Component3D copy) {}
 
   /// Deep-clones (or shallow-clones when [includeChildren] is `false`) this
   /// [Component3D], preserving local TRS [transform], [visible], [cameraMask],
-  /// [priority], [prefabId], [tags3D], and the [Object3D.shadowMotion] of an
-  /// [Object3D].
+  /// [priority], [prefabId], [tags3D], and base-subtype properties via
+  /// [copySubtypeStateTo].
   Component3D clone({bool includeChildren = true}) {
     final copy = cloneSelf()
       ..position.setFrom(position)
@@ -687,10 +651,7 @@ abstract class Component3D({
       ..cameraMask = cameraMask
       ..priority = priority
       ..prefabId = prefabId;
-    final self = this;
-    if (self is Object3D && copy is Object3D) {
-      copy.shadowMotion = self.shadowMotion;
-    }
+    copySubtypeStateTo(copy);
     if (_tags3D case final tags? when tags.isNotEmpty) {
       for (final tag in tags) {
         copy.addTag3D(tag);
@@ -712,42 +673,39 @@ abstract class Component3D({
   /// This propagates down to child [Component3D]s so the entire subtree
   /// stays consistent.
   ///
-  /// The [Object3D]s of the subtree are reported to [casters], when given, as
-  /// casters that moved (see [ShadowSettings.cacheStillCasters]).
-  void _markWorldTransformDirty([ShadowCasterTracker? casters]) {
+  /// When [recordShadowMove] is `true`, shadow-casting descendants notify
+  /// the world's `ShadowCasterTracker`.
+  void _markWorldTransformDirty({bool recordShadowMove = false}) {
     _worldTransformVersion++;
     _worldTransformDirty = true;
     _negativeScaleDirty = true;
     _aabbDirty = true;
-    final self = this;
-    if (self is LightComponent) {
-      // The worlds that borrow the light follow it, see
-      // [World3D.lightsVersion].
-      _cachedWorld?.markLightsDirty(shadows: _moveCanMoveShadows());
-    } else if (self is Object3D) {
-      casters?.changed(self);
-      _cachedWorld?.spatialIndex3D.onObjectMoved(self);
-    }
+    onWorldTransformDirtied(_cachedWorld, recordShadowMove: recordShadowMove);
     final list = _childComponents3D;
     if (list != null && list.isNotEmpty) {
       for (var i = 0; i < list.length; i++) {
-        list[i]._markWorldTransformDirty(casters);
+        list[i]._markWorldTransformDirty(recordShadowMove: recordShadowMove);
       }
     } else if (!isMounted && hasChildren) {
       for (final child in children) {
         if (child is Component3D) {
-          child._markWorldTransformDirty(casters);
+          child._markWorldTransformDirty(recordShadowMove: recordShadowMove);
         }
       }
     }
   }
 
+  /// Hook invoked when this component's world transform becomes dirty.
+  @protected
+  void onWorldTransformDirtied(
+    World3D? world, {
+    required bool recordShadowMove,
+  }) {}
+
   void _onTransformChanged() {
     final world = _cachedWorld;
     final movesShadows = world != null && _moveCanMoveShadows();
-    _markWorldTransformDirty(
-      world != null && movesShadows ? world.shadowCasters : null,
-    );
+    _markWorldTransformDirty(recordShadowMove: movesShadows);
     if (parent case final Component3D parent) {
       parent.markAabbDirty();
     } else {
@@ -757,10 +715,7 @@ abstract class Component3D({
   }
 
   /// Whether moving this component can change a shadow map: when it has
-  /// 3D children (they move along), when it is an [Object3D] that casts
-  /// shadows, or when it is a light whose source casts shadows (their maps
-  /// are rendered from the light). A moving collider, sound, or light
-  /// without shadows leaves a cached static shadow map alone.
+  /// 3D children (they move along) or [isShadowDirtyOnMove] holds.
   bool _moveCanMoveShadows() {
     final list = _childComponents3D;
     if (list != null && list.isNotEmpty) {
@@ -773,94 +728,7 @@ abstract class Component3D({
         }
       }
     }
-    final self = this;
-    if (self is Object3D) {
-      return self.castsShadows;
-    }
-    if (self is LightComponent) {
-      return switch (self.source) {
-        final DirectionalLight light => light.shadows != null,
-        final SpotLight light => light.shadows != null,
-        final PointLight light => light.shadows != null,
-        _ => false,
-      };
-    }
-    return false;
-  }
-
-  static LightSource _cloneLightSource(LightSource source) {
-    switch (source) {
-      case final AmbientLight s:
-        return AmbientLight(color: s.color, intensity: s.intensity);
-      case final HemisphereLight s:
-        return HemisphereLight(
-          skyColor: s.skyColor,
-          groundColor: s.groundColor,
-          intensity: s.intensity,
-          up: s.up.clone(),
-        );
-      case final DirectionalLight s:
-        return DirectionalLight(
-          color: s.color,
-          intensity: s.intensity,
-          direction: s.direction?.clone(),
-          specular: s.specular,
-          shadows: _cloneShadows(s.shadows),
-        );
-      case final PointLight s:
-        return PointLight(
-          color: s.color,
-          intensity: s.intensity,
-          range: s.range,
-          shadows: _cloneShadows(s.shadows),
-        );
-      case final SpotLight s:
-        return SpotLight(
-          color: s.color,
-          intensity: s.intensity,
-          direction: s.direction?.clone(),
-          innerConeAngle: s.innerConeAngle,
-          outerConeAngle: s.outerConeAngle,
-          range: s.range,
-          specular: s.specular,
-          shadows: _cloneShadows(s.shadows),
-        );
-      case _:
-        throw UnsupportedError(
-          'A LightComponent with a ${source.runtimeType} cannot be cloned.',
-        );
-    }
-  }
-
-  static ShadowSettings? _cloneShadows(ShadowSettings? shadows) {
-    if (shadows == null) {
-      return null;
-    }
-    return ShadowSettings(
-      resolution: shadows.resolution,
-      fit: shadows.fit,
-      bounds: shadows.bounds == null ? null : Aabb3.copy(shadows.bounds!),
-      casterBounds: shadows.casterBounds == null
-          ? null
-          : Aabb3.copy(shadows.casterBounds!),
-      maxDistance: shadows.maxDistance,
-      strength: shadows.strength,
-      color: shadows.color,
-      softness: shadows.softness,
-      depthBias: shadows.depthBias,
-      normalBias: shadows.normalBias,
-      encoding: shadows.encoding,
-      stabilize: shadows.stabilize,
-      cacheWhenStatic: shadows.cacheWhenStatic,
-      cacheStillCasters: shadows.cacheStillCasters,
-      stillCasterFrames: shadows.stillCasterFrames,
-      cascades: shadows.cascades,
-      cascadeSplitRatio: shadows.cascadeSplitRatio,
-      cascadeSplits: shadows.cascadeSplits == null
-          ? null
-          : List.of(shadows.cascadeSplits!),
-      cascadeBlendRange: shadows.cascadeBlendRange,
-    );
+    return isShadowDirtyOnMove;
   }
 }
 
@@ -875,4 +743,12 @@ class Group3D({
   super.tags3D,
   super.prefabId,
   super.cameraMask,
-}) extends Component3D;
+}) extends Component3D {
+  @override
+  Component3D cloneSelf() {
+    if (runtimeType != Group3D) {
+      return super.cloneSelf();
+    }
+    return Group3D();
+  }
+}

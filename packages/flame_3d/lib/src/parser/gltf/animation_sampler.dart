@@ -1,5 +1,5 @@
+import 'package:flame_3d/core.dart' show AnimationInterpolation;
 import 'package:flame_3d/src/parser/gltf/accessor.dart';
-import 'package:flame_3d/src/parser/gltf/animation_interpolation.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_node.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_ref.dart';
 import 'package:flame_3d/src/parser/gltf/gltf_root.dart';
@@ -28,7 +28,11 @@ class AnimationSampler({
         root: root,
         input: Parser.ref(root, map, 'input')!,
         interpolation:
-            AnimationInterpolation.parse(map, 'interpolation') ??
+            Parser.stringEnum(
+              map,
+              'interpolation',
+              AnimationInterpolation.valueOf,
+            ) ??
             AnimationInterpolation.linear,
         output: Parser.ref(root, map, 'output')!,
       );

@@ -2,175 +2,10 @@ import 'dart:math' as math;
 
 import 'package:flame/components.dart' show Component;
 import 'package:flame_3d/camera.dart' show World3D;
-import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
+import 'package:flame_3d/src/audio/audio_zone_3d.dart';
 import 'package:flame_3d/src/audio/spatial_audio_3d.dart';
-import 'package:flame_3d/src/audio/spatial_audio_registry_3d.dart';
 import 'package:meta/meta.dart';
-
-/// Acoustic reverb impulse/algorithmic preset parameters blended across
-/// [AudioZone3D] volumes by [SpatialAudioMixer3D].
-class const ReverbPreset3D({
-  required final double wetMix,
-  required final double decaySeconds,
-  required final double preDelayMs,
-  final String name = 'custom',
-}) {
-  /// Linearly interpolates between [a] and [b] by [t] in `[0, 1]`.
-  factory ReverbPreset3D.lerp(
-    ReverbPreset3D a,
-    ReverbPreset3D b,
-    double t,
-  ) {
-    final u = t.clamp(0.0, 1.0);
-    return ReverbPreset3D(
-      wetMix: a.wetMix + (b.wetMix - a.wetMix) * u,
-      decaySeconds: a.decaySeconds + (b.decaySeconds - a.decaySeconds) * u,
-      preDelayMs: a.preDelayMs + (b.preDelayMs - a.preDelayMs) * u,
-      name: u < 0.5 ? a.name : b.name,
-    );
-  }
-
-  /// Dry outdoor / anechoic baseline (`wetMix: 0`).
-  static const ReverbPreset3D dry = ReverbPreset3D(
-    wetMix: 0.0,
-    decaySeconds: 0.2,
-    preDelayMs: 0.0,
-    name: 'dry',
-  );
-
-  /// Compact indoor room preset.
-  static const ReverbPreset3D room = ReverbPreset3D(
-    wetMix: 0.25,
-    decaySeconds: 0.9,
-    preDelayMs: 8.0,
-    name: 'room',
-  );
-
-  /// Stone cavern / tunnel preset.
-  static const ReverbPreset3D cave = ReverbPreset3D(
-    wetMix: 0.6,
-    decaySeconds: 2.8,
-    preDelayMs: 24.0,
-    name: 'cave',
-  );
-
-  /// Large reverberant hall / cathedral preset.
-  static const ReverbPreset3D cathedral = ReverbPreset3D(
-    wetMix: 0.78,
-    decaySeconds: 4.5,
-    preDelayMs: 42.0,
-    name: 'cathedral',
-  );
-}
-
-/// 3D spatial reverb zone (spherical [radius] or OBB [halfExtents]) with a
-/// smooth outer [fadeDistance] feather margin.
-///
-/// A zone only describes reverb settings; `SpatialAudioMixer3D` blends the
-/// zones' presets at the listener and hands the result to its backend, which
-/// must apply it.
-class AudioZone3D({
-  required var ReverbPreset3D preset,
-  var double radius = 8.0,
-  Vector3? halfExtents,
-  var double fadeDistance = 2.0,
-  var bool enabled = true,
-  int priority = 0,
-  super.position,
-  super.rotation,
-  super.scale,
-  super.children,
-}) extends Component3D {
-  this
-    : assert(radius >= 0, 'radius must be non-negative'),
-      assert(fadeDistance >= 0, 'fadeDistance must be non-negative');
-
-  /// Order of this zone when overlapping zones are blended: zones with a
-  /// higher [audioPriority] are applied later and win (`priority` in the
-  /// constructor).
-  ///
-  /// This is not the component [priority], which orders the component among
-  /// its siblings for updates and rendering.
-  int audioPriority = priority;
-
-  @override
-  void onMount() {
-    super.onMount();
-    if (worldOrNull case final world?) {
-      SpatialAudioRegistry3D.of(world).addZone(this);
-    }
-  }
-
-  @override
-  void onRemove() {
-    SpatialAudioRegistry3D.maybeOf(worldOrNull)?.removeZone(this);
-    super.onRemove();
-  }
-
-  /// Optional local box half-extents; when `null`, uses spherical [radius].
-  final Vector3? halfExtents = halfExtents?.clone();
-
-  final Matrix4 _invWorld = Matrix4.identity();
-  final Vector3 _localPt = Vector3.zero();
-  int _invWorldVer = -1;
-  bool _invWorldValid = false;
-
-  /// Computes spatial influence weight in `[0, 1]` at [worldPoint] (`1.0`
-  /// inside the inner volume, tapering to `0.0` across [fadeDistance]).
-  double weightAt(Vector3 worldPoint) {
-    if (!enabled) {
-      return 0.0;
-    }
-    final box = halfExtents;
-    double signedDistOutside;
-    if (box != null) {
-      final worldMat = worldTransformMatrix;
-      final worldVer = worldTransformVersion;
-      if (worldVer != _invWorldVer) {
-        _invWorldVer = worldVer;
-        _invWorld.setFrom(worldMat);
-        _invWorldValid = _invWorld.invert().abs() >= 1e-15;
-      }
-      if (!_invWorldValid) {
-        return 0.0;
-      }
-      _localPt.setFrom(worldPoint);
-      _invWorld.transform3(_localPt);
-      final qx = math.max(0.0, _localPt.x.abs() - box.x);
-      final qy = math.max(0.0, _localPt.y.abs() - box.y);
-      final qz = math.max(0.0, _localPt.z.abs() - box.z);
-      signedDistOutside = math.sqrt(qx * qx + qy * qy + qz * qz);
-    } else {
-      final s = worldTransformMatrix.storage;
-      final dx = worldPoint.x - s[12];
-      final dy = worldPoint.y - s[13];
-      final dz = worldPoint.z - s[14];
-      final distSq = dx * dx + dy * dy + dz * dz;
-      final r = radius;
-      if (distSq <= r * r) {
-        return 1.0;
-      }
-      if (fadeDistance <= 1e-6) {
-        return 0.0;
-      }
-      final maxR = r + fadeDistance;
-      if (distSq >= maxR * maxR) {
-        return 0.0;
-      }
-      signedDistOutside = math.sqrt(distSq) - r;
-    }
-
-    if (signedDistOutside <= 0.0) {
-      return 1.0;
-    }
-    if (fadeDistance <= 1e-6 || signedDistOutside >= fadeDistance) {
-      return 0.0;
-    }
-    final t = 1.0 - (signedDistOutside / fadeDistance);
-    return t * t * (3.0 - 2.0 * t);
-  }
-}
 
 /// Evaluated per-voice channel parameters handed to an [AudioVoiceBackend3D].
 class AudioVoiceParams3D({
@@ -378,7 +213,9 @@ class SpatialAudioMixer3D({
       }
     }
     if (_world case final world?) {
-      SpatialAudioRegistry3D.of(world).mixers.add(this);
+      SpatialAudioWorldRegistry3D.of(
+        world,
+      ).addEmitterRemovedListener(forgetEmitter);
     }
     _zonesDirty = true;
     _seenRegistryZonesVer = -2;
@@ -387,7 +224,8 @@ class SpatialAudioMixer3D({
   @override
   void update(double dt) {
     super.update(dt);
-    final registry = SpatialAudioRegistry3D.maybeOf(_world);
+    final registry = SpatialAudioWorldRegistry3D.maybeOf(_world);
+    final zoneRegistry = AudioZoneWorldRegistry3D.maybeOf(_world);
     final activeListener = listener ?? registry?.firstListener;
     if (activeListener == null) {
       return;
@@ -395,15 +233,15 @@ class SpatialAudioMixer3D({
     final earPos = activeListener.earPosition; // syncs the listener once
 
     // 1. Evaluate & smoothly crossfade AudioZone3D reverb presets at `earPos`.
-    final regZonesVer = registry?.zonesVersion ?? -1;
+    final regZonesVer = zoneRegistry?.zonesVersion ?? -1;
     if (_zonesDirty || regZonesVer != _seenRegistryZonesVer) {
       _zonesDirty = false;
       _seenRegistryZonesVer = regZonesVer;
       _allZones
         ..clear()
         ..addAll(_registeredZones);
-      if (registry != null) {
-        final rz = registry.zones;
+      if (zoneRegistry != null) {
+        final rz = zoneRegistry.zones;
         for (var i = 0; i < rz.length; i++) {
           final zone = rz[i];
           if (!_registeredZones.contains(zone)) {
@@ -633,7 +471,9 @@ class SpatialAudioMixer3D({
   void onRemove() {
     stopAllRealVoices();
     _lastVoiceParams.clear();
-    SpatialAudioRegistry3D.maybeOf(_world)?.mixers.remove(this);
+    SpatialAudioWorldRegistry3D.maybeOf(
+      _world,
+    )?.removeEmitterRemovedListener(forgetEmitter);
     _world = null;
     super.onRemove();
   }

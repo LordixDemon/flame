@@ -1,5 +1,6 @@
-import 'package:flame_3d/game.dart';
 import 'package:flame_3d/src/extensions/clip_space.dart';
+import 'package:vector_math/vector_math.dart'
+    show Matrix4, Vector3, degrees2Radians;
 
 export 'package:vector_math/vector_math.dart'
     show

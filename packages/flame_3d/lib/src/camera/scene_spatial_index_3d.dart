@@ -1,10 +1,10 @@
 import 'dart:collection' show UnmodifiableListView;
 
 import 'package:flame_3d/camera.dart';
-import 'package:flame_3d/collisions.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
+import 'package:flame_3d/src/spatial/dynamic_aabb_tree_3d.dart';
 import 'package:meta/meta.dart';
 
 /// Incremental dynamic AABB Bounding Volume Hierarchy (BVH) over the

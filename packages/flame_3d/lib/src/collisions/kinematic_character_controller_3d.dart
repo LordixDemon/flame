@@ -1,6 +1,6 @@
 import 'dart:math' as math;
 
-import 'package:flame_3d/camera.dart' show Ray, World3D;
+import 'package:flame_3d/camera.dart' show World3D;
 import 'package:flame_3d/collisions.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';

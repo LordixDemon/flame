@@ -1,8 +1,6 @@
 import 'package:flame/components.dart' show HasFixedUpdate;
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
-import 'package:flame_3d/src/effects/transform_effects_3d.dart'
-    show slerpShortestInto;
 
 /// Mixin on [Component3D] providing zero-allocation fixed-timestep transform
 /// interpolation (`position`, `scale`, and shortest-hemisphere `Quaternion`
@@ -152,7 +150,12 @@ mixin FixedTransformInterpolation3D on Component3D {
       _prevScale.y + (_currScale.y - _prevScale.y) * t,
       _prevScale.z + (_currScale.z - _prevScale.z) * t,
     );
-    slerpShortestInto(_prevRotation, _currRotation, t, this);
+    AnimationInterpolation.slerpQuaternionsInto(
+      _prevRotation,
+      _currRotation,
+      t,
+      rotation,
+    );
   }
 
   /// Restores the exact simulated fixed-tick transform after rendering so

@@ -1,4 +1,9 @@
-part of 'occlusion_culler_3d.dart';
+import 'dart:collection' show UnmodifiableListView, UnmodifiableSetView;
+import 'dart:math' as math;
+import 'dart:typed_data';
+
+import 'package:flame_3d/core.dart';
+import 'package:flame_3d/src/extensions/clip_space.dart';
 
 /// Normalized 2D screen scissor rectangle `[minX, minY, maxX, maxY]` in
 /// `[0, 1]` produced by [PortalOcclusionGraph3D].

@@ -6,10 +6,10 @@ import 'dart:ui' show Color, FilterQuality;
 import 'package:flame/components.dart' show Component;
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
-import 'package:flame_3d/src/extensions/geometry_math.dart';
+import 'package:flame_3d/src/core/crc32.dart';
 import 'package:flame_3d/src/scene/prefab_3d.dart';
 
 part 'scene_serializer_binary.dart';

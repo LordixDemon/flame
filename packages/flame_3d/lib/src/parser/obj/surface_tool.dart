@@ -3,7 +3,7 @@
 import 'dart:collection';
 import 'dart:ui';
 
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart';
 import 'package:flame_3d/resources.dart';
 
 // TODO(wolfenrain): heavily inspired by the Godot one, maybe this should be

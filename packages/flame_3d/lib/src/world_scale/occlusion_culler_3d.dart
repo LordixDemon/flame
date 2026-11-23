@@ -1,12 +1,12 @@
-import 'dart:collection' show UnmodifiableListView, UnmodifiableSetView;
+import 'dart:collection' show UnmodifiableListView;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flame_3d/camera.dart' show SceneOcclusionCuller3D;
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/src/extensions/clip_space.dart';
 
 part 'occlusion_culler_rasterizer.dart';
-part 'portal_occlusion_graph_3d.dart';
 
 /// Oriented or axis-aligned 3D box occluder rasterized into
 /// [OcclusionCuller3D].
@@ -108,7 +108,7 @@ class OcclusionCuller3D({
 
   /// Base Hi-Z buffer height (`64` by default).
   final int height = 64,
-}) {
+}) implements SceneOcclusionCuller3D {
   /// Creates a software Hi-Z occlusion culler with dimensions divisible by 4.
   this
     : assert(width >= 4 && width % 4 == 0, 'width must be a multiple of 4'),
@@ -177,9 +177,11 @@ class OcclusionCuller3D({
   int get occludedCount => _occludedCount;
 
   /// Number of occluder primitives rasterized in the current frame.
+  @override
   int get rasterizedOccluderCount => _rasterizedOccluderCount;
 
   /// Whether at least one box or quad occluder is registered.
+  @override
   bool get hasOccluders => _boxes.isNotEmpty || _quads.isNotEmpty;
 
   late final List<OccluderBox3D> _boxesView = UnmodifiableListView(_boxes);
@@ -221,6 +223,7 @@ class OcclusionCuller3D({
   /// Clears the depth pyramid, rasterizes all registered [boxes] and [quads]
   /// for [viewProjection], and builds [depthMip0], [depthMip1], and
   /// [depthMip2].
+  @override
   void rasterizeOccluders(Matrix4 viewProjection) {
     _subDepth.fillRange(0, _subDepth.length, 1.0);
     _testedCount = 0;
@@ -300,6 +303,7 @@ class OcclusionCuller3D({
   /// nearest projected depth `minZ <= maxOccluderDepthInRect + depthBias`, and
   /// `false` when 100% occluded behind rasterized occluders (or completely
   /// outside the clip volume).
+  @override
   bool isAabbVisible(
     Aabb3 worldBounds,
     Matrix4 viewProjection, {

@@ -6,15 +6,15 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
 
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart';
 import 'package:flame_3d/src/graphics/backend/flutter_gpu/gles_driver_probe.dart';
 import 'package:flame_3d/src/graphics/backend/flutter_gpu/shader_bundle_reflection.dart';
 import 'package:flame_3d/src/graphics/backend/gpu_backend.dart' as base;
 import 'package:flame_3d/src/graphics/backend/gpu_device.dart';
 import 'package:flame_3d/src/graphics/backend/gpu_enums.dart';
 import 'package:flame_3d/src/graphics/backend/gpu_handles.dart';
+import 'package:flame_3d/src/graphics/backend/texture_sampler.dart';
 import 'package:flame_3d/src/graphics/render_state.dart';
-import 'package:flame_3d/src/resources/texture/texture_sampler.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart' show WidgetsBinding;

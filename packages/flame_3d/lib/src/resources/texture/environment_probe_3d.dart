@@ -6,6 +6,23 @@ import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 
+/// Minimal read-only contract implemented by spatial reflection probe volumes
+/// (such as `ReflectionProbeVolume3D`) so materials can bind local IBL probes
+/// without depending on the `components` layer.
+abstract interface class ReflectionProbeSource3D() {
+  /// Baked environment probe supplied by this volume.
+  EnvironmentProbe3D get probe;
+
+  /// Whether reflections inside this volume use box-projected parallax.
+  bool get boxProjection;
+
+  /// Current world-space center of this reflection probe volume.
+  Vector3 get worldCenter;
+
+  /// Current world-space AABB bounds of this reflection probe volume.
+  Aabb3 get worldBounds;
+}
+
 /// {@template environment_probe_3d}
 /// Pre-filtered Image-Based Lighting (IBL) probe storing 9-band (`L0..L2`)
 /// Spherical Harmonics (`SH9`) diffuse irradiance coefficients alongside a

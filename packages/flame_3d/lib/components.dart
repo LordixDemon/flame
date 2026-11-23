@@ -8,6 +8,8 @@ export 'src/components/line_3d.dart';
 export 'src/components/lod_mesh_component.dart';
 export 'src/components/mesh_component.dart';
 export 'src/components/object_3d.dart';
+export 'src/components/ray_hit_3d.dart';
+export 'src/components/reflection_probe_volume_3d.dart';
 export 'src/components/skybox_component_3d.dart';
 export 'src/components/text_3d_component.dart';
 export 'src/embedding/canvas_3d_fallback_component.dart';

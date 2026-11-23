@@ -1,9 +1,10 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' show Color;
 
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
-import 'package:flame_3d/game.dart';
+import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/extensions/geometry_math.dart';
@@ -411,6 +412,28 @@ class InstancedGroup3D({
 
   void _notifyWorldDirty({required bool shadows}) {
     markDrawDirty(shadows: shadows && castsShadows);
+  }
+
+  @override
+  Component3D cloneSelf() {
+    if (runtimeType != InstancedGroup3D) {
+      return super.cloneSelf();
+    }
+    final copy = InstancedGroup3D(
+      mesh: mesh,
+      initialCapacity: math.max(1, length),
+      castsShadows: castsShadows,
+    );
+    final transform = Matrix4.zero();
+    final data = Vector4.zero();
+    for (var i = 0; i < length; i++) {
+      copy.addInstance(
+        transform: instanceTransform(i, out: transform),
+        color: instanceColor(i),
+        instanceData: instanceDataAt(i, out: data),
+      );
+    }
+    return copy;
   }
 
   static final Matrix4 _scratchMatrix = Matrix4.identity();

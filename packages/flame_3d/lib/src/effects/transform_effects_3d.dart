@@ -259,7 +259,12 @@ class RotateToEffect3D(
 
   @override
   void apply(double progress) {
-    slerpShortestInto(_startRotation, _targetRotation, progress, target);
+    AnimationInterpolation.slerpQuaternionsInto(
+      _startRotation,
+      _targetRotation,
+      progress,
+      target.rotation,
+    );
   }
 
   @override
@@ -455,53 +460,4 @@ Vector3 _normalizedOrDefault(Vector3? candidate, Vector3 fallback) {
     return candidate.normalized();
   }
   return fallback.normalized();
-}
-
-/// Writes shortest-hemisphere Slerp between [q0] and [q1] at [t] directly into
-/// [component]'s `rotation` with zero heap allocations.
-void slerpShortestInto(
-  Quaternion q0,
-  Quaternion q1,
-  double t,
-  Component3D component,
-) {
-  var x1 = q1.x;
-  var y1 = q1.y;
-  var z1 = q1.z;
-  var w1 = q1.w;
-  var dot = q0.x * x1 + q0.y * y1 + q0.z * z1 + q0.w * w1;
-  if (dot < 0.0) {
-    dot = -dot;
-    x1 = -x1;
-    y1 = -y1;
-    z1 = -z1;
-    w1 = -w1;
-  }
-  dot = dot.clamp(0.0, 1.0);
-
-  final double s0;
-  final double s1;
-  if (1.0 - dot < 1e-6) {
-    s0 = 1.0 - t;
-    s1 = t;
-  } else {
-    final omega = math.acos(dot);
-    final invSin = 1.0 / math.sin(omega);
-    s0 = math.sin((1.0 - t) * omega) * invSin;
-    s1 = math.sin(t * omega) * invSin;
-  }
-
-  var rx = q0.x * s0 + x1 * s1;
-  var ry = q0.y * s0 + y1 * s1;
-  var rz = q0.z * s0 + z1 * s1;
-  var rw = q0.w * s0 + w1 * s1;
-  final len = math.sqrt(rx * rx + ry * ry + rz * rz + rw * rw);
-  if (len > 1e-12) {
-    final inv = 1.0 / len;
-    rx *= inv;
-    ry *= inv;
-    rz *= inv;
-    rw *= inv;
-  }
-  component.rotation.setValues(rx, ry, rz, rw);
 }

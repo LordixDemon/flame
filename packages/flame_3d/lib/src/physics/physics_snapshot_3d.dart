@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flame_3d/physics.dart';
-import 'package:flame_3d/src/extensions/geometry_math.dart';
+import 'package:flame_3d/src/core/crc32.dart';
 import 'package:flame_3d/src/physics/physics_world_3d.dart'
     show WarmContactRecord3D;
 

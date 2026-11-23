@@ -2,7 +2,7 @@ part of 'component_3d.dart';
 
 /// {@template shadow_caster_tracker}
 /// The change tracking of the shadow casters of a [World3D] that
-/// [ShadowSettings.cacheStillCasters] relies on: which casters stand still,
+/// `ShadowSettings.cacheStillCasters` relies on: which casters stand still,
 /// and when the kept layer of still casters must be rendered again.
 ///
 /// The renders of the world's shadows are counted ([clock]). Each [Object3D]

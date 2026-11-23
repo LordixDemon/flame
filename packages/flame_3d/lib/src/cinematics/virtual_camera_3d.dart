@@ -5,7 +5,6 @@ import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/src/extensions/geometry_math.dart';
-import 'package:flame_3d/src/parser/gltf/animation_interpolation.dart';
 import 'package:flutter/animation.dart' show Curve, Curves;
 import 'package:meta/meta.dart';
 

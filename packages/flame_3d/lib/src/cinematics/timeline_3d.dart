@@ -4,7 +4,6 @@ import 'dart:ui' show VoidCallback;
 import 'package:flame/components.dart' show Component;
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
-import 'package:flame_3d/game.dart' show NotifyingQuaternion;
 import 'package:flame_3d/model.dart';
 import 'package:flame_3d/src/cinematics/virtual_camera_3d.dart';
 

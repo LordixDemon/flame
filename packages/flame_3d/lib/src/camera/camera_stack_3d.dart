@@ -8,7 +8,7 @@ import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
 import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
-import 'package:flame_3d/src/embedding/embedded_renderer.dart';
+import 'package:flame_3d/src/graphics/embedded_renderer.dart';
 
 /// Framebuffer clear behavior for a [CameraViewportSlot3D] in a
 /// [CameraStack3D].

@@ -1,5 +1,4 @@
-import 'package:flame_3d/game.dart';
-import 'package:vector_math/vector_math.dart' show Frustum, Plane;
+import 'package:vector_math/vector_math.dart' show Aabb3, Frustum, Plane;
 
 /// Result of a frustum-AABB intersection test.
 enum CullResult() {
