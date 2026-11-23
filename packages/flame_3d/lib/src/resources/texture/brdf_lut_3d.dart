@@ -1,8 +1,8 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:flame_3d/graphics.dart';
-import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/graphics/backend.dart';
+import 'package:flame_3d/src/resources/texture/texture.dart';
 
 /// Karis Split-Sum GGX BRDF lookup table (`64x64`) + Kulla–Conty directional
 /// albedo for physically-accurate specular Image-Based Lighting.

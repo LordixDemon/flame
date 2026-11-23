@@ -3,8 +3,9 @@ import 'dart:typed_data';
 import 'dart:ui' show Color;
 
 import 'package:flame_3d/core.dart';
-import 'package:flame_3d/graphics.dart';
-import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/graphics/backend.dart';
+import 'package:flame_3d/src/resources/light.dart';
+import 'package:flame_3d/src/resources/texture/texture.dart';
 
 /// Volumetric 3D lattice of `L0..L2` Spherical Harmonics (`SH9`) diffuse
 /// irradiance probes over a world-space [bounds] box, backed by a flat

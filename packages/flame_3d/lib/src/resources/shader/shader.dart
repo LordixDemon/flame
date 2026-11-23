@@ -2,9 +2,21 @@ import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flame_3d/core.dart';
-import 'package:flame_3d/graphics.dart';
-import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/graphics/backend.dart';
+import 'package:flame_3d/src/resources/resource.dart';
+import 'package:flame_3d/src/resources/shader/uniform_block.dart';
+import 'package:flame_3d/src/resources/texture/texture.dart';
 import 'package:meta/meta.dart';
+
+/// Narrow binding target consumed by [Shader.bind] so shaders do not depend on
+/// the concrete `GraphicsDevice` in Layer 3.
+abstract interface class ShaderBindTarget() {
+  /// Bind a [UniformBlock] to its shader slot.
+  void bindUniformBlock(UniformBlock block);
+
+  /// Bind a [Texture] to the sampler [slot].
+  void bindTexture(GpuUniformSlot slot, Texture texture);
+}
 
 /// {@template shader}
 /// A shader [Resource] that represents a compiled shader program and the
@@ -17,8 +29,8 @@ import 'package:meta/meta.dart';
 /// Samplers are auto-detected at compile time via [GpuUniformSlot.sizeInBytes]
 /// returning `null` — no need to declare them separately.
 ///
-/// Some uniform blocks are filled by the [RenderContext3D] instead of by the
-/// material, once per render pass (see [RenderContext3D.passUniforms]): a
+/// Some uniform blocks are filled by the `RenderContext3D` instead of by the
+/// material, once per render pass (see `RenderContext3D.passUniforms`): a
 /// shader declares them like any other slot and does not set them.
 /// {@endtemplate}
 class Shader._(
@@ -243,7 +255,7 @@ class Shader._(
   /// [device].
   ///
   /// Unchanged blocks are not uploaded again within a frame.
-  void bind(GraphicsDevice device) {
+  void bind(ShaderBindTarget device) {
     for (var i = 0; i < _boundBlocks.length; i++) {
       device.bindUniformBlock(_boundBlocks[i]);
     }

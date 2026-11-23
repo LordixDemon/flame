@@ -8,52 +8,121 @@ final Int32List _gridScratch = Int32List(RenderContext3D.maxPointLights);
 final _scratchDirection = Vector3.zero();
 final _defaultAmbientLight = AmbientLight();
 
-extension _RenderContext3DUniforms on RenderContext3D {
-  void _saveCameraSnapshot(_CameraSnapshot out) {
-    out.view.setFrom(_viewMatrix);
-    out.projection.setFrom(_projectionMatrix);
-    out.viewProjection.setFrom(_viewProjectionMatrix);
-    out.cameraPosition.setFrom(_cameraPosition);
-    out.depthRow.setAll(0, _depthRow);
-    out.isMirrored = _isMirrored;
-    _copyFrustum(out.frustum, _frustum);
-  }
+class _LightPassState() {
+  List<Light> lights = const [];
+  int? worldLightsVersion;
+  Object? syncedOwner;
+  LightGridSettings? lightGrid;
+  Aabb3? lightGridBounds;
+  bool prioritizeNearestLights = false;
 
-  void _restoreCameraSnapshot(
-    _CameraSnapshot snap, {
-    required bool active,
-    required bool atlasActive,
+  final LightGrid3D lightGridBuilder = LightGrid3D();
+
+  int _lightSelPass = -1;
+  List<Light>? _lightSelList;
+  int _lightSelLength = -1;
+  int _lightSelMask = 0;
+  AmbientLight? selAmbient;
+  bool selHasHemisphere = false;
+  HemisphereLight? selHemisphere;
+  final List<Light> selDirectionals = [];
+
+  int _selPointPass = -1;
+  List<Light>? _selPointList;
+  int _selPointLength = -1;
+  int _selPointMask = 0;
+  bool _selPointPrioritize = false;
+  LightGridSettings? _selPointGrid;
+  int _selPointCount = 0;
+  final Int32List selPointIndices = Int32List(
+    RenderContext3D.maxPointLights,
+  );
+
+  int _selSpotPass = -1;
+  List<Light>? _selSpotList;
+  int _selSpotLength = -1;
+  int _selSpotMask = 0;
+  LightGridSettings? _selSpotGrid;
+  int _selSpotCount = 0;
+  final Int32List selSpotIndices = Int32List(
+    RenderContext3D.maxSpotLights,
+  );
+
+  int _gridPlanPass = -1;
+  List<Light>? _gridPlanLights;
+  int _gridPlanMask = 0;
+  LightGridSettings? _gridPlanSettings;
+  bool _gridPlanPrioritize = false;
+  bool gridPoints = false;
+  bool gridSpots = false;
+  int gridUniformPoints = RenderContext3D.maxPointLights;
+  int gridUniformSpots = RenderContext3D.maxSpotLights;
+  int _gridBuiltPass = -1;
+
+  int _syncedLightRev = -1;
+  int _syncedFogVer = -1;
+  int _syncedWaterVer = -1;
+  double _syncedProbeIntensity = -1.0;
+
+  bool needsSyncOptions({
+    required RenderContext3D context,
+    required List<Light> lights,
+    required int lightsVersion,
+    required FogSettings? fog,
+    required WaterVolumeSettings? waterVolume,
+    required RenderDebugMode3D renderDebugMode,
+    required LightProbeGrid3D? lightProbeGrid,
+    required List<ReflectionProbeSource3D> reflectionProbes,
+    required bool prioritizeNearestLights,
+    required LightGridSettings? lightGrid,
+    required Aabb3? lightGridBounds,
+    required bool hdrEnabled,
+    Object? owner,
   }) {
-    _bumpAllPassKinds();
-    _cameraPass++;
-    _shadows
-      ..active = active
-      ..atlasActive = atlasActive;
-    _viewMatrix.setFrom(snap.view);
-    _projectionMatrix.setFrom(snap.projection);
-    _viewProjectionMatrix.setFrom(snap.viewProjection);
-    _cameraPosition.setFrom(snap.cameraPosition);
-    _depthRow.setAll(0, snap.depthRow);
-    _isMirrored = snap.isMirrored;
-    _copyFrustum(_frustum, snap.frustum);
+    final fogVer = fog?.version ?? -1;
+    final waterVer = waterVolume?.version ?? -1;
+    final probeIntensity = lightProbeGrid?.intensity ?? -1.0;
+    if (_syncedLightRev == lightsVersion &&
+        identical(syncedOwner, owner) &&
+        identical(this.lights, lights) &&
+        identical(context.fog, fog) &&
+        _syncedFogVer == fogVer &&
+        identical(context.waterVolume, waterVolume) &&
+        _syncedWaterVer == waterVer &&
+        context.renderDebugMode == renderDebugMode &&
+        identical(context.lightProbeGrid, lightProbeGrid) &&
+        _syncedProbeIntensity == probeIntensity &&
+        identical(context.reflectionProbes, reflectionProbes) &&
+        this.prioritizeNearestLights == prioritizeNearestLights &&
+        identical(this.lightGrid, lightGrid) &&
+        this.lightGridBounds == lightGridBounds &&
+        context.hdrEnabled == hdrEnabled) {
+      return false;
+    }
+    syncedOwner = owner;
+    _syncedLightRev = lightsVersion;
+    _syncedFogVer = fogVer;
+    _syncedWaterVer = waterVer;
+    _syncedProbeIntensity = probeIntensity;
+    return true;
   }
 
-  void _ensureLightSelection() {
+  void ensureLightSelection(int pass, int cameraMask) {
     final list = lights;
-    if (_lightSelPass == _pass &&
+    if (_lightSelPass == pass &&
         identical(_lightSelList, list) &&
         _lightSelLength == list.length &&
         _lightSelMask == cameraMask) {
       return;
     }
-    _lightSelPass = _pass;
+    _lightSelPass = pass;
     _lightSelList = list;
     _lightSelLength = list.length;
     _lightSelMask = cameraMask;
-    _selAmbient = null;
-    _selHasHemisphere = false;
-    _selHemisphere = null;
-    _selDirectionals.clear();
+    selAmbient = null;
+    selHasHemisphere = false;
+    selHemisphere = null;
+    selDirectionals.clear();
     for (var i = 0; i < list.length; i++) {
       final l = list[i];
       if ((l.lightMask & cameraMask) == 0) {
@@ -61,34 +130,36 @@ extension _RenderContext3DUniforms on RenderContext3D {
       }
       final source = l.source;
       if (source is AmbientLight) {
-        _selAmbient ??= source;
+        selAmbient ??= source;
       } else if (source is HemisphereLight) {
-        _selHasHemisphere = true;
-        _selHemisphere ??= source;
+        selHasHemisphere = true;
+        selHemisphere ??= source;
       } else if (source is DirectionalLight &&
-          _selDirectionals.length < RenderContext3D.maxDirectionalLights) {
-        _selDirectionals.add(l);
+          selDirectionals.length < RenderContext3D.maxDirectionalLights) {
+        selDirectionals.add(l);
       }
     }
   }
 
-  void _planLightGrid() {
-    if (_gridPlanPass == _pass &&
+  void planLightGrid(RenderContext3D context) {
+    final pass = context._pass;
+    final cameraMask = context.cameraMask;
+    if (_gridPlanPass == pass &&
         identical(_gridPlanLights, lights) &&
         _gridPlanMask == cameraMask &&
         identical(_gridPlanSettings, lightGrid) &&
         _gridPlanPrioritize == prioritizeNearestLights) {
       return;
     }
-    _gridPlanPass = _pass;
+    _gridPlanPass = pass;
     _gridPlanLights = lights;
     _gridPlanMask = cameraMask;
     _gridPlanSettings = lightGrid;
     _gridPlanPrioritize = prioritizeNearestLights;
-    _gridPoints = false;
-    _gridSpots = false;
-    _gridUniformPoints = RenderContext3D.maxPointLights;
-    _gridUniformSpots = RenderContext3D.maxSpotLights;
+    gridPoints = false;
+    gridSpots = false;
+    gridUniformPoints = RenderContext3D.maxPointLights;
+    gridUniformSpots = RenderContext3D.maxSpotLights;
     final settings = lightGrid;
     if (settings == null) {
       return;
@@ -116,23 +187,23 @@ extension _RenderContext3DUniforms on RenderContext3D {
       }
     }
     final always = !settings.beyondLimitsOnly;
-    _gridPoints =
+    gridPoints =
         binnablePoints > 0 &&
         (always || points > RenderContext3D.maxPointLights);
-    _gridSpots =
+    gridSpots =
         binnableSpots > 0 && (always || spots > RenderContext3D.maxSpotLights);
-    if (_gridPoints) {
-      _gridUniformPoints = _pickPointLights(
-        this,
+    if (gridPoints) {
+      gridUniformPoints = _pickPointLights(
+        context,
         _gridScratch,
         0,
         RenderContext3D.maxPointLights,
         _pickFixed,
       );
     }
-    if (_gridSpots) {
-      _gridUniformSpots = _pickSpotLights(
-        this,
+    if (gridSpots) {
+      gridUniformSpots = _pickSpotLights(
+        context,
         _gridScratch,
         0,
         RenderContext3D.maxSpotLights,
@@ -143,48 +214,140 @@ extension _RenderContext3DUniforms on RenderContext3D {
 
   /// Builds the light grid of the pass, once per pass, when its lights need
   /// one; returns whether it holds any light.
-  bool _buildLightGrid() {
-    _planLightGrid();
-    if (!_gridPoints && !_gridSpots) {
-      _lightGrid.stats.active = false;
+  bool buildLightGrid(RenderContext3D context) {
+    planLightGrid(context);
+    if (!gridPoints && !gridSpots) {
+      lightGridBuilder.stats.active = false;
       return false;
     }
-    if (_gridBuiltPass != _pass) {
-      _gridBuiltPass = _pass;
-      _lightGrid.build(
+    if (_gridBuiltPass != context._pass) {
+      _gridBuiltPass = context._pass;
+      lightGridBuilder.build(
         lights: lights,
-        cameraMask: cameraMask,
+        cameraMask: context.cameraMask,
         settings: lightGrid!,
-        points: _gridPoints,
-        spots: _gridSpots,
+        points: gridPoints,
+        spots: gridSpots,
         bounds: lightGridBounds,
-        viewProjection: _viewProjectionMatrix,
-        lightsVersion: _worldLightsVersion,
+        viewProjection: context.viewProjection,
+        lightsVersion: worldLightsVersion,
       );
     }
-    return _lightGrid.hasLights;
+    return lightGridBuilder.hasLights;
+  }
+
+  int ensurePointLightSelection(RenderContext3D context) {
+    final pass = context._pass;
+    final list = lights;
+    if (_selPointPass == pass &&
+        identical(_selPointList, list) &&
+        _selPointLength == list.length &&
+        _selPointMask == context.cameraMask &&
+        _selPointPrioritize == prioritizeNearestLights &&
+        identical(_selPointGrid, lightGrid)) {
+      return _selPointCount;
+    }
+    _selPointPass = pass;
+    _selPointList = list;
+    _selPointLength = list.length;
+    _selPointMask = context.cameraMask;
+    _selPointPrioritize = prioritizeNearestLights;
+    _selPointGrid = lightGrid;
+    planLightGrid(context);
+    final out = selPointIndices;
+    final int count;
+    if (!gridPoints) {
+      count = _pickPointLights(
+        context,
+        out,
+        0,
+        RenderContext3D.maxPointLights,
+        _pickAll,
+      );
+    } else {
+      final fixed = _pickPointLights(
+        context,
+        out,
+        0,
+        RenderContext3D.maxPointLights,
+        _pickFixed,
+      );
+      count =
+          fixed +
+          _pickPointLights(
+            context,
+            out,
+            fixed,
+            RenderContext3D.maxPointLights - fixed,
+            _pickBinnable,
+          );
+    }
+    return _selPointCount = count;
+  }
+
+  int ensureSpotLightSelection(RenderContext3D context) {
+    final pass = context._pass;
+    final list = lights;
+    if (_selSpotPass == pass &&
+        identical(_selSpotList, list) &&
+        _selSpotLength == list.length &&
+        _selSpotMask == context.cameraMask &&
+        identical(_selSpotGrid, lightGrid)) {
+      return _selSpotCount;
+    }
+    _selSpotPass = pass;
+    _selSpotList = list;
+    _selSpotLength = list.length;
+    _selSpotMask = context.cameraMask;
+    _selSpotGrid = lightGrid;
+    planLightGrid(context);
+    final out = selSpotIndices;
+    final int count;
+    if (!gridSpots) {
+      count = _pickSpotLights(
+        context,
+        out,
+        0,
+        RenderContext3D.maxSpotLights,
+        _pickAll,
+      );
+    } else {
+      final fixed = _pickSpotLights(
+        context,
+        out,
+        0,
+        RenderContext3D.maxSpotLights,
+        _pickFixed,
+      );
+      count =
+          fixed +
+          _pickSpotLights(
+            context,
+            out,
+            fixed,
+            RenderContext3D.maxSpotLights - fixed,
+            _pickBinnable,
+          );
+    }
+    return _selSpotCount = count;
   }
 }
 
-void _copyFrustum(Frustum dst, Frustum src) {
-  dst.plane0
-    ..normal.setFrom(src.plane0.normal)
-    ..constant = src.plane0.constant;
-  dst.plane1
-    ..normal.setFrom(src.plane1.normal)
-    ..constant = src.plane1.constant;
-  dst.plane2
-    ..normal.setFrom(src.plane2.normal)
-    ..constant = src.plane2.constant;
-  dst.plane3
-    ..normal.setFrom(src.plane3.normal)
-    ..constant = src.plane3.constant;
-  dst.plane4
-    ..normal.setFrom(src.plane4.normal)
-    ..constant = src.plane4.constant;
-  dst.plane5
-    ..normal.setFrom(src.plane5.normal)
-    ..constant = src.plane5.constant;
+extension _RenderContext3DUniforms on RenderContext3D {
+  void _saveCameraSnapshot(_CameraSnapshot out) => _camera.saveSnapshot(out);
+
+  void _restoreCameraSnapshot(
+    _CameraSnapshot snap, {
+    required bool active,
+    required bool atlasActive,
+  }) {
+    _bumpAllPassKinds();
+    _cameraPass++;
+    _shadows
+      ..active = active
+      ..atlasActive = atlasActive;
+    _camera.restoreSnapshot(snap);
+  }
 }
 
 void _writePrefixedPass(
@@ -197,7 +360,7 @@ void _writePrefixedPass(
     for (final part in parts) PrefixedUniformBlock(block, '${part}_'),
   ];
   for (var i = 0; i < views.length; i++) {
-    context._passUniforms[parts[i]]?.call(context, views[i]);
+    context._passRegistry.writers[parts[i]]?.call(context, views[i]);
   }
 }
 
@@ -206,7 +369,7 @@ void _writeStylizedPass(RenderContext3D context, UniformBlock block) {
     context,
     block,
     RenderContext3D._stylizedPassParts,
-    context._stylizedPassViews,
+    context._passRegistry.stylizedPassViews,
   );
 }
 
@@ -215,7 +378,7 @@ void _writeSpatialPass(RenderContext3D context, UniformBlock block) {
     context,
     block,
     RenderContext3D._spatialPassParts,
-    context._spatialPassViews,
+    context._passRegistry.spatialPassViews,
   );
 }
 
@@ -245,12 +408,13 @@ void _writeAmbientLightUniforms(
   RenderContext3D context,
   UniformBlock block,
 ) {
-  context._ensureLightSelection();
+  final lightState = context._lightState
+    ..ensureLightSelection(context._pass, context.cameraMask);
   final off =
       (block.cachedWriterOffsets as _AmbientOffsets?) ??
       (block.cachedWriterOffsets = _AmbientOffsets(block));
-  final ambient = context._selAmbient;
-  if (ambient == null && context._selHasHemisphere) {
+  final ambient = lightState.selAmbient;
+  if (ambient == null && lightState.selHasHemisphere) {
     if (off.color >= 0) {
       block.writeVec4ValuesAt(off.color, 0, 0, 0, 0);
     }
@@ -291,54 +455,6 @@ double _lightPriorityScore(
   return intensity / (1.0 + nx * nx + ny * ny);
 }
 
-int _ensurePointLightSelection(RenderContext3D context) {
-  final list = context.lights;
-  if (context._selPointPass == context._pass &&
-      identical(context._selPointList, list) &&
-      context._selPointLength == list.length &&
-      context._selPointMask == context.cameraMask &&
-      context._selPointPrioritize == context.prioritizeNearestLights &&
-      identical(context._selPointGrid, context.lightGrid)) {
-    return context._selPointCount;
-  }
-  context._selPointPass = context._pass;
-  context._selPointList = list;
-  context._selPointLength = list.length;
-  context._selPointMask = context.cameraMask;
-  context._selPointPrioritize = context.prioritizeNearestLights;
-  context._selPointGrid = context.lightGrid;
-  context._planLightGrid();
-  final out = context._selPointIndices;
-  final int count;
-  if (!context._gridPoints) {
-    count = _pickPointLights(
-      context,
-      out,
-      0,
-      RenderContext3D.maxPointLights,
-      _pickAll,
-    );
-  } else {
-    final fixed = _pickPointLights(
-      context,
-      out,
-      0,
-      RenderContext3D.maxPointLights,
-      _pickFixed,
-    );
-    count =
-        fixed +
-        _pickPointLights(
-          context,
-          out,
-          fixed,
-          RenderContext3D.maxPointLights - fixed,
-          _pickBinnable,
-        );
-  }
-  return context._selPointCount = count;
-}
-
 /// Fills [out] with the indices in [RenderContext3D.lights] of point lights
 /// in [RenderContext3D.lightsBlock] order (filtered by `lightMask` and
 /// [RenderContext3D.prioritizeNearestLights] up to
@@ -349,8 +465,9 @@ int _ensurePointLightSelection(RenderContext3D context) {
 ///
 /// The shadow pass matches its lights to the block with it.
 int _selectPointLights(RenderContext3D context, Int32List out) {
-  final n = _ensurePointLightSelection(context);
-  final src = context._selPointIndices;
+  final lightState = context._lightState;
+  final n = lightState.ensurePointLightSelection(context);
+  final src = lightState.selPointIndices;
   for (var i = 0; i < n; i++) {
     out[i] = src[i];
   }
@@ -455,52 +572,6 @@ int _pickPointLights(
   return count;
 }
 
-int _ensureSpotLightSelection(RenderContext3D context) {
-  final list = context.lights;
-  if (context._selSpotPass == context._pass &&
-      identical(context._selSpotList, list) &&
-      context._selSpotLength == list.length &&
-      context._selSpotMask == context.cameraMask &&
-      identical(context._selSpotGrid, context.lightGrid)) {
-    return context._selSpotCount;
-  }
-  context._selSpotPass = context._pass;
-  context._selSpotList = list;
-  context._selSpotLength = list.length;
-  context._selSpotMask = context.cameraMask;
-  context._selSpotGrid = context.lightGrid;
-  context._planLightGrid();
-  final out = context._selSpotIndices;
-  final int count;
-  if (!context._gridSpots) {
-    count = _pickSpotLights(
-      context,
-      out,
-      0,
-      RenderContext3D.maxSpotLights,
-      _pickAll,
-    );
-  } else {
-    final fixed = _pickSpotLights(
-      context,
-      out,
-      0,
-      RenderContext3D.maxSpotLights,
-      _pickFixed,
-    );
-    count =
-        fixed +
-        _pickSpotLights(
-          context,
-          out,
-          fixed,
-          RenderContext3D.maxSpotLights - fixed,
-          _pickBinnable,
-        );
-  }
-  return context._selSpotCount = count;
-}
-
 /// Fills [out] with the indices in [RenderContext3D.lights] of spot lights
 /// in [RenderContext3D.spotLightsBlock] order up to
 /// [RenderContext3D.maxSpotLights].
@@ -510,8 +581,9 @@ int _ensureSpotLightSelection(RenderContext3D context) {
 ///
 /// The shadow pass matches its lights to the block with it.
 int _selectSpotLights(RenderContext3D context, Int32List out) {
-  final n = _ensureSpotLightSelection(context);
-  final src = context._selSpotIndices;
+  final lightState = context._lightState;
+  final n = lightState.ensureSpotLightSelection(context);
+  final src = lightState.selSpotIndices;
   for (var i = 0; i < n; i++) {
     out[i] = src[i];
   }
@@ -617,8 +689,9 @@ int _insertByScore(
   return count;
 }
 
-Texture _lightGridTexture(RenderContext3D context) => context._buildLightGrid()
-    ? context._lightGrid.texture(context.device.backend)
+Texture _lightGridTexture(RenderContext3D context) =>
+    context._lightState.buildLightGrid(context)
+    ? context._lightState.lightGridBuilder.texture(context.device.backend)
     : Texture.standard;
 
 /// Writes the [RenderContext3D.lightGridBlock] of the pass (grid origin,
@@ -631,8 +704,9 @@ void _writeLightGridUniforms(
   final off =
       (block.cachedWriterOffsets as _LightGridOffsets?) ??
       (block.cachedWriterOffsets = _LightGridOffsets(block));
-  if (context._buildLightGrid()) {
-    final grid = context._lightGrid;
+  final lightState = context._lightState;
+  if (lightState.buildLightGrid(context)) {
+    final grid = lightState.lightGridBuilder;
     final s = grid.stats;
     if (off.origin >= 0) {
       block.writeVec4ValuesAt(
@@ -675,8 +749,8 @@ void _writeLightGridUniforms(
   if (off.counts >= 0) {
     block.writeVec4ValuesAt(
       off.counts,
-      context._gridUniformPoints.toDouble(),
-      context._gridUniformSpots.toDouble(),
+      lightState.gridUniformPoints.toDouble(),
+      lightState.gridUniformSpots.toDouble(),
       0,
       0,
     );
@@ -687,9 +761,10 @@ void _writeLightsUniforms(RenderContext3D context, UniformBlock block) {
   final off =
       (block.cachedWriterOffsets as _LightsOffsets?) ??
       (block.cachedWriterOffsets = _LightsOffsets(block));
-  final lights = context.lights;
-  final count = _ensurePointLightSelection(context);
-  final indices = context._selPointIndices;
+  final lightState = context._lightState;
+  final lights = lightState.lights;
+  final count = lightState.ensurePointLightSelection(context);
+  final indices = lightState.selPointIndices;
   final dataLen = block.data.length;
   for (var k = 0; k < count; k++) {
     final light = lights[indices[k]];
@@ -724,9 +799,10 @@ void _writeSpotLightsUniforms(
   final off =
       (block.cachedWriterOffsets as _SpotLightsOffsets?) ??
       (block.cachedWriterOffsets = _SpotLightsOffsets(block));
-  final lights = context.lights;
-  final count = _ensureSpotLightSelection(context);
-  final indices = context._selSpotIndices;
+  final lightState = context._lightState;
+  final lights = lightState.lights;
+  final count = lightState.ensureSpotLightSelection(context);
+  final indices = lightState.selSpotIndices;
   final dataLen = block.data.length;
 
   final dir = _scratchDirection;
@@ -781,11 +857,12 @@ void _writeDirectionalLightsUniforms(
   RenderContext3D context,
   UniformBlock block,
 ) {
-  context._ensureLightSelection();
+  final lightState = context._lightState
+    ..ensureLightSelection(context._pass, context.cameraMask);
   final off =
       (block.cachedWriterOffsets as _DirLightsOffsets?) ??
       (block.cachedWriterOffsets = _DirLightsOffsets(block));
-  final dirs = context._selDirectionals;
+  final dirs = lightState.selDirectionals;
   final count = dirs.length;
   final direction = _scratchDirection;
   final dataLen = block.data.length;
@@ -822,11 +899,12 @@ void _writeHemisphereLightUniforms(
   RenderContext3D context,
   UniformBlock block,
 ) {
-  context._ensureLightSelection();
+  final lightState = context._lightState
+    ..ensureLightSelection(context._pass, context.cameraMask);
   final off =
       (block.cachedWriterOffsets as _HemiOffsets?) ??
       (block.cachedWriterOffsets = _HemiOffsets(block));
-  final hemisphere = context._selHemisphere;
+  final hemisphere = lightState.selHemisphere;
   final up = _scratchDirection;
   if (hemisphere == null) {
     if (off.skyColor >= 0) {
@@ -1092,14 +1170,4 @@ class _PassOptionsOffsets(final UniformBlock _b) {
   late final int gridBoundsMin = _b.resolveOffset('gridBoundsMin');
   late final int gridInvSpan = _b.resolveOffset('gridInvSpan');
   late final int gridRes = _b.resolveOffset('gridRes');
-}
-
-class _CameraSnapshot() {
-  final Matrix4 view = Matrix4.identity();
-  final Matrix4 projection = Matrix4.identity();
-  final Matrix4 viewProjection = Matrix4.identity();
-  final Vector3 cameraPosition = Vector3.zero();
-  final Float64List depthRow = Float64List(4);
-  final Frustum frustum = Frustum();
-  bool isMirrored = false;
 }

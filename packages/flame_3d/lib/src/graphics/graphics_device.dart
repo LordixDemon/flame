@@ -37,7 +37,7 @@ class GraphicsDevice({
   /// The clear value, used to clear out the screen.
   final Color clearValue = const Color(0x00000000),
   GpuBackend? backend,
-}) {
+}) implements ShaderBindTarget {
   /// The GPU backend this device records its rendering commands through.
   final GpuBackend backend = backend ?? GpuBackend.instance;
 
@@ -62,8 +62,9 @@ class GraphicsDevice({
 
   late final _TransientArena _arena = _TransientArena(backend);
 
-  // Render target pool buckets, matched directly to avoid Record boxing.
-  final List<_PoolBucket> _poolBuckets = [];
+  // Render-target and binding state trackers.
+  final _RenderTargetPool _targetPool = _RenderTargetPool();
+  final _PassBindingState _bindings = _PassBindingState();
 
   /// The number of frames a render target size that is no longer used stays
   /// pooled, so that a scene whose size changes back and forth, or that skips
@@ -79,74 +80,15 @@ class GraphicsDevice({
   VertexLayout? _lastPipeLayout;
   DevicePipeline? _lastPipeResult;
 
-  // What is currently bound to the render pass.
-  GpuPipeline? _pipeline;
-  Surface? _surface;
-  int _bindingEpoch = 0;
-  BlendState _blend = BlendState.opaque;
-  CompareFunction _depthCompare = CompareFunction.less;
-  bool _depthWrite = true;
-  CullMode _cullMode = CullMode.none;
-  WindingOrder _frontFace = WindingOrder.counterClockwise;
-  StencilState? _stencil;
-  PolygonFillMode _polygonMode = PolygonFillMode.fill;
-  PrimitiveTopology _topology = PrimitiveTopology.triangles;
-
-  // Per-pass/pipeline descriptor deduplication (reset in `_startPass`,
-  // `clearBindings`, and when switching pipelines).
-  GpuBuffer? _boundInstBuffer;
-  int _boundInstOffset = -1;
-  int _boundInstLength = -1;
   final Expando<_InstanceUploadCache> _instanceCache = Expando();
-
-  final List<GpuUniformSlot?> _boundUniformSlots = List.filled(
-    16,
-    null,
-    growable: true,
-  );
-  final List<GpuBuffer?> _boundUniformBuffers = List.filled(
-    16,
-    null,
-    growable: true,
-  );
-  Int32List _boundUniformOffsets = Int32List(16);
-  Int32List _boundUniformLengths = Int32List(16);
-  int _boundUniformCount = 0;
-
-  final List<GpuUniformSlot?> _boundTexSlots = List.filled(
-    16,
-    null,
-    growable: true,
-  );
-  final List<GpuTexture?> _boundTexHandles = List.filled(
-    16,
-    null,
-    growable: true,
-  );
-  Int32List _boundTexSamplerKeys = Int32List(16);
-  int _boundTexCount = 0;
-
-  bool _hasViewport = false;
-  int _vpX = 0;
-  int _vpY = 0;
-  int _vpW = 0;
-  int _vpH = 0;
-  double _vpZNear = 0.0;
-  double _vpZFar = 1.0;
-
-  bool _hasScissor = false;
-  int _scX = 0;
-  int _scY = 0;
-  int _scW = 0;
-  int _scH = 0;
 
   /// Incremented whenever the pass's bindings are cleared (by [clearBindings]
   /// or by binding a different pipeline), after which every resource of the
   /// next draw must be bound again.
-  int get bindingEpoch => _bindingEpoch;
+  int get bindingEpoch => _bindings.bindingEpoch;
 
   /// The winding order of front faces for the following draws.
-  WindingOrder get frontFace => _frontFace;
+  WindingOrder get frontFace => _bindings.frontFace;
 
   /// Whether a render pass is being recorded.
   bool get isInPass => _renderPass != null;
@@ -163,9 +105,7 @@ class GraphicsDevice({
   void begin() {
     _frame++;
     stats.reset();
-    for (var i = 0; i < _poolBuckets.length; i++) {
-      _poolBuckets[i].used = 0;
-    }
+    _targetPool.beginFrame();
     _gpuFrame = backend.beginFrame();
   }
 
@@ -175,7 +115,7 @@ class GraphicsDevice({
     _gpuFrame = null;
     _arena.endFrame();
     lastFrameStats.setFrom(stats);
-    _evictUnusedTargets();
+    _targetPool.evictUnused(_frame);
   }
 
   /// Begin a render pass at the given [size], in physical pixels.
@@ -189,7 +129,13 @@ class GraphicsDevice({
       throw StateError('beginPass must be called between begin and end');
     }
     RenderProfile.lap(RenderPhase.setup);
-    _renderTarget = _acquireRenderTarget(size, msaaSampleCount);
+    _renderTarget = _targetPool.acquireRenderTarget(
+      backend,
+      clearValue,
+      _frame,
+      size,
+      msaaSampleCount,
+    );
     _startPass(_beginGpuPass(frame, _renderTarget), frontFace);
     RenderProfile.lap(RenderPhase.passBegin);
   }
@@ -245,19 +191,7 @@ class GraphicsDevice({
 
   /// Estimated GPU render-target memory (color + depth attachments, in bytes)
   /// currently pooled by this device.
-  int get estimatedTargetVramBytes {
-    var total = 0;
-    for (var i = 0; i < _poolBuckets.length; i++) {
-      final b = _poolBuckets[i];
-      // Triple-buffered color + depth-stencil estimate.
-      final perTarget = b.width * b.height * 4 * (3 + b.msaaSampleCount);
-      total += perTarget * b.targets.length;
-    }
-    for (var i = 0; i < _textureTargetList.length; i++) {
-      total += _textureTargetList[i].estimatedBytes;
-    }
-    return total;
-  }
+  int get estimatedTargetVramBytes => _targetPool.estimatedVramBytes;
 
   /// Pre-compiles and caches the GPU [DevicePipeline] for [material] and
   /// [layout] (`VertexLayout.standard` by default) so its first draw in
@@ -311,62 +245,22 @@ class GraphicsDevice({
     Color clearValue = const Color(0xFFFFFFFF),
     Object? role,
     int msaaSampleCount = 1,
-  }) {
-    for (var i = 0; i < _textureTargetList.length; i++) {
-      final entry = _textureTargetList[i];
-      if (entry.width == width &&
-          entry.height == height &&
-          entry.format == format &&
-          entry.msaaSampleCount == msaaSampleCount &&
-          entry.clearValue == clearValue &&
-          (identical(entry.role, role) || entry.role == role)) {
-        entry.lastUsedFrame = _frame;
-        return entry.target;
-      }
-    }
-    final target = backend.createTextureTarget(
-      width: width,
-      height: height,
-      format: format,
-      clearValue: clearValue,
-      msaaSampleCount: msaaSampleCount,
-    );
-    final estimatedBytes =
-        width *
-        height *
-        (format.bytesPerBlock *
-                (msaaSampleCount > 1 ? 1 + msaaSampleCount : 1) +
-            4 * msaaSampleCount);
-    _textureTargetList.add(
-      _TextureTargetEntry(
-        width,
-        height,
-        format,
-        clearValue,
-        role,
-        msaaSampleCount,
-        target,
-        _frame,
-        estimatedBytes,
-      ),
-    );
-    return target;
-  }
-
-  final List<_TextureTargetEntry> _textureTargetList = [];
+  }) => _targetPool.acquireTextureTarget(
+    backend,
+    _frame,
+    width,
+    height,
+    format,
+    clearValue: clearValue,
+    role: role,
+    msaaSampleCount: msaaSampleCount,
+  );
 
   /// Marks [target] as used in the current frame so [targetRetainFrames] does
   /// not evict a cached texture target (such as a static shadow map).
   @internal
-  void touchTextureTarget(GpuTextureTarget target) {
-    for (var i = 0; i < _textureTargetList.length; i++) {
-      final entry = _textureTargetList[i];
-      if (identical(entry.target, target)) {
-        entry.lastUsedFrame = _frame;
-        return;
-      }
-    }
-  }
+  void touchTextureTarget(GpuTextureTarget target) =>
+      _targetPool.touchTextureTarget(target, _frame);
 
   /// Begin a render pass into [target], whose texture later passes sample.
   ///
@@ -520,18 +414,20 @@ class GraphicsDevice({
   /// Bind [pipeline].
   bool bindPipeline(DevicePipeline pipeline) {
     final gpuPipeline = pipeline.pipeline;
-    if (identical(gpuPipeline, _pipeline)) {
+    final b = _bindings;
+    if (identical(gpuPipeline, b.pipeline)) {
       return false;
     }
     final renderPass = _pass;
-    if (_pipeline != null) {
+    if (b.pipeline != null) {
       renderPass.clearBindings();
-      _clearPassBindings();
+      b.clearBindings();
     }
     renderPass.bindPipeline(gpuPipeline);
-    _pipeline = gpuPipeline;
-    _surface = null;
-    _bindingEpoch++;
+    b
+      ..pipeline = gpuPipeline
+      ..surface = null;
+    b.bindingEpoch++;
     stats.pipelineChanges++;
     return true;
   }
@@ -540,34 +436,36 @@ class GraphicsDevice({
   /// to the following draws.
   void setRenderState(RenderState state) {
     final renderPass = _pass;
-    if (state.blend != _blend) {
+    final b = _bindings;
+    if (state.blend != b.blend) {
       renderPass.setBlendState(state.blend);
-      _blend = state.blend;
+      b.blend = state.blend;
       stats.stateChanges++;
     }
     final compare = state.effectiveDepthCompare;
-    if (compare != _depthCompare || state.depthWrite != _depthWrite) {
+    if (compare != b.depthCompare || state.depthWrite != b.depthWrite) {
       renderPass.setDepthState(
         compare: compare,
         writeEnabled: state.depthWrite,
       );
-      _depthCompare = compare;
-      _depthWrite = state.depthWrite;
+      b
+        ..depthCompare = compare
+        ..depthWrite = state.depthWrite;
       stats.stateChanges++;
     }
-    if (state.cullMode != _cullMode) {
+    if (state.cullMode != b.cullMode) {
       renderPass.setCullMode(state.cullMode);
-      _cullMode = state.cullMode;
+      b.cullMode = state.cullMode;
       stats.stateChanges++;
     }
-    if (state.stencil != _stencil) {
+    if (state.stencil != b.stencil) {
       renderPass.setStencil(state.stencil);
-      _stencil = state.stencil;
+      b.stencil = state.stencil;
       stats.stateChanges++;
     }
-    if (state.polygonMode != _polygonMode) {
+    if (state.polygonMode != b.polygonMode) {
       renderPass.setPolygonMode(state.polygonMode);
-      _polygonMode = state.polygonMode;
+      b.polygonMode = state.polygonMode;
       stats.stateChanges++;
     }
   }
@@ -582,40 +480,44 @@ class GraphicsDevice({
     double zNear = 0.0,
     double zFar = 1.0,
   }) {
-    if (_hasViewport &&
-        _vpX == x &&
-        _vpY == y &&
-        _vpW == width &&
-        _vpH == height &&
-        _vpZNear == zNear &&
-        _vpZFar == zFar) {
+    final b = _bindings;
+    if (b.hasViewport &&
+        b.vpX == x &&
+        b.vpY == y &&
+        b.vpW == width &&
+        b.vpH == height &&
+        b.vpZNear == zNear &&
+        b.vpZFar == zFar) {
       return;
     }
-    _hasViewport = true;
-    _vpX = x;
-    _vpY = y;
-    _vpW = width;
-    _vpH = height;
-    _vpZNear = zNear;
-    _vpZFar = zFar;
+    b
+      ..hasViewport = true
+      ..vpX = x
+      ..vpY = y
+      ..vpW = width
+      ..vpH = height
+      ..vpZNear = zNear
+      ..vpZFar = zFar;
     _pass.setViewport(x, y, width, height, zNear: zNear, zFar: zFar);
     stats.stateChanges++;
   }
 
   /// Sets the pixel scissor clip rectangle inside the current render pass.
   void setScissor(int x, int y, int width, int height) {
-    if (_hasScissor &&
-        _scX == x &&
-        _scY == y &&
-        _scW == width &&
-        _scH == height) {
+    final b = _bindings;
+    if (b.hasScissor &&
+        b.scX == x &&
+        b.scY == y &&
+        b.scW == width &&
+        b.scH == height) {
       return;
     }
-    _hasScissor = true;
-    _scX = x;
-    _scY = y;
-    _scW = width;
-    _scH = height;
+    b
+      ..hasScissor = true
+      ..scX = x
+      ..scY = y
+      ..scW = width
+      ..scH = height;
     _pass.setScissor(x, y, width, height);
     stats.stateChanges++;
   }
@@ -623,36 +525,40 @@ class GraphicsDevice({
   /// Sets the stencil state (`null` disables stencil testing and writes) in the
   /// current render pass.
   void setStencil(StencilState? stencil) {
-    if (stencil != _stencil) {
+    final b = _bindings;
+    if (stencil != b.stencil) {
       _pass.setStencil(stencil);
-      _stencil = stencil;
+      b.stencil = stencil;
       stats.stateChanges++;
     }
   }
 
   /// Sets polygon fill or wireframe rasterization mode in the current pass.
   void setPolygonMode(PolygonFillMode mode) {
-    if (mode != _polygonMode) {
+    final b = _bindings;
+    if (mode != b.polygonMode) {
       _pass.setPolygonMode(mode);
-      _polygonMode = mode;
+      b.polygonMode = mode;
       stats.stateChanges++;
     }
   }
 
   /// Sets primitive assembly topology in the current pass.
   void setPrimitiveTopology(PrimitiveTopology topology) {
-    if (topology != _topology) {
+    final b = _bindings;
+    if (topology != b.topology) {
       _pass.setPrimitiveTopology(topology);
-      _topology = topology;
+      b.topology = topology;
       stats.stateChanges++;
     }
   }
 
   /// Set the winding order of front faces for the following draws.
   void setFrontFace(WindingOrder frontFace) {
-    if (frontFace != _frontFace) {
+    final b = _bindings;
+    if (frontFace != b.frontFace) {
       _pass.setWindingOrder(frontFace);
-      _frontFace = frontFace;
+      b.frontFace = frontFace;
       stats.stateChanges++;
     }
   }
@@ -660,14 +566,16 @@ class GraphicsDevice({
   /// Clear all resources bound to the current render pass.
   void clearBindings() {
     _pass.clearBindings();
-    _surface = null;
-    _clearPassBindings();
-    _bindingEpoch++;
+    _bindings
+      ..surface = null
+      ..clearBindings();
+    _bindings.bindingEpoch++;
   }
 
   /// Bind the vertex and index buffers of [surface].
   void bindSurface(Surface surface) {
-    if (identical(surface, _surface) || _suspended) {
+    final b = _bindings;
+    if (identical(surface, b.surface) || _suspended) {
       return;
     }
     final buffer = surface.resource;
@@ -683,7 +591,7 @@ class GraphicsDevice({
         lengthInBytes: surface.indicesBytes,
         indexType: surface.indexType,
       );
-    _surface = surface;
+    b.surface = surface;
     RenderProfile.lap(RenderPhase.binding);
   }
 
@@ -719,7 +627,7 @@ class GraphicsDevice({
       );
       stats.uploadedBytes += bytes;
       RenderProfile.lap(RenderPhase.upload);
-      _bindInstanceSlice(block.buffer, offset, bytes);
+      _bindings.bindInstanceSlice(_pass, block.buffer, offset, bytes);
       RenderProfile.lap(RenderPhase.binding);
       return;
     }
@@ -742,7 +650,7 @@ class GraphicsDevice({
         entry.version == version &&
         entry.spanStartFloat == spanStartFloat &&
         entry.spanFloats == spanFloats) {
-      _bindInstanceSlice(gpuBuf, subOffsetBytes, bytes);
+      _bindings.bindInstanceSlice(_pass, gpuBuf, subOffsetBytes, bytes);
       RenderProfile.lap(RenderPhase.binding);
       return;
     }
@@ -754,7 +662,12 @@ class GraphicsDevice({
         entry.version == version &&
         entry.spanStartFloat == spanStartFloat &&
         entry.spanFloats == spanFloats) {
-      _bindInstanceSlice(arenaBuf, entry.arenaOffset + subOffsetBytes, bytes);
+      _bindings.bindInstanceSlice(
+        _pass,
+        arenaBuf,
+        entry.arenaOffset + subOffsetBytes,
+        bytes,
+      );
       RenderProfile.lap(RenderPhase.binding);
       return;
     }
@@ -780,7 +693,7 @@ class GraphicsDevice({
         ..arenaBuffer = null;
       stats.uploadedBytes += spanBytes;
       RenderProfile.lap(RenderPhase.upload);
-      _bindInstanceSlice(persistent, subOffsetBytes, bytes);
+      _bindings.bindInstanceSlice(_pass, persistent, subOffsetBytes, bytes);
       RenderProfile.lap(RenderPhase.binding);
       return;
     }
@@ -804,7 +717,12 @@ class GraphicsDevice({
       ..spanFloats = spanFloats;
     stats.uploadedBytes += spanBytes;
     RenderProfile.lap(RenderPhase.upload);
-    _bindInstanceSlice(block.buffer, offset + subOffsetBytes, bytes);
+    _bindings.bindInstanceSlice(
+      _pass,
+      block.buffer,
+      offset + subOffsetBytes,
+      bytes,
+    );
     RenderProfile.lap(RenderPhase.binding);
   }
 
@@ -833,7 +751,7 @@ class GraphicsDevice({
     }
     stats.uploadedBytes += floats * 4;
     RenderProfile.lap(RenderPhase.gather);
-    _bindInstanceSlice(block.buffer, offset, floats * 4);
+    _bindings.bindInstanceSlice(_pass, block.buffer, offset, floats * 4);
     RenderProfile.lap(RenderPhase.binding);
   }
 
@@ -867,7 +785,8 @@ class GraphicsDevice({
       return;
     }
     final block = _uploadUniformByteData(data);
-    _bindUniformResolved(
+    _bindings.bindUniformResolved(
+      _pass,
       slot,
       block.buffer,
       block.lastOffset,
@@ -917,11 +836,18 @@ class GraphicsDevice({
     if (_suspended) {
       return;
     }
-    _bindUniformResolved(slot, buffer, offsetInBytes, lengthInBytes);
+    _bindings.bindUniformResolved(
+      _pass,
+      slot,
+      buffer,
+      offsetInBytes,
+      lengthInBytes,
+    );
   }
 
   /// Bind [block] to its slot, uploading it first unless its current contents
   /// were already uploaded during this frame.
+  @override
   void bindUniformBlock(UniformBlock block) {
     if (_suspended) {
       return;
@@ -932,7 +858,8 @@ class GraphicsDevice({
       block.markUploaded(_frame, upload.buffer, upload.lastOffset);
       RenderProfile.lap(RenderPhase.upload);
     }
-    _bindUniformResolved(
+    _bindings.bindUniformResolved(
+      _pass,
       block.slot,
       block.uploadBuffer!,
       block.uploadOffset,
@@ -943,41 +870,17 @@ class GraphicsDevice({
 
   /// Bind a uniform [slot] to the [texture], sampled with its
   /// [Texture.sampler].
+  @override
   void bindTexture(GpuUniformSlot slot, Texture texture) {
     if (_suspended) {
       return;
     }
-    final gpuTex = texture.resource;
-    final sampler = texture.sampler;
-    final samplerKey = sampler.key;
-    for (var i = 0; i < _boundTexCount; i++) {
-      if (identical(_boundTexSlots[i], slot)) {
-        if (identical(_boundTexHandles[i], gpuTex) &&
-            _boundTexSamplerKeys[i] == samplerKey) {
-          return;
-        }
-        _boundTexHandles[i] = gpuTex;
-        _boundTexSamplerKeys[i] = samplerKey;
-        _pass.bindTexture(slot, gpuTex, sampler: sampler);
-        RenderProfile.lap(RenderPhase.binding);
-        return;
-      }
-    }
-    final idx = _boundTexCount++;
-    if (idx == _boundTexSlots.length) {
-      _boundTexSlots.add(slot);
-      _boundTexHandles.add(gpuTex);
-    } else {
-      _boundTexSlots[idx] = slot;
-      _boundTexHandles[idx] = gpuTex;
-    }
-    if (idx >= _boundTexSamplerKeys.length) {
-      _boundTexSamplerKeys = Int32List(_boundTexSamplerKeys.length * 2)
-        ..setRange(0, _boundTexSamplerKeys.length, _boundTexSamplerKeys);
-    }
-    _boundTexSamplerKeys[idx] = samplerKey;
-    _pass.bindTexture(slot, gpuTex, sampler: sampler);
-    RenderProfile.lap(RenderPhase.binding);
+    _bindings.bindTextureResolved(
+      _pass,
+      slot,
+      texture.resource,
+      texture.sampler,
+    );
   }
 
   static const _instanceAlignment = 16;

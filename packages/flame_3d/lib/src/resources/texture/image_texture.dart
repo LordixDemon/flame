@@ -1,7 +1,7 @@
 import 'dart:ui';
 
-import 'package:flame_3d/graphics.dart';
-import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/graphics/backend.dart';
+import 'package:flame_3d/src/resources/texture/texture.dart';
 
 /// {@template image_texture}
 /// A texture that holds an image as it's render-able texture.

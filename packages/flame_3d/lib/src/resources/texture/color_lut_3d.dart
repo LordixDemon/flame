@@ -2,8 +2,8 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flame_3d/core.dart';
-import 'package:flame_3d/graphics.dart';
-import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/graphics/backend.dart';
+import 'package:flame_3d/src/resources/texture/texture.dart';
 
 /// 3D color-grading lookup table (`size x size x size`, `16x16x16` by default)
 /// unpacked horizontally as a `(size * size) x size` (`256x16`) 2D strip

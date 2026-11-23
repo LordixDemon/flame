@@ -1,8 +1,8 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/graphics/backend.dart';
 
 /// {@template torus_mesh}
 /// Procedural torus [Mesh] lying in the XZ plane around the origin (`+Y` axis

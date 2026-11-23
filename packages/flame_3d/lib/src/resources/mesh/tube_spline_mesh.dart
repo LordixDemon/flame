@@ -3,9 +3,9 @@ import 'dart:typed_data';
 import 'dart:ui' show Color;
 
 import 'package:flame_3d/core.dart';
-import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/extensions/geometry_math.dart';
+import 'package:flame_3d/src/graphics/backend.dart';
 
 /// Smooth 3D Catmull-Rom spline passing through `controlPoints` (`>= 2`
 /// points), supporting open and closed loops.

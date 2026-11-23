@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
-import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/graphics/backend.dart';
 import 'package:meta/meta.dart';
 
 /// Vertex layout shared by unit quad billboarding, decal, and particle

@@ -437,9 +437,9 @@ class _ShadowPass(final RenderContext3D _context) {
         casters: sceneBounds,
         receivers: settings.bounds,
         cameraViewProjection: fitView && views == null
-            ? context._viewProjectionMatrix
+            ? context.viewProjection
             : null,
-        cameraView: context._viewMatrix,
+        cameraView: context.view,
         cameraViewProjections: fitView ? views : null,
         cameraViews: _fitViews,
         maxDistance: settings.maxDistance,

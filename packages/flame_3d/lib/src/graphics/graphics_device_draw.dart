@@ -11,6 +11,216 @@ class _InstanceUploadCache() {
   int spanFloats = -1;
 }
 
+class _PassBindingState() {
+  GpuPipeline? pipeline;
+  Surface? surface;
+  int bindingEpoch = 0;
+  BlendState blend = BlendState.opaque;
+  CompareFunction depthCompare = CompareFunction.less;
+  bool depthWrite = true;
+  CullMode cullMode = CullMode.none;
+  WindingOrder frontFace = WindingOrder.counterClockwise;
+  StencilState? stencil;
+  PolygonFillMode polygonMode = PolygonFillMode.fill;
+  PrimitiveTopology topology = PrimitiveTopology.triangles;
+
+  GpuBuffer? boundInstBuffer;
+  int boundInstOffset = -1;
+  int boundInstLength = -1;
+
+  final List<GpuUniformSlot?> boundUniformSlots = List.filled(
+    16,
+    null,
+    growable: true,
+  );
+  final List<GpuBuffer?> boundUniformBuffers = List.filled(
+    16,
+    null,
+    growable: true,
+  );
+  Int32List boundUniformOffsets = Int32List(16);
+  Int32List boundUniformLengths = Int32List(16);
+  int boundUniformCount = 0;
+
+  final List<GpuUniformSlot?> boundTexSlots = List.filled(
+    16,
+    null,
+    growable: true,
+  );
+  final List<GpuTexture?> boundTexHandles = List.filled(
+    16,
+    null,
+    growable: true,
+  );
+  Int32List boundTexSamplerKeys = Int32List(16);
+  int boundTexCount = 0;
+
+  bool hasViewport = false;
+  int vpX = 0;
+  int vpY = 0;
+  int vpW = 0;
+  int vpH = 0;
+  double vpZNear = 0.0;
+  double vpZFar = 1.0;
+
+  bool hasScissor = false;
+  int scX = 0;
+  int scY = 0;
+  int scW = 0;
+  int scH = 0;
+
+  void clearBindings() {
+    boundInstBuffer = null;
+    boundInstOffset = -1;
+    boundInstLength = -1;
+    if (boundUniformCount > 0) {
+      boundUniformSlots.fillRange(0, boundUniformCount, null);
+      boundUniformBuffers.fillRange(0, boundUniformCount, null);
+      boundUniformCount = 0;
+    }
+    if (boundTexCount > 0) {
+      boundTexSlots.fillRange(0, boundTexCount, null);
+      boundTexHandles.fillRange(0, boundTexCount, null);
+      boundTexCount = 0;
+    }
+  }
+
+  void resetForPass(
+    GpuRenderPass renderPass,
+    WindingOrder initialFrontFace,
+    RenderStats stats,
+  ) {
+    pipeline = null;
+    surface = null;
+    clearBindings();
+    hasViewport = false;
+    hasScissor = false;
+    bindingEpoch++;
+    blend = BlendState.opaque;
+    depthCompare = CompareFunction.less;
+    depthWrite = true;
+    cullMode = CullMode.none;
+    frontFace = WindingOrder.counterClockwise;
+    stencil = null;
+    polygonMode = PolygonFillMode.fill;
+    topology = PrimitiveTopology.triangles;
+    if (initialFrontFace != frontFace) {
+      renderPass.setWindingOrder(initialFrontFace);
+      frontFace = initialFrontFace;
+      stats.stateChanges++;
+    }
+  }
+
+  void bindInstanceSlice(
+    GpuRenderPass pass,
+    GpuBuffer buffer,
+    int offsetInBytes,
+    int lengthInBytes,
+  ) {
+    if (identical(boundInstBuffer, buffer) &&
+        boundInstOffset == offsetInBytes &&
+        boundInstLength == lengthInBytes) {
+      return;
+    }
+    boundInstBuffer = buffer;
+    boundInstOffset = offsetInBytes;
+    boundInstLength = lengthInBytes;
+    pass.bindVertexBuffer(
+      buffer,
+      offsetInBytes: offsetInBytes,
+      lengthInBytes: lengthInBytes,
+      slot: 1,
+    );
+  }
+
+  void bindUniformResolved(
+    GpuRenderPass pass,
+    GpuUniformSlot slot,
+    GpuBuffer buffer,
+    int offsetInBytes,
+    int lengthInBytes,
+  ) {
+    for (var i = 0; i < boundUniformCount; i++) {
+      if (identical(boundUniformSlots[i], slot)) {
+        if (identical(boundUniformBuffers[i], buffer) &&
+            boundUniformOffsets[i] == offsetInBytes &&
+            boundUniformLengths[i] == lengthInBytes) {
+          return;
+        }
+        boundUniformBuffers[i] = buffer;
+        boundUniformOffsets[i] = offsetInBytes;
+        boundUniformLengths[i] = lengthInBytes;
+        pass.bindUniform(
+          slot,
+          buffer,
+          offsetInBytes: offsetInBytes,
+          lengthInBytes: lengthInBytes,
+        );
+        return;
+      }
+    }
+    final idx = boundUniformCount++;
+    if (idx == boundUniformSlots.length) {
+      boundUniformSlots.add(slot);
+      boundUniformBuffers.add(buffer);
+    } else {
+      boundUniformSlots[idx] = slot;
+      boundUniformBuffers[idx] = buffer;
+    }
+    if (idx >= boundUniformOffsets.length) {
+      boundUniformOffsets = Int32List(boundUniformOffsets.length * 2)
+        ..setRange(0, boundUniformOffsets.length, boundUniformOffsets);
+      boundUniformLengths = Int32List(boundUniformLengths.length * 2)
+        ..setRange(0, boundUniformLengths.length, boundUniformLengths);
+    }
+    boundUniformOffsets[idx] = offsetInBytes;
+    boundUniformLengths[idx] = lengthInBytes;
+    pass.bindUniform(
+      slot,
+      buffer,
+      offsetInBytes: offsetInBytes,
+      lengthInBytes: lengthInBytes,
+    );
+  }
+
+  void bindTextureResolved(
+    GpuRenderPass pass,
+    GpuUniformSlot slot,
+    GpuTexture gpuTex,
+    TextureSampler sampler,
+  ) {
+    final samplerKey = sampler.key;
+    for (var i = 0; i < boundTexCount; i++) {
+      if (identical(boundTexSlots[i], slot)) {
+        if (identical(boundTexHandles[i], gpuTex) &&
+            boundTexSamplerKeys[i] == samplerKey) {
+          return;
+        }
+        boundTexHandles[i] = gpuTex;
+        boundTexSamplerKeys[i] = samplerKey;
+        pass.bindTexture(slot, gpuTex, sampler: sampler);
+        RenderProfile.lap(RenderPhase.binding);
+        return;
+      }
+    }
+    final idx = boundTexCount++;
+    if (idx == boundTexSlots.length) {
+      boundTexSlots.add(slot);
+      boundTexHandles.add(gpuTex);
+    } else {
+      boundTexSlots[idx] = slot;
+      boundTexHandles[idx] = gpuTex;
+    }
+    if (idx >= boundTexSamplerKeys.length) {
+      boundTexSamplerKeys = Int32List(boundTexSamplerKeys.length * 2)
+        ..setRange(0, boundTexSamplerKeys.length, boundTexSamplerKeys);
+    }
+    boundTexSamplerKeys[idx] = samplerKey;
+    pass.bindTexture(slot, gpuTex, sampler: sampler);
+    RenderProfile.lap(RenderPhase.binding);
+  }
+}
+
 extension _GraphicsDeviceDraw on GraphicsDevice {
   /// Starts recording a pass into [target], or into nothing while the
   /// device is not ready.
@@ -25,67 +235,11 @@ extension _GraphicsDeviceDraw on GraphicsDevice {
         : frame.beginRenderPass(target, keepContents: keepContents);
   }
 
-  void _clearPassBindings() {
-    _boundInstBuffer = null;
-    _boundInstOffset = -1;
-    _boundInstLength = -1;
-    if (_boundUniformCount > 0) {
-      _boundUniformSlots.fillRange(0, _boundUniformCount, null);
-      _boundUniformBuffers.fillRange(0, _boundUniformCount, null);
-      _boundUniformCount = 0;
-    }
-    if (_boundTexCount > 0) {
-      _boundTexSlots.fillRange(0, _boundTexCount, null);
-      _boundTexHandles.fillRange(0, _boundTexCount, null);
-      _boundTexCount = 0;
-    }
-  }
-
-  void _bindInstanceSlice(
-    GpuBuffer buffer,
-    int offsetInBytes,
-    int lengthInBytes,
-  ) {
-    if (identical(_boundInstBuffer, buffer) &&
-        _boundInstOffset == offsetInBytes &&
-        _boundInstLength == lengthInBytes) {
-      return;
-    }
-    _boundInstBuffer = buffer;
-    _boundInstOffset = offsetInBytes;
-    _boundInstLength = lengthInBytes;
-    _pass.bindVertexBuffer(
-      buffer,
-      offsetInBytes: offsetInBytes,
-      lengthInBytes: lengthInBytes,
-      slot: 1,
-    );
-  }
-
   void _startPass(GpuRenderPass renderPass, WindingOrder frontFace) {
     _renderPass = renderPass;
     stats.renderPasses++;
-
     // The state every pass starts with, see `GpuFrame.beginRenderPass`.
-    _pipeline = null;
-    _surface = null;
-    _clearPassBindings();
-    _hasViewport = false;
-    _hasScissor = false;
-    _bindingEpoch++;
-    _blend = BlendState.opaque;
-    _depthCompare = CompareFunction.less;
-    _depthWrite = true;
-    _cullMode = CullMode.none;
-    _frontFace = WindingOrder.counterClockwise;
-    _stencil = null;
-    _polygonMode = PolygonFillMode.fill;
-    _topology = PrimitiveTopology.triangles;
-    if (frontFace != _frontFace) {
-      renderPass.setWindingOrder(frontFace);
-      _frontFace = frontFace;
-      stats.stateChanges++;
-    }
+    _bindings.resetForPass(renderPass, frontFace, stats);
   }
 
   /// Draws [source] over the whole open pass.
@@ -100,55 +254,6 @@ extension _GraphicsDeviceDraw on GraphicsDevice {
       );
     }
     drawTextureCopy(_copyTextures[slot]);
-  }
-
-  void _bindUniformResolved(
-    GpuUniformSlot slot,
-    GpuBuffer buffer,
-    int offsetInBytes,
-    int lengthInBytes,
-  ) {
-    for (var i = 0; i < _boundUniformCount; i++) {
-      if (identical(_boundUniformSlots[i], slot)) {
-        if (identical(_boundUniformBuffers[i], buffer) &&
-            _boundUniformOffsets[i] == offsetInBytes &&
-            _boundUniformLengths[i] == lengthInBytes) {
-          return;
-        }
-        _boundUniformBuffers[i] = buffer;
-        _boundUniformOffsets[i] = offsetInBytes;
-        _boundUniformLengths[i] = lengthInBytes;
-        _pass.bindUniform(
-          slot,
-          buffer,
-          offsetInBytes: offsetInBytes,
-          lengthInBytes: lengthInBytes,
-        );
-        return;
-      }
-    }
-    final idx = _boundUniformCount++;
-    if (idx == _boundUniformSlots.length) {
-      _boundUniformSlots.add(slot);
-      _boundUniformBuffers.add(buffer);
-    } else {
-      _boundUniformSlots[idx] = slot;
-      _boundUniformBuffers[idx] = buffer;
-    }
-    if (idx >= _boundUniformOffsets.length) {
-      _boundUniformOffsets = Int32List(_boundUniformOffsets.length * 2)
-        ..setRange(0, _boundUniformOffsets.length, _boundUniformOffsets);
-      _boundUniformLengths = Int32List(_boundUniformLengths.length * 2)
-        ..setRange(0, _boundUniformLengths.length, _boundUniformLengths);
-    }
-    _boundUniformOffsets[idx] = offsetInBytes;
-    _boundUniformLengths[idx] = lengthInBytes;
-    _pass.bindUniform(
-      slot,
-      buffer,
-      offsetInBytes: offsetInBytes,
-      lengthInBytes: lengthInBytes,
-    );
   }
 
   _TransientBlock _uploadUniform(Uint8List data) =>

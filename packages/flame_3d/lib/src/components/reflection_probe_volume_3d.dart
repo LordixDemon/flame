@@ -24,7 +24,7 @@ import 'package:flame_3d/resources.dart';
 class ReflectionProbeVolume3D({
   @override required var EnvironmentProbe3D probe,
   Vector3? extents,
-  var double blendDistance = 1.0,
+  @override var double blendDistance = 1.0,
   @override var bool boxProjection = true,
   int priority = 0,
   super.position,
@@ -68,6 +68,7 @@ class ReflectionProbeVolume3D({
   /// Smooth containment weight in `[0, 1]` for [worldPoint] (`1` deep inside
   /// the volume, fading smoothly to `0` across [blendDistance] at the box
   /// boundary).
+  @override
   double weightAt(Vector3 worldPoint) {
     final box = worldBounds;
     final cx = (box.min.x + box.max.x) * 0.5;

@@ -1,8 +1,9 @@
 import 'dart:typed_data';
 import 'dart:ui';
 
-import 'package:flame_3d/graphics.dart';
-import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/graphics/backend.dart';
+import 'package:flame_3d/src/resources/resource.dart';
+import 'package:flame_3d/src/resources/texture/color_texture.dart';
 import 'package:flame_3d/src/resources/texture/mipmaps.dart';
 
 /// {@template texture}

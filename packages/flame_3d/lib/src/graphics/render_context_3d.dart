@@ -2,8 +2,6 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
 
-import 'package:flame_3d/camera.dart';
-import 'package:flame_3d/components.dart' show ReflectionProbeVolume3D;
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
@@ -15,10 +13,14 @@ import 'package:flame_3d/src/graphics/prefixed_uniform_block.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:meta/meta.dart';
 
+part 'render_context_3d_camera_state.dart';
 part 'render_context_3d_depth_normal.dart';
-part 'render_context_3d_oit_refraction.dart';
 part 'render_context_3d_draw.dart';
+part 'render_context_3d_draw_queue.dart';
+part 'render_context_3d_joints.dart';
+part 'render_context_3d_oit_refraction.dart';
 part 'render_context_3d_plan.dart';
+part 'render_context_3d_probes.dart';
 part 'render_context_3d_shadows.dart';
 part 'render_context_3d_shadows_atlas.dart';
 part 'render_context_3d_shadows_cascades.dart';
@@ -93,98 +95,95 @@ class RenderContext3D(super.device) extends RenderContext {
   /// members of [cameraMatricesBlock]).
   static const String cameraBlock = 'Camera';
 
-  /// The name of the block holding the ambient light `color` and `intensity`.
+  /// The name of the ambient light uniform block.
   static const String ambientLightBlock = 'AmbientLight';
 
-  /// The name of the block holding the point lights.
+  /// The name of the point lights uniform block.
   static const String lightsBlock = 'Lights';
 
-  /// The name of the block holding the directional lights.
+  /// The name of the directional lights uniform block.
   static const String directionalLightsBlock = 'DirectionalLights';
 
-  /// The name of the block holding cone spot lights.
+  /// The name of the spot lights uniform block.
   static const String spotLightsBlock = 'SpotLights';
 
-  /// The name of the block holding the hemisphere light.
+  /// The name of the hemisphere light uniform block.
   static const String hemisphereLightBlock = 'HemisphereLight';
 
-  /// The name of the block describing the light grid of the pass (see
-  /// [lightGrid]): where its cells are, the size of its texture and how many
-  /// of the lights of the [lightsBlock] and [spotLightsBlock] come before
-  /// those the grid holds too. See `flame_3d/light_grid.glsl`.
+  /// The name of the uniform block describing the light grid of the pass, see
+  /// `flame_3d/light_grid.glsl` (`LightGrid.origin`, `cells`, `data`,
+  /// `counts`, the unbinned light counts at the head of [lightsBlock] and
+  /// [spotLightsBlock]).
   static const String lightGridBlock = 'LightGrid';
 
-  /// The name of the sampler of the texture holding the light grid of the
-  /// pass, see [lightGridBlock].
+  /// The name of the sampler holding the packed cell lists of the light grid
+  /// (`RGBA32F` of width [LightGrid3D.textureWidth]).
   static const String lightGridSampler = 'lightGridTexture';
 
-  /// The name of the block holding the joint matrices of a skinned draw: the
-  /// top three rows of each ([jointRowsMember]), or whole `mat4` matrices
-  /// (`joints`) in shaders that declare them so.
+  /// The name of the skeletal skinning joint-matrices uniform block.
+  ///
+  /// The block holds at most 32 transposed `3x4` joint matrices (`vec4` rows,
+  /// [jointRowsMember]).
   static const String jointMatricesBlock = 'JointMatrices';
 
-  /// The member of [jointMatricesBlock] holding the top three rows of each
-  /// joint matrix, `vec4 jointRows[192]` in `flame_3d/skinning.glsl`: row `r`
-  /// of joint `j` is `jointRows[j * 3 + r]`. The bottom row of a joint matrix
-  /// is taken to be `(0, 0, 0, 1)`, as it is for affine transforms.
+  /// The vector member holding the `3x4` transposed joint matrices inside
+  /// [jointMatricesBlock].
   static const String jointRowsMember = 'jointRows';
 
-  /// The name of the block describing the shadow map of the pass.
+  /// The name of the directional shadow mapping uniform block.
   static const String shadowsBlock = 'Shadows';
 
-  /// The name of the block describing the unified multi-light `ShadowAtlas3D`.
+  /// The name of the multi-tile `ShadowAtlas3D` uniform block (`tiles`, `res`).
   static const String shadowAtlasBlock = 'ShadowAtlas';
 
-  /// The name of the sampler of the shadow map, see [shadowsBlock].
+  /// The name of the directional shadow map sampler.
   static const String shadowMapSampler = 'shadowMap';
 
-  /// The name of the block of the shaders that render shadow maps.
+  /// The name of the uniform block giving the view-projection matrix (`vp`)
+  /// for the shadow-caster pass.
   static const String shadowCasterBlock = 'ShadowCaster';
 
-  /// The name of the sampler holding the kept depths of the still casters
-  /// that the moving casters are drawn over, in a shadow pass that keeps
-  /// them (see [ShadowSettings.cacheStillCasters]): the texture of the view
-  /// being recorded, or a white texture.
+  /// The name of the sampler giving a shadow caster view the depth of its
+  /// still casters while it records the moving ones over them.
   static const String shadowStillCastersSampler = 'shadowStillCasters';
 
-  /// The name of the block describing atmospheric fog (`FogSettings`).
+  /// The name of the atmospheric fog uniform block.
   static const String fogBlock = 'Fog';
 
-  /// The name of the block describing the body of water of the pass
-  /// (`WaterVolumeSettings`), see `flame_3d/water_volume.glsl`.
+  /// The name of the volumetric water uniform block (`WaterVolume`, read
+  /// through `StylizedPass` by `StylizedMaterial`).
   static const String waterVolumeBlock = 'WaterVolume';
 
-  /// The name of the block describing the half-res scene depth-normal prepass.
+  /// The name of the half-res depth-normal pass uniform block (`DepthNormal`).
   static const String depthNormalBlock = 'DepthNormal';
 
-  /// The name of the sampler providing the half-res depth-normal texture.
+  /// The name of the half-res depth-normal texture sampler.
   static const String depthNormalSampler = 'depthNormalTexture';
 
-  /// The name of the block describing the opaque scene-color grab pass.
+  /// The name of the scene-color grab-pass uniform block (`SceneColor`).
   static const String sceneColorBlock = 'SceneColor';
 
-  /// The name of the sampler providing the opaque scene-color grab texture.
+  /// The name of the scene-color grab-pass texture sampler
+  /// (`sceneColorTexture`).
   static const String sceneColorSampler = 'sceneColorTexture';
 
-  /// The name of the shared `64x64` split-sum GGX BRDF LUT sampler.
+  /// The name of the shared Karis split-sum GGX BRDF lookup sampler.
   static const String brdfLutSampler = 'brdfLutTexture';
 
-  /// The name of the 3D `LightProbeGrid3D` volume strip sampler.
+  /// The name of the volumetric `SH9` diffuse irradiance probe grid sampler.
   static const String probeGridSampler = 'probeGridTexture';
 
-  /// The name of the block carrying HDR, debug mode, local reflection probe box
-  /// and 3D light-probe grid uniforms for `SpatialMaterial`.
+  /// The name of the per-pass options uniform block (`PassOptions`: HDR
+  /// encoding flag, diagnostic `RenderDebugMode3D`, and `LightProbeGrid3D`).
   static const String passOptionsBlock = 'PassOptions';
 
-  /// The name of the block in which `StylizedMaterial`'s fragment shader
-  /// reads the camera, the lights, the shadows, the fog and the water volume
-  /// of the pass.
+  /// The single uniform block packing every pass block a `StylizedMaterial`
+  /// reads. Its fields match those of the sub-blocks prefixed with `<Block>_`.
   @internal
   static const String stylizedPassBlock = 'StylizedPass';
 
-  /// The name of the consolidated pass block in which `SpatialMaterial`'s
-  /// PBR fragment shaders read pass-level camera, options, lighting, light
-  /// grid, shadows, and fog uniforms.
+  /// The single uniform block packing every pass block a `SpatialMaterial`
+  /// reads. Its fields match those of the sub-blocks prefixed with `<Block>_`.
   @internal
   static const String spatialPassBlock = 'SpatialPass';
 
@@ -214,39 +213,46 @@ class RenderContext3D(super.device) extends RenderContext {
     fogBlock,
   ];
 
-  /// The maximum number of point lights written to the [lightsBlock].
+  /// Maximum point lights supported per render pass.
   static const int maxPointLights = 8;
 
-  /// The maximum number of directional lights written to the
-  /// [directionalLightsBlock].
+  /// Maximum directional lights supported per render pass (`DirectionalLights`
+  /// UBO holds `4` entries `[0..3]`).
   static const int maxDirectionalLights = 4;
 
-  /// The maximum number of spot lights written to the [spotLightsBlock].
+  /// Maximum spot lights supported per render pass.
   static const int maxSpotLights = 4;
 
+  final _CameraPassState _camera = _CameraPassState();
+  final _DrawQueue _queue = _DrawQueue();
+  final _JointUploadCache _jointCache = _JointUploadCache();
+  final _ReflectionProbeSelector _probeSelector = _ReflectionProbeSelector();
+  final _PipelineResolutionCache _pipelineCache = _PipelineResolutionCache();
+  final _PassUniformRegistry _passRegistry = _PassUniformRegistry();
+  final _LightPassState _lightState = _LightPassState();
+
+  late final _ShadowPass _shadows = _ShadowPass(this);
+  late final _DepthNormalPass _depthNormal = _DepthNormalPass(this);
+  late final _OitAndGrabPass _oitGrab = _OitAndGrabPass(this);
+
   /// The model matrix of the draw being submitted.
-  Matrix4 get model => _modelMatrix;
-  final Matrix4 _modelMatrix = Matrix4.identity();
+  Matrix4 get model => _camera.modelMatrix;
 
   /// The camera's view matrix for the current pass.
-  Matrix4 get view => _viewMatrix;
-  final Matrix4 _viewMatrix = Matrix4.identity();
+  Matrix4 get view => _camera.viewMatrix;
 
   /// The camera's projection matrix for the current pass.
-  Matrix4 get projection => _projectionMatrix;
-  final Matrix4 _projectionMatrix = Matrix4.identity();
+  Matrix4 get projection => _camera.projectionMatrix;
 
   /// `projection * view` for the current pass.
-  Matrix4 get viewProjection => _viewProjectionMatrix;
-  final Matrix4 _viewProjectionMatrix = Matrix4.identity();
+  Matrix4 get viewProjection => _camera.viewProjectionMatrix;
 
   /// Camera world-space position, computed from the view matrix by
   /// [setCamera].
   ///
   /// In a shadow pass this is the origin of the light's view, not a viewer:
   /// choose level of detail and distance culling from [viewerPosition].
-  Vector3 get cameraPosition => _cameraPosition;
-  final Vector3 _cameraPosition = Vector3.zero();
+  Vector3 get cameraPosition => _camera.cameraPosition;
 
   /// The world-space position of the viewer that level of detail and
   /// distance culling choose detail from.
@@ -256,86 +262,89 @@ class RenderContext3D(super.device) extends RenderContext {
   /// was set when the shadow pass began, so shadow casters draw the geometry
   /// the main pass shows instead of geometry chosen around the light's view
   /// origin.
-  Vector3 get viewerPosition =>
-      _shadows.recording ? _shadowViewerPosition : _cameraPosition;
-  final Vector3 _shadowViewerPosition = Vector3.zero();
+  Vector3 get viewerPosition => _shadows.recording
+      ? _camera.shadowViewerPosition
+      : _camera.cameraPosition;
 
   /// The `projection * view` matrix of the viewer of [viewerPosition]: the
   /// same as [viewProjection] in a camera pass, the main camera's while a
   /// shadow pass records. Use it to measure the screen size of an object for
   /// level of detail.
-  Matrix4 get viewerViewProjection =>
-      _shadows.recording ? _shadowViewerViewProjection : _viewProjectionMatrix;
-  final Matrix4 _shadowViewerViewProjection = Matrix4.identity();
+  Matrix4 get viewerViewProjection => _shadows.recording
+      ? _camera.shadowViewerViewProjection
+      : _camera.viewProjectionMatrix;
 
   /// The view frustum of the current pass, in world space.
-  Frustum get frustum => _frustum;
-  final Frustum _frustum = Frustum();
+  Frustum get frustum => _camera.frustum;
 
   /// Whether the camera of the current pass mirrors the scene.
-  bool get isMirrored => _isMirrored;
-  bool _isMirrored = false;
+  bool get isMirrored => _camera.isMirrored;
 
   /// The front-face winding for the current pass.
-  WindingOrder get frontFace =>
-      _isMirrored ? WindingOrder.clockwise : WindingOrder.counterClockwise;
+  WindingOrder get frontFace => _camera.isMirrored
+      ? WindingOrder.clockwise
+      : WindingOrder.counterClockwise;
 
   /// Monotonically incremented whenever the main viewer camera changes
   /// outside shadow rendering, used by LODs and view-dependent caches.
-  int get viewerEpoch => _viewerEpoch;
-  int _viewerEpoch = 0;
+  int get viewerEpoch => _camera.viewerEpoch;
 
   /// The joint matrices of the draw [Material.apply] runs for, or `null` when
   /// it is not skinned.
-  List<Matrix4>? get jointTransforms => _jointTransforms;
-  List<Matrix4>? _jointTransforms;
+  List<Matrix4>? get jointTransforms => _jointCache.activeTransforms;
 
   /// The lights of the scene. Must be set before the draws are flushed.
-  List<Light> get lights => _lights;
+  List<Light> get lights => _lightState.lights;
   set lights(List<Light> value) {
-    _lights = value;
-    _worldLightsVersion = null;
-    _syncedLightRev = -1;
-    _syncedOwner = null;
+    _lightState
+      ..lights = value
+      ..worldLightsVersion = null
+      .._syncedLightRev = -1
+      ..syncedOwner = null;
   }
-
-  List<Light> _lights = const [];
-  int? _worldLightsVersion;
-  Object? _syncedOwner;
 
   /// World lights revision last supplied by [setWorldLights], or `null` when
   /// [lights] was assigned directly.
   @internal
-  int? get worldLightsVersion => _worldLightsVersion;
+  int? get worldLightsVersion => _lightState.worldLightsVersion;
 
   /// Owner that last synchronized options onto this context via
   /// [needsSyncOptions].
   @internal
-  Object? get syncedOwner => _syncedOwner;
+  Object? get syncedOwner => _lightState.syncedOwner;
 
-  /// Sets [lights] together with the enclosing [World3D.lightsVersion] so
+  /// Sets [lights] together with the enclosing `World3D.lightsVersion` so
   /// light-grid builds can skip unchanged passes in O(1).
   @internal
   void setWorldLights(List<Light> value, int lightsVersion) {
-    _lights = value;
-    _worldLightsVersion = lightsVersion;
+    _lightState
+      ..lights = value
+      ..worldLightsVersion = lightsVersion;
   }
 
   /// How the passes shade more point and spot lights than the
   /// [lightsBlock] and [spotLightsBlock] hold, or `null` (the default) to
   /// leave the lights beyond those out, see [LightGridSettings].
   /// `World3D.lightGrid` sets it.
-  LightGridSettings? lightGrid;
+  LightGridSettings? get lightGrid => _lightState.lightGrid;
+  set lightGrid(LightGridSettings? value) => _lightState.lightGrid = value;
 
   /// What the light grid of the last pass that read one held, see
   /// [LightGridStats].
-  LightGridStats get lightGridStats => _lightGrid.stats;
+  LightGridStats get lightGridStats => _lightState.lightGridBuilder.stats;
 
   /// The world bounds of everything the pass draws, or `null` (the default)
   /// when they are not known: the [lightGrid] covers only them.
   /// `World3D` sets its `sceneBounds`, unless it holds a component that may
   /// draw outside them.
-  Aabb3? lightGridBounds;
+  Aabb3? get lightGridBounds => _lightState.lightGridBounds;
+  set lightGridBounds(Aabb3? value) => _lightState.lightGridBounds = value;
+
+  /// Whether exceeding [maxPointLights] / [maxSpotLights] ranks lights by
+  /// proximity + intensity instead of keeping list order.
+  bool get prioritizeNearestLights => _lightState.prioritizeNearestLights;
+  set prioritizeNearestLights(bool value) =>
+      _lightState.prioritizeNearestLights = value;
 
   /// Atmospheric fog of the current pass (`null` disables fog).
   FogSettings? fog;
@@ -359,34 +368,28 @@ class RenderContext3D(super.device) extends RenderContext {
   /// Optional volumetric 3D `SH9` diffuse irradiance probe grid of the scene.
   LightProbeGrid3D? lightProbeGrid;
 
-  /// Active local box-projected `ReflectionProbeVolume3D`s of the scene.
-  List<ReflectionProbeVolume3D> reflectionProbes = const [];
+  /// Active local box-projected [ReflectionProbeSource3D]s of the scene.
+  List<ReflectionProbeSource3D> get reflectionProbes => _probeSelector.probes;
+  set reflectionProbes(List<ReflectionProbeSource3D> value) =>
+      _probeSelector.probes = value;
 
   /// 32-bit layer bitmask filtering `Object3D.cameraMask` and `Light.lightMask`
   /// for the current pass (`0xFFFFFFFF` renders all layers by default).
   int cameraMask = 0xFFFFFFFF;
 
   /// The number of draws recorded in the last flushed pass.
-  int get drawCount => _lastDrawCount;
-  int _lastDrawCount = 0;
+  int get drawCount => _queue.lastDrawCount;
 
   /// Notes the materials bound while a world renders, so that its version
   /// follows their changes; set by the world for its render.
   @internal
   MaterialTracker? materialTracker;
 
-  final Float64List _depthRow = Float64List(4);
-
-  final Map<String, PassUniformWriter> _passUniforms = {};
-  final Map<String, PassTextureProvider> _passTextures = {};
-  final Map<String, int> _customWriterKinds = {};
-  int _passUniformsVersion = 0;
   int _pass = 0;
   int _cameraPass = 0;
   int _nextPassEpoch = 1;
-  final Int32List _passKindEpochs = Int32List(_passKindCount)
-    ..fillRange(0, _passKindCount, 1);
 
+  /// Incremented whenever the active camera matrices change.
   @internal
   int get cameraPass => _cameraPass;
 
@@ -397,30 +400,25 @@ class RenderContext3D(super.device) extends RenderContext {
   @internal
   Shader? get activeApplyVertexShader => _activeApplyVertexShader;
 
+  Material? _boundMaterial;
+  int _bindingEpoch = -1;
+  int _oitPass = _OitAndGrabPass.noPass;
+  bool _depthPrepassOverride = false;
+
   void _bumpAllPassKinds() {
     _pass++;
-    final epoch = ++_nextPassEpoch;
-    for (var k = 0; k < _passKindCount; k++) {
-      _passKindEpochs[k] = epoch;
-    }
+    _passRegistry.bumpAll(++_nextPassEpoch);
   }
 
   void _bumpSceneColorUniforms() {
-    final epoch = ++_nextPassEpoch;
-    _passKindEpochs[_passKindSceneColor] = epoch;
-    _passKindEpochs[_passKindPassOptions] = epoch;
-    _passKindEpochs[_passKindSpatial] = epoch;
-    _passKindEpochs[_passKindCustom] = epoch;
+    _passRegistry.bumpSceneColor(++_nextPassEpoch);
   }
 
   /// Bumps only `PassOptions`, `SpatialPass`, and custom pass blocks (without
   /// invalidating camera, light, fog, or stylized pass caches).
   @internal
   void bumpPassOptionsUniforms() {
-    final epoch = ++_nextPassEpoch;
-    _passKindEpochs[_passKindPassOptions] = epoch;
-    _passKindEpochs[_passKindSpatial] = epoch;
-    _passKindEpochs[_passKindCustom] = epoch;
+    _passRegistry.bumpPassOptions(++_nextPassEpoch);
   }
 
   /// Bumps the pass uniform epoch when per-pass state (such as `hdrEnabled`,
@@ -432,115 +430,41 @@ class RenderContext3D(super.device) extends RenderContext {
 
   /// The uniform blocks filled once per render pass, by block name.
   Map<String, PassUniformWriter> get passUniforms =>
-      Map.unmodifiable(_passUniforms);
+      Map.unmodifiable(_passRegistry.writers);
 
   /// Registers [writer] to fill every uniform block named [name] once per
   /// render pass, for every shader that declares it.
-  void registerPassUniform(String name, PassUniformWriter? writer) {
-    if (writer == null) {
-      _passUniforms.remove(name);
-      _customWriterKinds.remove(name);
-    } else {
-      _passUniforms[name] = writer;
-      final defaultKind = _defaultPassKindFor(name, writer);
-      if (defaultKind > 0) {
-        _customWriterKinds.remove(name);
-      } else {
-        _customWriterKinds[name] = 1;
-      }
-    }
-    _passUniformsVersion++;
-  }
+  void registerPassUniform(String name, PassUniformWriter? writer) =>
+      _passRegistry.registerUniform(name, writer);
 
   /// Registers [provider] to give the texture of every sampler named [name],
   /// once per render pass, for every shader that declares it.
-  void registerPassTexture(String name, PassTextureProvider? provider) {
-    if (provider == null) {
-      _passTextures.remove(name);
-    } else {
-      _passTextures[name] = provider;
-    }
-    _passUniformsVersion++;
-  }
+  void registerPassTexture(String name, PassTextureProvider? provider) =>
+      _passRegistry.registerTexture(name, provider);
 
   /// Set the camera matrices for the next pass.
   void setCamera(Matrix4 viewMatrix, Matrix4 projectionMatrix) {
     _bumpAllPassKinds();
     _cameraPass++;
-    if (!_shadows.recording) {
-      _viewerEpoch++;
-    }
     _shadows
       ..active = false
       ..atlasActive = false;
-    _viewMatrix.setFrom(viewMatrix);
-    _projectionMatrix.setFrom(projectionMatrix);
-    _viewProjectionMatrix
-      ..setFrom(projectionMatrix)
-      ..multiply(viewMatrix);
-    _inverseView.copyInverse(viewMatrix);
-    _cameraPosition.setValues(
-      _inverseView.storage[12],
-      _inverseView.storage[13],
-      _inverseView.storage[14],
+    _camera.setCamera(
+      viewMatrix,
+      projectionMatrix,
+      isRecordingShadow: _shadows.recording,
     );
-    _frustum.setFromViewProjection(_viewProjectionMatrix);
-
-    final m = _viewProjectionMatrix.storage;
-    final perspective = m[3] * m[3] + m[7] * m[7] + m[11] * m[11] > 1e-12;
-    final depthRow = perspective ? 3 : 2;
-    for (var i = 0; i < 4; i++) {
-      _depthRow[i] = m[i * 4 + depthRow];
-    }
-    _isMirrored = mirrors(_viewProjectionMatrix);
   }
 
-  final Matrix4 _inverseView = Matrix4.identity();
-
-  static bool mirrors(Matrix4 m) {
-    final s = m.storage;
-    final perspective = s[3] * s[3] + s[7] * s[7] + s[11] * s[11] > 1e-12;
-    final r = perspective ? 3 : 2;
-    final det =
-        s[0] * (s[5] * s[8 + r] - s[9] * s[4 + r]) -
-        s[4] * (s[1] * s[8 + r] - s[9] * s[r]) +
-        s[8] * (s[1] * s[4 + r] - s[5] * s[r]);
-    return det > 0;
-  }
-
-  int _activePrepassGroup = 0;
-  int _nextPrepassGroupId = 1;
-
-  // The prepass groups of Material.depthPrepassGroup keys in this pass: the
-  // key, the group and the sort depth of each, the first [_sharedGroupCount]
-  // entries in use (the lists are reused from pass to pass).
-  final List<Object?> _sharedGroupKeys = [];
-  final List<int> _sharedGroupIds = [];
-  final List<double> _sharedGroupDepths = [];
-  int _sharedGroupCount = 0;
-
-  int _prepassGroupNesting = 0;
-  double _prepassGroupDepth = double.nan;
-  bool _depthPrepassOverride = false;
+  static bool mirrors(Matrix4 m) => _CameraPassState.mirrors(m);
 
   /// Groups all translucent draws with [RenderState.depthPrepass] recorded
   /// before the matching [endDepthPrepassGroup] into a single cohesive depth
   /// prepass followed by a single `lessEqual` shaded pass.
-  void beginDepthPrepassGroup() {
-    if (_prepassGroupNesting++ == 0) {
-      _activePrepassGroup = _nextPrepassGroupId++;
-      _prepassGroupDepth = double.nan;
-    }
-  }
+  void beginDepthPrepassGroup() => _queue.beginDepthPrepassGroup();
 
   /// Ends a group started by [beginDepthPrepassGroup].
-  void endDepthPrepassGroup() {
-    if (--_prepassGroupNesting <= 0) {
-      _prepassGroupNesting = 0;
-      _activePrepassGroup = 0;
-      _prepassGroupDepth = double.nan;
-    }
-  }
+  void endDepthPrepassGroup() => _queue.endDepthPrepassGroup();
 
   /// Records a draw of every surface of [mesh].
   void drawMesh(
@@ -600,32 +524,33 @@ class RenderContext3D(super.device) extends RenderContext {
         return;
       }
     }
-    final i = _count;
-    if (i == _capacity) {
-      _grow();
+    final queue = _queue;
+    final i = queue.count;
+    if (i == queue.capacity) {
+      queue.grow();
     }
-    _count++;
+    queue.count++;
 
-    _surfaces[i] = surface;
-    _materials[i] = drawMaterial;
-    _joints[i] = jointTransforms != null && jointTransforms.isNotEmpty
+    queue.surfaces[i] = surface;
+    queue.materials[i] = drawMaterial;
+    queue.joints[i] = jointTransforms != null && jointTransforms.isNotEmpty
         ? jointTransforms
         : null;
-    _external[i] = null;
+    queue.external[i] = null;
 
-    final m = (transform ?? _modelMatrix).storage;
+    final m = (transform ?? _camera.modelMatrix).storage;
     final base = i * VertexLayout.instanceStrideInFloats;
-    final instances = _instances..setRange(base, base + 16, m);
+    final instances = queue.instances..setRange(base, base + 16, m);
 
     if (shadowPass) {
-      _pipelines[i] = null;
-      _vertexShaders[i] = null;
-      _fragmentShaders[i] = null;
-      _mirrored[i] = 0;
-      _probeSlots[i] = 0;
-      _probeWeights[i] = 0;
-      _prepassGroups[i] = 0;
-      _depths[i] = 0;
+      queue.pipelines[i] = null;
+      queue.vertexShaders[i] = null;
+      queue.fragmentShaders[i] = null;
+      queue.mirrored[i] = 0;
+      queue.probeSlots[i] = 0;
+      queue.probeWeights[i] = 0;
+      queue.prepassGroups[i] = 0;
+      queue.depths[i] = 0;
       RenderProfile.lap(RenderPhase.recording);
       return;
     }
@@ -634,13 +559,13 @@ class RenderContext3D(super.device) extends RenderContext {
       if (hasDepthNormalMat) {
         _writeInstanceColorAndData(instances, base, color, instanceData);
       }
-      _pipelines[i] = null;
-      _vertexShaders[i] = null;
-      _fragmentShaders[i] = null;
-      _mirrored[i] = 0;
-      _probeSlots[i] = 0;
-      _probeWeights[i] = 0;
-      _prepassGroups[i] = 0;
+      queue.pipelines[i] = null;
+      queue.vertexShaders[i] = null;
+      queue.fragmentShaders[i] = null;
+      queue.mirrored[i] = 0;
+      queue.probeSlots[i] = 0;
+      queue.probeWeights[i] = 0;
+      queue.prepassGroups[i] = 0;
       final center = surface.aabbCenter;
       final cx = center.x;
       final cy = center.y;
@@ -648,38 +573,38 @@ class RenderContext3D(super.device) extends RenderContext {
       final wx = m[0] * cx + m[4] * cy + m[8] * cz + m[12];
       final wy = m[1] * cx + m[5] * cy + m[9] * cz + m[13];
       final wz = m[2] * cx + m[6] * cy + m[10] * cz + m[14];
-      final d = _depthRow;
-      _depths[i] = d[0] * wx + d[1] * wy + d[2] * wz + d[3];
+      final d = _camera.depthRow;
+      queue.depths[i] = d[0] * wx + d[1] * wy + d[2] * wz + d[3];
       RenderProfile.lap(RenderPhase.recording);
       return;
     }
 
-    if (_cachedOpaqueCount >= 0 || _oitGrab.hasSortCache) {
-      _cachedOpaqueCount = -1;
+    if (queue.cachedOpaqueCount >= 0 || _oitGrab.hasSortCache) {
+      queue.cachedOpaqueCount = -1;
       _oitGrab.resetSortCache();
     }
     if (drawMaterial.renderState.translucent) {
-      _hasRecordedTranslucent = true;
+      queue.hasRecordedTranslucent = true;
     }
-    if (!_hasRecordedRefractive &&
+    if (!queue.hasRecordedRefractive &&
         drawMaterial is SpatialMaterial &&
         drawMaterial.transmission > 1e-4) {
-      _hasRecordedRefractive = true;
+      queue.hasRecordedRefractive = true;
     }
 
-    _resolvePipeline(drawMaterial, surface.layout);
-    _pipelines[i] = _lastPipeDev;
-    _vertexShaders[i] = _lastPipeVert;
-    _fragmentShaders[i] = _lastPipeFrag;
+    _pipelineCache.resolve(this, drawMaterial, surface.layout);
+    queue.pipelines[i] = _pipelineCache.lastDev;
+    queue.vertexShaders[i] = _pipelineCache.lastVert;
+    queue.fragmentShaders[i] = _pipelineCache.lastFrag;
 
     if (mirrored != null) {
-      _mirrored[i] = mirrored ? 1 : 0;
+      queue.mirrored[i] = mirrored ? 1 : 0;
     } else {
       final determinant =
           m[0] * (m[5] * m[10] - m[6] * m[9]) -
           m[4] * (m[1] * m[10] - m[2] * m[9]) +
           m[8] * (m[1] * m[6] - m[2] * m[5]);
-      _mirrored[i] = determinant < 0 ? 1 : 0;
+      queue.mirrored[i] = determinant < 0 ? 1 : 0;
     }
 
     _writeInstanceColorAndData(instances, base, color, instanceData);
@@ -691,32 +616,32 @@ class RenderContext3D(super.device) extends RenderContext {
     final wx = m[0] * cx + m[4] * cy + m[8] * cz + m[12];
     final wy = m[1] * cx + m[5] * cy + m[9] * cz + m[13];
     final wz = m[2] * cx + m[6] * cy + m[10] * cz + m[14];
-    if (reflectionProbes.isNotEmpty && drawMaterial.usesReflectionProbes) {
-      _selectProbeFor(i, wx, wy, wz);
+    if (_probeSelector.probes.isNotEmpty && drawMaterial.usesReflectionProbes) {
+      _probeSelector.selectForDraw(queue, i, _pass, wx, wy, wz);
     } else {
-      _probeSlots[i] = 0;
-      _probeWeights[i] = 0;
+      queue.probeSlots[i] = 0;
+      queue.probeWeights[i] = 0;
     }
-    final d = _depthRow;
+    final d = _camera.depthRow;
     var depth = d[0] * wx + d[1] * wy + d[2] * wz + d[3];
     if (drawMaterial.renderState.translucent &&
         drawMaterial.renderState.depthPrepass) {
       if (drawMaterial.depthPrepassGroup case final key?) {
-        depth = _joinSharedPrepassGroup(i, key, depth);
-      } else if (_activePrepassGroup != 0) {
-        if (_prepassGroupDepth.isNaN) {
-          _prepassGroupDepth = depth;
+        depth = queue.joinSharedPrepassGroup(i, key, depth);
+      } else if (queue.activePrepassGroup != 0) {
+        if (queue.prepassGroupDepth.isNaN) {
+          queue.prepassGroupDepth = depth;
         } else {
-          depth = _prepassGroupDepth;
+          depth = queue.prepassGroupDepth;
         }
-        _prepassGroups[i] = _activePrepassGroup;
+        queue.prepassGroups[i] = queue.activePrepassGroup;
       } else {
-        _prepassGroups[i] = _nextPrepassGroupId++;
+        queue.prepassGroups[i] = queue.nextPrepassGroupId++;
       }
     } else {
-      _prepassGroups[i] = 0;
+      queue.prepassGroups[i] = 0;
     }
-    _depths[i] = depth;
+    queue.depths[i] = depth;
     RenderProfile.lap(RenderPhase.recording);
   }
 
@@ -799,10 +724,10 @@ class RenderContext3D(super.device) extends RenderContext {
     Shader? vertShader;
     Shader? fragShader;
     if (!shadowPass && !depthNormalPass) {
-      _resolvePipeline(drawMaterial, surface.layout);
-      pipeline = _lastPipeDev!;
-      vertShader = _lastPipeVert!;
-      fragShader = _lastPipeFrag!;
+      _pipelineCache.resolve(this, drawMaterial, surface.layout);
+      pipeline = _pipelineCache.lastDev!;
+      vertShader = _pipelineCache.lastVert!;
+      fragShader = _pipelineCache.lastFrag!;
       if (!pipeline.instanced) {
         throw StateError(
           'drawInstances needs a material whose vertex shader reads the '
@@ -810,99 +735,91 @@ class RenderContext3D(super.device) extends RenderContext {
         );
       }
     }
-    final i = _count;
-    if (i == _capacity) {
-      _grow();
+    final queue = _queue;
+    final i = queue.count;
+    if (i == queue.capacity) {
+      queue.grow();
     }
-    _count++;
+    queue.count++;
 
-    _surfaces[i] = surface;
-    _materials[i] = drawMaterial;
-    _pipelines[i] = pipeline;
-    _vertexShaders[i] = vertShader;
-    _fragmentShaders[i] = fragShader;
-    _joints[i] = jointTransforms != null && jointTransforms.isNotEmpty
+    queue.surfaces[i] = surface;
+    queue.materials[i] = drawMaterial;
+    queue.pipelines[i] = pipeline;
+    queue.vertexShaders[i] = vertShader;
+    queue.fragmentShaders[i] = fragShader;
+    queue.joints[i] = jointTransforms != null && jointTransforms.isNotEmpty
         ? jointTransforms
         : null;
-    _mirrored[i] = mirrored ? 1 : 0;
-    _external[i] = instances;
-    _externalCounts[i] = count;
-    _externalOffsets[i] = instanceOffset * VertexLayout.instanceStrideInFloats;
-    _externalVersions[i] = instanceVersion ?? -1;
-    _externalCacheSpans[i] = instanceBufferCount ?? 0;
+    queue.mirrored[i] = mirrored ? 1 : 0;
+    queue.external[i] = instances;
+    queue.externalCounts[i] = count;
+    queue.externalOffsets[i] =
+        instanceOffset * VertexLayout.instanceStrideInFloats;
+    queue.externalVersions[i] = instanceVersion ?? -1;
+    queue.externalCacheSpans[i] = instanceBufferCount ?? 0;
 
     if (shadowPass) {
-      _probeSlots[i] = 0;
-      _probeWeights[i] = 0;
-      _prepassGroups[i] = 0;
-      _depths[i] = 0;
+      queue.probeSlots[i] = 0;
+      queue.probeWeights[i] = 0;
+      queue.prepassGroups[i] = 0;
+      queue.depths[i] = 0;
       RenderProfile.lap(RenderPhase.recording);
       return;
     }
 
-    final d = _depthRow;
+    final d = _camera.depthRow;
     if (depthNormalPass) {
-      _probeSlots[i] = 0;
-      _probeWeights[i] = 0;
-      _prepassGroups[i] = 0;
-      _depths[i] = center == null
+      queue.probeSlots[i] = 0;
+      queue.probeWeights[i] = 0;
+      queue.prepassGroups[i] = 0;
+      queue.depths[i] = center == null
           ? d[3]
           : d[0] * center.x + d[1] * center.y + d[2] * center.z + d[3];
       RenderProfile.lap(RenderPhase.recording);
       return;
     }
 
-    if (_cachedOpaqueCount >= 0 || _oitGrab.hasSortCache) {
-      _cachedOpaqueCount = -1;
+    if (queue.cachedOpaqueCount >= 0 || _oitGrab.hasSortCache) {
+      queue.cachedOpaqueCount = -1;
       _oitGrab.resetSortCache();
     }
     if (drawMaterial.renderState.translucent) {
-      _hasRecordedTranslucent = true;
+      queue.hasRecordedTranslucent = true;
     }
-    if (!_hasRecordedRefractive &&
+    if (!queue.hasRecordedRefractive &&
         drawMaterial is SpatialMaterial &&
         drawMaterial.transmission > 1e-4) {
-      _hasRecordedRefractive = true;
+      queue.hasRecordedRefractive = true;
     }
 
-    if (reflectionProbes.isNotEmpty && drawMaterial.usesReflectionProbes) {
-      final at = center ?? _cameraPosition;
-      _selectProbeFor(i, at.x, at.y, at.z);
+    if (_probeSelector.probes.isNotEmpty && drawMaterial.usesReflectionProbes) {
+      final at = center ?? _camera.cameraPosition;
+      _probeSelector.selectForDraw(queue, i, _pass, at.x, at.y, at.z);
     } else {
-      _probeSlots[i] = 0;
-      _probeWeights[i] = 0;
+      queue.probeSlots[i] = 0;
+      queue.probeWeights[i] = 0;
     }
-    _depths[i] = center == null
+    queue.depths[i] = center == null
         ? d[3]
         : d[0] * center.x + d[1] * center.y + d[2] * center.z + d[3];
     final prepass =
         drawMaterial.renderState.translucent &&
         drawMaterial.renderState.depthPrepass;
     if (prepass && drawMaterial.depthPrepassGroup != null) {
-      _depths[i] = _joinSharedPrepassGroup(
+      queue.depths[i] = queue.joinSharedPrepassGroup(
         i,
         drawMaterial.depthPrepassGroup!,
-        _depths[i],
+        queue.depths[i],
       );
     } else {
-      _prepassGroups[i] = prepass
-          ? (_activePrepassGroup != 0
-                ? _activePrepassGroup
-                : _nextPrepassGroupId++)
+      queue.prepassGroups[i] = prepass
+          ? (queue.activePrepassGroup != 0
+                ? queue.activePrepassGroup
+                : queue.nextPrepassGroupId++)
           : 0;
     }
     RenderProfile.lap(RenderPhase.recording);
   }
-
-  Material? _lastPipeMat;
-  VertexLayout? _lastPipeLayout;
-  Shader? _lastPipeVert;
-  Shader? _lastPipeFrag;
-  int _lastPipeMatVer = -1;
-  int _lastPipeVertGen = -1;
-  int _lastPipeFragGen = -1;
-  int _lastPipePass = -1;
-  DevicePipeline? _lastPipeDev;
 
   /// Whether the draws being recorded are those of a shadow map.
   bool get isShadowPass => _shadows.recording;
@@ -973,8 +890,8 @@ class RenderContext3D(super.device) extends RenderContext {
     List<Matrix4>? fitViewProjections,
     List<Matrix4>? fitViews,
   }) {
-    _shadowViewerPosition.setFrom(_cameraPosition);
-    _shadowViewerViewProjection.setFrom(_viewProjectionMatrix);
+    _camera.shadowViewerPosition.setFrom(_camera.cameraPosition);
+    _camera.shadowViewerViewProjection.setFrom(_camera.viewProjectionMatrix);
     _shadows
       .._fitViewProjections = fitViewProjections
       .._fitViews = fitViews;
@@ -1032,19 +949,12 @@ class RenderContext3D(super.device) extends RenderContext {
   /// Marks the depth-normal prepass inactive when skipped for a pass.
   void clearDepthNormalPass() => _depthNormal.clear();
 
-  late final _DepthNormalPass _depthNormal = _DepthNormalPass(this);
-  late final _OitAndGrabPass _oitGrab = _OitAndGrabPass(this);
-
-  bool _hasRecordedRefractive = false;
-  bool _hasRecordedTranslucent = false;
-  int _cachedOpaqueCount = -1;
-
   /// Whether any currently recorded draw uses a refractive `SpatialMaterial`
   /// (`transmission > 0`).
-  bool get hasRefractiveDraws => _hasRecordedRefractive;
+  bool get hasRefractiveDraws => _queue.hasRecordedRefractive;
 
   /// Whether any currently recorded draw is translucent.
-  bool get hasTranslucentDraws => _hasRecordedTranslucent;
+  bool get hasTranslucentDraws => _queue.hasRecordedTranslucent;
 
   /// Binds [grabTarget] as the active `sceneColorTexture` for upcoming passes
   /// (`null` clears it).
@@ -1069,9 +979,9 @@ class RenderContext3D(super.device) extends RenderContext {
     _boundMaterial = null;
     _bindingEpoch = -1;
     _depthPrepassOverride = false;
-    _submitBatches(_opaque, opaqueCount);
+    _submitBatches(_queue.opaque, opaqueCount);
     _boundMaterial = null;
-    _jointTransforms = null;
+    _jointCache.activeTransforms = null;
   }
 
   /// Executes a Weighted Blended OIT accumulation (`revealPass == false`) or
@@ -1096,7 +1006,7 @@ class RenderContext3D(super.device) extends RenderContext {
     revealTarget: revealTarget,
   );
 
-  /// The [ReflectionProbeVolume3D] chosen for the draw [Material.apply] runs
+  /// The [ReflectionProbeSource3D] chosen for the draw `Material.apply` runs
   /// for, or `null` when its material does not use volumes (see
   /// [Material.usesReflectionProbes]) or no volume reaches it.
   ///
@@ -1105,66 +1015,23 @@ class RenderContext3D(super.device) extends RenderContext {
   /// bounds in world space (for [drawInstances], at its `center`, or the
   /// camera position without one). Draws that get different volumes, or
   /// different weights, are not batched together.
-  ReflectionProbeVolume3D? get reflectionProbe {
-    final slot = _drawProbeSlot;
-    return slot > 0 && slot <= reflectionProbes.length
-        ? reflectionProbes[slot - 1]
-        : null;
-  }
+  ReflectionProbeSource3D? get reflectionProbe => _probeSelector.activeProbe;
 
   /// The weight of [reflectionProbe] at the drawn object, in `(0, 1]`
-  /// (`ReflectionProbeVolume3D.weightAt`), or `0` without one.
-  double get reflectionProbeWeight =>
-      reflectionProbe == null ? 0.0 : _drawProbeWeight;
+  /// ([ReflectionProbeSource3D.weightAt]), or `0` without one.
+  double get reflectionProbeWeight => _probeSelector.activeWeight;
 
   @internal
-  int get activeProbeSlot => _drawProbeSlot;
+  int get activeProbeSlot => _probeSelector.drawProbeSlot;
 
   @internal
-  double get activeProbeWeight => _drawProbeWeight;
+  double get activeProbeWeight => _probeSelector.drawProbeWeight;
 
-  int _drawProbeSlot = 0;
-  double _drawProbeWeight = 0;
-  int _boundProbeSlot = 0;
-  double _boundProbeWeight = 0;
-  bool _anyProbeDraw = false;
-  bool _sortByProbe = false;
-
-  // Per pass: the center, half extents, blend distance and priority of each
-  // volume, 8 doubles per volume.
-  Float64List _probeBoxes = Float64List(0);
-  int _probeBoxesPass = -1;
-  List<ReflectionProbeVolume3D>? _probeBoxesOf;
-  int _probeBoxesCount = 0;
-
-  /// Selects the highest-priority / highest-weight `ReflectionProbeVolume3D`
+  /// Selects the highest-priority / highest-weight [ReflectionProbeSource3D]
   /// influencing [worldPoint], or `null` when none covers it.
-  (ReflectionProbeVolume3D, double)? selectReflectionProbe(
+  (ReflectionProbeSource3D, double)? selectReflectionProbe(
     Vector3 worldPoint,
-  ) {
-    final probes = reflectionProbes;
-    if (probes.isEmpty) {
-      return null;
-    }
-    ReflectionProbeVolume3D? best;
-    var bestWeight = 0.0;
-    var bestPriority = -0x7FFFFFFF;
-    for (var i = 0; i < probes.length; i++) {
-      final p = probes[i];
-      final w = p.weightAt(worldPoint);
-      if (w <= 1e-4) {
-        continue;
-      }
-      if (best == null ||
-          p.priority > bestPriority ||
-          (p.priority == bestPriority && w > bestWeight)) {
-        best = p;
-        bestWeight = w;
-        bestPriority = p.priority;
-      }
-    }
-    return best != null ? (best, bestWeight) : null;
-  }
+  ) => _probeSelector.select(worldPoint);
 
   int get shadowMapVersion => _shadows.version;
 
@@ -1253,152 +1120,25 @@ class RenderContext3D(super.device) extends RenderContext {
     }
   }
 
-  late final _ShadowPass _shadows = _ShadowPass(this);
-
   /// Submit all queued draws.
   void flush() => _flushDraws();
-
-  Material? _boundMaterial;
-  int _bindingEpoch = -1;
-
-  // The order-independent transparency pass draws are submitted for, see
-  // `_OitAndGrabPass`.
-  int _oitPass = _OitAndGrabPass.noPass;
-
-  // The render states derived from material render states, created once.
-  final Map<RenderState, RenderState> _depthOnlyStates = {};
-  final Map<RenderState, RenderState> _prepassShadedStates = {};
-  final Map<RenderState, RenderState> _wireframeStates = {};
-
-  final Int32List _sharedPassEpochs = Int32List(_passKindCount)
-    ..fillRange(0, _passKindCount, -1);
-  final Int32List _sharedPassFrames = Int32List(_passKindCount)
-    ..fillRange(0, _passKindCount, -1);
-  final Int32List _sharedPassSigs = Int32List(_passKindCount);
-  final List<GpuBuffer?> _sharedPassBuffers = List.filled(_passKindCount, null);
-  final Int32List _sharedPassOffsets = Int32List(_passKindCount);
-  final Int32List _sharedPassLengths = Int32List(_passKindCount);
-
-  final Map<GpuUniformSlot, UniformBlock> _passBlocks = {};
-  final Map<GpuUniformSlot, UniformBlock> _jointBlocks = {};
-
-  final Map<UniformBlock, List<UniformBlock>> _stylizedPassViews = {};
-  final Map<UniformBlock, List<UniformBlock>> _spatialPassViews = {};
-
-  Float32List _jointPackScratch = Float32List(1024);
-  late Uint8List _jointPackBytes = _jointPackScratch.buffer.asUint8List();
-  int _jointPackDirtyStart = 0;
-  int _jointPackDirtyEnd = 0;
-  int _jointCacheFrame = -1;
-  static const int _jointHashTableSize = 512;
-  static const int _jointHashTableMask = _jointHashTableSize - 1;
-  static const int _maxJointCacheEntries = 256;
-  final List<_JointUploadEntry?> _jointHashTable = List.filled(
-    _jointHashTableSize,
-    null,
-  );
-  final Int32List _jointHashUsed = Int32List(_maxJointCacheEntries);
-  int _jointHashCount = 0;
-  final List<_JointUploadEntry> _jointCachePool = [];
-
-  int _viewerPass = -1;
-  double _viewerX = 0;
-  double _viewerY = 0;
-  double _viewerZ = 0;
-  double _viewerW = 1;
-  final Matrix4 _inverseViewProj = Matrix4.zero();
 
   /// Writes the viewer's world-space center of projection (`w = 1`) or
   /// parallel direction (`w = 0`) for the current camera pass, cached once per
   /// [_cameraPass].
   @internal
-  void writeViewerTo(UniformBlock block, int offset) {
-    if (_viewerPass != _cameraPass) {
-      _viewerPass = _cameraPass;
-      final inverse = _inverseViewProj..setFrom(_viewProjectionMatrix);
-      final determinant = inverse.invert();
-      final s = inverse.storage;
-      final x = s[8];
-      final y = s[9];
-      final z = s[10];
-      final w = s[11];
-      final length = math.sqrt(x * x + y * y + z * z);
-      if (determinant == 0 || !(length > 0)) {
-        _viewerX = _cameraPosition.x;
-        _viewerY = _cameraPosition.y;
-        _viewerZ = _cameraPosition.z;
-        _viewerW = 1;
-      } else if (w.abs() > 1e-9 * length) {
-        _viewerX = x / w;
-        _viewerY = y / w;
-        _viewerZ = z / w;
-        _viewerW = 1;
-      } else {
-        _viewerX = -x / length;
-        _viewerY = -y / length;
-        _viewerZ = -z / length;
-        _viewerW = 0;
-      }
-    }
-    block.writeVec4ValuesAt(offset, _viewerX, _viewerY, _viewerZ, _viewerW);
-  }
+  void writeViewerTo(UniformBlock block, int offset) =>
+      _camera.writeViewerTo(_cameraPass, block, offset);
 
   static void writeCameraUniforms(
     RenderContext3D context,
     UniformBlock block,
   ) => _writeCameraUniforms(context, block);
 
-  int _lightSelPass = -1;
-  List<Light>? _lightSelList;
-  int _lightSelLength = -1;
-  int _lightSelMask = 0;
-  AmbientLight? _selAmbient;
-  bool _selHasHemisphere = false;
-  HemisphereLight? _selHemisphere;
-  final List<Light> _selDirectionals = [];
-
-  int _selPointPass = -1;
-  List<Light>? _selPointList;
-  int _selPointLength = -1;
-  int _selPointMask = 0;
-  bool _selPointPrioritize = false;
-  LightGridSettings? _selPointGrid;
-  int _selPointCount = 0;
-  final Int32List _selPointIndices = Int32List(maxPointLights);
-
-  int _selSpotPass = -1;
-  List<Light>? _selSpotList;
-  int _selSpotLength = -1;
-  int _selSpotMask = 0;
-  LightGridSettings? _selSpotGrid;
-  int _selSpotCount = 0;
-  final Int32List _selSpotIndices = Int32List(maxSpotLights);
-
   static void writeAmbientLightUniforms(
     RenderContext3D context,
     UniformBlock block,
   ) => _writeAmbientLightUniforms(context, block);
-
-  bool prioritizeNearestLights = false;
-
-  // Which lights a selection picks among: all, those a light grid cannot
-  // hold, or those it can (see LightGrid3D.binnable).
-
-  final LightGrid3D _lightGrid = LightGrid3D();
-
-  // The plan of the pass for its lights beyond the blocks: whether its point
-  // (and spot) lights go into the light grid, and how many lights of the
-  // blocks come before those the grid holds too. Made once per pass.
-  int _gridPlanPass = -1;
-  List<Light>? _gridPlanLights;
-  int _gridPlanMask = 0;
-  LightGridSettings? _gridPlanSettings;
-  bool _gridPlanPrioritize = false;
-  bool _gridPoints = false;
-  bool _gridSpots = false;
-  int _gridUniformPoints = maxPointLights;
-  int _gridUniformSpots = maxSpotLights;
-  int _gridBuiltPass = -1;
 
   static void writeLightGridUniforms(
     RenderContext3D context,
@@ -1435,11 +1175,6 @@ class RenderContext3D(super.device) extends RenderContext {
     UniformBlock block,
   ) => _writeWaterVolumeUniforms(context, block);
 
-  int _syncedLightRev = -1;
-  int _syncedFogVer = -1;
-  int _syncedWaterVer = -1;
-  double _syncedProbeIntensity = -1.0;
-
   @internal
   bool needsSyncOptions({
     required List<Light> lights,
@@ -1448,64 +1183,25 @@ class RenderContext3D(super.device) extends RenderContext {
     required WaterVolumeSettings? waterVolume,
     required RenderDebugMode3D renderDebugMode,
     required LightProbeGrid3D? lightProbeGrid,
-    required List<ReflectionProbeVolume3D> reflectionProbes,
+    required List<ReflectionProbeSource3D> reflectionProbes,
     required bool prioritizeNearestLights,
     required LightGridSettings? lightGrid,
     required Aabb3? lightGridBounds,
     required bool hdrEnabled,
     Object? owner,
-  }) {
-    final fogVer = fog?.version ?? -1;
-    final waterVer = waterVolume?.version ?? -1;
-    final probeIntensity = lightProbeGrid?.intensity ?? -1.0;
-    if (_syncedLightRev == lightsVersion &&
-        identical(_syncedOwner, owner) &&
-        identical(this.lights, lights) &&
-        identical(this.fog, fog) &&
-        _syncedFogVer == fogVer &&
-        identical(this.waterVolume, waterVolume) &&
-        _syncedWaterVer == waterVer &&
-        this.renderDebugMode == renderDebugMode &&
-        identical(this.lightProbeGrid, lightProbeGrid) &&
-        _syncedProbeIntensity == probeIntensity &&
-        identical(this.reflectionProbes, reflectionProbes) &&
-        this.prioritizeNearestLights == prioritizeNearestLights &&
-        identical(this.lightGrid, lightGrid) &&
-        this.lightGridBounds == lightGridBounds &&
-        this.hdrEnabled == hdrEnabled) {
-      return false;
-    }
-    _syncedOwner = owner;
-    _syncedLightRev = lightsVersion;
-    _syncedFogVer = fogVer;
-    _syncedWaterVer = waterVer;
-    _syncedProbeIntensity = probeIntensity;
-    return true;
-  }
-
-  int _count = 0;
-  int _capacity = 0;
-  List<Surface?> _surfaces = [];
-  List<Material?> _materials = [];
-  List<DevicePipeline?> _pipelines = [];
-  List<Shader?> _vertexShaders = [];
-  List<Shader?> _fragmentShaders = [];
-  List<List<Matrix4>?> _joints = [];
-  List<Float32List?> _external = [];
-  Int32List _externalCounts = Int32List(0);
-  Int32List _externalOffsets = Int32List(0);
-  Int32List _externalVersions = Int32List(0);
-  Int32List _externalCacheSpans = Int32List(0);
-  Float32List _instances = Float32List(0);
-  Float64List _depths = Float64List(0);
-  Float64List _groupKeys = Float64List(0);
-  Uint8List _mirrored = Uint8List(0);
-  Int32List _surfaceKeys = Int32List(0);
-  Int32List _prepassGroups = Int32List(0);
-  Int32List _probeSlots = Int32List(0);
-  Float64List _probeWeights = Float64List(0);
-  Int32List _opaque = Int32List(0);
-  Int32List _translucent = Int32List(0);
-  Int32List _sortScratch = Int32List(0);
-  Float64List _sortDepths = Float64List(0);
+  }) => _lightState.needsSyncOptions(
+    context: this,
+    lights: lights,
+    lightsVersion: lightsVersion,
+    fog: fog,
+    waterVolume: waterVolume,
+    renderDebugMode: renderDebugMode,
+    lightProbeGrid: lightProbeGrid,
+    reflectionProbes: reflectionProbes,
+    prioritizeNearestLights: prioritizeNearestLights,
+    lightGrid: lightGrid,
+    lightGridBounds: lightGridBounds,
+    hdrEnabled: hdrEnabled,
+    owner: owner,
+  );
 }

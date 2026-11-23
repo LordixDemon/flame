@@ -3,11 +3,12 @@ part of 'render_context_3d.dart';
 extension _ShadowPassCasters on _ShadowPass {
   void flushCasters() {
     final context = _context;
-    final count = context._count;
-    final order = context._opaque;
-    final groupKeys = context._groupKeys;
-    final surfaceKeys = context._surfaceKeys;
-    final sortDepths = context._sortDepths;
+    final queue = context._queue;
+    final count = queue.count;
+    final order = queue.opaque;
+    final groupKeys = queue.groupKeys;
+    final surfaceKeys = queue.surfaceKeys;
+    final sortDepths = queue.sortDepths;
     var casters = 0;
     VertexLayout? lastLayout;
     _CasterPipeline? caster;
@@ -15,11 +16,11 @@ extension _ShadowPassCasters on _ShadowPass {
       // The caster shaders read every instance as a model matrix: draws
       // whose instances hold something else (billboards, ribbons) cannot
       // cast where they are, so they cast nothing.
-      final material = context._materials[i]!;
+      final material = queue.materials[i]!;
       if (!material.castsShadows || !material.instancesHoldModelMatrices) {
         continue;
       }
-      final surface = context._surfaces[i]!;
+      final surface = queue.surfaces[i]!;
       final layout = surface.layout;
       if (!identical(layout, lastLayout)) {
         lastLayout = layout;
@@ -29,22 +30,23 @@ extension _ShadowPassCasters on _ShadowPass {
         continue;
       }
       final pipeline = caster.pipeline;
-      context._pipelines[i] = pipeline;
+      queue.pipelines[i] = pipeline;
       groupKeys[i] = pipeline.id.toDouble();
-      surfaceKeys[i] = surface.id * 2 + (context._joints[i] == null ? 0 : 1);
-      sortDepths[i] = context._depths[i];
+      surfaceKeys[i] = surface.id * 2 + (queue.joints[i] == null ? 0 : 1);
+      sortDepths[i] = queue.depths[i];
       order[casters++] = i;
     }
-    context._sort(order, casters);
+    queue.sort(order, casters);
     RenderProfile.lap(RenderPhase.sort);
 
-    context._boundMaterial = null;
-    context._bindingEpoch = -1;
+    context
+      .._boundMaterial = null
+      .._bindingEpoch = -1;
     var start = 0;
     while (start < casters) {
       final first = order[start];
       var end = start + 1;
-      if (context._joints[first] == null && context._external[first] == null) {
+      if (queue.joints[first] == null && queue.external[first] == null) {
         while (end < casters && _batchesWith(first, order[end])) {
           end++;
         }
@@ -53,22 +55,22 @@ extension _ShadowPassCasters on _ShadowPass {
       start = end;
     }
 
-    context
-      .._releaseDraws(count)
-      .._jointTransforms = null;
-    context._lastDrawCount = count;
-    context._count = 0;
+    queue.release(count, context._oitGrab);
+    context._jointCache.activeTransforms = null;
+    queue.lastDrawCount = count;
+    queue.count = 0;
     RenderProfile.lap(RenderPhase.release);
   }
 
   bool _batchesWith(int first, int other) =>
-      _context._batchesBasic(first, other);
+      _context._queue.batchesBasic(first, other);
 
   void _submit(Int32List order, int start, int count) {
     final context = _context;
+    final queue = context._queue;
     final device = context.device;
     final first = order[start];
-    final surface = context._surfaces[first]!;
+    final surface = queue.surfaces[first]!;
     final caster = _activeCasters[surface.layout]!;
     final vertexShader = caster.vertexShader!;
     final fragmentShader = caster.fragmentShader!;
@@ -102,8 +104,8 @@ extension _ShadowPassCasters on _ShadowPass {
     }
     RenderProfile.lap(RenderPhase.batch);
 
-    final joints = context._joints[first];
-    device.bindPipeline(context._pipelines[first]!);
+    final joints = queue.joints[first];
+    device.bindPipeline(queue.pipelines[first]!);
     if (device.bindingEpoch != context._bindingEpoch) {
       context
         .._bindingEpoch = device.bindingEpoch

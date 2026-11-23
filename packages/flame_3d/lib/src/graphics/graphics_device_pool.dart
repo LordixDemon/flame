@@ -1,13 +1,27 @@
 part of 'graphics_device.dart';
 
-extension _GraphicsDevicePool on GraphicsDevice {
-  /// Acquire a render target from the pool, creating one if needed.
-  GpuRenderTarget _acquireRenderTarget(Size size, int msaaSampleCount) {
+class _RenderTargetPool() {
+  final List<_PoolBucket> buckets = [];
+  final List<_TextureTargetEntry> textureTargets = [];
+
+  void beginFrame() {
+    for (var i = 0; i < buckets.length; i++) {
+      buckets[i].used = 0;
+    }
+  }
+
+  GpuRenderTarget acquireRenderTarget(
+    GpuBackend backend,
+    Color clearValue,
+    int frame,
+    Size size,
+    int msaaSampleCount,
+  ) {
     final width = _pixels(size.width);
     final height = _pixels(size.height);
     _PoolBucket? bucket;
-    for (var i = 0; i < _poolBuckets.length; i++) {
-      final b = _poolBuckets[i];
+    for (var i = 0; i < buckets.length; i++) {
+      final b = buckets[i];
       if (b.width == width &&
           b.height == height &&
           b.msaaSampleCount == msaaSampleCount) {
@@ -16,8 +30,8 @@ extension _GraphicsDevicePool on GraphicsDevice {
       }
     }
     if (bucket == null) {
-      bucket = _PoolBucket(width, height, msaaSampleCount, _frame);
-      _poolBuckets.add(bucket);
+      bucket = _PoolBucket(width, height, msaaSampleCount, frame);
+      buckets.add(bucket);
     }
     final index = bucket.used;
     final targets = bucket.targets;
@@ -38,29 +52,103 @@ extension _GraphicsDevicePool on GraphicsDevice {
     return target;
   }
 
-  void _evictUnusedTargets() {
-    for (var i = _poolBuckets.length - 1; i >= 0; i--) {
-      final bucket = _poolBuckets[i];
+  GpuTextureTarget acquireTextureTarget(
+    GpuBackend backend,
+    int frame,
+    int width,
+    int height,
+    GpuPixelFormat format, {
+    required Color clearValue,
+    required Object? role,
+    required int msaaSampleCount,
+  }) {
+    for (var i = 0; i < textureTargets.length; i++) {
+      final entry = textureTargets[i];
+      if (entry.width == width &&
+          entry.height == height &&
+          entry.format == format &&
+          entry.msaaSampleCount == msaaSampleCount &&
+          entry.clearValue == clearValue &&
+          (identical(entry.role, role) || entry.role == role)) {
+        entry.lastUsedFrame = frame;
+        return entry.target;
+      }
+    }
+    final target = backend.createTextureTarget(
+      width: width,
+      height: height,
+      format: format,
+      clearValue: clearValue,
+      msaaSampleCount: msaaSampleCount,
+    );
+    final estimatedBytes =
+        width *
+        height *
+        (format.bytesPerBlock *
+                (msaaSampleCount > 1 ? 1 + msaaSampleCount : 1) +
+            4 * msaaSampleCount);
+    textureTargets.add(
+      _TextureTargetEntry(
+        width,
+        height,
+        format,
+        clearValue,
+        role,
+        msaaSampleCount,
+        target,
+        frame,
+        estimatedBytes,
+      ),
+    );
+    return target;
+  }
+
+  void touchTextureTarget(GpuTextureTarget target, int frame) {
+    for (var i = 0; i < textureTargets.length; i++) {
+      final entry = textureTargets[i];
+      if (identical(entry.target, target)) {
+        entry.lastUsedFrame = frame;
+        return;
+      }
+    }
+  }
+
+  void evictUnused(int frame) {
+    for (var i = buckets.length - 1; i >= 0; i--) {
+      final bucket = buckets[i];
       final used = bucket.used;
       if (used == 0) {
-        if (_frame - bucket.lastUsedFrame >=
-            GraphicsDevice.targetRetainFrames) {
-          _poolBuckets.removeAt(i);
+        if (frame - bucket.lastUsedFrame >= GraphicsDevice.targetRetainFrames) {
+          buckets.removeAt(i);
         }
       } else {
-        bucket.lastUsedFrame = _frame;
+        bucket.lastUsedFrame = frame;
         final targets = bucket.targets;
         if (used < targets.length) {
           targets.removeRange(used, targets.length);
         }
       }
     }
-    for (var i = _textureTargetList.length - 1; i >= 0; i--) {
-      if (_frame - _textureTargetList[i].lastUsedFrame >=
+    for (var i = textureTargets.length - 1; i >= 0; i--) {
+      if (frame - textureTargets[i].lastUsedFrame >=
           GraphicsDevice.targetRetainFrames) {
-        _textureTargetList.removeAt(i);
+        textureTargets.removeAt(i);
       }
     }
+  }
+
+  int get estimatedVramBytes {
+    var total = 0;
+    for (var i = 0; i < buckets.length; i++) {
+      final b = buckets[i];
+      // Triple-buffered color + depth-stencil estimate.
+      final perTarget = b.width * b.height * 4 * (3 + b.msaaSampleCount);
+      total += perTarget * b.targets.length;
+    }
+    for (var i = 0; i < textureTargets.length; i++) {
+      total += textureTargets[i].estimatedBytes;
+    }
+    return total;
   }
 }
 

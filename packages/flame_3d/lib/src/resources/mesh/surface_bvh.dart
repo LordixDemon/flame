@@ -2,8 +2,8 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flame_3d/core.dart';
-import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/graphics/backend.dart';
 import 'package:flame_3d/src/spatial/static_bvh_3d.dart';
 
 /// {@template surface_ray_hit}

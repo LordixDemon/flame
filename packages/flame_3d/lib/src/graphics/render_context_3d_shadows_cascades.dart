@@ -367,7 +367,7 @@ extension _ShadowPassCascades on _ShadowPass {
   }) {
     final context = _context;
     _ShadowPass._cascadeSplits(settings, count);
-    final perspective = context._projectionMatrix.storage[15].abs() < 0.5;
+    final perspective = context.projection.storage[15].abs() < 0.5;
     final fixed = settings.fit == ShadowFit.fixed;
     final fitView = settings.fit == ShadowFit.view;
     final views = _fitViewProjections;
@@ -395,9 +395,9 @@ extension _ShadowPassCascades on _ShadowPass {
           casters: sceneBounds,
           receivers: settings.bounds,
           cameraViewProjection: fitView && views == null
-              ? context._viewProjectionMatrix
+              ? context.viewProjection
               : null,
-          cameraView: context._viewMatrix,
+          cameraView: context.view,
           cameraViewProjections: fitView ? views : null,
           cameraViews: _fitViews,
           maxDistance: settings.maxDistance,
@@ -414,8 +414,8 @@ extension _ShadowPassCascades on _ShadowPass {
           direction: direction,
           casters: sceneBounds,
           receivers: settings.bounds,
-          cameraViewProjection: context._viewProjectionMatrix,
-          cameraView: context._viewMatrix,
+          cameraViewProjection: context.viewProjection,
+          cameraView: context.view,
           cameraViewProjections: views,
           cameraViews: _fitViews,
           maxDistance: far * _ShadowPass._splits[c],
@@ -471,7 +471,7 @@ extension _ShadowPassCascades on _ShadowPass {
   double _viewDepthExtent(Aabb3 box) {
     final views = _fitViews;
     if (views == null) {
-      return _ShadowPass._viewDepthExtentFrom(_context._viewMatrix, box);
+      return _ShadowPass._viewDepthExtentFrom(_context.view, box);
     }
     var far = 1e-3;
     for (var i = 0; i < views.length; i++) {

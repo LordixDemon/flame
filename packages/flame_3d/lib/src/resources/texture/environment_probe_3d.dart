@@ -3,8 +3,8 @@ import 'dart:typed_data';
 import 'dart:ui' show Color;
 
 import 'package:flame_3d/core.dart';
-import 'package:flame_3d/graphics.dart';
-import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/graphics/backend.dart';
+import 'package:flame_3d/src/resources/texture/texture.dart';
 
 /// Minimal read-only contract implemented by spatial reflection probe volumes
 /// (such as `ReflectionProbeVolume3D`) so materials can bind local IBL probes
@@ -16,11 +16,20 @@ abstract interface class ReflectionProbeSource3D() {
   /// Whether reflections inside this volume use box-projected parallax.
   bool get boxProjection;
 
+  /// Distance outside the probe bounds over which the blend weight fades to 0.
+  double get blendDistance;
+
+  /// Selection priority among overlapping probes (higher wins).
+  int get priority;
+
   /// Current world-space center of this reflection probe volume.
   Vector3 get worldCenter;
 
   /// Current world-space AABB bounds of this reflection probe volume.
   Aabb3 get worldBounds;
+
+  /// Smooth containment weight in `[0, 1]` for [worldPoint].
+  double weightAt(Vector3 worldPoint);
 }
 
 /// {@template environment_probe_3d}

@@ -1,8 +1,8 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:flame_3d/graphics.dart';
-import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/graphics/backend.dart';
+import 'package:flame_3d/src/resources/texture/texture.dart';
 
 /// Metadata of a single mip level in a parsed [Ktx2Container].
 class const Ktx2MipLevel({

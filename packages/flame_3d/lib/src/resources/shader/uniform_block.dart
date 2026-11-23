@@ -2,7 +2,7 @@ import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flame_3d/core.dart';
-import 'package:flame_3d/graphics.dart';
+import 'package:flame_3d/src/graphics/backend.dart';
 import 'package:meta/meta.dart';
 
 /// {@template uniform_block}
@@ -10,7 +10,7 @@ import 'package:meta/meta.dart';
 /// the shader reflects for [slot].
 ///
 /// Members are written by name. A block remembers whether it changed since it
-/// was last uploaded, so the [GraphicsDevice] uploads it at most once per frame
+/// was last uploaded, so the `GraphicsDevice` uploads it at most once per frame
 /// while it does not change, however many draws bind it.
 /// {@endtemplate}
 class UniformBlock(

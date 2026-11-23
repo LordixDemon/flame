@@ -1,8 +1,7 @@
 import 'dart:async';
 import 'dart:ui' as ui;
 
-import 'package:flame_3d/graphics.dart';
-import 'package:flame_3d/src/graphics/backend/texture_sampler.dart';
+import 'package:flame_3d/src/graphics/backend.dart';
 import 'package:flame_3d/src/resources/texture/image_texture.dart';
 import 'package:flame_3d/src/resources/texture/texture.dart';
 import 'package:flutter/foundation.dart' show debugPrint;

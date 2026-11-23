@@ -114,31 +114,31 @@ class _OitAndGrabPass(final RenderContext3D _context) {
   /// so that they hide the translucent fragments behind them.
   void _drawOpaqueDepth() {
     final context = _context;
+    final queue = context._queue;
     var opaqueCount = _opaqueDepthSortedCount;
     if (opaqueCount < 0) {
-      context._cachedOpaqueCount = -1;
-      final count = context._count;
+      queue.cachedOpaqueCount = -1;
+      final count = queue.count;
       opaqueCount = 0;
       for (var i = 0; i < count; i++) {
-        final mat = context._materials[i]!;
+        final mat = queue.materials[i]!;
         if (!mat.renderState.translucent && mat.renderState.depthWrite) {
-          context._opaque[opaqueCount++] = i;
-          context._groupKeys[i] = context._pipelines[i]!.id.toDouble();
-          context._surfaceKeys[i] =
-              context._surfaces[i]!.id * 2 +
-              (context._joints[i] == null ? 0 : 1);
-          context._sortDepths[i] = context._depths[i];
+          queue.opaque[opaqueCount++] = i;
+          queue.groupKeys[i] = queue.pipelines[i]!.id.toDouble();
+          queue.surfaceKeys[i] =
+              queue.surfaces[i]!.id * 2 + (queue.joints[i] == null ? 0 : 1);
+          queue.sortDepths[i] = queue.depths[i];
         }
       }
-      context._sortByProbe = false;
-      context._sort(context._opaque, opaqueCount);
+      queue.sort(queue.opaque, opaqueCount);
       _opaqueDepthSortedCount = opaqueCount;
     }
-    context._boundMaterial = null;
-    context._bindingEpoch = -1;
-    context._depthPrepassOverride = true;
-    context._submitBatches(context._opaque, opaqueCount);
-    context._depthPrepassOverride = false;
+    context
+      .._boundMaterial = null
+      .._bindingEpoch = -1
+      .._depthPrepassOverride = true
+      .._submitBatches(queue.opaque, opaqueCount)
+      .._depthPrepassOverride = false;
   }
 
   /// Submits the recorded alpha-blended translucent draws with their own
@@ -150,37 +150,37 @@ class _OitAndGrabPass(final RenderContext3D _context) {
     required bool releaseAfter,
   }) {
     final context = _context;
-    final count = context._count;
+    final queue = context._queue;
+    final count = queue.count;
 
     _drawOpaqueDepth();
 
     // The draws are summed (or multiplied), so their order does not matter:
     // they are grouped to batch as opaque draws are.
-    final order = context._translucent;
+    final order = queue.translucent;
     var oitCount = _wboitSortedCount;
     if (oitCount < 0) {
       oitCount = 0;
       for (var i = 0; i < count; i++) {
-        final material = context._materials[i]!;
+        final material = queue.materials[i]!;
         if (accumulates(material.renderState)) {
           order[oitCount++] = i;
-          context._groupKeys[i] =
-              context._pipelines[i]!.id * 8589934592.0 +
+          queue.groupKeys[i] =
+              queue.pipelines[i]!.id * 8589934592.0 +
               material.id * 2.0 +
-              context._mirrored[i];
-          context._surfaceKeys[i] =
-              context._surfaces[i]!.id * 2 +
-              (context._joints[i] == null ? 0 : 1);
-          context._sortDepths[i] = context._depths[i];
+              queue.mirrored[i];
+          queue.surfaceKeys[i] =
+              queue.surfaces[i]!.id * 2 + (queue.joints[i] == null ? 0 : 1);
+          queue.sortDepths[i] = queue.depths[i];
         }
       }
-      context._sortByProbe = false;
-      context._sort(order, oitCount);
+      queue.sort(order, oitCount);
       _wboitSortedCount = oitCount;
     }
-    context._boundMaterial = null;
-    context._bindingEpoch = -1;
-    context._oitPass = revealPass ? revealagePass : accumulationPass;
+    context
+      .._boundMaterial = null
+      .._bindingEpoch = -1
+      .._oitPass = revealPass ? revealagePass : accumulationPass;
     try {
       context._submitBatches(order, oitCount);
     } finally {
@@ -194,16 +194,16 @@ class _OitAndGrabPass(final RenderContext3D _context) {
 
   void _release() {
     final context = _context;
-    final count = context._count;
+    final queue = context._queue;
+    final count = queue.count;
+    context._probeSelector.resetPass();
+    queue.release(count, context._oitGrab);
     context
-      .._releaseDraws(count)
       .._boundMaterial = null
-      .._jointTransforms = null
-      .._lastDrawCount = count
-      .._count = 0
-      .._nextPrepassGroupId = 1
-      .._activePrepassGroup = 0
-      .._prepassGroupNesting = 0;
+      .._jointCache.activeTransforms = null;
+    queue.lastDrawCount = count;
+    queue.count = 0;
+    queue.resetPrepassGroups();
   }
 
   Texture _textureOf(int index, GpuTextureTarget target) {
@@ -231,19 +231,20 @@ class _OitAndGrabPass(final RenderContext3D _context) {
     required GpuTextureTarget revealTarget,
   }) {
     final context = _context;
+    final queue = context._queue;
     final device = context.device;
-    final count = context._count;
+    final count = queue.count;
 
-    final order = context._translucent;
+    final order = queue.translucent;
     _wboitSortedCount = -1;
     var sortedCount = 0;
     for (var i = 0; i < count; i++) {
-      final state = context._materials[i]!.renderState;
+      final state = queue.materials[i]!.renderState;
       if (state.translucent && !accumulates(state)) {
         order[sortedCount++] = i;
-        context._groupKeys[i] = 0;
-        context._surfaceKeys[i] = 0;
-        context._sortDepths[i] = -context._depths[i];
+        queue.groupKeys[i] = 0;
+        queue.surfaceKeys[i] = 0;
+        queue.sortDepths[i] = -queue.depths[i];
       }
     }
 
@@ -278,11 +279,11 @@ class _OitAndGrabPass(final RenderContext3D _context) {
 
     if (sortedCount > 0) {
       _drawOpaqueDepth();
-      context._sortByProbe = false;
-      context._sort(order, sortedCount);
-      context._boundMaterial = null;
-      context._bindingEpoch = -1;
-      context._submitTranslucentBatches(order, sortedCount);
+      queue.sort(order, sortedCount);
+      context
+        .._boundMaterial = null
+        .._bindingEpoch = -1
+        .._submitTranslucentBatches(order, sortedCount);
     }
     _release();
   }
