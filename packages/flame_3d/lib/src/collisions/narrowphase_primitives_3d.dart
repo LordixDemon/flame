@@ -7,6 +7,29 @@ final _ObbFrame _obbB = _ObbFrame();
 int _satBestAxisCode = -1;
 double _satMinPen = 0.0;
 
+void _sphereSphereInto(
+  SphereShape3D a,
+  Matrix4 transformA,
+  SphereShape3D b,
+  Matrix4 transformB,
+  MutableManifoldBuffer3D out,
+) {
+  final mA = transformA.storage;
+  final mB = transformB.storage;
+  _pushSphereSphereInto(
+    mA[12],
+    mA[13],
+    mA[14],
+    a.worldRadius(transformA),
+    mB[12],
+    mB[13],
+    mB[14],
+    b.worldRadius(transformB),
+    out,
+    flip: false,
+  );
+}
+
 void _sphereCapsuleInto(
   SphereShape3D a,
   Matrix4 transformA,
@@ -21,7 +44,7 @@ void _sphereCapsuleInto(
   final cAz = mA[14];
   final rA = a.worldRadius(transformA);
   final rB = b.worldSpine(transformB, _segB0, _segB1);
-  _closestPointOnSegment(cAx, cAy, cAz, _segB0, _segB1, _ptB);
+  closestPointOnSegment3D(cAx, cAy, cAz, _segB0, _segB1, _ptB);
   _pushSphereSphereInto(
     cAx,
     cAy,
@@ -33,6 +56,30 @@ void _sphereCapsuleInto(
     rB,
     out,
     flip: flip,
+  );
+}
+
+void _capsuleCapsuleInto(
+  CapsuleShape3D a,
+  Matrix4 transformA,
+  CapsuleShape3D b,
+  Matrix4 transformB,
+  MutableManifoldBuffer3D out,
+) {
+  final rA = a.worldSpine(transformA, _segA0, _segA1);
+  final rB = b.worldSpine(transformB, _segB0, _segB1);
+  closestPointsSegmentSegment3D(_segA0, _segA1, _segB0, _segB1, _ptA, _ptB);
+  _pushSphereSphereInto(
+    _ptA.x,
+    _ptA.y,
+    _ptA.z,
+    rA,
+    _ptB.x,
+    _ptB.y,
+    _ptB.z,
+    rB,
+    out,
+    flip: false,
   );
 }
 
@@ -125,7 +172,14 @@ void _boxBoxInto(
     final axisB = edgePair % 3;
     _obbA.supportEdge(axisA, nx, ny, nz, _segA0, _segA1);
     _obbB.supportEdge(axisB, -nx, -ny, -nz, _segB0, _segB1);
-    _closestPointsSegmentSegment(_segA0, _segA1, _segB0, _segB1, _ptA, _ptB);
+    closestPointsSegmentSegment3D(
+      _segA0,
+      _segA1,
+      _segB0,
+      _segB1,
+      _ptA,
+      _ptB,
+    );
     out.pushSingle(
       nx,
       ny,
@@ -251,189 +305,6 @@ bool _solveBoxBoxSat(
   _satBestAxisCode = bestAxisCode;
   _satMinPen = minPen;
   return true;
-}
-
-/// Exact analytical Sphere-Sphere narrowphase.
-CollisionManifold3D? _npSphereSphere(
-  SphereShape3D a,
-  Matrix4 transformA,
-  SphereShape3D b,
-  Matrix4 transformB,
-) {
-  final mA = transformA.storage;
-  final mB = transformB.storage;
-  final rA = a.worldRadius(transformA);
-  final rB = b.worldRadius(transformB);
-  return _sphereSpherePoints(
-    mA[12],
-    mA[13],
-    mA[14],
-    rA,
-    mB[12],
-    mB[13],
-    mB[14],
-    rB,
-  );
-}
-
-/// Exact analytical Sphere-Capsule narrowphase.
-CollisionManifold3D? _npSphereCapsule(
-  SphereShape3D a,
-  Matrix4 transformA,
-  CapsuleShape3D b,
-  Matrix4 transformB,
-) {
-  final mA = transformA.storage;
-  final cAx = mA[12];
-  final cAy = mA[13];
-  final cAz = mA[14];
-  final rA = a.worldRadius(transformA);
-  final rB = b.worldSpine(transformB, _segB0, _segB1);
-  _closestPointOnSegment(cAx, cAy, cAz, _segB0, _segB1, _ptB);
-  return _sphereSpherePoints(
-    cAx,
-    cAy,
-    cAz,
-    rA,
-    _ptB.x,
-    _ptB.y,
-    _ptB.z,
-    rB,
-  );
-}
-
-/// Exact analytical Capsule-Capsule narrowphase.
-CollisionManifold3D? _npCapsuleCapsule(
-  CapsuleShape3D a,
-  Matrix4 transformA,
-  CapsuleShape3D b,
-  Matrix4 transformB,
-) {
-  final rA = a.worldSpine(transformA, _segA0, _segA1);
-  final rB = b.worldSpine(transformB, _segB0, _segB1);
-  _closestPointsSegmentSegment(_segA0, _segA1, _segB0, _segB1, _ptA, _ptB);
-  return _sphereSpherePoints(
-    _ptA.x,
-    _ptA.y,
-    _ptA.z,
-    rA,
-    _ptB.x,
-    _ptB.y,
-    _ptB.z,
-    rB,
-  );
-}
-
-/// Exact analytical Sphere-OBB narrowphase.
-CollisionManifold3D? _npSphereBox(
-  SphereShape3D a,
-  Matrix4 transformA,
-  BoxShape3D b,
-  Matrix4 transformB,
-) {
-  final mA = transformA.storage;
-  final rA = a.worldRadius(transformA);
-  _obbB.extract(b, transformB);
-  return _sphereObbPoints(mA[12], mA[13], mA[14], rA, _obbB);
-}
-
-/// Exact analytical Capsule-OBB narrowphase.
-CollisionManifold3D? _npCapsuleBox(
-  CapsuleShape3D a,
-  Matrix4 transformA,
-  BoxShape3D b,
-  Matrix4 transformB,
-) {
-  final rA = a.worldSpine(transformA, _segA0, _segA1);
-  _obbB.extract(b, transformB);
-
-  // Transform capsule segment into OBB B's local orthonormal frame.
-  final p0x = _obbB.toLocalX(_segA0.x, _segA0.y, _segA0.z);
-  final p0y = _obbB.toLocalY(_segA0.x, _segA0.y, _segA0.z);
-  final p0z = _obbB.toLocalZ(_segA0.x, _segA0.y, _segA0.z);
-  final p1x = _obbB.toLocalX(_segA1.x, _segA1.y, _segA1.z);
-  final p1y = _obbB.toLocalY(_segA1.x, _segA1.y, _segA1.z);
-  final p1z = _obbB.toLocalZ(_segA1.x, _segA1.y, _segA1.z);
-
-  final hx = _obbB.ex;
-  final hy = _obbB.ey;
-  final hz = _obbB.ez;
-
-  final bestT = _closestSegmentParamToAabb(
-    p0x,
-    p0y,
-    p0z,
-    p1x - p0x,
-    p1y - p0y,
-    p1z - p0z,
-    hx,
-    hy,
-    hz,
-  );
-
-  final sx = _segA0.x + (_segA1.x - _segA0.x) * bestT;
-  final sy = _segA0.y + (_segA1.y - _segA0.y) * bestT;
-  final sz = _segA0.z + (_segA1.z - _segA0.z) * bestT;
-  return _sphereObbPoints(sx, sy, sz, rA, _obbB);
-}
-
-/// Exact SAT Box-Box narrowphase (face-face clipping + edge-edge contacts).
-CollisionManifold3D? _npBoxBox(
-  BoxShape3D a,
-  Matrix4 transformA,
-  BoxShape3D b,
-  Matrix4 transformB,
-) {
-  if (!_solveBoxBoxSat(a, transformA, b, transformB)) {
-    return null;
-  }
-  final bestAxisCode = _satBestAxisCode;
-  final minPen = _satMinPen;
-  final nx = _boxNormalScratch.x;
-  final ny = _boxNormalScratch.y;
-  final nz = _boxNormalScratch.z;
-
-  if (bestAxisCode < 6) {
-    _writeObbFace(_obbA, nx, ny, nz, _faceA);
-    _writeObbFace(_obbB, -nx, -ny, -nz, _faceB);
-    final faced = _clipSupportFaces(
-      nx,
-      ny,
-      nz,
-      _faceA,
-      _faceB,
-      forceReference: bestAxisCode < 3 ? 1 : 2,
-      depthOverride: minPen,
-    );
-    if (faced != null) {
-      return faced;
-    }
-  }
-
-  if (bestAxisCode >= 6) {
-    final edgePair = bestAxisCode - 6;
-    final axisA = edgePair ~/ 3;
-    final axisB = edgePair % 3;
-    _obbA.supportEdge(axisA, nx, ny, nz, _segA0, _segA1);
-    _obbB.supportEdge(axisB, -nx, -ny, -nz, _segB0, _segB1);
-    _closestPointsSegmentSegment(_segA0, _segA1, _segB0, _segB1, _ptA, _ptB);
-    return CollisionManifold3D(
-      normal: _boxNormalScratch,
-      penetrationDepth: minPen,
-      contactPointA: _ptA,
-      contactPointB: _ptB,
-    );
-  }
-
-  a.supportPoint(_boxNormalScratch, transformA, _ptA);
-  _boxNormalNegScratch.setValues(-nx, -ny, -nz);
-  b.supportPoint(_boxNormalNegScratch, transformB, _ptB);
-  return CollisionManifold3D(
-    normal: _boxNormalScratch,
-    penetrationDepth: minPen,
-    contactPointA: _ptA,
-    contactPointB: _ptB,
-  );
 }
 
 void _pushSphereSphereInto(
@@ -618,135 +489,6 @@ void _pushSphereObbInto(
       _ptB.z,
     );
   }
-}
-
-CollisionManifold3D? _sphereSpherePoints(
-  double ax,
-  double ay,
-  double az,
-  double rA,
-  double bx,
-  double by,
-  double bz,
-  double rB,
-) {
-  final dx = bx - ax;
-  final dy = by - ay;
-  final dz = bz - az;
-  final dist2 = dx * dx + dy * dy + dz * dz;
-  final rSum = rA + rB;
-  if (dist2 > rSum * rSum) {
-    return null;
-  }
-  final dist = math.sqrt(dist2);
-  final double nx;
-  final double ny;
-  final double nz;
-  if (dist > 1e-9) {
-    final inv = 1.0 / dist;
-    nx = dx * inv;
-    ny = dy * inv;
-    nz = dz * inv;
-  } else {
-    nx = 0.0;
-    ny = 1.0;
-    nz = 0.0;
-  }
-  final normal = Vector3(nx, ny, nz);
-  return CollisionManifold3D(
-    normal: normal,
-    penetrationDepth: rSum - dist,
-    contactPointA: Vector3(ax + nx * rA, ay + ny * rA, az + nz * rA),
-    contactPointB: Vector3(bx - nx * rB, by - ny * rB, bz - nz * rB),
-  );
-}
-
-CollisionManifold3D? _sphereObbPoints(
-  double sx,
-  double sy,
-  double sz,
-  double rA,
-  _ObbFrame obb,
-) {
-  final lx = obb.toLocalX(sx, sy, sz);
-  final ly = obb.toLocalY(sx, sy, sz);
-  final lz = obb.toLocalZ(sx, sy, sz);
-  final hx = obb.ex;
-  final hy = obb.ey;
-  final hz = obb.ez;
-
-  final cx = lx.clamp(-hx, hx);
-  final cy = ly.clamp(-hy, hy);
-  final cz = lz.clamp(-hz, hz);
-
-  final dx = lx - cx;
-  final dy = ly - cy;
-  final dz = lz - cz;
-  final dist2 = dx * dx + dy * dy + dz * dz;
-  if (dist2 > rA * rA) {
-    return null;
-  }
-
-  if (dist2 > 1e-12) {
-    final dist = math.sqrt(dist2);
-    final pB = Vector3.zero();
-    obb.toWorld(cx, cy, cz, pB);
-    final inv = 1.0 / dist;
-    final nx = (pB.x - sx) * inv;
-    final ny = (pB.y - sy) * inv;
-    final nz = (pB.z - sz) * inv;
-    return CollisionManifold3D(
-      normal: Vector3(nx, ny, nz),
-      penetrationDepth: rA - dist,
-      contactPointA: Vector3(sx + nx * rA, sy + ny * rA, sz + nz * rA),
-      contactPointB: pB,
-    );
-  }
-
-  // Sphere center lies inside OBB: pick closest face.
-  final penX = hx - lx.abs();
-  final penY = hy - ly.abs();
-  final penZ = hz - lz.abs();
-
-  var nLx = 0.0;
-  var nLy = 0.0;
-  var nLz = 0.0;
-  var faceLx = lx;
-  var faceLy = ly;
-  var faceLz = lz;
-  double faceDist;
-
-  if (penX <= penY && penX <= penZ) {
-    faceDist = penX;
-    final sign = lx >= 0.0 ? 1.0 : -1.0;
-    nLx = -sign;
-    faceLx = sign * hx;
-  } else if (penY <= penZ) {
-    faceDist = penY;
-    final sign = ly >= 0.0 ? 1.0 : -1.0;
-    nLy = -sign;
-    faceLy = sign * hy;
-  } else {
-    faceDist = penZ;
-    final sign = lz >= 0.0 ? 1.0 : -1.0;
-    nLz = -sign;
-    faceLz = sign * hz;
-  }
-
-  final normal = Vector3.zero();
-  obb.dirToWorld(nLx, nLy, nLz, normal);
-  final pB = Vector3.zero();
-  obb.toWorld(faceLx, faceLy, faceLz, pB);
-  return CollisionManifold3D(
-    normal: normal,
-    penetrationDepth: rA + faceDist,
-    contactPointA: Vector3(
-      sx + normal.x * rA,
-      sy + normal.y * rA,
-      sz + normal.z * rA,
-    ),
-    contactPointB: pB,
-  );
 }
 
 class _ObbFrame() {

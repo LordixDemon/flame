@@ -66,56 +66,6 @@ double _epaBz = 0.0;
 /// incident face is clipped against the reference face, which gives up to
 /// four contact points with stable feature ids; otherwise (edge against
 /// edge, or a curved shape) the manifold has the single EPA point.
-CollisionManifold3D? _npConvexConvex(
-  Shape3D shapeA,
-  Matrix4 transformA,
-  Shape3D shapeB,
-  Matrix4 transformB,
-) {
-  final cA = centerOfMatrix3D(transformA, _cAScratch);
-  final cB = centerOfMatrix3D(transformB, _cBScratch);
-  if (!_gjkEpaRun(
-    shapeA: shapeA,
-    transformA: transformA,
-    shapeB: shapeB,
-    transformB: transformB,
-    cAx: cA.x,
-    cAy: cA.y,
-    cAz: cA.z,
-    cBx: cB.x,
-    cBy: cB.y,
-    cBz: cB.z,
-  )) {
-    return null;
-  }
-  if (_writeSupportFace(shapeA, transformA, _epaNx, _epaNy, _epaNz, _faceA) &&
-      _writeSupportFace(
-        shapeB,
-        transformB,
-        -_epaNx,
-        -_epaNy,
-        -_epaNz,
-        _faceB,
-      )) {
-    final faced = _clipSupportFaces(
-      _epaNx,
-      _epaNy,
-      _epaNz,
-      _faceA,
-      _faceB,
-    );
-    if (faced != null) {
-      return faced;
-    }
-  }
-  return CollisionManifold3D(
-    normal: Vector3(_epaNx, _epaNy, _epaNz),
-    penetrationDepth: _epaDepth,
-    contactPointA: Vector3(_epaAx, _epaAy, _epaAz),
-    contactPointB: Vector3(_epaBx, _epaBy, _epaBz),
-  );
-}
-
 void _convexConvexInto(
   Shape3D shapeA,
   Matrix4 transformA,
@@ -537,80 +487,6 @@ bool _clipSupportFacesInto(
     out.setDepth(mIdx, maxDepth);
   }
   return true;
-}
-
-CollisionManifold3D? _clipSupportFaces(
-  double nx,
-  double ny,
-  double nz,
-  _SupportFace3D fA,
-  _SupportFace3D fB, {
-  int forceReference = 0,
-  double depthOverride = -1.0,
-}) {
-  if (!_prepareClippedFaces(
-    nx,
-    ny,
-    nz,
-    fA,
-    fB,
-    forceReference: forceReference,
-  )) {
-    return null;
-  }
-  final refIsA = _clipRefIsA;
-  final rnx = _clipRnx;
-  final rny = _clipRny;
-  final rnz = _clipRnz;
-  final base = _clipBase;
-  final pick = _clipPick;
-  final kept = _clipKept;
-  final clip = _clip;
-  final contacts = <ContactPoint3D>[];
-  var maxDepth = 0.0;
-  var ax = 0.0;
-  var ay = 0.0;
-  var az = 0.0;
-  var bx = 0.0;
-  var by = 0.0;
-  var bz = 0.0;
-  for (var k = 0; k < pick; k++) {
-    final idx = kept <= 4 ? k : _chosen[k];
-    final px = clip.keptX(idx);
-    final py = clip.keptY(idx);
-    final pz = clip.keptZ(idx);
-    final sep = clip.keptSep(idx);
-    final depth = sep < 0.0 ? -sep : 0.0;
-    if (depth > maxDepth) {
-      maxDepth = depth;
-    }
-    final pInc = Vector3(px, py, pz);
-    final pRef = Vector3(px - rnx * sep, py - rny * sep, pz - rnz * sep);
-    final pa = refIsA ? pRef : pInc;
-    final pb = refIsA ? pInc : pRef;
-    ax += pa.x;
-    ay += pa.y;
-    az += pa.z;
-    bx += pb.x;
-    by += pb.y;
-    bz += pb.z;
-    contacts.add(
-      ContactPoint3D(
-        pointA: pa,
-        pointB: pb,
-        penetrationDepth: depth,
-        featureId: _mixId(base, clip.keptId(idx)),
-      ),
-    );
-  }
-  final inv = 1.0 / pick;
-  return CollisionManifold3D(
-    normal: refIsA ? Vector3(rnx, rny, rnz) : Vector3(-rnx, -rny, -rnz),
-    penetrationDepth: depthOverride >= 0.0 ? depthOverride : maxDepth,
-    contactPointA: Vector3(ax * inv, ay * inv, az * inv),
-    contactPointB: Vector3(bx * inv, by * inv, bz * inv),
-    contacts: contacts,
-  );
 }
 
 @pragma('vm:prefer-inline')

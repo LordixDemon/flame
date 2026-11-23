@@ -108,9 +108,9 @@ class HingeJoint3D({
 
   @override
   void prepare(double dt) {
-    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
-    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
-    _buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _linearMass);
+    computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _linearMass);
 
     final invDt = dt > 1e-9 ? 1.0 / dt : 0.0;
     const betaLin = 0.2;
@@ -126,10 +126,10 @@ class HingeJoint3D({
     buildOrthonormalBasis3D(_a1, _b2, _c2);
 
     // 2x2 angular effective mass on `(_b2, _c2)` using `I_A^-1 + I_B^-1`.
-    _sumInvInertiaMul(bodyA, bodyB, _b2, _scratch);
+    sumInvInertiaMul(bodyA, bodyB, _b2, _scratch);
     final k00 = _b2.dot(_scratch);
     final k01 = _c2.dot(_scratch);
-    _sumInvInertiaMul(bodyA, bodyB, _c2, _scratch);
+    sumInvInertiaMul(bodyA, bodyB, _c2, _scratch);
     final k11 = _c2.dot(_scratch);
     final det = k00 * k11 - k01 * k01;
     if (det.abs() > 1e-14) {
@@ -158,7 +158,7 @@ class HingeJoint3D({
     _limitBias = 0.0;
     _limitAccum = 0.0;
     if (minAngle != null || maxAngle != null) {
-      _sumInvInertiaMul(bodyA, bodyB, _a1, _scratch);
+      sumInvInertiaMul(bodyA, bodyB, _a1, _scratch);
       final kTwist = _a1.dot(_scratch);
       _twistMass = kTwist > 1e-12 ? 1.0 / kTwist : 0.0;
 
@@ -181,10 +181,10 @@ class HingeJoint3D({
   @override
   void solveVelocity(double dt) {
     // 1. Point-to-point linear anchor impulse.
-    _relVel3(bodyA, _rA, bodyB, _rB, _rhs);
+    relativeVelocityAtLevers(bodyA, _rA, bodyB, _rB, _rhs);
     _rhs.add(_linearBias);
-    _mulMat3Neg(_linearMass, _rhs, _imp);
-    _applyLinearPairImpulse(
+    mulMat3Neg(_linearMass, _rhs, _imp);
+    applyLinearPairImpulse(
       bodyA,
       _rA,
       bodyB,
@@ -203,7 +203,7 @@ class HingeJoint3D({
     final cDot1 = dwx * _c2.x + dwy * _c2.y + dwz * _c2.z + _swingBias1;
     final l0 = -(_swingM00 * cDot0 + _swingM01 * cDot1);
     final l1 = -(_swingM01 * cDot0 + _swingM11 * cDot1);
-    _applyAngularPairImpulse(
+    applyAngularPairImpulse(
       bodyA,
       bodyB,
       _b2.x * l0 + _c2.x * l1,
@@ -231,7 +231,7 @@ class HingeJoint3D({
         _limitAccum += dLambda;
       }
       if (dLambda.abs() > 1e-12) {
-        _applyAngularPairImpulse(
+        applyAngularPairImpulse(
           bodyA,
           bodyB,
           _a1.x * dLambda,
@@ -246,16 +246,16 @@ class HingeJoint3D({
   @override
   void solvePosition() {
     // 1. Anchor position drift correction.
-    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
-    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
     final ex = _wB.x - _wA.x;
     final ey = _wB.y - _wA.y;
     final ez = _wB.z - _wA.z;
     if (ex * ex + ey * ey + ez * ez > 1e-9) {
-      _buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _linearMass);
+      buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _linearMass);
       _rhs.setValues(ex * 0.4, ey * 0.4, ez * 0.4);
-      _mulMat3Neg(_linearMass, _rhs, _imp);
-      _applyPositionPairImpulse(
+      mulMat3Neg(_linearMass, _rhs, _imp);
+      applyPositionPairImpulse(
         bodyA,
         _rA,
         bodyB,
@@ -275,11 +275,11 @@ class HingeJoint3D({
     final errZ = _a1.x * _a2.y - _a1.y * _a2.x;
     if (errX * errX + errY * errY + errZ * errZ > 1e-8) {
       _scratch2.setValues(errX, errY, errZ);
-      _sumInvInertiaMul(bodyA, bodyB, _scratch2, _scratch);
+      sumInvInertiaMul(bodyA, bodyB, _scratch2, _scratch);
       final denom = _scratch2.dot(_scratch);
       if (denom > 1e-12) {
         final scale = -0.4 * _scratch2.length2 / denom;
-        _applyAngularPositionPairImpulse(
+        applyAngularPositionPairImpulse(
           bodyA,
           bodyB,
           errX * scale,
@@ -300,11 +300,11 @@ class HingeJoint3D({
         angleErr = angle - maxAngle!;
       }
       if (angleErr.abs() > 1e-4) {
-        _sumInvInertiaMul(bodyA, bodyB, _a1, _scratch);
+        sumInvInertiaMul(bodyA, bodyB, _a1, _scratch);
         final k = _a1.dot(_scratch);
         if (k > 1e-12) {
           final tau = -(angleErr * 0.5) / k;
-          _applyAngularPositionPairImpulse(
+          applyAngularPositionPairImpulse(
             bodyA,
             bodyB,
             _a1.x * tau,
@@ -355,7 +355,7 @@ class FixedJoint3D({
         ..setFrom(referenceRotation)
         ..normalize();
     } else {
-      _quatMulConjA(bodyA.bodyRotation, bodyB.bodyRotation, _qRef);
+      quatMulConjA(bodyA.bodyRotation, bodyB.bodyRotation, _qRef);
     }
   }
 
@@ -388,10 +388,10 @@ class FixedJoint3D({
 
   @override
   void prepare(double dt) {
-    _computeWorldAnchorAndLever(bodyA, _anchorA, _wA, _rA);
-    _computeWorldAnchorAndLever(bodyB, _anchorB, _wB, _rB);
-    _buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _linearMass);
-    _buildAngularInvK(bodyA, bodyB, _angularMass);
+    computeWorldAnchorAndLever(bodyA, _anchorA, _wA, _rA);
+    computeWorldAnchorAndLever(bodyB, _anchorB, _wB, _rB);
+    buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _linearMass);
+    buildAngularInvK(bodyA, bodyB, _angularMass);
 
     final invDt = dt > 1e-9 ? 1.0 / dt : 0.0;
     const betaLin = 0.22;
@@ -401,7 +401,7 @@ class FixedJoint3D({
       (_wB.z - _wA.z) * betaLin * invDt,
     );
 
-    _computeWorldRotationError(
+    computeWorldRotationError(
       bodyA.bodyRotation,
       bodyB.bodyRotation,
       _qRef,
@@ -415,10 +415,10 @@ class FixedJoint3D({
   @override
   void solveVelocity(double dt) {
     // 1. 3-DOF linear lock.
-    _relVel3(bodyA, _rA, bodyB, _rB, _rhs);
+    relativeVelocityAtLevers(bodyA, _rA, bodyB, _rB, _rhs);
     _rhs.add(_linearBias);
-    _mulMat3Neg(_linearMass, _rhs, _imp);
-    _applyLinearPairImpulse(
+    mulMat3Neg(_linearMass, _rhs, _imp);
+    applyLinearPairImpulse(
       bodyA,
       _rA,
       bodyB,
@@ -435,8 +435,8 @@ class FixedJoint3D({
       (bodyB.angularVelocity.y - bodyA.angularVelocity.y) + _angularBias.y,
       (bodyB.angularVelocity.z - bodyA.angularVelocity.z) + _angularBias.z,
     );
-    _mulMat3Neg(_angularMass, _rhs, _imp);
-    _applyAngularPairImpulse(
+    mulMat3Neg(_angularMass, _rhs, _imp);
+    applyAngularPairImpulse(
       bodyA,
       bodyB,
       _imp.x,
@@ -448,16 +448,16 @@ class FixedJoint3D({
 
   @override
   void solvePosition() {
-    _computeWorldAnchorAndLever(bodyA, _anchorA, _wA, _rA);
-    _computeWorldAnchorAndLever(bodyB, _anchorB, _wB, _rB);
+    computeWorldAnchorAndLever(bodyA, _anchorA, _wA, _rA);
+    computeWorldAnchorAndLever(bodyB, _anchorB, _wB, _rB);
     final ex = _wB.x - _wA.x;
     final ey = _wB.y - _wA.y;
     final ez = _wB.z - _wA.z;
     if (ex * ex + ey * ey + ez * ez > 1e-9) {
-      _buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _linearMass);
+      buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _linearMass);
       _rhs.setValues(ex * 0.45, ey * 0.45, ez * 0.45);
-      _mulMat3Neg(_linearMass, _rhs, _imp);
-      _applyPositionPairImpulse(
+      mulMat3Neg(_linearMass, _rhs, _imp);
+      applyPositionPairImpulse(
         bodyA,
         _rA,
         bodyB,
@@ -469,7 +469,7 @@ class FixedJoint3D({
       );
     }
 
-    _computeWorldRotationError(
+    computeWorldRotationError(
       bodyA.bodyRotation,
       bodyB.bodyRotation,
       _qRef,
@@ -478,10 +478,10 @@ class FixedJoint3D({
       _rhs,
     );
     if (_rhs.length2 > 1e-9) {
-      _buildAngularInvK(bodyA, bodyB, _angularMass);
+      buildAngularInvK(bodyA, bodyB, _angularMass);
       _rhs.scale(0.45);
-      _mulMat3Neg(_angularMass, _rhs, _imp);
-      _applyAngularPositionPairImpulse(
+      mulMat3Neg(_angularMass, _rhs, _imp);
+      applyAngularPositionPairImpulse(
         bodyA,
         bodyB,
         _imp.x,
@@ -535,7 +535,7 @@ class SliderJoint3D({
         ..setFrom(referenceRotation)
         ..normalize();
     } else {
-      _quatMulConjA(bodyA.bodyRotation, bodyB.bodyRotation, _qRef);
+      quatMulConjA(bodyA.bodyRotation, bodyB.bodyRotation, _qRef);
     }
   }
 
@@ -584,8 +584,8 @@ class SliderJoint3D({
 
   /// Current signed translation (meters) along the world slider axis.
   double get currentDistance {
-    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
-    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
     rotateVectorByQuat(bodyA.bodyRotation, _axisA, _n1);
     return (_wB.x - _wA.x) * _n1.x +
         (_wB.y - _wA.y) * _n1.y +
@@ -594,21 +594,21 @@ class SliderJoint3D({
 
   /// Current relative speed (`m/s`) along the world slider axis.
   double get currentSpeed {
-    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
-    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
     rotateVectorByQuat(bodyA.bodyRotation, _axisA, _n1);
     _rAEff.setValues(
       _rA.x + (_wB.x - _wA.x),
       _rA.y + (_wB.y - _wA.y),
       _rA.z + (_wB.z - _wA.z),
     );
-    return _relVelAlongAxis(bodyA, _rAEff, bodyB, _rB, _n1);
+    return relativeVelocityAlongAxis(bodyA, _rAEff, bodyB, _rB, _n1);
   }
 
   @override
   void prepare(double dt) {
-    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
-    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
     final dx = _wB.x - _wA.x;
     final dy = _wB.y - _wA.y;
     final dz = _wB.z - _wA.z;
@@ -618,9 +618,9 @@ class SliderJoint3D({
     buildOrthonormalBasis3D(_n1, _t1, _t2);
 
     // 1. 3-DOF angular orientation lock.
-    _buildAngularInvK(bodyA, bodyB, _angularMass);
+    buildAngularInvK(bodyA, bodyB, _angularMass);
     final invDt = dt > 1e-9 ? 1.0 / dt : 0.0;
-    _computeWorldRotationError(
+    computeWorldRotationError(
       bodyA.bodyRotation,
       bodyB.bodyRotation,
       _qRef,
@@ -633,7 +633,7 @@ class SliderJoint3D({
     // 2. 2-DOF transverse linear lock perpendicular to `_n1`.
     final k00 = computeLinearAxisK(bodyA, _rAEff, bodyB, _rB, _t1, _scratch);
     final k11 = computeLinearAxisK(bodyA, _rAEff, bodyB, _rB, _t2, _scratch);
-    final k01 = _computeLinearCoupledK(
+    final k01 = computeLinearCoupledK(
       bodyA,
       _rAEff,
       bodyB,
@@ -698,8 +698,8 @@ class SliderJoint3D({
       (bodyB.angularVelocity.y - bodyA.angularVelocity.y) + _angularBias.y,
       (bodyB.angularVelocity.z - bodyA.angularVelocity.z) + _angularBias.z,
     );
-    _mulMat3Neg(_angularMass, _rhs, _imp);
-    _applyAngularPairImpulse(
+    mulMat3Neg(_angularMass, _rhs, _imp);
+    applyAngularPairImpulse(
       bodyA,
       bodyB,
       _imp.x,
@@ -709,11 +709,13 @@ class SliderJoint3D({
     );
 
     // 2. 2-DOF transverse linear lock.
-    final vT1 = _relVelAlongAxis(bodyA, _rAEff, bodyB, _rB, _t1) + _transBias0;
-    final vT2 = _relVelAlongAxis(bodyA, _rAEff, bodyB, _rB, _t2) + _transBias1;
+    final vT1 =
+        relativeVelocityAlongAxis(bodyA, _rAEff, bodyB, _rB, _t1) + _transBias0;
+    final vT2 =
+        relativeVelocityAlongAxis(bodyA, _rAEff, bodyB, _rB, _t2) + _transBias1;
     final l0 = -(_transM00 * vT1 + _transM01 * vT2);
     final l1 = -(_transM01 * vT1 + _transM11 * vT2);
-    _applyLinearPairImpulse(
+    applyLinearPairImpulse(
       bodyA,
       _rAEff,
       bodyB,
@@ -726,13 +728,13 @@ class SliderJoint3D({
 
     // 3. Axial motor impulse (`maxMotorForce`).
     if (_maxMotorImpulse > 0.0 && _axialMass > 0.0 && _limitState != 2) {
-      final vAxial = _relVelAlongAxis(bodyA, _rAEff, bodyB, _rB, _n1);
+      final vAxial = relativeVelocityAlongAxis(bodyA, _rAEff, bodyB, _rB, _n1);
       var dMotor = _axialMass * (motorSpeed - vAxial);
       final prev = _motorAccum;
       _motorAccum = (prev + dMotor).clamp(-_maxMotorImpulse, _maxMotorImpulse);
       dMotor = _motorAccum - prev;
       if (dMotor.abs() > 1e-12) {
-        _applyLinearPairImpulse(
+        applyLinearPairImpulse(
           bodyA,
           _rAEff,
           bodyB,
@@ -747,7 +749,7 @@ class SliderJoint3D({
 
     // 4. Axial translational limits.
     if (_limitState != 0 && _axialMass > 0.0) {
-      final vAxial = _relVelAlongAxis(bodyA, _rAEff, bodyB, _rB, _n1);
+      final vAxial = relativeVelocityAlongAxis(bodyA, _rAEff, bodyB, _rB, _n1);
       var dLambda = -_axialMass * (vAxial + _limitBias);
       if (_limitState == -1) {
         final prev = _limitAccum;
@@ -761,7 +763,7 @@ class SliderJoint3D({
         _limitAccum += dLambda;
       }
       if (dLambda.abs() > 1e-12) {
-        _applyLinearPairImpulse(
+        applyLinearPairImpulse(
           bodyA,
           _rAEff,
           bodyB,
@@ -778,7 +780,7 @@ class SliderJoint3D({
   @override
   void solvePosition() {
     // 1. Orientation drift correction.
-    _computeWorldRotationError(
+    computeWorldRotationError(
       bodyA.bodyRotation,
       bodyB.bodyRotation,
       _qRef,
@@ -787,10 +789,10 @@ class SliderJoint3D({
       _rhs,
     );
     if (_rhs.length2 > 1e-9) {
-      _buildAngularInvK(bodyA, bodyB, _angularMass);
+      buildAngularInvK(bodyA, bodyB, _angularMass);
       _rhs.scale(0.45);
-      _mulMat3Neg(_angularMass, _rhs, _imp);
-      _applyAngularPositionPairImpulse(
+      mulMat3Neg(_angularMass, _rhs, _imp);
+      applyAngularPositionPairImpulse(
         bodyA,
         bodyB,
         _imp.x,
@@ -801,8 +803,8 @@ class SliderJoint3D({
     }
 
     // 2. Transverse & axial limit position drift correction.
-    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
-    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
     final dx = _wB.x - _wA.x;
     final dy = _wB.y - _wA.y;
     final dz = _wB.z - _wA.z;
@@ -815,7 +817,7 @@ class SliderJoint3D({
     if (e0 * e0 + e1 * e1 > 1e-9) {
       final k00 = computeLinearAxisK(bodyA, _rAEff, bodyB, _rB, _t1, _scratch);
       final k11 = computeLinearAxisK(bodyA, _rAEff, bodyB, _rB, _t2, _scratch);
-      final k01 = _computeLinearCoupledK(
+      final k01 = computeLinearCoupledK(
         bodyA,
         _rAEff,
         bodyB,
@@ -831,7 +833,7 @@ class SliderJoint3D({
         final c1 = e1 * 0.45;
         final l0 = -(k11 * invDet * c0 - k01 * invDet * c1);
         final l1 = -(-k01 * invDet * c0 + k00 * invDet * c1);
-        _applyPositionPairImpulse(
+        applyPositionPairImpulse(
           bodyA,
           _rAEff,
           bodyB,
@@ -845,8 +847,8 @@ class SliderJoint3D({
     }
 
     if (minDistance != null || maxDistance != null) {
-      _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
-      _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+      computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+      computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
       final ndx = _wB.x - _wA.x;
       final ndy = _wB.y - _wA.y;
       final ndz = _wB.z - _wA.z;
@@ -863,7 +865,7 @@ class SliderJoint3D({
         final k = computeLinearAxisK(bodyA, _rAEff, bodyB, _rB, _n1, _scratch);
         if (k > 1e-12) {
           final lambda = -(axialErr * 0.5) / k;
-          _applyPositionPairImpulse(
+          applyPositionPairImpulse(
             bodyA,
             _rAEff,
             bodyB,

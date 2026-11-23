@@ -406,17 +406,7 @@ class _ContactConstraint3D() {
     manifoldIndex = mIdx;
     restitutionThreshold = threshold;
     normal.setValues(nx, ny, nz);
-    if (nx.abs() < 0.9) {
-      t1.setValues(0.0, -nz, ny);
-    } else {
-      t1.setValues(-nz, 0.0, nx);
-    }
-    t1.normalize();
-    t2.setValues(
-      ny * t1.z - nz * t1.y,
-      nz * t1.x - nx * t1.z,
-      nx * t1.y - ny * t1.x,
-    );
+    buildOrthonormalBasis3D(normal, t1, t2);
     restitution = _resolveRestitution(a, b);
     friction = _resolveFriction(a, b);
     useA =
@@ -727,32 +717,18 @@ class _ContactConstraint3D() {
       final py = normal.y * pImpulse;
       final pz = normal.z * pImpulse;
 
-      if (useA) {
-        final posA = bodyA.bodyPosition;
-        posA.setValues(
-          posA.x - px * imA,
-          posA.y - py * imA,
-          posA.z - pz * imA,
-        );
-        final tx = rA.y * pz - rA.z * py;
-        final ty = rA.z * px - rA.x * pz;
-        final tz = rA.x * py - rA.y * px;
-        bodyA.multiplyWorldInvInertia(-tx, -ty, -tz, scratch);
-        applyDeltaQuatToBody(bodyA, scratch);
-      }
-      if (useB) {
-        final posB = bodyB.bodyPosition;
-        posB.setValues(
-          posB.x + px * imB,
-          posB.y + py * imB,
-          posB.z + pz * imB,
-        );
-        final tx = rB.y * pz - rB.z * py;
-        final ty = rB.z * px - rB.x * pz;
-        final tz = rB.x * py - rB.y * px;
-        bodyB.multiplyWorldInvInertia(tx, ty, tz, scratch);
-        applyDeltaQuatToBody(bodyB, scratch);
-      }
+      applyPositionPairImpulseWithInvMass(
+        bodyA,
+        imA,
+        rA,
+        bodyB,
+        imB,
+        rB,
+        px,
+        py,
+        pz,
+        scratch,
+      );
     }
   }
 
@@ -775,47 +751,21 @@ class _ContactConstraint3D() {
   }
 
   double _axisMass(Vector3 rA, Vector3 rB, Vector3 axis, Vector3 scratch) {
-    var k = imA + imB;
-    if (useA) {
-      final cx = rA.y * axis.z - rA.z * axis.y;
-      final cy = rA.z * axis.x - rA.x * axis.z;
-      final cz = rA.x * axis.y - rA.y * axis.x;
-      bodyA.multiplyWorldInvInertia(cx, cy, cz, scratch);
-      k += cx * scratch.x + cy * scratch.y + cz * scratch.z;
-    }
-    if (useB) {
-      final cx = rB.y * axis.z - rB.z * axis.y;
-      final cy = rB.z * axis.x - rB.x * axis.z;
-      final cz = rB.x * axis.y - rB.y * axis.x;
-      bodyB.multiplyWorldInvInertia(cx, cy, cz, scratch);
-      k += cx * scratch.x + cy * scratch.y + cz * scratch.z;
-    }
+    final k = computeLinearAxisKWithInvMass(
+      bodyA,
+      imA,
+      rA,
+      bodyB,
+      imB,
+      rB,
+      axis,
+      scratch,
+    );
     return k > 1e-12 ? 1.0 / k : 0.0;
   }
 
-  double _relVelDot(Vector3 rA, Vector3 rB, Vector3 axis) {
-    final vAx =
-        bodyA.linearVelocity.x +
-        (bodyA.angularVelocity.y * rA.z - bodyA.angularVelocity.z * rA.y);
-    final vAy =
-        bodyA.linearVelocity.y +
-        (bodyA.angularVelocity.z * rA.x - bodyA.angularVelocity.x * rA.z);
-    final vAz =
-        bodyA.linearVelocity.z +
-        (bodyA.angularVelocity.x * rA.y - bodyA.angularVelocity.y * rA.x);
-
-    final vBx =
-        bodyB.linearVelocity.x +
-        (bodyB.angularVelocity.y * rB.z - bodyB.angularVelocity.z * rB.y);
-    final vBy =
-        bodyB.linearVelocity.y +
-        (bodyB.angularVelocity.z * rB.x - bodyB.angularVelocity.x * rB.z);
-    final vBz =
-        bodyB.linearVelocity.z +
-        (bodyB.angularVelocity.x * rB.y - bodyB.angularVelocity.y * rB.x);
-
-    return (vBx - vAx) * axis.x + (vBy - vAy) * axis.y + (vBz - vAz) * axis.z;
-  }
+  double _relVelDot(Vector3 rA, Vector3 rB, Vector3 axis) =>
+      relativeVelocityAlongAxis(bodyA, rA, bodyB, rB, axis);
 
   void _applyImpulse(
     Vector3 rA,
@@ -824,30 +774,16 @@ class _ContactConstraint3D() {
     double py,
     double pz,
     Vector3 scratch,
-  ) {
-    if (useA) {
-      bodyA.linearVelocity.setValues(
-        bodyA.linearVelocity.x - px * imA,
-        bodyA.linearVelocity.y - py * imA,
-        bodyA.linearVelocity.z - pz * imA,
-      );
-      final tx = rA.y * pz - rA.z * py;
-      final ty = rA.z * px - rA.x * pz;
-      final tz = rA.x * py - rA.y * px;
-      bodyA.multiplyWorldInvInertia(tx, ty, tz, scratch);
-      bodyA.angularVelocity.sub(scratch);
-    }
-    if (useB) {
-      bodyB.linearVelocity.setValues(
-        bodyB.linearVelocity.x + px * imB,
-        bodyB.linearVelocity.y + py * imB,
-        bodyB.linearVelocity.z + pz * imB,
-      );
-      final tx = rB.y * pz - rB.z * py;
-      final ty = rB.z * px - rB.x * pz;
-      final tz = rB.x * py - rB.y * px;
-      bodyB.multiplyWorldInvInertia(tx, ty, tz, scratch);
-      bodyB.angularVelocity.add(scratch);
-    }
-  }
+  ) => applyLinearPairImpulseWithInvMass(
+    bodyA,
+    imA,
+    rA,
+    bodyB,
+    imB,
+    rB,
+    px,
+    py,
+    pz,
+    scratch,
+  );
 }

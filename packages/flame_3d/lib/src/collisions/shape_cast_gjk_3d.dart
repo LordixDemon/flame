@@ -69,30 +69,15 @@ _SweepResult? _gjkConvexSweep(
     final vLen2 = vx * vx + vy * vy + vz * vz;
 
     if (vLen2 <= 1e-10) {
-      if (!hasNormal) {
-        // Started overlapping at `lambda == 0`. Only report hit if moving
-        // deeper into the obstacle; ignore parallel/separating skin touches!
-        final manifold = initialOverlapTest();
-        if (manifold == null || manifold.penetrationDepth <= 1e-4) {
-          return null;
-        }
-        final obsNormal = -manifold.normal;
-        if (obsNormal.dot(delta) >= -1e-6) {
-          return null;
-        }
-        return _SweepResult(
-          toi: 0.0,
-          point: manifold.contactPointB.clone(),
-          normal: obsNormal,
-        );
-      }
-      final nLen = math.sqrt(nx * nx + ny * ny + nz * nz);
-      return _SweepResult(
-        toi: lambda,
-        point: _closestB.clone(),
-        normal: nLen > 1e-12
-            ? Vector3(nx / nLen, ny / nLen, nz / nLen)
-            : Vector3(-rx, -ry, -rz).normalized(),
+      return _finalizeSweepHit(
+        hasNormal: hasNormal,
+        initialOverlapTest: initialOverlapTest,
+        delta: delta,
+        lambda: lambda,
+        closestB: _closestB,
+        nx: nx,
+        ny: ny,
+        nz: nz,
       );
     }
 
@@ -135,28 +120,15 @@ _SweepResult? _gjkConvexSweep(
       if (vp > 1e-6) {
         return null;
       }
-      if (!hasNormal) {
-        final manifold = initialOverlapTest();
-        if (manifold == null || manifold.penetrationDepth <= 1e-4) {
-          return null;
-        }
-        final obsNormal = -manifold.normal;
-        if (obsNormal.dot(delta) >= -1e-6) {
-          return null;
-        }
-        return _SweepResult(
-          toi: 0.0,
-          point: manifold.contactPointB.clone(),
-          normal: obsNormal,
-        );
-      }
-      final nLen = math.sqrt(nx * nx + ny * ny + nz * nz);
-      return _SweepResult(
-        toi: lambda,
-        point: _closestB.clone(),
-        normal: nLen > 1e-12
-            ? Vector3(nx / nLen, ny / nLen, nz / nLen)
-            : Vector3(-rx, -ry, -rz).normalized(),
+      return _finalizeSweepHit(
+        hasNormal: hasNormal,
+        initialOverlapTest: initialOverlapTest,
+        delta: delta,
+        lambda: lambda,
+        closestB: _closestB,
+        nx: nx,
+        ny: ny,
+        nz: nz,
       );
     }
 
@@ -186,6 +158,43 @@ _SweepResult? _gjkConvexSweep(
     }
   }
   return null;
+}
+
+_SweepResult? _finalizeSweepHit({
+  required bool hasNormal,
+  required CollisionManifold3D? Function() initialOverlapTest,
+  required Vector3 delta,
+  required double lambda,
+  required Vector3 closestB,
+  required double nx,
+  required double ny,
+  required double nz,
+}) {
+  if (!hasNormal) {
+    // Started overlapping at `lambda == 0`. Only report hit if moving deeper
+    // into the obstacle; ignore parallel/separating skin touches.
+    final manifold = initialOverlapTest();
+    if (manifold == null || manifold.penetrationDepth <= 1e-4) {
+      return null;
+    }
+    final obsNormal = -manifold.normal;
+    if (obsNormal.dot(delta) >= -1e-6) {
+      return null;
+    }
+    return _SweepResult(
+      toi: 0.0,
+      point: manifold.contactPointB.clone(),
+      normal: obsNormal,
+    );
+  }
+  final nLen = math.sqrt(nx * nx + ny * ny + nz * nz);
+  return _SweepResult(
+    toi: lambda,
+    point: closestB.clone(),
+    normal: nLen > 1e-12
+        ? Vector3(nx / nLen, ny / nLen, nz / nLen)
+        : (-delta).normalized(),
+  );
 }
 
 int _reduceSimplexClosestTo(

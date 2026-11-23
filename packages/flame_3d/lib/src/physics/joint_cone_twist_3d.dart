@@ -19,13 +19,13 @@ class ConeTwistJoint3D({
     : assert(swingLimitRad >= 0, 'swingLimitRad must be non-negative'),
       assert(minTwistRad <= maxTwistRad, 'minTwistRad must be <= maxTwistRad') {
     final axA = (localAxisA?.clone() ?? Vector3(1.0, 0.0, 0.0))..normalize();
-    _quatFromXAxis(axA, _qFrameA);
+    quatFromXAxis(axA, _qFrameA);
 
     if (localAxisB == null) {
       // Align joint frame B with joint frame A in the initial world pose so
       // both `swingAngle == 0` and `twistAngle == 0` at rest.
       final qWorldA = bodyA.bodyRotation * _qFrameA;
-      _quatMulConjA(bodyB.bodyRotation, qWorldA, _qFrameB);
+      quatMulConjA(bodyB.bodyRotation, qWorldA, _qFrameB);
     } else {
       final axB = localAxisB.normalized();
       // Build frame B around `axB`, choosing its Y/Z reference from frame A's
@@ -35,7 +35,7 @@ class ConeTwistJoint3D({
       final localRefY = Vector3.zero();
       rotateVectorByQuat(qWorldA, Vector3(0.0, 1.0, 0.0), worldRefY);
       unrotateVectorByQuat(bodyB.bodyRotation, worldRefY, localRefY);
-      _quatFromXAndRefY(axB, localRefY, _qFrameB);
+      quatFromXAndRefY(axB, localRefY, _qFrameB);
     }
   }
 
@@ -89,9 +89,9 @@ class ConeTwistJoint3D({
   }
 
   (double swing, double twist) _decomposeSwingTwist() {
-    _quatMul(bodyA.bodyRotation, _qFrameA, _qWorldA);
-    _quatMul(bodyB.bodyRotation, _qFrameB, _qWorldB);
-    _quatMulConjA(_qWorldA, _qWorldB, _qRel);
+    quatMul(bodyA.bodyRotation, _qFrameA, _qWorldA);
+    quatMul(bodyB.bodyRotation, _qFrameB, _qWorldB);
+    quatMulConjA(_qWorldA, _qWorldB, _qRel);
     if (_qRel.w < 0.0) {
       _qRel.setValues(-_qRel.x, -_qRel.y, -_qRel.z, -_qRel.w);
     }
@@ -132,9 +132,9 @@ class ConeTwistJoint3D({
 
   @override
   void prepare(double dt) {
-    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
-    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
-    _buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _linearMass);
+    computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _linearMass);
 
     final invDt = dt > 1e-9 ? 1.0 / dt : 0.0;
     const betaLin = 0.22;
@@ -150,7 +150,7 @@ class ConeTwistJoint3D({
     _swingActive = swing >= swingLimitRad;
     _swingAccum = 0.0;
     if (_swingActive) {
-      _sumInvInertiaMul(bodyA, bodyB, _swingAxisWorld, _scratch);
+      sumInvInertiaMul(bodyA, bodyB, _swingAxisWorld, _scratch);
       final kSwing = _swingAxisWorld.dot(_scratch);
       _swingMass = kSwing > 1e-12 ? 1.0 / kSwing : 0.0;
       _swingBias = math.max(0.0, swing - swingLimitRad) * betaAng * invDt;
@@ -162,7 +162,7 @@ class ConeTwistJoint3D({
     _twistState = 0;
     _twistAccum = 0.0;
     _twistBias = 0.0;
-    _sumInvInertiaMul(bodyA, bodyB, _twistAxisWorld, _scratch);
+    sumInvInertiaMul(bodyA, bodyB, _twistAxisWorld, _scratch);
     final kTwist = _twistAxisWorld.dot(_scratch);
     _twistMass = kTwist > 1e-12 ? 1.0 / kTwist : 0.0;
     if ((maxTwistRad - minTwistRad).abs() < 1e-4) {
@@ -180,10 +180,10 @@ class ConeTwistJoint3D({
   @override
   void solveVelocity(double dt) {
     // 1. Ball-and-socket linear anchor lock.
-    _relVel3(bodyA, _rA, bodyB, _rB, _rhs);
+    relativeVelocityAtLevers(bodyA, _rA, bodyB, _rB, _rhs);
     _rhs.add(_linearBias);
-    _mulMat3Neg(_linearMass, _rhs, _imp);
-    _applyLinearPairImpulse(
+    mulMat3Neg(_linearMass, _rhs, _imp);
+    applyLinearPairImpulse(
       bodyA,
       _rA,
       bodyB,
@@ -208,7 +208,7 @@ class ConeTwistJoint3D({
       _swingAccum = math.min(0.0, prev + dLambda);
       dLambda = _swingAccum - prev;
       if (dLambda.abs() > 1e-12) {
-        _applyAngularPairImpulse(
+        applyAngularPairImpulse(
           bodyA,
           bodyB,
           _swingAxisWorld.x * dLambda,
@@ -241,7 +241,7 @@ class ConeTwistJoint3D({
         _twistAccum += dLambda;
       }
       if (dLambda.abs() > 1e-12) {
-        _applyAngularPairImpulse(
+        applyAngularPairImpulse(
           bodyA,
           bodyB,
           _twistAxisWorld.x * dLambda,
@@ -255,16 +255,16 @@ class ConeTwistJoint3D({
 
   @override
   void solvePosition() {
-    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
-    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
     final ex = _wB.x - _wA.x;
     final ey = _wB.y - _wA.y;
     final ez = _wB.z - _wA.z;
     if (ex * ex + ey * ey + ez * ez > 1e-9) {
-      _buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _linearMass);
+      buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _linearMass);
       _rhs.setValues(ex * 0.45, ey * 0.45, ez * 0.45);
-      _mulMat3Neg(_linearMass, _rhs, _imp);
-      _applyPositionPairImpulse(
+      mulMat3Neg(_linearMass, _rhs, _imp);
+      applyPositionPairImpulse(
         bodyA,
         _rA,
         bodyB,
@@ -278,11 +278,11 @@ class ConeTwistJoint3D({
 
     final (swing, twist) = _decomposeSwingTwist();
     if (swing > swingLimitRad + 1e-4) {
-      _sumInvInertiaMul(bodyA, bodyB, _swingAxisWorld, _scratch);
+      sumInvInertiaMul(bodyA, bodyB, _swingAxisWorld, _scratch);
       final k = _swingAxisWorld.dot(_scratch);
       if (k > 1e-12) {
         final tau = -((swing - swingLimitRad) * 0.5) / k;
-        _applyAngularPositionPairImpulse(
+        applyAngularPositionPairImpulse(
           bodyA,
           bodyB,
           _swingAxisWorld.x * tau,
@@ -300,11 +300,11 @@ class ConeTwistJoint3D({
       twistErr = twist - maxTwistRad;
     }
     if (twistErr.abs() > 1e-4) {
-      _sumInvInertiaMul(bodyA, bodyB, _twistAxisWorld, _scratch);
+      sumInvInertiaMul(bodyA, bodyB, _twistAxisWorld, _scratch);
       final k = _twistAxisWorld.dot(_scratch);
       if (k > 1e-12) {
         final tau = -(twistErr * 0.5) / k;
-        _applyAngularPositionPairImpulse(
+        applyAngularPositionPairImpulse(
           bodyA,
           bodyB,
           _twistAxisWorld.x * tau,

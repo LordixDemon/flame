@@ -35,7 +35,7 @@ class Generic6DofJoint3D({
         ..normalize();
     } else {
       final qWorldA = bodyA.bodyRotation * _frameA;
-      _quatMulConjA(bodyB.bodyRotation, qWorldA, _frameB);
+      quatMulConjA(bodyB.bodyRotation, qWorldA, _frameB);
     }
   }
 
@@ -132,9 +132,9 @@ class Generic6DofJoint3D({
 
   /// Computes current linear displacement `(x, y, z)` in joint frame `A`.
   Vector3 get currentLinearOffset {
-    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
-    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
-    _quatMul(bodyA.bodyRotation, _frameA, _qWorldA);
+    computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    quatMul(bodyA.bodyRotation, _frameA, _qWorldA);
     final diff = _wB - _wA;
     final local = Vector3.zero();
     unrotateVectorByQuat(_qWorldA, diff, local);
@@ -144,26 +144,26 @@ class Generic6DofJoint3D({
   /// Computes current relative rotation angles `(rx, ry, rz)` in joint frame
   /// `A`.
   Vector3 get currentAngularOffset {
-    _quatMul(bodyA.bodyRotation, _frameA, _qWorldA);
-    _quatMul(bodyB.bodyRotation, _frameB, _qWorldB);
-    _quatMulConjA(_qWorldA, _qWorldB, _qRel);
+    quatMul(bodyA.bodyRotation, _frameA, _qWorldA);
+    quatMul(bodyB.bodyRotation, _frameB, _qWorldB);
+    quatMulConjA(_qWorldA, _qWorldB, _qRel);
     final out = Vector3.zero();
-    _extractIntrinsicXyzAngles(_qRel, out);
+    extractIntrinsicXyzAngles(_qRel, out);
     return out;
   }
 
   @override
   void prepare(double dt) {
-    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
-    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
     final dx = _wB.x - _wA.x;
     final dy = _wB.y - _wA.y;
     final dz = _wB.z - _wA.z;
     _rAEff.setValues(_rA.x + dx, _rA.y + dy, _rA.z + dz);
 
-    _quatMul(bodyA.bodyRotation, _frameA, _qWorldA);
-    _quatMul(bodyB.bodyRotation, _frameB, _qWorldB);
-    _quatMulConjA(_qWorldA, _qWorldB, _qRel);
+    quatMul(bodyA.bodyRotation, _frameA, _qWorldA);
+    quatMul(bodyB.bodyRotation, _frameB, _qWorldB);
+    quatMulConjA(_qWorldA, _qWorldB, _qRel);
 
     _scratch.setValues(1.0, 0.0, 0.0);
     rotateVectorByQuat(_qWorldA, _scratch, _linAxes[0]);
@@ -175,7 +175,7 @@ class Generic6DofJoint3D({
     for (var i = 0; i < 3; i++) {
       _angAxes[i].setFrom(_linAxes[i]);
     }
-    _extractIntrinsicXyzAngles(_qRel, _anglesScratch);
+    extractIntrinsicXyzAngles(_qRel, _anglesScratch);
 
     final invDt = dt > 1e-9 ? 1.0 / dt : 0.0;
     const beta = 0.22;
@@ -205,7 +205,7 @@ class Generic6DofJoint3D({
     for (var i = 0; i < 3; i++) {
       final axis = _angAxes[i];
       final ang = _anglesScratch[i];
-      _sumInvInertiaMul(bodyA, bodyB, axis, _scratch);
+      sumInvInertiaMul(bodyA, bodyB, axis, _scratch);
       final k = axis.dot(_scratch);
       _prepareAxisLimit(
         state: _angStates[i],
@@ -294,11 +294,11 @@ class Generic6DofJoint3D({
       final axis = _linAxes[i];
       final sp = _linSprings[i];
       if (sp.mode != 0 && sp.effMass > 0.0) {
-        final vRel = _relVelAlongAxis(bodyA, _rAEff, bodyB, _rB, axis);
+        final vRel = relativeVelocityAlongAxis(bodyA, _rAEff, bodyB, _rB, axis);
         final dImp = -sp.effMass * (vRel + sp.bias + sp.gamma * sp.accum);
         sp.accum += dImp;
         if (dImp.abs() > 1e-12) {
-          _applyLinearPairImpulse(
+          applyLinearPairImpulse(
             bodyA,
             _rAEff,
             bodyB,
@@ -313,10 +313,10 @@ class Generic6DofJoint3D({
 
       final lim = _linStates[i];
       if (lim.mode != 0 && lim.effMass > 0.0) {
-        final vRel = _relVelAlongAxis(bodyA, _rAEff, bodyB, _rB, axis);
+        final vRel = relativeVelocityAlongAxis(bodyA, _rAEff, bodyB, _rB, axis);
         final dImp = _clampLimitDelta(lim, -lim.effMass * (vRel + lim.bias));
         if (dImp.abs() > 1e-12) {
-          _applyLinearPairImpulse(
+          applyLinearPairImpulse(
             bodyA,
             _rAEff,
             bodyB,
@@ -342,7 +342,7 @@ class Generic6DofJoint3D({
         final dImp = -sp.effMass * (dw + sp.bias + sp.gamma * sp.accum);
         sp.accum += dImp;
         if (dImp.abs() > 1e-12) {
-          _applyAngularPairImpulse(
+          applyAngularPairImpulse(
             bodyA,
             bodyB,
             axis.x * dImp,
@@ -361,7 +361,7 @@ class Generic6DofJoint3D({
             (bodyB.angularVelocity.z - bodyA.angularVelocity.z) * axis.z;
         final dImp = _clampLimitDelta(lim, -lim.effMass * (dw + lim.bias));
         if (dImp.abs() > 1e-12) {
-          _applyAngularPairImpulse(
+          applyAngularPairImpulse(
             bodyA,
             bodyB,
             axis.x * dImp,
@@ -391,14 +391,14 @@ class Generic6DofJoint3D({
 
   @override
   void solvePosition() {
-    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
-    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
     final dx = _wB.x - _wA.x;
     final dy = _wB.y - _wA.y;
     final dz = _wB.z - _wA.z;
     _rAEff.setValues(_rA.x + dx, _rA.y + dy, _rA.z + dz);
 
-    _quatMul(bodyA.bodyRotation, _frameA, _qWorldA);
+    quatMul(bodyA.bodyRotation, _frameA, _qWorldA);
     _scratch.setValues(1.0, 0.0, 0.0);
     rotateVectorByQuat(_qWorldA, _scratch, _linAxes[0]);
     _scratch.setValues(0.0, 1.0, 0.0);
@@ -431,7 +431,7 @@ class Generic6DofJoint3D({
         );
         if (k > 1e-12) {
           final lambda = -(err * 0.45) / k;
-          _applyPositionPairImpulse(
+          applyPositionPairImpulse(
             bodyA,
             _rAEff,
             bodyB,
@@ -445,10 +445,10 @@ class Generic6DofJoint3D({
       }
     }
 
-    _quatMul(bodyA.bodyRotation, _frameA, _qWorldA);
-    _quatMul(bodyB.bodyRotation, _frameB, _qWorldB);
-    _quatMulConjA(_qWorldA, _qWorldB, _qRel);
-    _extractIntrinsicXyzAngles(_qRel, _anglesScratch);
+    quatMul(bodyA.bodyRotation, _frameA, _qWorldA);
+    quatMul(bodyB.bodyRotation, _frameB, _qWorldB);
+    quatMulConjA(_qWorldA, _qWorldB, _qRel);
+    extractIntrinsicXyzAngles(_qRel, _anglesScratch);
 
     for (var i = 0; i < 3; i++) {
       final lo = angularLowerLimit[i];
@@ -465,11 +465,11 @@ class Generic6DofJoint3D({
       }
       if (err.abs() > 1e-4) {
         final axis = _linAxes[i];
-        _sumInvInertiaMul(bodyA, bodyB, axis, _scratch);
+        sumInvInertiaMul(bodyA, bodyB, axis, _scratch);
         final k = axis.dot(_scratch);
         if (k > 1e-12) {
           final tau = -(err * 0.45) / k;
-          _applyAngularPositionPairImpulse(
+          applyAngularPositionPairImpulse(
             bodyA,
             bodyB,
             axis.x * tau,

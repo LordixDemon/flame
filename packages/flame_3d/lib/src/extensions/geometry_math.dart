@@ -320,18 +320,19 @@ void buildUpTangentBasis3D(Vector3 upAxis, Vector3 basisU, Vector3 basisV) {
   basisU.normalize();
 }
 
-/// Computes the inverse of a symmetric 3x3 matrix [sym] via cofactors into
-/// [out]. Returns `false` if [sym] is singular.
+/// Computes the inverse of the symmetric 3x3 matrix defined by its upper
+/// triangle `(a00, a01, a02, a11, a12, a22)` via cofactors into [out].
+/// Returns `false` if the matrix is singular.
 @internal
-bool invertSymmetric3D(Matrix3 sym, Matrix3 out) {
-  final s = sym.storage;
-  final a00 = s[0];
-  final a01 = s[1];
-  final a02 = s[2];
-  final a11 = s[4];
-  final a12 = s[5];
-  final a22 = s[8];
-
+bool invertSymmetricValues3D(
+  double a00,
+  double a01,
+  double a02,
+  double a11,
+  double a12,
+  double a22,
+  Matrix3 out,
+) {
   final c00 = a11 * a22 - a12 * a12;
   final c01 = -(a01 * a22 - a12 * a02);
   final c02 = a01 * a12 - a11 * a02;
@@ -355,6 +356,142 @@ bool invertSymmetric3D(Matrix3 sym, Matrix3 out) {
   o[7] = c12 * invDet;
   o[8] = c22 * invDet;
   return true;
+}
+
+/// Computes the inverse of a symmetric 3x3 matrix [sym] via cofactors into
+/// [out]. Returns `false` if [sym] is singular.
+@internal
+bool invertSymmetric3D(Matrix3 sym, Matrix3 out) {
+  final s = sym.storage;
+  return invertSymmetricValues3D(s[0], s[1], s[2], s[4], s[5], s[8], out);
+}
+
+/// Computes the normalized Hamilton product `a * b` into [out].
+///
+/// Safe when [out] aliases [a] or [b].
+@internal
+@pragma('vm:prefer-inline')
+void quatMul(Quaternion a, Quaternion b, Quaternion out) {
+  final ax = a.x;
+  final ay = a.y;
+  final az = a.z;
+  final aw = a.w;
+  final bx = b.x;
+  final by = b.y;
+  final bz = b.z;
+  final bw = b.w;
+  out
+    ..setValues(
+      aw * bx + ax * bw + ay * bz - az * by,
+      aw * by - ax * bz + ay * bw + az * bx,
+      aw * bz + ax * by - ay * bx + az * bw,
+      aw * bw - ax * bx - ay * by - az * bz,
+    )
+    ..normalize();
+}
+
+/// Computes the normalized Hamilton product `conjugate(a) * b` into [out].
+///
+/// Safe when [out] aliases [a] or [b].
+@internal
+@pragma('vm:prefer-inline')
+void quatMulConjA(Quaternion a, Quaternion b, Quaternion out) {
+  final ax = -a.x;
+  final ay = -a.y;
+  final az = -a.z;
+  final aw = a.w;
+  final bx = b.x;
+  final by = b.y;
+  final bz = b.z;
+  final bw = b.w;
+  out
+    ..setValues(
+      aw * bx + ax * bw + ay * bz - az * by,
+      aw * by - ax * bz + ay * bw + az * bx,
+      aw * bz + ax * by - ay * bx + az * bw,
+      aw * bw - ax * bx - ay * by - az * bz,
+    )
+    ..normalize();
+}
+
+/// Writes the closest point on segment `[a, b]` to `(px, py, pz)` into [out].
+@internal
+void closestPointOnSegment3D(
+  double px,
+  double py,
+  double pz,
+  Vector3 a,
+  Vector3 b,
+  Vector3 out,
+) {
+  final abx = b.x - a.x;
+  final aby = b.y - a.y;
+  final abz = b.z - a.z;
+  final len2 = abx * abx + aby * aby + abz * abz;
+  if (len2 <= 1e-16) {
+    out.setFrom(a);
+    return;
+  }
+  final t = (((px - a.x) * abx + (py - a.y) * aby + (pz - a.z) * abz) / len2)
+      .clamp(0.0, 1.0);
+  out.setValues(a.x + abx * t, a.y + aby * t, a.z + abz * t);
+}
+
+/// Computes the closest pair of points between segments `[p1, q1]` and
+/// `[p2, q2]` into [out1] and [out2].
+@internal
+void closestPointsSegmentSegment3D(
+  Vector3 p1,
+  Vector3 q1,
+  Vector3 p2,
+  Vector3 q2,
+  Vector3 out1,
+  Vector3 out2,
+) {
+  final d1x = q1.x - p1.x;
+  final d1y = q1.y - p1.y;
+  final d1z = q1.z - p1.z;
+  final d2x = q2.x - p2.x;
+  final d2y = q2.y - p2.y;
+  final d2z = q2.z - p2.z;
+  final rx = p1.x - p2.x;
+  final ry = p1.y - p2.y;
+  final rz = p1.z - p2.z;
+
+  final a = d1x * d1x + d1y * d1y + d1z * d1z;
+  final e = d2x * d2x + d2y * d2y + d2z * d2z;
+  final f = d2x * rx + d2y * ry + d2z * rz;
+
+  double s;
+  double t;
+  if (a <= 1e-14 && e <= 1e-14) {
+    s = 0.0;
+    t = 0.0;
+  } else if (a <= 1e-14) {
+    s = 0.0;
+    t = (f / e).clamp(0.0, 1.0);
+  } else {
+    final c = d1x * rx + d1y * ry + d1z * rz;
+    if (e <= 1e-14) {
+      t = 0.0;
+      s = (-c / a).clamp(0.0, 1.0);
+    } else {
+      final b = d1x * d2x + d1y * d2y + d1z * d2z;
+      final denom = a * e - b * b;
+      s = denom > 1e-14 ? ((b * f - c * e) / denom).clamp(0.0, 1.0) : 0.0;
+      t = (b * s + f) / e;
+      if (t < 0.0) {
+        t = 0.0;
+        s = (-c / a).clamp(0.0, 1.0);
+      } else if (t > 1.0) {
+        t = 1.0;
+        s = ((b - c) / a).clamp(0.0, 1.0);
+      }
+    }
+  }
+
+  out1.setValues(p1.x + d1x * s, p1.y + d1y * s, p1.z + d1z * s);
+  out2.setValues(p2.x + d2x * t, p2.y + d2y * t, p2.z + d2z * t);
 }
 
 /// Computes the closest point on triangle `(a, b, c)` to point `(px, py, pz)`

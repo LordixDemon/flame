@@ -48,8 +48,8 @@ class DistanceJoint3D({
 
   @override
   void prepare(double dt) {
-    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
-    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
 
     final dx = _wB.x - _wA.x;
     final dy = _wB.y - _wA.y;
@@ -88,10 +88,10 @@ class DistanceJoint3D({
     if (_effMass <= 0.0) {
       return;
     }
-    final vRel = _relVelAlongAxis(bodyA, _rA, bodyB, _rB, _u);
+    final vRel = relativeVelocityAlongAxis(bodyA, _rA, bodyB, _rB, _u);
     final impulse = -_effMass * (vRel + _bias + _gamma * _accumImpulse);
     _accumImpulse += impulse;
-    _applyLinearPairImpulse(
+    applyLinearPairImpulse(
       bodyA,
       _rA,
       bodyB,
@@ -108,8 +108,8 @@ class DistanceJoint3D({
     if (frequencyHz > 0.0) {
       return;
     }
-    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
-    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
     final dx = _wB.x - _wA.x;
     final dy = _wB.y - _wA.y;
     final dz = _wB.z - _wA.z;
@@ -127,7 +127,7 @@ class DistanceJoint3D({
       return;
     }
     final lambda = -err / k;
-    _applyPositionPairImpulse(
+    applyPositionPairImpulse(
       bodyA,
       _rA,
       bodyB,
@@ -167,9 +167,9 @@ class BallSocketJoint3D({
 
   @override
   void prepare(double dt) {
-    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
-    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
-    _buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _effMass3);
+    computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _effMass3);
 
     if (dt > 1e-9) {
       const beta = 0.2;
@@ -186,10 +186,10 @@ class BallSocketJoint3D({
 
   @override
   void solveVelocity(double dt) {
-    _relVel3(bodyA, _rA, bodyB, _rB, _rhs);
+    relativeVelocityAtLevers(bodyA, _rA, bodyB, _rB, _rhs);
     _rhs.add(_bias);
-    _mulMat3Neg(_effMass3, _rhs, _imp);
-    _applyLinearPairImpulse(
+    mulMat3Neg(_effMass3, _rhs, _imp);
+    applyLinearPairImpulse(
       bodyA,
       _rA,
       bodyB,
@@ -203,18 +203,18 @@ class BallSocketJoint3D({
 
   @override
   void solvePosition() {
-    _computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
-    _computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
+    computeWorldAnchorAndLever(bodyA, localAnchorA, _wA, _rA);
+    computeWorldAnchorAndLever(bodyB, localAnchorB, _wB, _rB);
     final ex = _wB.x - _wA.x;
     final ey = _wB.y - _wA.y;
     final ez = _wB.z - _wA.z;
     if (ex * ex + ey * ey + ez * ez <= 1e-9) {
       return;
     }
-    _buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _effMass3);
+    buildPointToPointInvK(bodyA, _rA, bodyB, _rB, _effMass3);
     _rhs.setValues(ex * 0.4, ey * 0.4, ez * 0.4);
-    _mulMat3Neg(_effMass3, _rhs, _imp);
-    _applyPositionPairImpulse(
+    mulMat3Neg(_effMass3, _rhs, _imp);
+    applyPositionPairImpulse(
       bodyA,
       _rA,
       bodyB,

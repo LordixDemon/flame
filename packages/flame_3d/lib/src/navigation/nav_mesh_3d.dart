@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/resources.dart';
 import 'package:flame_3d/src/extensions/geometry_math.dart';
+import 'package:flame_3d/src/spatial/static_bvh_3d.dart';
 
 part 'nav_mesh_bvh_3d.dart';
 part 'nav_mesh_factories_3d.dart';

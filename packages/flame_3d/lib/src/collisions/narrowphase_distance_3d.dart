@@ -122,81 +122,6 @@ double _closestSegmentParamToAabb(
   return bestT;
 }
 
-void _closestPointOnSegment(
-  double px,
-  double py,
-  double pz,
-  Vector3 a,
-  Vector3 b,
-  Vector3 out,
-) {
-  final abx = b.x - a.x;
-  final aby = b.y - a.y;
-  final abz = b.z - a.z;
-  final len2 = abx * abx + aby * aby + abz * abz;
-  if (len2 <= 1e-16) {
-    out.setFrom(a);
-    return;
-  }
-  final t = (((px - a.x) * abx + (py - a.y) * aby + (pz - a.z) * abz) / len2)
-      .clamp(0.0, 1.0);
-  out.setValues(a.x + abx * t, a.y + aby * t, a.z + abz * t);
-}
-
-void _closestPointsSegmentSegment(
-  Vector3 p1,
-  Vector3 q1,
-  Vector3 p2,
-  Vector3 q2,
-  Vector3 out1,
-  Vector3 out2,
-) {
-  final d1x = q1.x - p1.x;
-  final d1y = q1.y - p1.y;
-  final d1z = q1.z - p1.z;
-  final d2x = q2.x - p2.x;
-  final d2y = q2.y - p2.y;
-  final d2z = q2.z - p2.z;
-  final rx = p1.x - p2.x;
-  final ry = p1.y - p2.y;
-  final rz = p1.z - p2.z;
-
-  final a = d1x * d1x + d1y * d1y + d1z * d1z;
-  final e = d2x * d2x + d2y * d2y + d2z * d2z;
-  final f = d2x * rx + d2y * ry + d2z * rz;
-
-  double s;
-  double t;
-  if (a <= 1e-14 && e <= 1e-14) {
-    s = 0.0;
-    t = 0.0;
-  } else if (a <= 1e-14) {
-    s = 0.0;
-    t = (f / e).clamp(0.0, 1.0);
-  } else {
-    final c = d1x * rx + d1y * ry + d1z * rz;
-    if (e <= 1e-14) {
-      t = 0.0;
-      s = (-c / a).clamp(0.0, 1.0);
-    } else {
-      final b = d1x * d2x + d1y * d2y + d1z * d2z;
-      final denom = a * e - b * b;
-      s = denom > 1e-14 ? ((b * f - c * e) / denom).clamp(0.0, 1.0) : 0.0;
-      t = (b * s + f) / e;
-      if (t < 0.0) {
-        t = 0.0;
-        s = (-c / a).clamp(0.0, 1.0);
-      } else if (t > 1.0) {
-        t = 1.0;
-        s = ((b - c) / a).clamp(0.0, 1.0);
-      }
-    }
-  }
-
-  out1.setValues(p1.x + d1x * s, p1.y + d1y * s, p1.z + d1z * s);
-  out2.setValues(p2.x + d2x * t, p2.y + d2y * t, p2.z + d2z * t);
-}
-
 void _closestPointsSegmentTriangle(
   Vector3 p0,
   Vector3 p1,
@@ -227,11 +152,11 @@ void _closestPointsSegmentTriangle(
   consider(p1, _candTri);
 
   // 2. Segment against the 3 triangle edges.
-  _closestPointsSegmentSegment(p0, p1, v0, v1, _candSeg, _candTri);
+  closestPointsSegmentSegment3D(p0, p1, v0, v1, _candSeg, _candTri);
   consider(_candSeg, _candTri);
-  _closestPointsSegmentSegment(p0, p1, v1, v2, _candSeg, _candTri);
+  closestPointsSegmentSegment3D(p0, p1, v1, v2, _candSeg, _candTri);
   consider(_candSeg, _candTri);
-  _closestPointsSegmentSegment(p0, p1, v2, v0, _candSeg, _candTri);
+  closestPointsSegmentSegment3D(p0, p1, v2, v0, _candSeg, _candTri);
   consider(_candSeg, _candTri);
 
   // 3. Segment piercing the triangle plane.
@@ -265,72 +190,4 @@ void _closestPointsSegmentTriangle(
       consider(_candSeg, _candTri);
     }
   }
-}
-
-List<ContactPoint3D> _reduceContactsToFour(
-  List<ContactPoint3D> contacts,
-  double nx,
-  double ny,
-  double nz,
-) {
-  // Keep deepest point first, then farthest from it, then maximize triangle
-  // area, then farthest from triangle edges.
-  var i0 = 0;
-  for (var i = 1; i < contacts.length; i++) {
-    if (contacts[i].penetrationDepth > contacts[i0].penetrationDepth) {
-      i0 = i;
-    }
-  }
-  var i1 = 0;
-  var bestD2 = -1.0;
-  final p0 = contacts[i0].pointA;
-  for (var i = 0; i < contacts.length; i++) {
-    final d2 = contacts[i].pointA.distanceToSquared(p0);
-    if (d2 > bestD2) {
-      bestD2 = d2;
-      i1 = i;
-    }
-  }
-  var i2 = 0;
-  var bestArea = -1.0;
-  final p1 = contacts[i1].pointA;
-  for (var i = 0; i < contacts.length; i++) {
-    if (i == i0 || i == i1) {
-      continue;
-    }
-    final p = contacts[i].pointA;
-    final e1x = p1.x - p0.x;
-    final e1y = p1.y - p0.y;
-    final e1z = p1.z - p0.z;
-    final e2x = p.x - p0.x;
-    final e2y = p.y - p0.y;
-    final e2z = p.z - p0.z;
-    final cx = e1y * e2z - e1z * e2y;
-    final cy = e1z * e2x - e1x * e2z;
-    final cz = e1x * e2y - e1y * e2x;
-    final area = (cx * nx + cy * ny + cz * nz).abs();
-    if (area > bestArea) {
-      bestArea = area;
-      i2 = i;
-    }
-  }
-  var i3 = 0;
-  var bestFourth = -1.0;
-  final p2 = contacts[i2].pointA;
-  for (var i = 0; i < contacts.length; i++) {
-    if (i == i0 || i == i1 || i == i2) {
-      continue;
-    }
-    final p = contacts[i].pointA;
-    final d = math.min(
-      p.distanceToSquared(p0),
-      math.min(p.distanceToSquared(p1), p.distanceToSquared(p2)),
-    );
-    if (d > bestFourth) {
-      bestFourth = d;
-      i3 = i;
-    }
-  }
-  final chosen = <int>{i0, i1, i2, i3};
-  return [for (final idx in chosen) contacts[idx]];
 }

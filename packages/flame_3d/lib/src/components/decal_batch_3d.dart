@@ -6,6 +6,7 @@ import 'package:flame_3d/components.dart';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/components/instance_buffer_3d.dart';
 import 'package:flame_3d/src/extensions/clip_space.dart';
 import 'package:flame_3d/src/resources/mesh/unit_quad_surface.dart';
 
@@ -32,20 +33,14 @@ class DecalBatch3D({
   super.children,
 }) extends Object3D {
   /// {@macro decal_batch_3d}
-  this : super(castsShadows: false) {
-    if (initialCapacity < 1) {
-      throw ArgumentError.value(
-        initialCapacity,
-        'initialCapacity',
-        'Must be at least 1',
-      );
-    }
-    _capacity = initialCapacity;
-    _instances = Float32List(_capacity * _stride);
-  }
+  this : super(castsShadows: false);
 
   /// The material shared by all decals in this batch.
   final DecalMaterial material = material ?? DecalMaterial();
+
+  final InstanceBuffer3D _buffer = InstanceBuffer3D(
+    initialCapacity: initialCapacity,
+  );
 
   /// Whether the decals are drawn back to front, from the farthest from the
   /// camera of the pass to the nearest (by the depth of their centers), so
@@ -74,24 +69,16 @@ class DecalBatch3D({
   int get sortCount => _sortCount;
   int _sortCount = 0;
 
-  static const int _stride = VertexLayout.instanceStrideInFloats;
-
-  int _capacity = 16;
-  int _length = 0;
-  late Float32List _instances;
-  Float32List? _worldInstances;
-  final Matrix4 _lastWorldMatrix = Matrix4.zero();
-  int _localVersion = 0;
-  int _transformedVersion = -1;
+  static const int _stride = InstanceBuffer3D.stride;
 
   final Aabb3 _localAabb = Aabb3();
   bool _localBoundsDirty = true;
 
   /// Number of decals currently in the batch.
-  int get length => _length;
+  int get length => _buffer.length;
 
   /// Whether the batch has no decals.
-  bool get isEmpty => _length == 0;
+  bool get isEmpty => _buffer.isEmpty;
 
   /// Appends a decal with an arbitrary 3D [transform] (mapping the unit XY quad
   /// `[-0.5, 0.5]^2` into the batch's local space) and returns its index.
@@ -100,12 +87,14 @@ class DecalBatch3D({
     Color color = const Color(0xFFFFFFFF),
     Rect? uvRect,
   }) {
-    final index = _length;
-    if (index == _capacity) {
-      _grow(_capacity * 2);
-    }
-    _length++;
-    _writeDecal(index, transform, color, uvRect);
+    final index = _buffer.append(
+      transform,
+      color,
+      uvRect?.left ?? 0,
+      uvRect?.top ?? 0,
+      uvRect?.width ?? 0,
+      uvRect?.height ?? 0,
+    );
     _invalidate();
     return index;
   }
@@ -133,31 +122,20 @@ class DecalBatch3D({
     Color? color,
     Rect? uvRect,
   }) {
-    RangeError.checkValidIndex(index, this, 'index', _length);
-    final base = index * _stride;
+    RangeError.checkValidIndex(index, this, 'index', _buffer.length);
+    _buffer.update(
+      index,
+      transform: transform,
+      color: color,
+      d0: uvRect?.left,
+      d1: uvRect?.top,
+      d2: uvRect?.width,
+      d3: uvRect?.height,
+    );
     if (transform != null) {
-      final s = transform.storage;
-      for (var i = 0; i < 16; i++) {
-        _instances[base + i] = s[i];
-      }
       _localBoundsDirty = true;
       markAabbDirty();
     }
-    if (color != null) {
-      _instances
-        ..[base + 16] = color.r
-        ..[base + 17] = color.g
-        ..[base + 18] = color.b
-        ..[base + 19] = color.a;
-    }
-    if (uvRect != null) {
-      _instances
-        ..[base + 20] = uvRect.left
-        ..[base + 21] = uvRect.top
-        ..[base + 22] = uvRect.width
-        ..[base + 23] = uvRect.height;
-    }
-    _localVersion++;
     worldOrNull?.markSceneDirty(shadows: false);
   }
 
@@ -201,25 +179,16 @@ class DecalBatch3D({
 
   /// Removes the decal at [index] in `O(1)` by swapping with the last entry.
   void removeAtSwapLast(int index) {
-    RangeError.checkValidIndex(index, this, 'index', _length);
-    final last = --_length;
-    if (index != last) {
-      _instances.setRange(
-        index * _stride,
-        (index + 1) * _stride,
-        _instances,
-        last * _stride,
-      );
-    }
+    RangeError.checkValidIndex(index, this, 'index', _buffer.length);
+    _buffer.removeAtSwapLast(index);
     _invalidate();
   }
 
   /// Removes all decals without freeing capacity.
   void clear() {
-    if (_length == 0) {
+    if (!_buffer.clear()) {
       return;
     }
-    _length = 0;
     _invalidate();
   }
 
@@ -228,32 +197,30 @@ class DecalBatch3D({
 
   @override
   Aabb3? computeLocalAabb() {
-    if (_length == 0) {
+    final count = _buffer.length;
+    if (count == 0) {
       return null;
     }
     if (_localBoundsDirty) {
       _localBoundsDirty = false;
+      final instances = _buffer.localData;
       var minX = double.infinity;
       var minY = double.infinity;
       var minZ = double.infinity;
       var maxX = double.negativeInfinity;
       var maxY = double.negativeInfinity;
       var maxZ = double.negativeInfinity;
-      for (var idx = 0; idx < _length; idx++) {
+      for (var idx = 0; idx < count; idx++) {
         final b = idx * _stride;
         for (var corner = 0; corner < 4; corner++) {
           final cx = (corner & 1) == 0 ? -0.5 : 0.5;
           final cy = (corner & 2) == 0 ? -0.5 : 0.5;
           final wx =
-              _instances[b] * cx + _instances[b + 4] * cy + _instances[b + 12];
+              instances[b] * cx + instances[b + 4] * cy + instances[b + 12];
           final wy =
-              _instances[b + 1] * cx +
-              _instances[b + 5] * cy +
-              _instances[b + 13];
+              instances[b + 1] * cx + instances[b + 5] * cy + instances[b + 13];
           final wz =
-              _instances[b + 2] * cx +
-              _instances[b + 6] * cy +
-              _instances[b + 14];
+              instances[b + 2] * cx + instances[b + 6] * cy + instances[b + 14];
           minX = math.min(minX, wx);
           minY = math.min(minY, wy);
           minZ = math.min(minZ, wz);
@@ -271,7 +238,8 @@ class DecalBatch3D({
 
   @override
   void draw(covariant RenderContext3D context) {
-    if (_length == 0 || context.isShadowPass) {
+    final count = _buffer.length;
+    if (count == 0 || context.isShadowPass) {
       return;
     }
     // Sorted among the translucent draws at the center of the decals.
@@ -280,12 +248,16 @@ class DecalBatch3D({
       ..setFrom(local.min)
       ..add(local.max)
       ..scale(0.5);
-    worldTransformMatrix.transform3(center);
-    final buffer = _resolvedBuffer();
+    final world = worldTransformMatrix;
+    final worldVer = worldTransformVersion;
+    world.transform3(center);
+    final buffer = _buffer.resolveWorld(world, worldVer);
     context.drawInstances(
       unitQuadSurface3D,
-      instances: _sortByDepth ? _sortedBuffer(buffer, context) : buffer,
-      count: _length,
+      instances: _sortByDepth
+          ? _sortedBuffer(buffer, worldVer, context)
+          : buffer,
+      count: count,
       material: material,
       center: center,
     );
@@ -293,43 +265,49 @@ class DecalBatch3D({
 
   final Vector3 _drawCenter = Vector3.zero();
 
-  // The decals of [_resolvedBuffer] back to front, see [sortByDepth], and
-  // what they were sorted for.
+  // The decals of [_buffer] back to front, see [sortByDepth], and what they
+  // were sorted for.
   Float32List? _sorted;
   Int32List _order = Int32List(0);
   Int32List _orderScratch = Int32List(0);
   Float64List _sortDepths = Float64List(0);
   bool _sortedValid = false;
   int _sortedVersion = -1;
+  int _sortedWorldVer = -1;
   Float32List? _sortedSource;
   final Float32List _sortedViewProjection = Float32List(16);
-  final Matrix4 _sortedWorld = Matrix4.zero();
 
   /// The decals of [source] (in world space) from the farthest to the
   /// nearest for the camera of [context], sorted again only when the camera,
   /// the decals or the batch's transform changed.
-  Float32List _sortedBuffer(Float32List source, RenderContext3D context) {
-    final count = _length;
+  Float32List _sortedBuffer(
+    Float32List source,
+    int worldVer,
+    RenderContext3D context,
+  ) {
+    final count = _buffer.length;
+    final localVer = _buffer.localVersion;
+    final cap = _buffer.capacity;
     final viewProjection = context.viewProjection.storage;
     var sorted = _sorted;
     if (sorted == null || sorted.length < count * _stride) {
-      sorted = _sorted = Float32List(_capacity * _stride);
-      _order = Int32List(_capacity);
-      _orderScratch = Int32List(_capacity);
-      _sortDepths = Float64List(_capacity);
+      sorted = _sorted = Float32List(cap * _stride);
+      _order = Int32List(cap);
+      _orderScratch = Int32List(cap);
+      _sortDepths = Float64List(cap);
       _sortedValid = false;
     }
     if (_sortedValid &&
-        _sortedVersion == _localVersion &&
+        _sortedVersion == localVer &&
         identical(_sortedSource, source) &&
-        _sortedWorld == worldTransformMatrix &&
+        _sortedWorldVer == worldVer &&
         sameMatrix16(_sortedViewProjection, viewProjection)) {
       return sorted;
     }
     _sortedValid = true;
-    _sortedVersion = _localVersion;
+    _sortedVersion = localVer;
     _sortedSource = source;
-    _sortedWorld.setFrom(worldTransformMatrix);
+    _sortedWorldVer = worldVer;
     _sortedViewProjection.setAll(0, viewProjection);
     _sortCount++;
 
@@ -404,69 +382,7 @@ class DecalBatch3D({
     }
   }
 
-  Float32List _resolvedBuffer() {
-    final world = worldTransformMatrix;
-    if (world.isIdentity()) {
-      return _instances;
-    }
-    var out = _worldInstances;
-    if (out == null || out.length < _length * _stride) {
-      out = _worldInstances = Float32List(_capacity * _stride);
-      _transformedVersion = -1;
-    }
-    if (_transformedVersion != _localVersion || _lastWorldMatrix != world) {
-      _transformedVersion = _localVersion;
-      _lastWorldMatrix.setFrom(world);
-      final w = world.storage;
-      for (var i = 0; i < _length; i++) {
-        final b = i * _stride;
-        for (var col = 0; col < 4; col++) {
-          final c = b + col * 4;
-          final x = _instances[c];
-          final y = _instances[c + 1];
-          final z = _instances[c + 2];
-          final mw = _instances[c + 3];
-          out
-            ..[c] = w[0] * x + w[4] * y + w[8] * z + w[12] * mw
-            ..[c + 1] = w[1] * x + w[5] * y + w[9] * z + w[13] * mw
-            ..[c + 2] = w[2] * x + w[6] * y + w[10] * z + w[14] * mw
-            ..[c + 3] = w[3] * x + w[7] * y + w[11] * z + w[15] * mw;
-        }
-        for (var k = 16; k < 24; k++) {
-          out[b + k] = _instances[b + k];
-        }
-      }
-    }
-    return out;
-  }
-
-  void _writeDecal(int index, Matrix4 transform, Color color, Rect? uvRect) {
-    final base = index * _stride;
-    final s = transform.storage;
-    for (var i = 0; i < 16; i++) {
-      _instances[base + i] = s[i];
-    }
-    _instances
-      ..[base + 16] = color.r
-      ..[base + 17] = color.g
-      ..[base + 18] = color.b
-      ..[base + 19] = color.a
-      ..[base + 20] = uvRect?.left ?? 0
-      ..[base + 21] = uvRect?.top ?? 0
-      ..[base + 22] = uvRect?.width ?? 0
-      ..[base + 23] = uvRect?.height ?? 0;
-  }
-
-  void _grow(int newCapacity) {
-    final next = Float32List(newCapacity * _stride)
-      ..setRange(0, _length * _stride, _instances);
-    _instances = next;
-    _capacity = newCapacity;
-    _worldInstances = null;
-  }
-
   void _invalidate() {
-    _localVersion++;
     _localBoundsDirty = true;
     markAabbDirty();
     worldOrNull?.markSceneDirty(shadows: false);

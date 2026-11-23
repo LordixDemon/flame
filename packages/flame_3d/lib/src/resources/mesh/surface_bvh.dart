@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_3d/src/spatial/static_bvh_3d.dart';
 
 /// {@template surface_ray_hit}
 /// A narrowphase ray intersection on a [Surface] in the surface's local space.
@@ -60,12 +61,10 @@ class SurfaceBvh {
 
     final verts = surface.vertexData;
     final stride = surface.layout.strideInFloats;
-    final triIndices = Int32List(triCount);
     final triBounds = Float32List(triCount * 6);
     final centroids = Float32List(triCount * 3);
 
     for (var t = 0; t < triCount; t++) {
-      triIndices[t] = t;
       final b = t * 3;
       final i0 = indices[b] * stride + posOffset;
       final i1 = indices[b + 1] * stride + posOffset;
@@ -81,21 +80,14 @@ class SurfaceBvh {
       final y2 = verts[i2 + 1];
       final z2 = verts[i2 + 2];
 
-      final minX = math.min(x0, math.min(x1, x2));
-      final minY = math.min(y0, math.min(y1, y2));
-      final minZ = math.min(z0, math.min(z1, z2));
-      final maxX = math.max(x0, math.max(x1, x2));
-      final maxY = math.max(y0, math.max(y1, y2));
-      final maxZ = math.max(z0, math.max(z1, z2));
-
       final tb = t * 6;
       triBounds
-        ..[tb] = minX
-        ..[tb + 1] = minY
-        ..[tb + 2] = minZ
-        ..[tb + 3] = maxX
-        ..[tb + 4] = maxY
-        ..[tb + 5] = maxZ;
+        ..[tb] = math.min(x0, math.min(x1, x2))
+        ..[tb + 1] = math.min(y0, math.min(y1, y2))
+        ..[tb + 2] = math.min(z0, math.min(z1, z2))
+        ..[tb + 3] = math.max(x0, math.max(x1, x2))
+        ..[tb + 4] = math.max(y0, math.max(y1, y2))
+        ..[tb + 5] = math.max(z0, math.max(z1, z2));
 
       final cb = t * 3;
       centroids
@@ -104,123 +96,16 @@ class SurfaceBvh {
         ..[cb + 2] = (z0 + z1 + z2) * (1.0 / 3.0);
     }
 
-    final maxNodes = math.max(1, triCount * 2);
-    final bounds = Float32List(maxNodes * 6);
-    final leftOrFirst = Int32List(maxNodes);
-    final rightChild = Int32List(maxNodes);
-    final counts = Int32List(maxNodes);
-    var nodeCount = 0;
-
-    int buildNode(int start, int count) {
-      final node = nodeCount++;
-      var minX = double.infinity;
-      var minY = double.infinity;
-      var minZ = double.infinity;
-      var maxX = double.negativeInfinity;
-      var maxY = double.negativeInfinity;
-      var maxZ = double.negativeInfinity;
-      var cMinX = double.infinity;
-      var cMinY = double.infinity;
-      var cMinZ = double.infinity;
-      var cMaxX = double.negativeInfinity;
-      var cMaxY = double.negativeInfinity;
-      var cMaxZ = double.negativeInfinity;
-
-      for (var i = start; i < start + count; i++) {
-        final t = triIndices[i];
-        final tb = t * 6;
-        minX = math.min(minX, triBounds[tb]);
-        minY = math.min(minY, triBounds[tb + 1]);
-        minZ = math.min(minZ, triBounds[tb + 2]);
-        maxX = math.max(maxX, triBounds[tb + 3]);
-        maxY = math.max(maxY, triBounds[tb + 4]);
-        maxZ = math.max(maxZ, triBounds[tb + 5]);
-
-        final cb = t * 3;
-        final cx = centroids[cb];
-        final cy = centroids[cb + 1];
-        final cz = centroids[cb + 2];
-        cMinX = math.min(cMinX, cx);
-        cMinY = math.min(cMinY, cy);
-        cMinZ = math.min(cMinZ, cz);
-        cMaxX = math.max(cMaxX, cx);
-        cMaxY = math.max(cMaxY, cy);
-        cMaxZ = math.max(cMaxZ, cz);
-      }
-
-      final nb = node * 6;
-      bounds
-        ..[nb] = minX
-        ..[nb + 1] = minY
-        ..[nb + 2] = minZ
-        ..[nb + 3] = maxX
-        ..[nb + 4] = maxY
-        ..[nb + 5] = maxZ;
-
-      if (count <= maxLeafTriangles) {
-        leftOrFirst[node] = start;
-        counts[node] = count;
-        return node;
-      }
-
-      final extX = cMaxX - cMinX;
-      final extY = cMaxY - cMinY;
-      final extZ = cMaxZ - cMinZ;
-      var axis = 0;
-      var split = 0.5 * (cMinX + cMaxX);
-      var extent = extX;
-      if (extY > extent) {
-        axis = 1;
-        split = 0.5 * (cMinY + cMaxY);
-        extent = extY;
-      }
-      if (extZ > extent) {
-        axis = 2;
-        split = 0.5 * (cMinZ + cMaxZ);
-        extent = extZ;
-      }
-
-      int mid;
-      if (extent <= 1e-12) {
-        mid = start + (count >> 1);
-      } else {
-        var i = start;
-        var j = start + count - 1;
-        while (i <= j) {
-          if (centroids[triIndices[i] * 3 + axis] < split) {
-            i++;
-          } else {
-            final tmp = triIndices[i];
-            triIndices[i] = triIndices[j];
-            triIndices[j] = tmp;
-            j--;
-          }
-        }
-        mid = i;
-        if (mid == start || mid == start + count) {
-          mid = start + (count >> 1);
-        }
-      }
-
-      counts[node] = 0;
-      leftOrFirst[node] = buildNode(start, mid - start);
-      rightChild[node] = buildNode(mid, start + count - mid);
-      return node;
-    }
-
-    buildNode(0, triCount);
-
     return SurfaceBvh._(
       surface: surface,
       positionOffset: posOffset,
       stride: stride,
-      nodeCount: nodeCount,
-      triangleCount: triCount,
-      bounds: Float32List.sublistView(bounds, 0, nodeCount * 6),
-      leftOrFirst: Int32List.sublistView(leftOrFirst, 0, nodeCount),
-      rightChild: Int32List.sublistView(rightChild, 0, nodeCount),
-      counts: Int32List.sublistView(counts, 0, nodeCount),
-      triangles: triIndices,
+      bvh: StaticBvh3D.build(
+        primitiveCount: triCount,
+        primitiveBounds: triBounds,
+        centroids: centroids,
+        maxLeafPrimitives: maxLeafTriangles,
+      ),
     );
   }
 
@@ -244,27 +129,19 @@ class SurfaceBvh {
     if (posOffset == null || triCount == 0 || nodeCount == 0) {
       return SurfaceBvh._empty(surface);
     }
-    if (bounds.length < nodeCount * 6 ||
-        leftOrFirst.length < nodeCount ||
-        rightChild.length < nodeCount ||
-        counts.length < nodeCount ||
-        triangles.length != triCount) {
-      throw ArgumentError(
-        'Prepared BVH does not match the surface: $nodeCount nodes, '
-        '${triangles.length} triangles for a surface of $triCount',
-      );
-    }
     return SurfaceBvh._(
       surface: surface,
       positionOffset: posOffset,
       stride: surface.layout.strideInFloats,
-      nodeCount: nodeCount,
-      triangleCount: triCount,
-      bounds: bounds,
-      leftOrFirst: leftOrFirst,
-      rightChild: rightChild,
-      counts: counts,
-      triangles: triangles,
+      bvh: StaticBvh3D.fromPrepared(
+        nodeCount: nodeCount,
+        primitiveCount: triCount,
+        bounds: bounds,
+        leftOrFirst: leftOrFirst,
+        rightChild: rightChild,
+        counts: counts,
+        primitives: triangles,
+      ),
     );
   }
 
@@ -272,53 +149,29 @@ class SurfaceBvh {
     required this.surface,
     required this._positionOffset,
     required this._stride,
-    required this.nodeCount,
-    required this.triangleCount,
-    required this._bounds,
-    required this._leftOrFirst,
-    required this._rightChild,
-    required this._counts,
-    required this._triangles,
+    required this._bvh,
   });
 
   SurfaceBvh._empty(this.surface)
     : _positionOffset = 0,
       _stride = 0,
-      nodeCount = 0,
-      triangleCount = 0,
-      _bounds = Float32List(0),
-      _leftOrFirst = Int32List(0),
-      _rightChild = Int32List(0),
-      _counts = Int32List(0),
-      _triangles = Int32List(0);
+      _bvh = StaticBvh3D.empty();
 
   /// The surface indexed by this BVH.
   final Surface surface;
 
-  /// Number of BVH nodes (`0` when the surface has no triangles).
-  final int nodeCount;
-
-  /// Number of indexed triangles in [surface].
-  final int triangleCount;
-
   final int _positionOffset;
   final int _stride;
-  final Float32List _bounds;
-  final Int32List _leftOrFirst;
-  final Int32List _rightChild;
-  final Int32List _counts;
-  final Int32List _triangles;
+  final StaticBvh3D _bvh;
+
+  /// Number of BVH nodes (`0` when the surface has no triangles).
+  int get nodeCount => _bvh.nodeCount;
+
+  /// Number of indexed triangles in [surface].
+  int get triangleCount => _bvh.primitiveCount;
 
   Int32List _stack = Int32List(128);
-  Int32List _queryStack = Int32List(128);
-  bool _inQuery = false;
   bool _inRaycast = false;
-
-  static Int32List _growStack(Int32List current, int used) {
-    final grown = Int32List(current.length * 2);
-    grown.setRange(0, used, current);
-    return grown;
-  }
 
   /// Appends indices of triangles in [surface] whose BVH leaf (or individual
   /// triangle bounds when [filterTriangles] is `true`) overlaps [localAabb].
@@ -357,141 +210,39 @@ class SurfaceBvh {
     List<int> outTriangles, {
     bool filterTriangles = false,
   }) {
-    if (nodeCount == 0) {
+    if (_bvh.isEmpty) {
       return outTriangles.length;
     }
-    final qMinX = minX - 1e-5;
-    final qMinY = minY - 1e-5;
-    final qMinZ = minZ - 1e-5;
-    final qMaxX = maxX + 1e-5;
-    final qMaxY = maxY + 1e-5;
-    final qMaxZ = maxZ + 1e-5;
+    const pad = 1e-5;
+    final startLen = outTriangles.length;
+    _bvh.queryAabbExtents(
+      minX,
+      minY,
+      minZ,
+      maxX,
+      maxY,
+      maxZ,
+      outTriangles,
+      padding: pad,
+    );
+    if (!filterTriangles || outTriangles.length == startLen) {
+      return outTriangles.length;
+    }
 
-    final bounds = _bounds;
-    final counts = _counts;
-    final leftOrFirst = _leftOrFirst;
-    final rightChild = _rightChild;
-    final triangles = _triangles;
+    final qMinX = minX - pad;
+    final qMinY = minY - pad;
+    final qMinZ = minZ - pad;
+    final qMaxX = maxX + pad;
+    final qMaxY = maxY + pad;
+    final qMaxZ = maxZ + pad;
 
-    final verts = filterTriangles ? surface.vertexData : null;
-    final indices = filterTriangles ? surface.indices : null;
+    final verts = surface.vertexData;
+    final indices = surface.indices;
     final stride = _stride;
     final posOffset = _positionOffset;
-
-    final reentrant = _inQuery;
-    if (reentrant) {
-      final localStack = <int>[0];
-      while (localStack.isNotEmpty) {
-        final node = localStack.removeLast();
-        final nb = node * 6;
-        if (bounds[nb] > qMaxX ||
-            bounds[nb + 3] < qMinX ||
-            bounds[nb + 1] > qMaxY ||
-            bounds[nb + 4] < qMinY ||
-            bounds[nb + 2] > qMaxZ ||
-            bounds[nb + 5] < qMinZ) {
-          continue;
-        }
-        final cnt = counts[node];
-        if (cnt > 0) {
-          _appendLeafTriangles(
-            leftOrFirst[node],
-            cnt,
-            triangles,
-            outTriangles,
-            verts,
-            indices,
-            stride,
-            posOffset,
-            qMinX,
-            qMinY,
-            qMinZ,
-            qMaxX,
-            qMaxY,
-            qMaxZ,
-          );
-        } else {
-          localStack
-            ..add(rightChild[node])
-            ..add(leftOrFirst[node]);
-        }
-      }
-      return outTriangles.length;
-    }
-
-    _inQuery = true;
-    try {
-      var sp = 0;
-      _queryStack[sp++] = 0;
-      while (sp > 0) {
-        final node = _queryStack[--sp];
-        final nb = node * 6;
-        if (bounds[nb] > qMaxX ||
-            bounds[nb + 3] < qMinX ||
-            bounds[nb + 1] > qMaxY ||
-            bounds[nb + 4] < qMinY ||
-            bounds[nb + 2] > qMaxZ ||
-            bounds[nb + 5] < qMinZ) {
-          continue;
-        }
-        final cnt = counts[node];
-        if (cnt > 0) {
-          _appendLeafTriangles(
-            leftOrFirst[node],
-            cnt,
-            triangles,
-            outTriangles,
-            verts,
-            indices,
-            stride,
-            posOffset,
-            qMinX,
-            qMinY,
-            qMinZ,
-            qMaxX,
-            qMaxY,
-            qMaxZ,
-          );
-        } else {
-          if (sp + 2 > _queryStack.length) {
-            final grown = Int32List(_queryStack.length * 2)
-              ..setRange(0, sp, _queryStack);
-            _queryStack = grown;
-          }
-          _queryStack[sp++] = rightChild[node];
-          _queryStack[sp++] = leftOrFirst[node];
-        }
-      }
-    } finally {
-      _inQuery = false;
-    }
-    return outTriangles.length;
-  }
-
-  static void _appendLeafTriangles(
-    int start,
-    int count,
-    Int32List triangles,
-    List<int> outTriangles,
-    Float32List? verts,
-    List<int>? indices,
-    int stride,
-    int posOffset,
-    double qMinX,
-    double qMinY,
-    double qMinZ,
-    double qMaxX,
-    double qMaxY,
-    double qMaxZ,
-  ) {
-    if (verts == null || indices == null) {
-      for (var i = start; i < start + count; i++) {
-        outTriangles.add(triangles[i]);
-      }
-      return;
-    }
-    for (var i = start; i < start + count; i++) {
-      final tri = triangles[i];
+    var write = startLen;
+    for (var i = startLen; i < outTriangles.length; i++) {
+      final tri = outTriangles[i];
       final b = tri * 3;
       final i0 = indices[b] * stride + posOffset;
       final i1 = indices[b + 1] * stride + posOffset;
@@ -518,8 +269,10 @@ class SurfaceBvh {
           math.max(z0, math.max(z1, z2)) < qMinZ) {
         continue;
       }
-      outTriangles.add(tri);
+      outTriangles[write++] = tri;
     }
+    outTriangles.length = write;
+    return write;
   }
 
   /// Finds the closest intersection of [ray] (in [surface]'s local space)
@@ -533,7 +286,7 @@ class SurfaceBvh {
     double maxDistance = double.infinity,
     CullMode cullMode = CullMode.none,
   }) {
-    if (nodeCount == 0 || maxDistance <= 0) {
+    if (_bvh.isEmpty || maxDistance <= 0) {
       return null;
     }
     final ox = ray.origin.x;
@@ -543,11 +296,15 @@ class SurfaceBvh {
     final dy = ray.direction.y;
     final dz = ray.direction.z;
 
-    if (_rayBoxEntry(0, ox, oy, oz, dx, dy, dz, maxDistance) ==
+    if (_bvh.rayBoxEntry(0, ox, oy, oz, dx, dy, dz, maxDistance) ==
         double.infinity) {
       return null;
     }
 
+    final counts = _bvh.counts;
+    final leftOrFirst = _bvh.leftOrFirst;
+    final rightChild = _bvh.rightChild;
+    final triangles = _bvh.primitives;
     final verts = surface.vertexData;
     final indices = surface.indices;
     final stride = _stride;
@@ -573,16 +330,16 @@ class SurfaceBvh {
     try {
       while (sp > 0) {
         final node = stack[--sp];
-        if (_rayBoxEntry(node, ox, oy, oz, dx, dy, dz, bestT) ==
+        if (_bvh.rayBoxEntry(node, ox, oy, oz, dx, dy, dz, bestT) ==
             double.infinity) {
           continue;
         }
 
-        final count = _counts[node];
+        final count = counts[node];
         if (count > 0) {
-          final start = _leftOrFirst[node];
+          final start = leftOrFirst[node];
           for (var i = start; i < start + count; i++) {
-            final tri = _triangles[i];
+            final tri = triangles[i];
             final b = tri * 3;
             final i0 = indices[b] * stride + posOffset;
             final i1 = indices[b + 1] * stride + posOffset;
@@ -647,12 +404,12 @@ class SurfaceBvh {
             }
           }
         } else {
-          final left = _leftOrFirst[node];
-          final right = _rightChild[node];
-          final tLeft = _rayBoxEntry(left, ox, oy, oz, dx, dy, dz, bestT);
-          final tRight = _rayBoxEntry(right, ox, oy, oz, dx, dy, dz, bestT);
+          final left = leftOrFirst[node];
+          final right = rightChild[node];
+          final tLeft = _bvh.rayBoxEntry(left, ox, oy, oz, dx, dy, dz, bestT);
+          final tRight = _bvh.rayBoxEntry(right, ox, oy, oz, dx, dy, dz, bestT);
           if (sp + 2 > stack.length) {
-            stack = _growStack(stack, sp);
+            stack = StaticBvh3D.growStack(stack, sp);
             if (!reentrant) {
               _stack = stack;
             }
@@ -702,7 +459,7 @@ class SurfaceBvh {
     double maxDistance = double.infinity,
     CullMode cullMode = CullMode.none,
   }) {
-    if (nodeCount == 0 || maxDistance <= 0) {
+    if (_bvh.isEmpty || maxDistance <= 0) {
       return;
     }
     final ox = ray.origin.x;
@@ -712,11 +469,15 @@ class SurfaceBvh {
     final dy = ray.direction.y;
     final dz = ray.direction.z;
 
-    if (_rayBoxEntry(0, ox, oy, oz, dx, dy, dz, maxDistance) ==
+    if (_bvh.rayBoxEntry(0, ox, oy, oz, dx, dy, dz, maxDistance) ==
         double.infinity) {
       return;
     }
 
+    final counts = _bvh.counts;
+    final leftOrFirst = _bvh.leftOrFirst;
+    final rightChild = _bvh.rightChild;
+    final triangles = _bvh.primitives;
     final verts = surface.vertexData;
     final indices = surface.indices;
     final stride = _stride;
@@ -734,16 +495,16 @@ class SurfaceBvh {
     try {
       while (sp > 0) {
         final node = stack[--sp];
-        if (_rayBoxEntry(node, ox, oy, oz, dx, dy, dz, maxDistance) ==
+        if (_bvh.rayBoxEntry(node, ox, oy, oz, dx, dy, dz, maxDistance) ==
             double.infinity) {
           continue;
         }
 
-        final count = _counts[node];
+        final count = counts[node];
         if (count > 0) {
-          final start = _leftOrFirst[node];
+          final start = leftOrFirst[node];
           for (var i = start; i < start + count; i++) {
-            final tri = _triangles[i];
+            final tri = triangles[i];
             final b = tri * 3;
             final i0 = indices[b] * stride + posOffset;
             final i1 = indices[b + 1] * stride + posOffset;
@@ -817,13 +578,13 @@ class SurfaceBvh {
           }
         } else {
           if (sp + 2 > stack.length) {
-            stack = _growStack(stack, sp);
+            stack = StaticBvh3D.growStack(stack, sp);
             if (!reentrant) {
               _stack = stack;
             }
           }
-          stack[sp++] = _rightChild[node];
-          stack[sp++] = _leftOrFirst[node];
+          stack[sp++] = rightChild[node];
+          stack[sp++] = leftOrFirst[node];
         }
       }
     } finally {
@@ -831,104 +592,5 @@ class SurfaceBvh {
         _inRaycast = false;
       }
     }
-  }
-
-  /// Entry parameter `t >= 0` of the ray into [node]'s AABB, or
-  /// `double.infinity` when missed or beyond [maxT].
-  @pragma('vm:prefer-inline')
-  double _rayBoxEntry(
-    int node,
-    double ox,
-    double oy,
-    double oz,
-    double dx,
-    double dy,
-    double dz,
-    double maxT,
-  ) {
-    final b = node * 6;
-    final minX = _bounds[b] - 1e-5;
-    final minY = _bounds[b + 1] - 1e-5;
-    final minZ = _bounds[b + 2] - 1e-5;
-    final maxX = _bounds[b + 3] + 1e-5;
-    final maxY = _bounds[b + 4] + 1e-5;
-    final maxZ = _bounds[b + 5] + 1e-5;
-
-    var tMin = 0.0;
-    var tMax = maxT;
-
-    if (dx.abs() < 1e-12) {
-      if (ox < minX || ox > maxX) {
-        return double.infinity;
-      }
-    } else {
-      final inv = 1.0 / dx;
-      var t1 = (minX - ox) * inv;
-      var t2 = (maxX - ox) * inv;
-      if (t1 > t2) {
-        final s = t1;
-        t1 = t2;
-        t2 = s;
-      }
-      if (t1 > tMin) {
-        tMin = t1;
-      }
-      if (t2 < tMax) {
-        tMax = t2;
-      }
-      if (tMin > tMax) {
-        return double.infinity;
-      }
-    }
-
-    if (dy.abs() < 1e-12) {
-      if (oy < minY || oy > maxY) {
-        return double.infinity;
-      }
-    } else {
-      final inv = 1.0 / dy;
-      var t1 = (minY - oy) * inv;
-      var t2 = (maxY - oy) * inv;
-      if (t1 > t2) {
-        final s = t1;
-        t1 = t2;
-        t2 = s;
-      }
-      if (t1 > tMin) {
-        tMin = t1;
-      }
-      if (t2 < tMax) {
-        tMax = t2;
-      }
-      if (tMin > tMax) {
-        return double.infinity;
-      }
-    }
-
-    if (dz.abs() < 1e-12) {
-      if (oz < minZ || oz > maxZ) {
-        return double.infinity;
-      }
-    } else {
-      final inv = 1.0 / dz;
-      var t1 = (minZ - oz) * inv;
-      var t2 = (maxZ - oz) * inv;
-      if (t1 > t2) {
-        final s = t1;
-        t1 = t2;
-        t2 = s;
-      }
-      if (t1 > tMin) {
-        tMin = t1;
-      }
-      if (t2 < tMax) {
-        tMax = t2;
-      }
-      if (tMin > tMax) {
-        return double.infinity;
-      }
-    }
-
-    return tMin;
   }
 }

@@ -109,6 +109,9 @@ class MutableManifoldBuffer3D() {
   /// Number of stored manifolds in this buffer.
   int get manifoldCount => _manifoldCount;
 
+  /// Total number of stored contact points in this buffer.
+  int get contactCount => _contactCount;
+
   /// Whether zero manifolds are currently stored.
   bool get isEmpty => _manifoldCount == 0;
 
@@ -330,12 +333,180 @@ class MutableManifoldBuffer3D() {
       );
     }
   }
+
+  /// Compacts `[baseManifold .. _manifoldCount)` down to only [keepManifold],
+  /// discarding all sibling manifolds and their contacts added since
+  /// `baseManifold` / `baseContact` without heap allocations.
+  void retainOnlyManifold(int baseManifold, int baseContact, int keepManifold) {
+    final keepStart = _manifoldRanges[keepManifold * 2];
+    final keepLen = _manifoldRanges[keepManifold * 2 + 1];
+    if (keepManifold != baseManifold) {
+      final srcM = keepManifold * 4;
+      final dstM = baseManifold * 4;
+      _manifoldData
+        ..[dstM] = _manifoldData[srcM]
+        ..[dstM + 1] = _manifoldData[srcM + 1]
+        ..[dstM + 2] = _manifoldData[srcM + 2]
+        ..[dstM + 3] = _manifoldData[srcM + 3];
+    }
+    if (keepStart != baseContact) {
+      for (var k = 0; k < keepLen; k++) {
+        final srcC = (keepStart + k) * 7;
+        final dstC = (baseContact + k) * 7;
+        for (var j = 0; j < 7; j++) {
+          _contactData[dstC + j] = _contactData[srcC + j];
+        }
+        _contactFeatures[baseContact + k] = _contactFeatures[keepStart + k];
+      }
+    }
+    final ro = baseManifold * 2;
+    _manifoldRanges
+      ..[ro] = baseContact
+      ..[ro + 1] = keepLen;
+    _manifoldCount = baseManifold + 1;
+    _contactCount = baseContact + keepLen;
+  }
+
+  /// Materializes manifold [manifoldIndex] as an immutable
+  /// [CollisionManifold3D].
+  CollisionManifold3D materializeAt(int manifoldIndex) {
+    final mo = manifoldIndex * 4;
+    final normal = Vector3(
+      _manifoldData[mo],
+      _manifoldData[mo + 1],
+      _manifoldData[mo + 2],
+    );
+    final depth = _manifoldData[mo + 3];
+    final start = contactStart(manifoldIndex);
+    final len = contactLength(manifoldIndex);
+    if (len <= 0) {
+      return CollisionManifold3D(
+        normal: normal,
+        penetrationDepth: depth,
+        contactPointA: Vector3.zero(),
+        contactPointB: Vector3.zero(),
+        contacts: const [],
+      );
+    }
+    if (len == 1) {
+      final co = start * 7;
+      final pa = Vector3(
+        _contactData[co],
+        _contactData[co + 1],
+        _contactData[co + 2],
+      );
+      final pb = Vector3(
+        _contactData[co + 3],
+        _contactData[co + 4],
+        _contactData[co + 5],
+      );
+      return CollisionManifold3D(
+        normal: normal,
+        penetrationDepth: depth,
+        contactPointA: pa,
+        contactPointB: pb,
+        contacts: [
+          ContactPoint3D(
+            pointA: pa,
+            pointB: pb,
+            penetrationDepth: _contactData[co + 6],
+            featureId: _contactFeatures[start],
+          ),
+        ],
+      );
+    }
+    var ax = 0.0;
+    var ay = 0.0;
+    var az = 0.0;
+    var bx = 0.0;
+    var by = 0.0;
+    var bz = 0.0;
+    final contacts = List<ContactPoint3D>.generate(len, (k) {
+      final ci = start + k;
+      final co = ci * 7;
+      final pax = _contactData[co];
+      final pay = _contactData[co + 1];
+      final paz = _contactData[co + 2];
+      final pbx = _contactData[co + 3];
+      final pby = _contactData[co + 4];
+      final pbz = _contactData[co + 5];
+      ax += pax;
+      ay += pay;
+      az += paz;
+      bx += pbx;
+      by += pby;
+      bz += pbz;
+      return ContactPoint3D(
+        pointA: Vector3(pax, pay, paz),
+        pointB: Vector3(pbx, pby, pbz),
+        penetrationDepth: _contactData[co + 6],
+        featureId: _contactFeatures[ci],
+      );
+    }, growable: false);
+    final inv = 1.0 / len;
+    return CollisionManifold3D(
+      normal: normal,
+      penetrationDepth: depth,
+      contactPointA: Vector3(ax * inv, ay * inv, az * inv),
+      contactPointB: Vector3(bx * inv, by * inv, bz * inv),
+      contacts: contacts,
+    );
+  }
+
+  /// Materializes the first manifold, or `null` if the buffer is empty.
+  CollisionManifold3D? materializeFirst() =>
+      _manifoldCount == 0 ? null : materializeAt(0);
+
+  /// Materializes the manifold with greatest depth, or `null` if empty.
+  CollisionManifold3D? materializeDeepest() {
+    if (_manifoldCount == 0) {
+      return null;
+    }
+    var best = 0;
+    var bestDepth = depth(0);
+    for (var m = 1; m < _manifoldCount; m++) {
+      final d = depth(m);
+      if (d > bestDepth) {
+        bestDepth = d;
+        best = m;
+      }
+    }
+    return materializeAt(best);
+  }
+
+  /// Materializes all manifolds in order as a growable list (`const []` if
+  /// empty).
+  List<CollisionManifold3D> materializeAll() {
+    if (_manifoldCount == 0) {
+      return const [];
+    }
+    return [for (var m = 0; m < _manifoldCount; m++) materializeAt(m)];
+  }
 }
 
 /// Narrowphase 3D intersection solver supporting analytical primitives, 15-axis
 /// OBB SAT with Sutherland-Hodgman face clipping, general GJK+EPA convex
 /// hulls, and `O(log T)` [Surface] triangle BVH queries.
 abstract final class Narrowphase3D._() {
+  static final MutableManifoldBuffer3D _publicOutBuf =
+      MutableManifoldBuffer3D();
+  static bool _inPublicQuery = false;
+
+  static MutableManifoldBuffer3D _acquirePublicBuffer() {
+    if (_inPublicQuery) {
+      return MutableManifoldBuffer3D();
+    }
+    _inPublicQuery = true;
+    _publicOutBuf.clear();
+    return _publicOutBuf;
+  }
+
+  static void _releasePublicBuffer(MutableManifoldBuffer3D buf) {
+    if (identical(buf, _publicOutBuf)) {
+      _inPublicQuery = false;
+    }
+  }
+
   /// Computes the [CollisionManifold3D] between [shapeA] at [transformA] and
   /// [shapeB] at [transformB], or `null` when separated.
   static CollisionManifold3D? test(
@@ -344,81 +515,13 @@ abstract final class Narrowphase3D._() {
     Shape3D shapeB,
     Matrix4 transformB,
   ) {
-    return switch ((shapeA, shapeB)) {
-      (final SphereShape3D a, final SphereShape3D b) => sphereSphere(
-        a,
-        transformA,
-        b,
-        transformB,
-      ),
-      (final SphereShape3D a, final CapsuleShape3D b) => sphereCapsule(
-        a,
-        transformA,
-        b,
-        transformB,
-      ),
-      (final CapsuleShape3D a, final SphereShape3D b) => sphereCapsule(
-        b,
-        transformB,
-        a,
-        transformA,
-      )?.flipped(),
-      (final CapsuleShape3D a, final CapsuleShape3D b) => capsuleCapsule(
-        a,
-        transformA,
-        b,
-        transformB,
-      ),
-      (final SphereShape3D a, final BoxShape3D b) => sphereBox(
-        a,
-        transformA,
-        b,
-        transformB,
-      ),
-      (final BoxShape3D a, final SphereShape3D b) => sphereBox(
-        b,
-        transformB,
-        a,
-        transformA,
-      )?.flipped(),
-      (final CapsuleShape3D a, final BoxShape3D b) => capsuleBox(
-        a,
-        transformA,
-        b,
-        transformB,
-      ),
-      (final BoxShape3D a, final CapsuleShape3D b) => capsuleBox(
-        b,
-        transformB,
-        a,
-        transformA,
-      )?.flipped(),
-      (final BoxShape3D a, final BoxShape3D b) => boxBox(
-        a,
-        transformA,
-        b,
-        transformB,
-      ),
-      (final CompoundShape3D a, _) => _pickDeepestMerged(
-        _testCompoundVsShapeAll(a, transformA, shapeB, transformB),
-      ),
-      (_, final CompoundShape3D b) => _pickDeepestMerged(
-        _testCompoundVsShapeAll(b, transformB, shapeA, transformA),
-      )?.flipped(),
-      (final HeightfieldShape3D a, _) => heightfieldShape(
-        shapeB,
-        transformB,
-        a,
-        transformA,
-      )?.flipped(),
-      (_, final HeightfieldShape3D b) => heightfieldShape(
-        shapeA,
-        transformA,
-        b,
-        transformB,
-      ),
-      _ => convexConvex(shapeA, transformA, shapeB, transformB),
-    };
+    final buf = _acquirePublicBuffer();
+    try {
+      testAllInto(shapeA, transformA, shapeB, transformB, buf);
+      return buf.materializeDeepest();
+    } finally {
+      _releasePublicBuffer(buf);
+    }
   }
 
   /// Returns all distinct contact manifolds between [shapeA] (at [transformA])
@@ -431,39 +534,13 @@ abstract final class Narrowphase3D._() {
     Shape3D shapeB,
     Matrix4 transformB,
   ) {
-    if (shapeA is CompoundShape3D) {
-      return _mergeCoDirectionalManifolds(
-        _testCompoundVsShapeAll(shapeA, transformA, shapeB, transformB),
-      );
+    final buf = _acquirePublicBuffer();
+    try {
+      testAllInto(shapeA, transformA, shapeB, transformB, buf);
+      return buf.materializeAll();
+    } finally {
+      _releasePublicBuffer(buf);
     }
-    if (shapeB is CompoundShape3D) {
-      final flippedAll = _testCompoundVsShapeAll(
-        shapeB,
-        transformB,
-        shapeA,
-        transformA,
-      );
-      if (flippedAll.isEmpty) {
-        return const [];
-      }
-      return _mergeCoDirectionalManifolds([
-        for (final m in flippedAll) m.flipped(),
-      ]);
-    }
-    if (shapeA is HeightfieldShape3D) {
-      final raw = heightfieldShapeAll(shapeB, transformB, shapeA, transformA);
-      if (raw.isEmpty) {
-        return const [];
-      }
-      return _mergeCoDirectionalManifolds([for (final m in raw) m.flipped()]);
-    }
-    if (shapeB is HeightfieldShape3D) {
-      return _mergeCoDirectionalManifolds(
-        heightfieldShapeAll(shapeA, transformA, shapeB, transformB),
-      );
-    }
-    final single = test(shapeA, transformA, shapeB, transformB);
-    return single == null ? const [] : [single];
   }
 
   /// Zero-allocation narrowphase entry point writing all distinct contact
@@ -478,55 +555,45 @@ abstract final class Narrowphase3D._() {
     MutableManifoldBuffer3D out,
   ) {
     if (shapeA is CompoundShape3D) {
-      _rawManifoldBuf.clear();
-      _collectCompoundRawInto(
-        shapeA,
-        transformA,
-        shapeB,
-        transformB,
-        _rawManifoldBuf,
-        0,
-      );
-      _mergeCoDirectionalInto(_rawManifoldBuf, out);
+      final raw = _acquireRawManifoldBuf();
+      try {
+        _collectCompoundRawInto(shapeA, transformA, shapeB, transformB, raw, 0);
+        _mergeCoDirectionalInto(raw, out);
+      } finally {
+        _releaseRawManifoldBuf(raw);
+      }
       return;
     }
     if (shapeB is CompoundShape3D) {
-      _rawManifoldBuf.clear();
-      _collectCompoundRawInto(
-        shapeB,
-        transformB,
-        shapeA,
-        transformA,
-        _rawManifoldBuf,
-        0,
-      );
-      _rawManifoldBuf.flipManifoldsFrom(0);
-      _mergeCoDirectionalInto(_rawManifoldBuf, out);
+      final raw = _acquireRawManifoldBuf();
+      try {
+        _collectCompoundRawInto(shapeB, transformB, shapeA, transformA, raw, 0);
+        raw.flipManifoldsFrom(0);
+        _mergeCoDirectionalInto(raw, out);
+      } finally {
+        _releaseRawManifoldBuf(raw);
+      }
       return;
     }
     if (shapeA is HeightfieldShape3D) {
-      _rawManifoldBuf.clear();
-      _heightfieldShapeRawInto(
-        shapeB,
-        transformB,
-        shapeA,
-        transformA,
-        _rawManifoldBuf,
-      );
-      _rawManifoldBuf.flipManifoldsFrom(0);
-      _mergeCoDirectionalInto(_rawManifoldBuf, out);
+      final raw = _acquireRawManifoldBuf();
+      try {
+        _heightfieldShapeRawInto(shapeB, transformB, shapeA, transformA, raw);
+        raw.flipManifoldsFrom(0);
+        _mergeCoDirectionalInto(raw, out);
+      } finally {
+        _releaseRawManifoldBuf(raw);
+      }
       return;
     }
     if (shapeB is HeightfieldShape3D) {
-      _rawManifoldBuf.clear();
-      _heightfieldShapeRawInto(
-        shapeA,
-        transformA,
-        shapeB,
-        transformB,
-        _rawManifoldBuf,
-      );
-      _mergeCoDirectionalInto(_rawManifoldBuf, out);
+      final raw = _acquireRawManifoldBuf();
+      try {
+        _heightfieldShapeRawInto(shapeA, transformA, shapeB, transformB, raw);
+        _mergeCoDirectionalInto(raw, out);
+      } finally {
+        _releaseRawManifoldBuf(raw);
+      }
       return;
     }
     _primitiveOrConvexInto(shapeA, transformA, shapeB, transformB, out);
@@ -541,47 +608,13 @@ abstract final class Narrowphase3D._() {
   ) {
     switch ((shapeA, shapeB)) {
       case (final SphereShape3D a, final SphereShape3D b):
-        final mA = transformA.storage;
-        final mB = transformB.storage;
-        _pushSphereSphereInto(
-          mA[12],
-          mA[13],
-          mA[14],
-          a.worldRadius(transformA),
-          mB[12],
-          mB[13],
-          mB[14],
-          b.worldRadius(transformB),
-          out,
-          flip: false,
-        );
+        _sphereSphereInto(a, transformA, b, transformB, out);
       case (final SphereShape3D a, final CapsuleShape3D b):
         _sphereCapsuleInto(a, transformA, b, transformB, out, flip: false);
       case (final CapsuleShape3D a, final SphereShape3D b):
         _sphereCapsuleInto(b, transformB, a, transformA, out, flip: true);
       case (final CapsuleShape3D a, final CapsuleShape3D b):
-        final rA = a.worldSpine(transformA, _segA0, _segA1);
-        final rB = b.worldSpine(transformB, _segB0, _segB1);
-        _closestPointsSegmentSegment(
-          _segA0,
-          _segA1,
-          _segB0,
-          _segB1,
-          _ptA,
-          _ptB,
-        );
-        _pushSphereSphereInto(
-          _ptA.x,
-          _ptA.y,
-          _ptA.z,
-          rA,
-          _ptB.x,
-          _ptB.y,
-          _ptB.z,
-          rB,
-          out,
-          flip: false,
-        );
+        _capsuleCapsuleInto(a, transformA, b, transformB, out);
       case (final SphereShape3D a, final BoxShape3D b):
         _sphereBoxInto(a, transformA, b, transformB, out, flip: false);
       case (final BoxShape3D a, final SphereShape3D b):
@@ -603,7 +636,15 @@ abstract final class Narrowphase3D._() {
     Matrix4 transformA,
     SphereShape3D b,
     Matrix4 transformB,
-  ) => _npSphereSphere(a, transformA, b, transformB);
+  ) {
+    final buf = _acquirePublicBuffer();
+    try {
+      _sphereSphereInto(a, transformA, b, transformB, buf);
+      return buf.materializeFirst();
+    } finally {
+      _releasePublicBuffer(buf);
+    }
+  }
 
   /// Exact Sphere-Capsule narrowphase (`a`: sphere, `b`: capsule).
   static CollisionManifold3D? sphereCapsule(
@@ -611,7 +652,15 @@ abstract final class Narrowphase3D._() {
     Matrix4 transformA,
     CapsuleShape3D b,
     Matrix4 transformB,
-  ) => _npSphereCapsule(a, transformA, b, transformB);
+  ) {
+    final buf = _acquirePublicBuffer();
+    try {
+      _sphereCapsuleInto(a, transformA, b, transformB, buf, flip: false);
+      return buf.materializeFirst();
+    } finally {
+      _releasePublicBuffer(buf);
+    }
+  }
 
   /// Exact Capsule-Capsule narrowphase via segment-segment closest points.
   static CollisionManifold3D? capsuleCapsule(
@@ -619,7 +668,15 @@ abstract final class Narrowphase3D._() {
     Matrix4 transformA,
     CapsuleShape3D b,
     Matrix4 transformB,
-  ) => _npCapsuleCapsule(a, transformA, b, transformB);
+  ) {
+    final buf = _acquirePublicBuffer();
+    try {
+      _capsuleCapsuleInto(a, transformA, b, transformB, buf);
+      return buf.materializeFirst();
+    } finally {
+      _releasePublicBuffer(buf);
+    }
+  }
 
   /// Exact Sphere-Box (OBB) narrowphase.
   static CollisionManifold3D? sphereBox(
@@ -627,7 +684,15 @@ abstract final class Narrowphase3D._() {
     Matrix4 transformA,
     BoxShape3D b,
     Matrix4 transformB,
-  ) => _npSphereBox(a, transformA, b, transformB);
+  ) {
+    final buf = _acquirePublicBuffer();
+    try {
+      _sphereBoxInto(a, transformA, b, transformB, buf, flip: false);
+      return buf.materializeFirst();
+    } finally {
+      _releasePublicBuffer(buf);
+    }
+  }
 
   /// Exact Capsule-Box (OBB) narrowphase via segment-to-OBB distance.
   static CollisionManifold3D? capsuleBox(
@@ -635,7 +700,15 @@ abstract final class Narrowphase3D._() {
     Matrix4 transformA,
     BoxShape3D b,
     Matrix4 transformB,
-  ) => _npCapsuleBox(a, transformA, b, transformB);
+  ) {
+    final buf = _acquirePublicBuffer();
+    try {
+      _capsuleBoxInto(a, transformA, b, transformB, buf, flip: false);
+      return buf.materializeFirst();
+    } finally {
+      _releasePublicBuffer(buf);
+    }
+  }
 
   /// Exact SAT Box-Box narrowphase (face-face clipping + edge-edge contacts).
   static CollisionManifold3D? boxBox(
@@ -643,7 +716,15 @@ abstract final class Narrowphase3D._() {
     Matrix4 transformA,
     BoxShape3D b,
     Matrix4 transformB,
-  ) => _npBoxBox(a, transformA, b, transformB);
+  ) {
+    final buf = _acquirePublicBuffer();
+    try {
+      _boxBoxInto(a, transformA, b, transformB, buf);
+      return buf.materializeFirst();
+    } finally {
+      _releasePublicBuffer(buf);
+    }
+  }
 
   /// General Convex-Convex narrowphase using GJK + EPA.
   static CollisionManifold3D? convexConvex(
@@ -651,7 +732,15 @@ abstract final class Narrowphase3D._() {
     Matrix4 transformA,
     Shape3D shapeB,
     Matrix4 transformB,
-  ) => _npConvexConvex(shapeA, transformA, shapeB, transformB);
+  ) {
+    final buf = _acquirePublicBuffer();
+    try {
+      _convexConvexInto(shapeA, transformA, shapeB, transformB, buf);
+      return buf.materializeFirst();
+    } finally {
+      _releasePublicBuffer(buf);
+    }
+  }
 
   /// Deepest contact manifold between [shape] and static triangles in
   /// [surface].
@@ -660,12 +749,21 @@ abstract final class Narrowphase3D._() {
     Matrix4 shapeTransform,
     Surface surface,
     Matrix4 meshTransform,
-  ) => _npIntersectShapeWithSurfaceBvh(
-    shape,
-    shapeTransform,
-    surface,
-    meshTransform,
-  );
+  ) {
+    final buf = _acquirePublicBuffer();
+    try {
+      _intersectShapeWithSurfaceBvhRawInto(
+        shape,
+        shapeTransform,
+        surface,
+        meshTransform,
+        buf,
+      );
+      return buf.materializeDeepest();
+    } finally {
+      _releasePublicBuffer(buf);
+    }
+  }
 
   /// All colliding manifolds between [shape] and triangles in [surface].
   static List<CollisionManifold3D> intersectShapeWithSurfaceBvhAll(
@@ -673,12 +771,21 @@ abstract final class Narrowphase3D._() {
     Matrix4 shapeTransform,
     Surface surface,
     Matrix4 meshTransform,
-  ) => _npIntersectShapeWithSurfaceBvhAll(
-    shape,
-    shapeTransform,
-    surface,
-    meshTransform,
-  );
+  ) {
+    final buf = _acquirePublicBuffer();
+    try {
+      _intersectShapeWithSurfaceBvhRawInto(
+        shape,
+        shapeTransform,
+        surface,
+        meshTransform,
+        buf,
+      );
+      return buf.materializeAll();
+    } finally {
+      _releasePublicBuffer(buf);
+    }
+  }
 
   /// Deepest contact manifold between [shape] and [heightfield].
   static CollisionManifold3D? heightfieldShape(
@@ -686,12 +793,7 @@ abstract final class Narrowphase3D._() {
     Matrix4 shapeTransform,
     HeightfieldShape3D heightfield,
     Matrix4 heightfieldTransform,
-  ) => _npHeightfieldShape(
-    shape,
-    shapeTransform,
-    heightfield,
-    heightfieldTransform,
-  );
+  ) => test(shape, shapeTransform, heightfield, heightfieldTransform);
 
   /// All contact manifolds between [shape] and triangles of [heightfield].
   static List<CollisionManifold3D> heightfieldShapeAll(
@@ -699,12 +801,21 @@ abstract final class Narrowphase3D._() {
     Matrix4 shapeTransform,
     HeightfieldShape3D heightfield,
     Matrix4 heightfieldTransform,
-  ) => _npHeightfieldShapeAll(
-    shape,
-    shapeTransform,
-    heightfield,
-    heightfieldTransform,
-  );
+  ) {
+    final buf = _acquirePublicBuffer();
+    try {
+      _heightfieldShapeRawInto(
+        shape,
+        shapeTransform,
+        heightfield,
+        heightfieldTransform,
+        buf,
+      );
+      return buf.materializeAll();
+    } finally {
+      _releasePublicBuffer(buf);
+    }
+  }
 
   /// Computes contact manifold between [shape] and world-space triangle
   /// `(v0, v1, v2)`.
@@ -714,15 +825,20 @@ abstract final class Narrowphase3D._() {
     Vector3 v0,
     Vector3 v1,
     Vector3 v2,
-  ) => _npIntersectShapeWithTriangle(shape, shapeTransform, v0, v1, v2);
-
-  // Supporting-face contact manifolds (box and hull faces).
-
-  /// Largest separation (in world units) at which a clipped face point is
-  /// still reported (with a penetration depth of `0`): points of a face that
-  /// is about to touch stay in the manifold instead of flickering in and out.
-
-  /// Minimum cosine (about 5.7 degrees) between the contact normal and the
-  /// better aligned of the two supporting faces for a face contact. Below it
-  /// the contact is edge against edge and keeps a single point.
+  ) {
+    final buf = _acquirePublicBuffer();
+    try {
+      _intersectShapeWithTriangleInto(
+        shape,
+        shapeTransform,
+        v0,
+        v1,
+        v2,
+        buf,
+      );
+      return buf.materializeFirst();
+    } finally {
+      _releasePublicBuffer(buf);
+    }
+  }
 }
