@@ -499,6 +499,10 @@ class World3D({
     markSceneDirty(shadows: false);
   }
 
+  /// Diagnostic string describing why the last frame missed or invalidated
+  /// `staticSceneCache` (null when the last rendered frame hit).
+  String? get staticSceneCacheMissReason => _staticCache.lastMissReason;
+
   /// Rasterizes registered occluders of [occlusionCuller] once per unique
   /// main-camera view-projection and frame before traversal.
   @internal

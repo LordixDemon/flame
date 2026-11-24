@@ -63,7 +63,7 @@ class MaterialTracker() {
     final materials = _materials;
     for (var i = 0; i < _count; i++) {
       if (_staticFlags[i]) {
-        sum += materials[i]!.version;
+        sum += materials[i]!.version - materials[i]!.animationVersion;
       }
     }
     return sum;
@@ -114,7 +114,7 @@ class MaterialTracker() {
       final version = material.version;
       before += version;
       if (_staticFlags[i]) {
-        beforeStatic += version;
+        beforeStatic += version - material.animationVersion;
       }
       final changes = version - _versions[i];
       if (changes == 0) {
@@ -134,7 +134,7 @@ class MaterialTracker() {
       final nextVersion = _nextVersions[i];
       drawn += nextVersion;
       if (_nextStaticFlags[i]) {
-        drawnStatic += nextVersion;
+        drawnStatic += nextVersion - _nextAnimations[i];
       }
       if (_nextMaterials[i]!.animated) {
         declared++;

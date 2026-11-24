@@ -257,11 +257,15 @@ void main() {
           expect(windBox.mayHaveDynamicDescendant, isTrue);
           expect(staticDraws, 1);
           expect(windDraws, 1);
+          final staticVerAfterF1 = world.staticSceneVersion;
 
           // Advance windTime only: static cache stays hot and skips staticBox.
           windMat.windTime = 1.5;
+          expect(world.staticSceneVersion, staticVerAfterF1);
           final f2 = renderPass(world, record: recordScene);
+          expect(world.staticSceneCacheMissReason, isNull);
           expect(f2.staticCacheHits, 1);
+          expect(world.staticSceneVersion, staticVerAfterF1);
           expect(staticDraws, 1);
           expect(windDraws, 2);
 

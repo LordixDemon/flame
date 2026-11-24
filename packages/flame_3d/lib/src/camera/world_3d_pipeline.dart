@@ -430,25 +430,24 @@ extension _World3DPipeline on World3D {
             cacheSettings.projectMovingShadows &&
             renderContext.stillShadowTexture != null &&
             _hasUnsettledStaticCasters();
-        final shouldPopulate =
-            _staticCache.advanceWarmup(
-              deviceGeneration: GpuBackend.deviceGeneration,
-              width: width,
-              height: height,
-              msaaSampleCount: msaaSampleCount,
-              sceneFormat: sceneFormat,
-              clearArgb: clearValue.toARGB32(),
-              hdrEnabled: nextHdr,
-              renderDebugMode: _renderDebugMode3D,
-              cameraMask: renderContext.cameraMask,
-              depthLayersSig: depthLayersSig,
-              projectMovingShadows: cacheSettings.projectMovingShadows,
-              staticKey: staticKey,
-              stillShadowVersion: stillShadowVer,
-              vp: vpStorage,
-              stillFrames: cacheSettings.stillFrames,
-            ) &&
-            !unsettledShadows;
+        final warmed = _staticCache.advanceWarmup(
+          deviceGeneration: GpuBackend.deviceGeneration,
+          width: width,
+          height: height,
+          msaaSampleCount: msaaSampleCount,
+          sceneFormat: sceneFormat,
+          clearArgb: clearValue.toARGB32(),
+          hdrEnabled: nextHdr,
+          renderDebugMode: _renderDebugMode3D,
+          cameraMask: renderContext.cameraMask,
+          depthLayersSig: depthLayersSig,
+          projectMovingShadows: cacheSettings.projectMovingShadows,
+          staticKey: staticKey,
+          stillShadowVersion: stillShadowVer,
+          vp: vpStorage,
+          stillFrames: cacheSettings.stillFrames,
+        );
+        final shouldPopulate = warmed && !unsettledShadows;
         final prevHdr = _pipelineHdrOverride;
         _pipelineHdrOverride = nextHdr;
         renderContext.trackDynamicSubtrees = shouldPopulate;
@@ -464,7 +463,20 @@ extension _World3DPipeline on World3D {
             _oitMode == OitMode3D.weightedBlended &&
             device.backend.supportsPixelFormat(GpuPixelFormat.rgbaFloat16) &&
             renderContext.hasTranslucentDraws;
-        if (shouldPopulate && !needsGrab && !needsWboit) {
+        if (unsettledShadows) {
+          _staticCache.lastMissReason =
+              'unsettledShadows(${_unsettledStaticCasterName()})';
+        } else if (!warmed) {
+          _staticCache.lastMissReason =
+              'warmup(${_staticCache._stillCount}/'
+              '${cacheSettings.stillFrames}, '
+              'reset=${_staticCache.lastCandidateResetReason})';
+        } else if (needsGrab) {
+          _staticCache.lastMissReason = 'needsGrab';
+        } else if (needsWboit) {
+          _staticCache.lastMissReason = 'needsWboit';
+        } else if (shouldPopulate) {
+          _staticCache.lastMissReason = 'populated';
           if (renderContext.hdrEnabled != nextHdr) {
             renderContext
               ..hdrEnabled = nextHdr
@@ -976,6 +988,8 @@ class _StaticSceneCacheState() {
 
   bool populated = false;
   bool hasStaticDraws = false;
+  String? lastMissReason;
+  String? lastCandidateResetReason;
 
   final List<Material> staticMaterials = [];
   final List<int> staticMaterialVersions = [];
@@ -995,6 +1009,8 @@ class _StaticSceneCacheState() {
   void invalidate() {
     populated = false;
     _stillCount = 0;
+    lastMissReason = null;
+    lastCandidateResetReason = null;
     staticMaterials.clear();
     staticMaterialVersions.clear();
   }
@@ -1002,6 +1018,8 @@ class _StaticSceneCacheState() {
   void resetWarmup() {
     populated = false;
     _stillCount = 0;
+    lastMissReason = null;
+    lastCandidateResetReason = null;
   }
 
   void dispose() {
@@ -1012,6 +1030,78 @@ class _StaticSceneCacheState() {
     depthTexture = null;
     _targetW = 0;
     _targetH = 0;
+  }
+
+  String? _firstMismatchReason({
+    required int prevDeviceGeneration,
+    required int deviceGeneration,
+    required int prevWidth,
+    required int width,
+    required int prevHeight,
+    required int height,
+    required int prevMsaa,
+    required int msaaSampleCount,
+    required GpuPixelFormat prevFormat,
+    required GpuPixelFormat sceneFormat,
+    required int prevClear,
+    required int clearArgb,
+    required bool prevHdr,
+    required bool hdrEnabled,
+    required RenderDebugMode3D prevDebug,
+    required RenderDebugMode3D renderDebugMode,
+    required int prevMask,
+    required int cameraMask,
+    required int prevDepthLayers,
+    required int depthLayersSig,
+    required bool prevMovingShadows,
+    required bool projectMovingShadows,
+    required int prevStaticKey,
+    required int staticKey,
+    required int prevStillShadow,
+    required int stillShadowVersion,
+    required Float32List prevVp,
+    required Float32List vp,
+  }) {
+    if (prevDeviceGeneration != deviceGeneration) {
+      return 'deviceGen';
+    }
+    if (prevWidth != width || prevHeight != height) {
+      return 'size';
+    }
+    if (prevMsaa != msaaSampleCount) {
+      return 'msaa';
+    }
+    if (prevFormat != sceneFormat) {
+      return 'format';
+    }
+    if (prevClear != clearArgb) {
+      return 'clear';
+    }
+    if (prevHdr != hdrEnabled) {
+      return 'hdr';
+    }
+    if (prevDebug != renderDebugMode) {
+      return 'debug';
+    }
+    if (prevMask != cameraMask) {
+      return 'cameraMask';
+    }
+    if (prevDepthLayers != depthLayersSig) {
+      return 'depthLayers';
+    }
+    if (prevMovingShadows != projectMovingShadows) {
+      return 'movingShadows';
+    }
+    if (prevStaticKey != staticKey) {
+      return 'staticKey';
+    }
+    if (prevStillShadow != stillShadowVersion) {
+      return 'stillShadow';
+    }
+    if (!sameMatrix16(vp, prevVp)) {
+      return 'vp';
+    }
+    return null;
   }
 
   bool matchesHit({
@@ -1031,31 +1121,52 @@ class _StaticSceneCacheState() {
     required Float32List vp,
   }) {
     if (!populated) {
+      lastMissReason = 'notPopulated';
       return false;
     }
-    if (_deviceGeneration != deviceGeneration ||
-        _width != width ||
-        _height != height ||
-        _msaaSampleCount != msaaSampleCount ||
-        _sceneFormat != sceneFormat ||
-        _clearArgb != clearArgb ||
-        _hdrEnabled != hdrEnabled ||
-        _renderDebugMode != renderDebugMode ||
-        _cameraMask != cameraMask ||
-        _depthLayersSig != depthLayersSig ||
-        _projectMovingShadows != projectMovingShadows ||
-        _staticKey != staticKey ||
-        _stillShadowVersion != stillShadowVersion ||
-        !sameMatrix16(vp, _vp)) {
+    final fieldMismatch = _firstMismatchReason(
+      prevDeviceGeneration: _deviceGeneration,
+      deviceGeneration: deviceGeneration,
+      prevWidth: _width,
+      width: width,
+      prevHeight: _height,
+      height: height,
+      prevMsaa: _msaaSampleCount,
+      msaaSampleCount: msaaSampleCount,
+      prevFormat: _sceneFormat,
+      sceneFormat: sceneFormat,
+      prevClear: _clearArgb,
+      clearArgb: clearArgb,
+      prevHdr: _hdrEnabled,
+      hdrEnabled: hdrEnabled,
+      prevDebug: _renderDebugMode,
+      renderDebugMode: renderDebugMode,
+      prevMask: _cameraMask,
+      cameraMask: cameraMask,
+      prevDepthLayers: _depthLayersSig,
+      depthLayersSig: depthLayersSig,
+      prevMovingShadows: _projectMovingShadows,
+      projectMovingShadows: projectMovingShadows,
+      prevStaticKey: _staticKey,
+      staticKey: staticKey,
+      prevStillShadow: _stillShadowVersion,
+      stillShadowVersion: stillShadowVersion,
+      prevVp: _vp,
+      vp: vp,
+    );
+    if (fieldMismatch != null) {
+      lastMissReason = fieldMismatch;
       return false;
     }
     for (var i = 0; i < staticMaterials.length; i++) {
       final mat = staticMaterials[i];
       if (mat.isStaticCacheDynamic ||
           (mat.version - mat.animationVersion) != staticMaterialVersions[i]) {
+        lastMissReason = 'material(${mat.runtimeType})';
         return false;
       }
     }
+    lastMissReason = null;
     return true;
   }
 
@@ -1077,26 +1188,44 @@ class _StaticSceneCacheState() {
     required int stillFrames,
   }) {
     populated = false;
-    final sameCandidate =
-        _stillCount > 0 &&
-        _candDeviceGeneration == deviceGeneration &&
-        _candWidth == width &&
-        _candHeight == height &&
-        _candMsaaSampleCount == msaaSampleCount &&
-        _candSceneFormat == sceneFormat &&
-        _candClearArgb == clearArgb &&
-        _candHdrEnabled == hdrEnabled &&
-        _candRenderDebugMode == renderDebugMode &&
-        _candCameraMask == cameraMask &&
-        _candDepthLayersSig == depthLayersSig &&
-        _candProjectMovingShadows == projectMovingShadows &&
-        _candStaticKey == staticKey &&
-        _candStillShadowVersion == stillShadowVersion &&
-        sameMatrix16(vp, _candVp);
+    final candMismatch = _stillCount > 0
+        ? _firstMismatchReason(
+            prevDeviceGeneration: _candDeviceGeneration,
+            deviceGeneration: deviceGeneration,
+            prevWidth: _candWidth,
+            width: width,
+            prevHeight: _candHeight,
+            height: height,
+            prevMsaa: _candMsaaSampleCount,
+            msaaSampleCount: msaaSampleCount,
+            prevFormat: _candSceneFormat,
+            sceneFormat: sceneFormat,
+            prevClear: _candClearArgb,
+            clearArgb: clearArgb,
+            prevHdr: _candHdrEnabled,
+            hdrEnabled: hdrEnabled,
+            prevDebug: _candRenderDebugMode,
+            renderDebugMode: renderDebugMode,
+            prevMask: _candCameraMask,
+            cameraMask: cameraMask,
+            prevDepthLayers: _candDepthLayersSig,
+            depthLayersSig: depthLayersSig,
+            prevMovingShadows: _candProjectMovingShadows,
+            projectMovingShadows: projectMovingShadows,
+            prevStaticKey: _candStaticKey,
+            staticKey: staticKey,
+            prevStillShadow: _candStillShadowVersion,
+            stillShadowVersion: stillShadowVersion,
+            prevVp: _candVp,
+            vp: vp,
+          )
+        : 'initial';
 
-    if (sameCandidate) {
+    if (candMismatch == null) {
       _stillCount++;
+      lastCandidateResetReason = null;
     } else {
+      lastCandidateResetReason = candMismatch;
       _stillCount = 1;
       _candDeviceGeneration = deviceGeneration;
       _candWidth = width;
@@ -1208,6 +1337,52 @@ extension _WorldStaticCacheBounds on World3D {
       }
     }
     return false;
+  }
+
+  String _unsettledStaticCasterName() {
+    String? findIn(ShadowCasterTracker tracker) {
+      final movers = tracker.movers;
+      for (var i = 0; i < movers.length; i++) {
+        final c = movers[i];
+        if (c.shadowMotion == ShadowCasterMotion.auto &&
+            c.castsShadows &&
+            c.isEffectivelyVisible &&
+            c.affectsStaticSceneCache) {
+          var p = c.parent;
+          var dynamicAnc = false;
+          while (p is Component3D) {
+            if (!p.affectsStaticSceneCache) {
+              dynamicAnc = true;
+              break;
+            }
+            p = p.parent;
+          }
+          if (!dynamicAnc) {
+            return c.runtimeType.toString();
+          }
+        }
+      }
+      return null;
+    }
+
+    final own = findIn(_versions.shadowCasters);
+    if (own != null) {
+      return own;
+    }
+    final group = shadowGroup;
+    if (group != null) {
+      final worlds = group.worlds;
+      for (var i = 0; i < worlds.length; i++) {
+        final member = worlds[i];
+        if (!identical(member, this)) {
+          final found = findIn(member._versions.shadowCasters);
+          if (found != null) {
+            return found;
+          }
+        }
+      }
+    }
+    return 'none';
   }
 
   void _computeMovingShadowBounds(RenderContext3D ctx, Vector4 out) {
