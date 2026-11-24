@@ -312,6 +312,97 @@ void main() {
         expect(casters.hasUnsettledStaticCasters, isTrue);
       },
     );
+
+    test(
+      'bypasses static scene cache when backend.supportsFragDepth is false',
+      () {
+        final noFragDepthBackend = FakeGpuBackend(
+          textureTargets: true,
+          fragDepth: false,
+        );
+        final noDepthDevice = GraphicsDevice(backend: noFragDepthBackend);
+        final noDepthContext = RenderContext3D(noDepthDevice)
+          ..setCamera(Matrix4.identity(), perspective);
+        final staticMesh = CuboidMesh(
+          size: Vector3.all(1),
+          material: StylizedMaterial(
+            albedoColor: const Color(0xFFCC4444),
+            windAmplitude: 0,
+          ),
+        );
+        final world = World3D(
+          staticSceneCache: StaticSceneCacheSettings(stillFrames: 1),
+        );
+
+        void record() {
+          noDepthContext.drawMesh(
+            staticMesh,
+            transform: Matrix4.translationValues(0, 0, -5),
+          );
+        }
+
+        for (var i = 0; i < 3; i++) {
+          noDepthContext.setCamera(Matrix4.identity(), perspective);
+          noDepthDevice.begin();
+          world
+              .executeWorldRenderPipeline(
+                device: noDepthDevice,
+                renderContext: noDepthContext,
+                width: 64,
+                height: 64,
+                msaaSampleCount: 1,
+                clearValue: const Color(0x00000000),
+                recordDraws: record,
+              )
+              .dispose();
+          noDepthDevice.end();
+          final stats = noDepthDevice.lastFrameStats;
+          expect(stats.staticCacheHits, 0);
+          expect(stats.staticCacheMisses, 0);
+          expect(stats.drawCalls, 1);
+        }
+      },
+    );
+
+    test(
+      'GpuDeviceCapabilities.supportsOpenGlEs3 parses GL_VERSION safely',
+      () {
+        expect(
+          const GpuDeviceCapabilities(
+            api: GpuGraphicsApi.openGLES,
+            version: 'OpenGL ES 3.1 (4.5.0 NVIDIA 616.56)',
+          ).supportsOpenGlEs3,
+          isTrue,
+        );
+        expect(
+          const GpuDeviceCapabilities(
+            api: GpuGraphicsApi.openGLES,
+            version: 'OpenGL ES 3.2 v1.r32p1',
+          ).supportsOpenGlEs3,
+          isTrue,
+        );
+        expect(
+          const GpuDeviceCapabilities(
+            api: GpuGraphicsApi.openGLES,
+            version: 'OpenGL ES 2.0 build 1.10',
+          ).supportsOpenGlEs3,
+          isFalse,
+        );
+        expect(
+          const GpuDeviceCapabilities(
+            api: GpuGraphicsApi.openGLES,
+          ).supportsOpenGlEs3,
+          isFalse,
+        );
+        expect(
+          const GpuDeviceCapabilities(
+            api: GpuGraphicsApi.vulkan,
+            version: 'OpenGL ES 3.1',
+          ).supportsOpenGlEs3,
+          isFalse,
+        );
+      },
+    );
   });
 }
 

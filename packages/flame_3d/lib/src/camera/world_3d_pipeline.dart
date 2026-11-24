@@ -359,6 +359,7 @@ extension _World3DPipeline on World3D {
         cacheSettings != null &&
         cacheSettings.enabled &&
         supportsTexTargets &&
+        device.backend.supportsFragDepth &&
         renderContext.staticCacheShadersAvailable &&
         !_grabSceneColorEnabled &&
         !hasBeforeCustom &&

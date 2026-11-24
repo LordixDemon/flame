@@ -191,6 +191,9 @@ abstract base class GpuBackend() {
   /// natively preserve [target]'s color pixels without an external copy pass.
   bool supportsNativeKeepContents(GpuTextureTarget target) => false;
 
+  /// Whether fragment shaders on this backend may write `gl_FragDepth`.
+  bool get supportsFragDepth => true;
+
   /// Creates a [GpuTextureTarget] of [width]x[height] whose passes render
   /// into a texture of [format] that later passes sample, cleared to
   /// [clearValue] (and its depth to the far plane) at the start of each pass.

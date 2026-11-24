@@ -113,6 +113,26 @@ class const GpuDeviceCapabilities({
   /// Capabilities of a backend that detected nothing: no limit is checked.
   static const GpuDeviceCapabilities unknown = GpuDeviceCapabilities();
 
+  static final RegExp _glesVersionPattern = RegExp(
+    r'OpenGL ES(?:-CM)?\s+(\d+)\.(\d+)',
+  );
+
+  /// Whether an OpenGL ES device reports OpenGL ES 3.0 or newer (`GL_VERSION`).
+  bool get supportsOpenGlEs3 {
+    if (api != GpuGraphicsApi.openGLES) {
+      return false;
+    }
+    final v = version;
+    if (v == null) {
+      return false;
+    }
+    final match = _glesVersionPattern.firstMatch(v);
+    if (match == null) {
+      return false;
+    }
+    return (int.tryParse(match.group(1)!) ?? 0) >= 3;
+  }
+
   /// Whether the driver reported [extension].
   bool hasExtension(String extension) => extensions.contains(extension);
 

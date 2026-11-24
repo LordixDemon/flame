@@ -25,10 +25,15 @@ Future<void> build(
   final engineShaderLib = impellerC.resolve('./shader_lib/').toFilePath();
 
   for (final name in names) {
+    final fragPath = '${shaders.path}${Platform.pathSeparator}$name.frag';
+    final fragFile = File(fragPath);
+    final needsGles3 =
+        fragFile.existsSync() &&
+        fragFile.readAsStringSync().contains('gl_FragDepth');
     final bundle = {
       'TextureFragment': {
         'type': 'fragment',
-        'file': '${shaders.path}${Platform.pathSeparator}$name.frag',
+        'file': fragPath,
       },
       'TextureVertex': {
         'type': 'vertex',
@@ -40,6 +45,7 @@ Future<void> build(
     final result = await Process.run(impellerC.toFilePath(), [
       '--sl=${assets.path}${Platform.pathSeparator}$name.shaderbundle',
       '--shader-bundle=${jsonEncode(bundle)}',
+      if (needsGles3) '--gles-language-version=300',
       '--include=${shaders.path}',
       for (final dir in packageShaderDirs) '--include=${dir.path}',
       '--include=$engineShaderLib',

@@ -595,6 +595,10 @@ base class GpuBackend({gpu.GpuContext? gpuContext}) extends base.GpuBackend {
   bool supportsNativeKeepContents(GpuTextureTarget target) => false;
 
   @override
+  bool get supportsFragDepth =>
+      api != GpuGraphicsApi.openGLES || capabilities.supportsOpenGlEs3;
+
+  @override
   GpuTextureTarget createTextureTarget({
     required int width,
     required int height,

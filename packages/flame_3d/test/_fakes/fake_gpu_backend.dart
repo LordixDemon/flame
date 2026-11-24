@@ -27,6 +27,10 @@ final class FakeGpuBackend({
   /// Whether its texture targets can be 16/32-bit floats.
   final bool floatTextureTargets = true,
 
+  /// Whether fragment shaders may write `gl_FragDepth`,
+  /// see [supportsFragDepth].
+  final bool fragDepth = true,
+
   /// Maximum sampler anisotropy reported by [maxSamplerAnisotropy].
   final int maxAnisotropy = 16,
 
@@ -244,6 +248,9 @@ final class FakeGpuBackend({
 
   @override
   bool get supportsFloatTextureTargets => floatTextureTargets;
+
+  @override
+  bool get supportsFragDepth => fragDepth;
 
   /// Every texture target created, as (width, height, format).
   final List<(int, int, GpuPixelFormat)> textureTargetsCreated = [];
