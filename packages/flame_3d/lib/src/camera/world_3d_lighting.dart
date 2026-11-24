@@ -92,7 +92,9 @@ class _WorldLightRegistry() {
 class _WorldVersionState() {
   int ownSceneVersion = 0;
   int ownCastersVersion = 0;
+  int ownStaticVersion = 0;
   int settingsOffset = 0;
+  int staticSettingsOffset = 0;
   int animationTicks = 0;
 
   final MaterialTracker drawnMaterials = MaterialTracker();
@@ -131,8 +133,10 @@ extension _World3DLighting on World3D {
   /// the setter marks the scene dirty.
   void _replaceSetting(void Function() assign) {
     final before = _settingsVersion;
+    final beforeStatic = _staticSettingsVersion;
     assign();
     _versions.settingsOffset += before - _settingsVersion;
+    _versions.staticSettingsOffset += beforeStatic - _staticSettingsVersion;
   }
 
   Game? _resolveGame() {

@@ -3,6 +3,7 @@ export 'src/resources/light.dart';
 export 'src/resources/material.dart';
 export 'src/resources/mesh.dart';
 export 'src/resources/resource.dart';
+export 'src/resources/scene_cache_settings.dart';
 export 'src/resources/shader.dart';
 export 'src/resources/texture.dart';
 export 'src/resources/texture/texture_cache.dart';

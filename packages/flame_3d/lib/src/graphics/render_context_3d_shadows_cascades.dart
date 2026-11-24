@@ -174,11 +174,28 @@ extension _ShadowPassCascades on _ShadowPass {
         _target = live;
         _texture = layers.liveTexture;
       }
+      activeStillTexture =
+          !atlasPath && layers.views.isNotEmpty && layers.views[0].valid
+          ? layers.views[0].texture
+          : null;
       active = true;
       atlasActive = atlasPath;
       _mapIsAtlas = atlasPath;
       RenderProfile.switchPass(RenderPhase.shadowSetup, shadow: false);
       return false;
+    }
+
+    if (atlasPath) {
+      activeStillTexture = null;
+      stillVersion++;
+    } else if (_viewKinds[0] == _ShadowPass._stepStill) {
+      activeStillTexture = layers.views[0].texture;
+      stillVersion++;
+    } else if (_viewKinds[0] == _ShadowPass._stepOver) {
+      activeStillTexture = layers.views[0].texture;
+    } else {
+      activeStillTexture = null;
+      stillVersion++;
     }
 
     // The layers to render again, then the map.

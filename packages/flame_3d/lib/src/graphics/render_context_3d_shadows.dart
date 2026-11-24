@@ -132,6 +132,9 @@ class _ShadowPass(final RenderContext3D _context) {
   // The shadow map, as the texture bound to the receivers.
   GpuTextureTarget? _target;
   Texture? _texture;
+  Texture? _shadowMapOverride;
+  Texture? activeStillTexture;
+  int stillVersion = 0;
   final Expando<_StaticShadowMap> _staticMaps = Expando();
   final Expando<_StaticShadowAtlas> _staticAtlases = Expando();
 
@@ -569,6 +572,10 @@ class _ShadowPass(final RenderContext3D _context) {
       );
     }
     _stillLayers[projection] = null;
+    if (activeStillTexture != null) {
+      activeStillTexture = null;
+      stillVersion++;
+    }
 
     if (settings.cacheWhenStatic && castersKey != null) {
       final cached = _staticMaps[projection];
@@ -795,6 +802,10 @@ class _ShadowPass(final RenderContext3D _context) {
   }
 
   bool _none() {
+    if (activeStillTexture != null) {
+      activeStillTexture = null;
+      stillVersion++;
+    }
     RenderProfile.switchPass(RenderPhase.shadowSetup, shadow: false);
     return false;
   }
@@ -864,6 +875,10 @@ class _ShadowPass(final RenderContext3D _context) {
 
   static Texture shadowMapTexture(RenderContext3D context) {
     final shadows = context._shadows;
+    final override = shadows._shadowMapOverride;
+    if (override != null) {
+      return override;
+    }
     return shadows.active ? shadows._texture! : Texture.standard;
   }
 

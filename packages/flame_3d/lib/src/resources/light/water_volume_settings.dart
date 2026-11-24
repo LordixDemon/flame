@@ -80,6 +80,18 @@ class WaterVolumeSettings({
     _up.addListener(markChanged);
   }
 
+  int _staticVersion = 0;
+
+  /// A number that increases whenever any setting of this volume other than
+  /// animation [time] changes.
+  int get staticVersion => _staticVersion;
+
+  @override
+  void markChanged() {
+    _staticVersion++;
+    super.markChanged();
+  }
+
   /// The height of the water's surface along [up], in world units.
   double get level => _level;
   set level(double value) => _level = noteChange(_level, value);
@@ -126,7 +138,12 @@ class WaterVolumeSettings({
   /// The time of the caustics and the waterline foam, to advance every
   /// frame, in seconds (keep it equal to the water's `WaterMaterial.time`).
   double get time => _time;
-  set time(double value) => _time = noteChange(_time, value);
+  set time(double value) {
+    if (_time != value) {
+      super.markChanged();
+    }
+    _time = value;
+  }
 
   /// The width of the band of foam around the level on the surfaces that
   /// cross it, in world units: `0` (the default) turns it off.

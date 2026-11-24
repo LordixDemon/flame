@@ -288,13 +288,17 @@ extension _World3DPipeline on World3D {
     final ctx = overrideContext ?? context;
     syncContextOptions(ctx);
     prepareOcclusionCuller(ctx);
-    if (_visibility.consumeReusableVisible(ctx, sceneVersion)) {
+    if (!ctx.trackDynamicSubtrees &&
+        _visibility.consumeReusableVisible(ctx, sceneVersion)) {
       _rendering = true;
       final prevLayer = ctx.activeDepthLayer;
       try {
         final visible = _visibility.visibleObjects;
         for (var i = 0; i < visible.length; i++) {
           final obj = visible[i];
+          if (ctx.skipStaticDraws && !obj.mayHaveDynamicDescendant) {
+            continue;
+          }
           ctx.activeDepthLayer = obj.resolvedDepthLayer;
           obj.draw(ctx);
         }
@@ -338,29 +342,211 @@ extension _World3DPipeline on World3D {
       }
     }
 
-    final prevHdr = _pipelineHdrOverride;
-    _pipelineHdrOverride = nextHdr;
-    try {
-      recordDraws();
-    } finally {
-      _pipelineHdrOverride = prevHdr;
-    }
-
     final supportsTexTargets = device.backend.supportsTextureTargets;
     final sceneFormat =
         _hdrEnabled &&
             device.backend.supportsPixelFormat(GpuPixelFormat.rgbaFloat16)
         ? GpuPixelFormat.rgbaFloat16
         : GpuPixelFormat.rgba8888;
+    final cacheSettings = _staticSceneCache;
+    final hasBeforeCustom = customPasses.any(
+      (c) => c.enabled && c.stage == CustomRenderPassStage3D.beforeScene,
+    );
+    final hasAfterCustom = customPasses.any(
+      (c) => c.enabled && c.stage == CustomRenderPassStage3D.afterScene,
+    );
+    final staticCacheCandidate =
+        cacheSettings != null &&
+        cacheSettings.enabled &&
+        supportsTexTargets &&
+        renderContext.staticCacheShadersAvailable &&
+        !_grabSceneColorEnabled &&
+        !hasBeforeCustom &&
+        !hasAfterCustom;
+
+    var useStaticRestore = false;
+    var projectMovingShadows = false;
+    var layer0Near = 0.0;
+    var layer0Far = 1.0;
+
+    if (staticCacheCandidate) {
+      final layers = _depthLayers;
+      if (layers != null && layers.isNotEmpty) {
+        for (var i = 0; i < layers.length; i++) {
+          if (layers[i].index == 0) {
+            layer0Near = layers[i].zNear;
+            layer0Far = layers[i].zFar;
+            break;
+          }
+        }
+      }
+      final staticKey =
+          _versions.ownStaticVersion +
+          _versions.staticSettingsOffset +
+          _staticSettingsVersion +
+          Material.castsShadowsRevision +
+          Material.assignmentRevision +
+          GpuBackend.renderEpoch +
+          lightsVersion +
+          (_lighting.lightsFrom?._lighting.lightsVersion ?? 0);
+      final stillShadowVer =
+          cacheSettings.projectMovingShadows &&
+              renderContext.stillShadowTexture != null
+          ? renderContext.stillShadowVersion
+          : renderContext.shadowMapVersion;
+      final vpStorage = renderContext.viewProjection.storage;
+      final depthLayersSig = _depthLayersSignature(layers);
+
+      if (_staticCache.matchesHit(
+        deviceGeneration: GpuBackend.deviceGeneration,
+        width: width,
+        height: height,
+        msaaSampleCount: msaaSampleCount,
+        sceneFormat: sceneFormat,
+        clearArgb: clearValue.toARGB32(),
+        hdrEnabled: nextHdr,
+        renderDebugMode: _renderDebugMode3D,
+        cameraMask: renderContext.cameraMask,
+        depthLayersSig: depthLayersSig,
+        projectMovingShadows: cacheSettings.projectMovingShadows,
+        staticKey: staticKey,
+        stillShadowVersion: stillShadowVer,
+        vp: vpStorage,
+      )) {
+        device.stats.staticCacheHits++;
+        useStaticRestore = true;
+        final prevHdr = _pipelineHdrOverride;
+        _pipelineHdrOverride = nextHdr;
+        renderContext.skipStaticDraws = true;
+        try {
+          recordDraws();
+        } finally {
+          renderContext.skipStaticDraws = false;
+          _pipelineHdrOverride = prevHdr;
+        }
+      } else {
+        device.stats.staticCacheMisses++;
+        final shouldPopulate = _staticCache.advanceWarmup(
+          deviceGeneration: GpuBackend.deviceGeneration,
+          width: width,
+          height: height,
+          msaaSampleCount: msaaSampleCount,
+          sceneFormat: sceneFormat,
+          clearArgb: clearValue.toARGB32(),
+          hdrEnabled: nextHdr,
+          renderDebugMode: _renderDebugMode3D,
+          cameraMask: renderContext.cameraMask,
+          depthLayersSig: depthLayersSig,
+          projectMovingShadows: cacheSettings.projectMovingShadows,
+          staticKey: staticKey,
+          stillShadowVersion: stillShadowVer,
+          vp: vpStorage,
+          stillFrames: cacheSettings.stillFrames,
+        );
+        final prevHdr = _pipelineHdrOverride;
+        _pipelineHdrOverride = nextHdr;
+        renderContext.trackDynamicSubtrees = shouldPopulate;
+        try {
+          recordDraws();
+        } finally {
+          renderContext.trackDynamicSubtrees = false;
+          _pipelineHdrOverride = prevHdr;
+        }
+        final needsGrab =
+            _grabSceneColorEnabled || renderContext.hasRefractiveDraws;
+        final needsWboit =
+            _oitMode == OitMode3D.weightedBlended &&
+            device.backend.supportsPixelFormat(GpuPixelFormat.rgbaFloat16) &&
+            renderContext.hasTranslucentDraws;
+        if (shouldPopulate && !needsGrab && !needsWboit) {
+          if (renderContext.hdrEnabled != nextHdr) {
+            renderContext
+              ..hdrEnabled = nextHdr
+              ..bumpPassOptionsUniforms();
+          }
+          renderContext.collectStaticMaterials(
+            _staticCache.staticMaterials,
+            _staticCache.staticMaterialVersions,
+          );
+          final hasStatic = renderContext.hasStaticDraws;
+          _staticCache.hasStaticDraws = hasStatic;
+          if (hasStatic) {
+            final targets = _staticCache.ensureTargets(
+              device: device,
+              width: width,
+              height: height,
+              sceneFormat: sceneFormat,
+              clearValue: clearValue,
+              msaaSampleCount: msaaSampleCount,
+            );
+            final stillTex = cacheSettings.projectMovingShadows
+                ? renderContext.stillShadowTexture
+                : null;
+            if (stillTex != null) {
+              renderContext.setStaticShadowOverride(stillTex);
+            }
+            try {
+              device.beginTexturePass(
+                targets.colorTarget,
+                frontFace: renderContext.frontFace,
+              );
+              renderContext.flushStaticColorOnly(releaseAfter: false);
+              device.endTexturePass();
+            } finally {
+              if (stillTex != null) {
+                renderContext.setStaticShadowOverride(null);
+              }
+            }
+            device.beginTexturePass(
+              targets.depthTarget,
+              frontFace: renderContext.frontFace,
+            );
+            renderContext.flushStaticDepthOnly();
+            device.endTexturePass();
+            _staticCache.populated = true;
+            useStaticRestore = true;
+          } else {
+            _staticCache.populated = true;
+          }
+        }
+      }
+    } else {
+      _staticCache.resetWarmup();
+      final prevHdr = _pipelineHdrOverride;
+      _pipelineHdrOverride = nextHdr;
+      try {
+        recordDraws();
+      } finally {
+        _pipelineHdrOverride = prevHdr;
+      }
+    }
     if (renderContext.hdrEnabled != nextHdr) {
       renderContext
         ..hdrEnabled = nextHdr
         ..bumpPassOptionsUniforms();
     }
+    if (useStaticRestore) {
+      projectMovingShadows =
+          cacheSettings!.projectMovingShadows &&
+          renderContext.isSingleDirectionalShadowActive &&
+          renderContext.stillShadowTexture != null &&
+          !identical(
+            renderContext.stillShadowTexture,
+            renderContext.activeShadowMapTexture,
+          );
+      if (projectMovingShadows) {
+        _computeMovingShadowBounds(
+          renderContext,
+          _staticCache.movingBounds,
+        );
+      }
+    }
     final runGrab =
+        !useStaticRestore &&
         supportsTexTargets &&
         (_grabSceneColorEnabled || renderContext.hasRefractiveDraws);
     final runWboit =
+        !useStaticRestore &&
         supportsTexTargets &&
         _oitMode == OitMode3D.weightedBlended &&
         device.backend.supportsPixelFormat(GpuPixelFormat.rgbaFloat16) &&
@@ -497,7 +683,21 @@ extension _World3DPipeline on World3D {
         msaaSampleCount: msaaSampleCount,
       );
       device.beginTexturePass(texTarget, frontFace: renderContext.frontFace);
-      renderContext.flush();
+      if (useStaticRestore) {
+        if (_staticCache.hasStaticDraws) {
+          renderContext.drawStaticRestore(
+            staticColor: _staticCache.colorTexture!,
+            staticDepth: _staticCache.depthTexture!,
+            zNear: layer0Near,
+            zFar: layer0Far,
+            projectMovingShadows: projectMovingShadows,
+            movingBounds: _staticCache.movingBounds,
+          );
+        }
+        renderContext.flushDynamicOnly(releaseAfter: true);
+      } else {
+        renderContext.flush();
+      }
       device.endTexturePass();
 
       _runAfterSceneCustomPasses(
@@ -532,7 +732,21 @@ extension _World3DPipeline on World3D {
         frontFace: renderContext.frontFace,
       );
     }
-    renderContext.flush();
+    if (useStaticRestore) {
+      if (_staticCache.hasStaticDraws) {
+        renderContext.drawStaticRestore(
+          staticColor: _staticCache.colorTexture!,
+          staticDepth: _staticCache.depthTexture!,
+          zNear: layer0Near,
+          zFar: layer0Far,
+          projectMovingShadows: projectMovingShadows,
+          movingBounds: _staticCache.movingBounds,
+        );
+      }
+      renderContext.flushDynamicOnly(releaseAfter: true);
+    } else {
+      renderContext.flush();
+    }
     renderContext.clearActiveSceneColorTarget();
     return device.endPass();
   }
@@ -708,4 +922,331 @@ enum _SceneTarget() {
 
   /// The revealage of order-independent transparency.
   oitRevealage,
+}
+
+int _depthLayersSignature(List<DepthLayer3D>? layers) {
+  if (layers == null || layers.isEmpty) {
+    return 0;
+  }
+  var sig = layers.length;
+  for (var i = 0; i < layers.length; i++) {
+    final l = layers[i];
+    sig = Object.hash(sig, l.index, l.zNear, l.zFar, l.applyWaterVolume);
+  }
+  return sig;
+}
+
+class _StaticSceneCacheState() {
+  int _deviceGeneration = -1;
+  int _width = 0;
+  int _height = 0;
+  int _msaaSampleCount = 0;
+  GpuPixelFormat _sceneFormat = GpuPixelFormat.rgba8888;
+  int _clearArgb = 0;
+  bool _hdrEnabled = false;
+  RenderDebugMode3D _renderDebugMode = RenderDebugMode3D.none;
+  int _cameraMask = 0;
+  int _depthLayersSig = 0;
+  bool _projectMovingShadows = true;
+  int _staticKey = -1;
+  int _stillShadowVersion = -1;
+  final Float32List _vp = Float32List(16);
+
+  int _candDeviceGeneration = -1;
+  int _candWidth = 0;
+  int _candHeight = 0;
+  int _candMsaaSampleCount = 0;
+  GpuPixelFormat _candSceneFormat = GpuPixelFormat.rgba8888;
+  int _candClearArgb = 0;
+  bool _candHdrEnabled = false;
+  RenderDebugMode3D _candRenderDebugMode = RenderDebugMode3D.none;
+  int _candCameraMask = 0;
+  int _candDepthLayersSig = 0;
+  bool _candProjectMovingShadows = true;
+  int _candStaticKey = -1;
+  int _candStillShadowVersion = -1;
+  final Float32List _candVp = Float32List(16);
+  int _stillCount = 0;
+
+  bool populated = false;
+  bool hasStaticDraws = false;
+
+  final List<Material> staticMaterials = [];
+  final List<int> staticMaterialVersions = [];
+  final Vector4 movingBounds = Vector4(2, 2, -1, -1);
+
+  GpuTextureTarget? colorTarget;
+  GpuTextureTarget? depthTarget;
+  Texture? colorTexture;
+  Texture? depthTexture;
+  int _targetGen = -1;
+  int _targetW = 0;
+  int _targetH = 0;
+  int _targetMsaa = 0;
+  GpuPixelFormat _targetFormat = GpuPixelFormat.rgba8888;
+  int _targetClearArgb = 0;
+
+  void invalidate() {
+    populated = false;
+    _stillCount = 0;
+    staticMaterials.clear();
+    staticMaterialVersions.clear();
+  }
+
+  void resetWarmup() {
+    populated = false;
+    _stillCount = 0;
+  }
+
+  void dispose() {
+    invalidate();
+    colorTarget = null;
+    depthTarget = null;
+    colorTexture = null;
+    depthTexture = null;
+    _targetW = 0;
+    _targetH = 0;
+  }
+
+  bool matchesHit({
+    required int deviceGeneration,
+    required int width,
+    required int height,
+    required int msaaSampleCount,
+    required GpuPixelFormat sceneFormat,
+    required int clearArgb,
+    required bool hdrEnabled,
+    required RenderDebugMode3D renderDebugMode,
+    required int cameraMask,
+    required int depthLayersSig,
+    required bool projectMovingShadows,
+    required int staticKey,
+    required int stillShadowVersion,
+    required Float32List vp,
+  }) {
+    if (!populated) {
+      return false;
+    }
+    if (_deviceGeneration != deviceGeneration ||
+        _width != width ||
+        _height != height ||
+        _msaaSampleCount != msaaSampleCount ||
+        _sceneFormat != sceneFormat ||
+        _clearArgb != clearArgb ||
+        _hdrEnabled != hdrEnabled ||
+        _renderDebugMode != renderDebugMode ||
+        _cameraMask != cameraMask ||
+        _depthLayersSig != depthLayersSig ||
+        _projectMovingShadows != projectMovingShadows ||
+        _staticKey != staticKey ||
+        _stillShadowVersion != stillShadowVersion ||
+        !sameMatrix16(vp, _vp)) {
+      return false;
+    }
+    for (var i = 0; i < staticMaterials.length; i++) {
+      final mat = staticMaterials[i];
+      if (mat.isStaticCacheDynamic ||
+          mat.version != staticMaterialVersions[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool advanceWarmup({
+    required int deviceGeneration,
+    required int width,
+    required int height,
+    required int msaaSampleCount,
+    required GpuPixelFormat sceneFormat,
+    required int clearArgb,
+    required bool hdrEnabled,
+    required RenderDebugMode3D renderDebugMode,
+    required int cameraMask,
+    required int depthLayersSig,
+    required bool projectMovingShadows,
+    required int staticKey,
+    required int stillShadowVersion,
+    required Float32List vp,
+    required int stillFrames,
+  }) {
+    populated = false;
+    final sameCandidate =
+        _stillCount > 0 &&
+        _candDeviceGeneration == deviceGeneration &&
+        _candWidth == width &&
+        _candHeight == height &&
+        _candMsaaSampleCount == msaaSampleCount &&
+        _candSceneFormat == sceneFormat &&
+        _candClearArgb == clearArgb &&
+        _candHdrEnabled == hdrEnabled &&
+        _candRenderDebugMode == renderDebugMode &&
+        _candCameraMask == cameraMask &&
+        _candDepthLayersSig == depthLayersSig &&
+        _candProjectMovingShadows == projectMovingShadows &&
+        _candStaticKey == staticKey &&
+        _candStillShadowVersion == stillShadowVersion &&
+        sameMatrix16(vp, _candVp);
+
+    if (sameCandidate) {
+      _stillCount++;
+    } else {
+      _stillCount = 1;
+      _candDeviceGeneration = deviceGeneration;
+      _candWidth = width;
+      _candHeight = height;
+      _candMsaaSampleCount = msaaSampleCount;
+      _candSceneFormat = sceneFormat;
+      _candClearArgb = clearArgb;
+      _candHdrEnabled = hdrEnabled;
+      _candRenderDebugMode = renderDebugMode;
+      _candCameraMask = cameraMask;
+      _candDepthLayersSig = depthLayersSig;
+      _candProjectMovingShadows = projectMovingShadows;
+      _candStaticKey = staticKey;
+      _candStillShadowVersion = stillShadowVersion;
+      _candVp.setAll(0, vp);
+    }
+
+    if (_stillCount < stillFrames) {
+      return false;
+    }
+
+    _deviceGeneration = deviceGeneration;
+    _width = width;
+    _height = height;
+    _msaaSampleCount = msaaSampleCount;
+    _sceneFormat = sceneFormat;
+    _clearArgb = clearArgb;
+    _hdrEnabled = hdrEnabled;
+    _renderDebugMode = renderDebugMode;
+    _cameraMask = cameraMask;
+    _depthLayersSig = depthLayersSig;
+    _projectMovingShadows = projectMovingShadows;
+    _staticKey = staticKey;
+    _stillShadowVersion = stillShadowVersion;
+    _vp.setAll(0, vp);
+    return true;
+  }
+
+  ({GpuTextureTarget colorTarget, GpuTextureTarget depthTarget}) ensureTargets({
+    required GraphicsDevice device,
+    required int width,
+    required int height,
+    required GpuPixelFormat sceneFormat,
+    required Color clearValue,
+    required int msaaSampleCount,
+  }) {
+    final gen = GpuBackend.deviceGeneration;
+    final clearArgb = clearValue.toARGB32();
+    if (colorTarget != null &&
+        depthTarget != null &&
+        _targetGen == gen &&
+        _targetW == width &&
+        _targetH == height &&
+        _targetMsaa == msaaSampleCount &&
+        _targetFormat == sceneFormat &&
+        _targetClearArgb == clearArgb) {
+      return (colorTarget: colorTarget!, depthTarget: depthTarget!);
+    }
+    final ct = colorTarget = device.backend.createTextureTarget(
+      width: width,
+      height: height,
+      format: sceneFormat,
+      clearValue: clearValue,
+      msaaSampleCount: msaaSampleCount,
+    );
+    final dt = depthTarget = device.backend.createTextureTarget(
+      width: width,
+      height: height,
+      format: GpuPixelFormat.rgba8888,
+      clearValue: const Color(0x00FFFFFF),
+    );
+    colorTexture = Texture(
+      null,
+      width: width,
+      height: height,
+      gpuTexture: ct.texture,
+    );
+    depthTexture = Texture(
+      null,
+      width: width,
+      height: height,
+      gpuTexture: dt.texture,
+    );
+    _targetGen = gen;
+    _targetW = width;
+    _targetH = height;
+    _targetMsaa = msaaSampleCount;
+    _targetFormat = sceneFormat;
+    _targetClearArgb = clearArgb;
+    return (colorTarget: ct, depthTarget: dt);
+  }
+}
+
+extension _WorldStaticCacheBounds on World3D {
+  void _computeMovingShadowBounds(RenderContext3D ctx, Vector4 out) {
+    final casters = _versions.shadowCasters;
+    if (!casters.moversComplete) {
+      out.setValues(0.0, 0.0, 1.0, 1.0);
+      return;
+    }
+    final movers = casters.movers;
+    if (movers.isEmpty) {
+      out.setValues(2.0, 2.0, -1.0, -1.0);
+      return;
+    }
+    final lp = ctx.shadowLightViewProjection.storage;
+    final passMask = ctx.cameraMask;
+    var minU = double.infinity;
+    var minV = double.infinity;
+    var maxU = double.negativeInfinity;
+    var maxV = double.negativeInfinity;
+    for (var i = 0; i < movers.length; i++) {
+      final obj = movers[i];
+      if (!obj.castsShadows ||
+          !obj.isEffectivelyVisible ||
+          !World3D._passesCameraMaskHierarchy(obj, passMask)) {
+        continue;
+      }
+      final b = obj.aabb;
+      final bMin = b.min;
+      final bMax = b.max;
+      for (var c = 0; c < 8; c++) {
+        final x = (c & 1) == 0 ? bMin.x : bMax.x;
+        final y = (c & 2) == 0 ? bMin.y : bMax.y;
+        final z = (c & 4) == 0 ? bMin.z : bMax.z;
+        final cx = lp[0] * x + lp[4] * y + lp[8] * z + lp[12];
+        final cy = lp[1] * x + lp[5] * y + lp[9] * z + lp[13];
+        final cw = lp[3] * x + lp[7] * y + lp[11] * z + lp[15];
+        final invW = cw.abs() > 1e-6 ? 1.0 / cw : 1.0;
+        final u = 0.5 + 0.5 * (cx * invW);
+        final v = 0.5 - 0.5 * (cy * invW);
+        if (u < minU) {
+          minU = u;
+        }
+        if (v < minV) {
+          minV = v;
+        }
+        if (u > maxU) {
+          maxU = u;
+        }
+        if (v > maxV) {
+          maxV = v;
+        }
+      }
+    }
+    if (!minU.isFinite) {
+      out.setValues(2.0, 2.0, -1.0, -1.0);
+      return;
+    }
+    final pad =
+        (ctx.shadowFilterRadius.clamp(0.0, 3.0) + 1.5) * ctx.shadowMapInvSize;
+    out.setValues(
+      (minU - pad).clamp(0.0, 1.0),
+      (minV - pad).clamp(0.0, 1.0),
+      (maxU + pad).clamp(0.0, 1.0),
+      (maxV + pad).clamp(0.0, 1.0),
+    );
+  }
 }

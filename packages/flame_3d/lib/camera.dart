@@ -16,3 +16,5 @@ export 'src/camera/spring_arm_camera_3d.dart';
 export 'src/camera/third_person_camera.dart';
 export 'src/camera/world_3d.dart';
 export 'src/components/ray_hit_3d.dart';
+export 'src/resources/scene_cache_settings.dart'
+    show SceneCacheMotion, StaticSceneCacheSettings;

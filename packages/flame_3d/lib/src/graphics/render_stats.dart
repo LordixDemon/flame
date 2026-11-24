@@ -83,6 +83,15 @@ class RenderStats() {
   /// bound material changed.
   int updatedMaterials = 0;
 
+  /// The number of frames where the world reused its cached static scene
+  /// color and depth targets (`World3D.staticSceneCache`).
+  int staticCacheHits = 0;
+
+  /// The number of frames where the world populated or bypassed its static
+  /// scene cache and rendered static geometry directly
+  /// (`World3D.staticSceneCache`).
+  int staticCacheMisses = 0;
+
   /// The number of the materials a render drew that animate: those whose
   /// animation time (`WaterMaterial.time`, `BarrierMaterial.time`,
   /// `StylizedMaterial.windTime`, ...) advanced, and nothing else, since the
@@ -115,6 +124,8 @@ class RenderStats() {
     shadowReusedTriangles = 0;
     updatedMaterials = 0;
     animatedMaterials = 0;
+    staticCacheHits = 0;
+    staticCacheMisses = 0;
   }
 
   /// Copies every counter from [other].
@@ -138,6 +149,8 @@ class RenderStats() {
     shadowReusedTriangles = other.shadowReusedTriangles;
     updatedMaterials = other.updatedMaterials;
     animatedMaterials = other.animatedMaterials;
+    staticCacheHits = other.staticCacheHits;
+    staticCacheMisses = other.staticCacheMisses;
   }
 
   /// Stores `after - before` for every counter into `this`.
@@ -165,6 +178,8 @@ class RenderStats() {
         after.shadowReusedTriangles - before.shadowReusedTriangles;
     updatedMaterials = after.updatedMaterials - before.updatedMaterials;
     animatedMaterials = after.animatedMaterials - before.animatedMaterials;
+    staticCacheHits = after.staticCacheHits - before.staticCacheHits;
+    staticCacheMisses = after.staticCacheMisses - before.staticCacheMisses;
   }
 
   @override
@@ -181,6 +196,8 @@ class RenderStats() {
         'shadowReusedDrawCalls: $shadowReusedDrawCalls, '
         'shadowReusedTriangles: $shadowReusedTriangles, '
         'updatedMaterials: $updatedMaterials, '
-        'animatedMaterials: $animatedMaterials)';
+        'animatedMaterials: $animatedMaterials, '
+        'staticCacheHits: $staticCacheHits, '
+        'staticCacheMisses: $staticCacheMisses)';
   }
 }

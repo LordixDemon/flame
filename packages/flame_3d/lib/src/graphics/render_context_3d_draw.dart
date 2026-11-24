@@ -571,4 +571,178 @@ extension _RenderContext3DDraw on RenderContext3D {
       ..drawSurface(surface, instanceCount: count);
     RenderProfile.lap(RenderPhase.draw);
   }
+
+  bool get _hasStaticDraws {
+    final isStatic = _queue.isStatic;
+    final count = _queue.count;
+    for (var i = 0; i < count; i++) {
+      if (isStatic[i] == 1) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void _collectStaticMaterials(
+    List<Material> outMaterials,
+    List<int> outVersions,
+  ) {
+    outMaterials.clear();
+    outVersions.clear();
+    final queue = _queue;
+    final count = queue.count;
+    final isStatic = queue.isStatic;
+    final materials = queue.materials;
+    for (var i = 0; i < count; i++) {
+      if (isStatic[i] != 1) {
+        continue;
+      }
+      final mat = materials[i]!;
+      var seen = false;
+      for (var k = 0; k < outMaterials.length; k++) {
+        if (identical(outMaterials[k], mat)) {
+          seen = true;
+          break;
+        }
+      }
+      if (!seen) {
+        outMaterials.add(mat);
+        outVersions.add(mat.version);
+      }
+    }
+  }
+
+  void _flushFiltered({
+    required int staticFlag,
+    required bool releaseAfter,
+  }) {
+    final queue = _queue;
+    final count = queue.count;
+    final isStatic = queue.isStatic;
+    final groupKeysHi = queue.groupKeysHi;
+    final groupKeysLo = queue.groupKeysLo;
+    final surfaceKeys = queue.surfaceKeys;
+    final sortDepths = queue.sortDepths;
+    final layers = depthLayers;
+
+    void submitFiltered({int? filterLayer}) {
+      var oCount = 0;
+      var tCount = 0;
+      for (var i = 0; i < count; i++) {
+        if (isStatic[i] != staticFlag) {
+          continue;
+        }
+        if (filterLayer != null && queue.depthLayers[i] != filterLayer) {
+          continue;
+        }
+        final material = queue.materials[i]!;
+        if (material.renderState.translucent) {
+          queue.translucent[tCount++] = i;
+          groupKeysHi[i] = material.translucentOrder;
+          groupKeysLo[i] = 0;
+          surfaceKeys[i] = 0;
+          sortDepths[i] = -queue.depths[i];
+        } else {
+          queue.opaque[oCount++] = i;
+          groupKeysHi[i] = queue.pipelines[i]!.id;
+          groupKeysLo[i] = (material.id << 1) | queue.mirrored[i];
+          surfaceKeys[i] =
+              queue.surfaces[i]!.id * 2 + (queue.joints[i] == null ? 0 : 1);
+          sortDepths[i] = queue.depths[i];
+        }
+      }
+      if (oCount == 0 && tCount == 0) {
+        return;
+      }
+      if (oCount > 1) {
+        queue.sort(
+          queue.opaque,
+          oCount,
+          sortByProbe: _probeSelector.anyProbeDraw,
+        );
+      }
+      if (tCount > 1) {
+        queue.sort(queue.translucent, tCount);
+      }
+      _submitBatches(queue.opaque, oCount);
+      _submitTranslucentBatches(queue.translucent, tCount);
+    }
+
+    _boundMaterial = null;
+    _bindingEpoch = -1;
+    _depthPrepassOverride = false;
+
+    if (layers == null || layers.isEmpty) {
+      submitFiltered();
+    } else {
+      final savedWaterVolume = waterVolume;
+      final targetW = device.renderTarget.width;
+      final targetH = device.renderTarget.height;
+      var restoredViewport = false;
+      var anySubmitted = false;
+      try {
+        for (var l = 0; l < layers.length; l++) {
+          final layer = layers[l];
+          final layerIndex = layer.index;
+          if (staticFlag == 1 && layerIndex != 0) {
+            continue;
+          }
+          var anyInLayer = false;
+          for (var i = 0; i < count; i++) {
+            if (isStatic[i] == staticFlag &&
+                queue.depthLayers[i] == layerIndex) {
+              anyInLayer = true;
+              break;
+            }
+          }
+          if (!anyInLayer) {
+            continue;
+          }
+          device.setViewport(
+            0,
+            0,
+            targetW,
+            targetH,
+            zNear: layer.zNear,
+            zFar: layer.zFar,
+          );
+          if (layer.zNear != 0.0 || layer.zFar != 1.0) {
+            restoredViewport = true;
+          }
+          final targetWater = layer.applyWaterVolume ? savedWaterVolume : null;
+          final waterChanged = !identical(waterVolume, targetWater);
+          if (waterChanged) {
+            waterVolume = targetWater;
+            _passRegistry.bumpWaterVolume(++_nextPassEpoch);
+          }
+          if (!anySubmitted || waterChanged) {
+            _boundMaterial = null;
+            _bindingEpoch = -1;
+          }
+          _depthPrepassOverride = false;
+          anySubmitted = true;
+          submitFiltered(filterLayer: layerIndex);
+        }
+      } finally {
+        if (!identical(waterVolume, savedWaterVolume)) {
+          waterVolume = savedWaterVolume;
+          _passRegistry.bumpWaterVolume(++_nextPassEpoch);
+        }
+        if (restoredViewport) {
+          device.setViewport(0, 0, targetW, targetH);
+        }
+      }
+    }
+
+    _boundMaterial = null;
+    _jointCache.activeTransforms = null;
+    if (releaseAfter) {
+      _probeSelector.resetPass();
+      queue.release(count, _oitGrab);
+      queue.lastDrawCount = count;
+      queue.count = 0;
+      queue.resetPrepassGroups();
+      RenderProfile.lap(RenderPhase.release);
+    }
+  }
 }

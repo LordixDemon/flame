@@ -31,6 +31,7 @@ abstract class Object3D({
   super.prefabId,
   bool castsShadows = true,
   int? depthLayer,
+  SceneCacheMotion sceneCacheMotion = SceneCacheMotion.auto,
   super.cameraMask,
 }) extends Component3D {
   /// Whether this object casts shadows, when the scene has a light that
@@ -77,11 +78,38 @@ abstract class Object3D({
     final world = worldOrNull;
     if (world != null) {
       world.shadowCasters.motionChanged(this, previous, value);
-      world.markComponentDirty(shadows: true);
+      world.markComponentDirty(
+        shadows: true,
+        staticCache: affectsStaticSceneCache,
+      );
     }
   }
 
   ShadowCasterMotion _shadowMotion = ShadowCasterMotion.auto;
+
+  /// How this object participates in a `World3D.staticSceneCache`.
+  ///
+  /// Defaults to [SceneCacheMotion.auto], which lets static opaque unskinned
+  /// draws live in the static cache. Set [SceneCacheMotion.dynamic] for objects
+  /// whose transform, visibility, or parts change frequently so their updates
+  /// do not invalidate the static cache.
+  SceneCacheMotion get sceneCacheMotion => _sceneCacheMotion;
+  set sceneCacheMotion(SceneCacheMotion value) {
+    if (value == _sceneCacheMotion) {
+      return;
+    }
+    _sceneCacheMotion = value;
+    if (value == SceneCacheMotion.dynamic) {
+      markMayHaveDynamicDescendant();
+    }
+    worldOrNull?.markComponentDirty(shadows: false);
+  }
+
+  SceneCacheMotion _sceneCacheMotion = sceneCacheMotion;
+
+  @override
+  bool get affectsStaticSceneCache =>
+      _sceneCacheMotion != SceneCacheMotion.dynamic;
 
   /// The [DepthLayer3D.index] this object draws into when enclosed by a
   /// [World3D] with [World3D.depthLayers] (`0` by default).
@@ -183,86 +211,110 @@ abstract class Object3D({
     if (cameraMask != 0xFFFFFFFF && (cameraMask & context.cameraMask) == 0) {
       return;
     }
-    final hasKids = hasChildren;
     final isShadowPass = context.isShadowPass;
-    var drawSelf = true;
-    if (isShadowPass) {
-      final layer = context.shadowCasterLayer;
-      if (!castsShadows ||
-          (layer != ShadowCasterLayer.all && !_inShadowLayer(layer))) {
-        if (!hasKids) {
-          return;
-        }
-        drawSelf = false;
-      }
-    }
-    // The frustum of the pass, computed once by the context.
-    final frustum = context.frustum;
-    RenderProfile.lap(RenderPhase.traversal);
-
-    // If ancestor is inside, so are we, otherwise test.
-    final cullResult = _ancestorFullyInside
-        ? CullResult.inside
-        : aabb.frustumCullTest(frustum);
-    RenderProfile.lap(RenderPhase.culling);
-
-    // Result is fully outside, skip children and self.
-    if (cullResult == CullResult.outside) {
+    if (!isShadowPass && context.skipStaticDraws && !mayHaveDynamicDescendant) {
       return;
     }
+    final trackDynamic = !isShadowPass && context.trackDynamicSubtrees;
+    final prevSubtreeDynamic = context.subtreeRecordedDynamic;
+    if (trackDynamic) {
+      context.subtreeRecordedDynamic = !affectsStaticSceneCache;
+    }
+    final prevDynamic = context.currentObjectDynamic;
+    final effectiveDynamic =
+        prevDynamic || _sceneCacheMotion == SceneCacheMotion.dynamic;
+    if (effectiveDynamic && context.trackDynamicSubtrees) {
+      context.subtreeRecordedDynamic = true;
+    }
+    context.currentObjectDynamic = effectiveDynamic;
+    try {
+      final hasKids = hasChildren;
+      var drawSelf = true;
+      if (isShadowPass) {
+        final layer = context.shadowCasterLayer;
+        if (!castsShadows ||
+            (layer != ShadowCasterLayer.all && !_inShadowLayer(layer))) {
+          if (!hasKids) {
+            return;
+          }
+          drawSelf = false;
+        }
+      }
+      // The frustum of the pass, computed once by the context.
+      final frustum = context.frustum;
+      RenderProfile.lap(RenderPhase.traversal);
 
-    if (!isShadowPass) {
-      final culler = world.occlusionCuller;
-      if (culler != null &&
-          culler.rasterizedOccluderCount > 0 &&
-          !culler.isAabbVisible(aabb, context.viewProjection)) {
+      // If ancestor is inside, so are we, otherwise test.
+      final cullResult = _ancestorFullyInside
+          ? CullResult.inside
+          : aabb.frustumCullTest(frustum);
+      RenderProfile.lap(RenderPhase.culling);
+
+      // Result is fully outside, skip children and self.
+      if (cullResult == CullResult.outside) {
         return;
       }
-    }
 
-    if (hasKids) {
-      final wasAncestorFullyInside = _ancestorFullyInside;
-      if (cullResult == CullResult.inside) {
-        _ancestorFullyInside = true;
-      }
-      final prevDepthLayerKids = context.activeDepthLayer;
-      final effectiveKidsLayer = _hasExplicitDepthLayer
-          ? _depthLayer
-          : prevDepthLayerKids;
-      context.activeDepthLayer = effectiveKidsLayer;
-      try {
-        if (fast3D) {
-          super.renderTree3D(world, context, canvas);
-        } else {
-          super.renderTree(canvas!);
+      if (!isShadowPass) {
+        final culler = world.occlusionCuller;
+        if (culler != null &&
+            culler.rasterizedOccluderCount > 0 &&
+            !culler.isAabbVisible(aabb, context.viewProjection)) {
+          return;
         }
-      } finally {
-        context.activeDepthLayer = prevDepthLayerKids;
       }
-      _ancestorFullyInside = wasAncestorFullyInside;
-      RenderProfile.lap(RenderPhase.traversal);
-    }
 
-    final inFrustum =
-        drawSelf &&
-        (cullResult == CullResult.inside ||
-            usesDefaultFrustumVisibility ||
-            isVisible(frustum));
-    RenderProfile.lap(RenderPhase.culling);
-    final effectiveDepthLayer = _hasExplicitDepthLayer
-        ? _depthLayer
-        : context.activeDepthLayer;
-    resolvedDepthLayer = effectiveDepthLayer;
-    if (inFrustum) {
-      world.recordVisibleObject(this);
-      if (fast3D ? visible : (!hasKids || isEffectivelyVisible)) {
-        final prevDepthLayer = context.activeDepthLayer;
-        context.activeDepthLayer = effectiveDepthLayer;
+      if (hasKids) {
+        final wasAncestorFullyInside = _ancestorFullyInside;
+        if (cullResult == CullResult.inside) {
+          _ancestorFullyInside = true;
+        }
+        final prevDepthLayerKids = context.activeDepthLayer;
+        final effectiveKidsLayer = _hasExplicitDepthLayer
+            ? _depthLayer
+            : prevDepthLayerKids;
+        context.activeDepthLayer = effectiveKidsLayer;
         try {
-          draw(context);
+          if (fast3D) {
+            super.renderTree3D(world, context, canvas);
+          } else {
+            super.renderTree(canvas!);
+          }
         } finally {
-          context.activeDepthLayer = prevDepthLayer;
+          context.activeDepthLayer = prevDepthLayerKids;
         }
+        _ancestorFullyInside = wasAncestorFullyInside;
+        RenderProfile.lap(RenderPhase.traversal);
+      }
+
+      final inFrustum =
+          drawSelf &&
+          (cullResult == CullResult.inside ||
+              usesDefaultFrustumVisibility ||
+              isVisible(frustum));
+      RenderProfile.lap(RenderPhase.culling);
+      final effectiveDepthLayer = _hasExplicitDepthLayer
+          ? _depthLayer
+          : context.activeDepthLayer;
+      resolvedDepthLayer = effectiveDepthLayer;
+      if (inFrustum) {
+        world.recordVisibleObject(this);
+        if (fast3D ? visible : (!hasKids || isEffectivelyVisible)) {
+          final prevDepthLayer = context.activeDepthLayer;
+          context.activeDepthLayer = effectiveDepthLayer;
+          try {
+            draw(context);
+          } finally {
+            context.activeDepthLayer = prevDepthLayer;
+          }
+        }
+      }
+    } finally {
+      context.currentObjectDynamic = prevDynamic;
+      if (trackDynamic) {
+        final recorded = context.subtreeRecordedDynamic;
+        mayHaveDynamicDescendant = recorded;
+        context.subtreeRecordedDynamic = prevSubtreeDynamic || recorded;
       }
     }
   }
@@ -362,7 +414,10 @@ abstract class Object3D({
     if (shadows) {
       world.shadowCasters.changed(this);
     }
-    world.markComponentDirty(shadows: shadows);
+    world.markComponentDirty(
+      shadows: shadows,
+      staticCache: affectsStaticSceneCache,
+    );
   }
 
   @override
@@ -400,6 +455,7 @@ abstract class Object3D({
   void copySubtypeStateTo(Component3D copy) {
     if (copy is Object3D) {
       copy.shadowMotion = shadowMotion;
+      copy.sceneCacheMotion = sceneCacheMotion;
     }
   }
 

@@ -1315,6 +1315,9 @@ class BarrierMaterial({
   bool get hasPassStableFragmentShader => runtimeType == BarrierMaterial;
 
   @override
+  bool get isStaticCacheDynamic => true;
+
+  @override
   bool get cachesApply => runtimeType == BarrierMaterial;
 
   @override

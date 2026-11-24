@@ -49,11 +49,13 @@ class World3D({
   bool depthPrepassEnabled = false,
   SceneOcclusionCuller3D? occlusionCuller,
   List<DepthLayer3D>? depthLayers,
+  StaticSceneCacheSettings? staticSceneCache,
 }) extends flame.World {
   final _WorldLightRegistry _lighting = _WorldLightRegistry();
   final _WorldVersionState _versions = _WorldVersionState();
   final _WorldVisibilityCache _visibility = _WorldVisibilityCache();
   final _WorldShadowGroupState _shadowState = _WorldShadowGroupState();
+  final _StaticSceneCacheState _staticCache = _StaticSceneCacheState();
 
   /// User-defined GPU [CustomRenderPass3D] hooks executed before or after the
   /// main scene pass.
@@ -82,6 +84,23 @@ class World3D({
       (_waterVolume?.version ?? 0) +
       (_bloom?.version ?? 0) +
       (_postProcess?.version ?? 0);
+
+  int get _staticSettingsVersion =>
+      (_fog?.version ?? 0) + (_waterVolume?.staticVersion ?? 0);
+
+  /// Monotonically increasing version tracking everything that affects the
+  /// cached static scene pass (`staticSceneCache`): geometry, transforms,
+  /// lights, fog, static water-volume settings, and static materials.
+  int get staticSceneVersion =>
+      _versions.ownStaticVersion +
+      _versions.staticSettingsOffset +
+      _staticSettingsVersion +
+      _versions.drawnMaterials.staticVersion +
+      Material.castsShadowsRevision +
+      Material.assignmentRevision +
+      GpuBackend.renderEpoch +
+      lightsVersion +
+      (_lighting.lightsFrom?._lighting.lightsVersion ?? 0);
 
   /// The part of [sceneVersion] that follows the components of this world
   /// (and the lights and world settings it draws with), without the values
@@ -121,11 +140,17 @@ class World3D({
   /// ([ShadowSettings.cacheStillCasters]) is rendered again as well: report
   /// the change of one object with `Component3D.markDrawDirty` instead, so
   /// that only that object is drawn again.
-  void markSceneDirty({bool shadows = true}) {
+  void markSceneDirty({bool shadows = true, bool staticCache = true}) {
     if (shadows) {
       _versions.shadowCasters.invalidate();
     }
-    markComponentDirty(shadows: shadows);
+    markComponentDirty(shadows: shadows, staticCache: staticCache);
+  }
+
+  /// Marks only the dynamic part of the scene dirty (waking retained caches
+  /// without invalidating [staticSceneCache]).
+  void markDynamicSceneDirty({bool shadows = false}) {
+    markComponentDirty(shadows: shadows, staticCache: false);
   }
 
   /// Marks this world's rendered output (and, when [shadows], its shadow
@@ -133,10 +158,13 @@ class World3D({
   /// telling [shadowCasters] which casters it reaches: like [markSceneDirty],
   /// without rendering the kept layer of still casters again.
   @internal
-  void markComponentDirty({required bool shadows}) {
+  void markComponentDirty({required bool shadows, bool staticCache = true}) {
     _versions.ownSceneVersion++;
     if (shadows) {
       _versions.ownCastersVersion++;
+    }
+    if (staticCache) {
+      _versions.ownStaticVersion++;
     }
     Game.notifyVisualMutation();
   }
@@ -458,6 +486,19 @@ class World3D({
     return true;
   }
 
+  /// Optional static scene cache configuration (`null`, the default, disables
+  /// static scene caching).
+  StaticSceneCacheSettings? get staticSceneCache => _staticSceneCache;
+  StaticSceneCacheSettings? _staticSceneCache = staticSceneCache;
+  set staticSceneCache(StaticSceneCacheSettings? value) {
+    if (identical(value, _staticSceneCache)) {
+      return;
+    }
+    _staticSceneCache = value;
+    _staticCache.invalidate();
+    markSceneDirty(shadows: false);
+  }
+
   /// Rasterizes registered occluders of [occlusionCuller] once per unique
   /// main-camera view-projection and frame before traversal.
   @internal
@@ -544,7 +585,10 @@ class World3D({
     }
     final isVolumeOrLight =
         child is LightComponent || child is ReflectionProbeVolume3D;
-    markComponentDirty(shadows: !isVolumeOrLight);
+    final affectsStatic =
+        !isVolumeOrLight &&
+        !(child is Component3D && !child.affectsStaticSceneCache);
+    markComponentDirty(shadows: !isVolumeOrLight, staticCache: affectsStatic);
     if (child is! Component3D || isVolumeOrLight) {
       return;
     }
@@ -599,6 +643,7 @@ class World3D({
     _host = null;
     _cachedGame = null;
     _visibility.clearOnRemove();
+    _staticCache.dispose();
   }
 
   Game? _cachedGame;

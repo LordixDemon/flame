@@ -214,6 +214,7 @@ class ParticleSystem3D({
   super.rotation,
   super.scale,
   super.children,
+  super.sceneCacheMotion = SceneCacheMotion.dynamic,
 }) extends Object3D {
   /// {@macro particle_system_3d}
   this

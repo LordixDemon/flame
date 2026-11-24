@@ -210,6 +210,9 @@ class ParticleMaterial({
   @override
   bool get instancesHoldModelMatrices => false;
 
+  @override
+  bool get isStaticCacheDynamic => true;
+
   /// Whether draws with [state] blend in an order dependent way (alpha or
   /// premultiplied alpha blending), so that their particles are sorted back
   /// to front.
@@ -393,6 +396,9 @@ class _ParticleDepthNormalMaterial(final ParticleMaterial _source)
 
   @override
   bool get instancesHoldModelMatrices => false;
+
+  @override
+  bool get isStaticCacheDynamic => true;
 
   @override
   void apply(RenderContext context) {

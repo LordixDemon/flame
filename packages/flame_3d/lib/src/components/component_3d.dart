@@ -144,7 +144,10 @@ abstract class Component3D({
     } else {
       _noteShadowSubtreeHidden(world);
     }
-    world.markComponentDirty(shadows: true);
+    world.markComponentDirty(
+      shadows: true,
+      staticCache: affectsStaticSceneCache,
+    );
   }
 
   /// Hook invoked when this subtree becomes visible so casters can register.
@@ -197,7 +200,10 @@ abstract class Component3D({
       return;
     }
     super.cameraMask = value;
-    _cachedWorld?.markSceneDirty(shadows: affectsShadowPass);
+    _cachedWorld?.markSceneDirty(
+      shadows: affectsShadowPass,
+      staticCache: affectsStaticSceneCache,
+    );
   }
 
   /// Reports that what this component draws changed in a way the engine
@@ -232,14 +238,40 @@ abstract class Component3D({
     onMarkDrawDirty(world, shadows: shadows);
   }
 
+  /// Whether changes to this component's visibility, transform, mount state, or
+  /// programmatic draws invalidate a `World3D.staticSceneCache`.
+  @internal
+  bool get affectsStaticSceneCache => true;
+
+  /// Conservative flag set when this subtree recorded any dynamic draw on the
+  /// last static-cache populate pass or mounted a potentially dynamic node;
+  /// allows static-cache hit frames to skip pure-static subtrees completely.
+  @internal
+  bool mayHaveDynamicDescendant = true;
+
+  /// Marks this component and its [Component3D] ancestors as potentially
+  /// containing dynamic draws so static-cache hit frames traverse them.
+  @internal
+  void markMayHaveDynamicDescendant() {
+    Component3D? cursor = this;
+    while (cursor != null && !cursor.mayHaveDynamicDescendant) {
+      cursor.mayHaveDynamicDescendant = true;
+      final p = cursor.parent;
+      cursor = p is Component3D ? p : null;
+    }
+  }
+
   /// Records a programmatic draw invalidation in [world].
   @protected
   void onMarkDrawDirty(World3D world, {required bool shadows}) {
     if (shadows) {
-      world.markSceneDirty();
+      world.markSceneDirty(staticCache: affectsStaticSceneCache);
       return;
     }
-    world.markComponentDirty(shadows: false);
+    world.markComponentDirty(
+      shadows: false,
+      staticCache: affectsStaticSceneCache,
+    );
   }
 
   bool _includeInSceneBounds = true;
@@ -461,9 +493,13 @@ abstract class Component3D({
     }
     final world = _cachedWorld;
     if (world != null) {
+      markMayHaveDynamicDescendant();
       onWorldMounted(world);
     }
-    world?.markComponentDirty(shadows: affectsShadowPass);
+    world?.markComponentDirty(
+      shadows: affectsShadowPass,
+      staticCache: affectsStaticSceneCache,
+    );
   }
 
   /// Hook invoked when this component mounts inside [world].
@@ -476,7 +512,10 @@ abstract class Component3D({
     if (world != null) {
       onWorldRemoved(world);
     }
-    world?.markComponentDirty(shadows: affectsShadowPass);
+    world?.markComponentDirty(
+      shadows: affectsShadowPass,
+      staticCache: affectsStaticSceneCache,
+    );
     _cachedWorld = null;
     if (parent case final Component3D parent) {
       parent.markAabbDirty();
@@ -582,29 +621,51 @@ abstract class Component3D({
     if (!_visible) {
       return;
     }
+    if (context.skipStaticDraws && !mayHaveDynamicDescendant) {
+      return;
+    }
     if (cameraMask != 0xFFFFFFFF && (cameraMask & context.cameraMask) == 0) {
       return;
     }
-    if (debugMode || _non3DChildCount > 0 || (!isMounted && hasChildren)) {
-      super.renderTree(canvas ?? world.fallbackDummyCanvas());
-      return;
+    final trackDynamic = context.trackDynamicSubtrees;
+    final prevSubtreeDynamic = context.subtreeRecordedDynamic;
+    if (trackDynamic) {
+      context.subtreeRecordedDynamic = !affectsStaticSceneCache;
     }
-    if (_hasPrioritizedChild) {
-      if (hasChildren) {
-        for (final child in children) {
-          if (child is Component3D) {
-            child.renderTree3D(world, context, canvas);
-          } else {
-            child.renderTree(canvas ?? world.fallbackDummyCanvas());
+    try {
+      if (debugMode || _non3DChildCount > 0 || (!isMounted && hasChildren)) {
+        if (trackDynamic) {
+          context.subtreeRecordedDynamic = true;
+        }
+        super.renderTree(canvas ?? world.fallbackDummyCanvas());
+        return;
+      }
+      if (_hasPrioritizedChild) {
+        if (hasChildren) {
+          for (final child in children) {
+            if (child is Component3D) {
+              child.renderTree3D(world, context, canvas);
+            } else {
+              if (trackDynamic) {
+                context.subtreeRecordedDynamic = true;
+              }
+              child.renderTree(canvas ?? world.fallbackDummyCanvas());
+            }
           }
         }
+        return;
       }
-      return;
-    }
-    final list = _childComponents3D;
-    if (list != null) {
-      for (var i = 0; i < list.length; i++) {
-        list[i].renderTree3D(world, context, canvas);
+      final list = _childComponents3D;
+      if (list != null) {
+        for (var i = 0; i < list.length; i++) {
+          list[i].renderTree3D(world, context, canvas);
+        }
+      }
+    } finally {
+      if (trackDynamic) {
+        final recorded = context.subtreeRecordedDynamic;
+        mayHaveDynamicDescendant = recorded;
+        context.subtreeRecordedDynamic = prevSubtreeDynamic || recorded;
       }
     }
   }
@@ -711,7 +772,10 @@ abstract class Component3D({
     } else {
       _boundsOwner?._changed(this);
     }
-    world?.markComponentDirty(shadows: movesShadows);
+    world?.markComponentDirty(
+      shadows: movesShadows,
+      staticCache: affectsStaticSceneCache,
+    );
   }
 
   /// Whether moving this component can change a shadow map: when it has

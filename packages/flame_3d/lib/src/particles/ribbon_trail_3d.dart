@@ -22,6 +22,7 @@ class StrokeBatch3D({
   super.scale,
   super.rotation,
   super.children,
+  super.sceneCacheMotion = SceneCacheMotion.dynamic,
 }) extends Object3D {
   /// {@macro stroke_batch_3d}
   this : super(castsShadows: false) {
@@ -85,7 +86,7 @@ class StrokeBatch3D({
     _hasBounds = false;
     _localVersion++;
     markAabbDirty();
-    worldOrNull?.markSceneDirty(shadows: false);
+    worldOrNull?.markSceneDirty(shadows: false, staticCache: false);
   }
 
   /// Starts building a polyline of [color]; add vertices with [addPoint] and
@@ -252,7 +253,7 @@ class StrokeBatch3D({
 
     _localVersion++;
     markAabbDirty();
-    worldOrNull?.markSceneDirty(shadows: false);
+    worldOrNull?.markSceneDirty(shadows: false, staticCache: false);
   }
 
   void _expandBounds(double x, double y, double z, double r) {
@@ -391,6 +392,7 @@ class RibbonTrail3D({
   super.scale,
   super.rotation,
   super.children,
+  super.sceneCacheMotion = SceneCacheMotion.dynamic,
 }) extends Object3D {
   /// {@macro ribbon_trail_3d}
   this : super(castsShadows: false) {
@@ -435,7 +437,7 @@ class RibbonTrail3D({
     _count = 0;
     _batch.clear();
     markAabbDirty();
-    worldOrNull?.markSceneDirty(shadows: false);
+    worldOrNull?.markSceneDirty(shadows: false, staticCache: false);
   }
 
   /// Manually appends a world-space sample `(x, y, z)`.
@@ -503,7 +505,7 @@ class RibbonTrail3D({
     if (hadPoints || _count >= 2) {
       _rebuildSegments(maxAge);
       Game.notifyVisualMutation();
-      worldOrNull?.markSceneDirty(shadows: false);
+      worldOrNull?.markSceneDirty(shadows: false, staticCache: false);
     }
   }
 

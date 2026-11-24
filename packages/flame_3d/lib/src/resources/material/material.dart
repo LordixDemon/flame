@@ -275,6 +275,11 @@ abstract class Material({
   /// stray triangles.
   bool get instancesHoldModelMatrices => true;
 
+  /// Whether draws using this material are treated as dynamic for
+  /// `StaticSceneCache3D` (for example translucent, animated, or wind-animated
+  /// materials).
+  bool get isStaticCacheDynamic => renderState.translucent || animated;
+
   /// Whether the draws of this material read the `ReflectionProbeVolume3D`
   /// around them, `false` unless overridden.
   ///

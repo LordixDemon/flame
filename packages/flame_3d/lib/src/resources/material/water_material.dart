@@ -923,6 +923,9 @@ class WaterMaterial({
       aabb: aabb,
     );
   }
+
+  @override
+  bool get isStaticCacheDynamic => true;
 }
 
 class _WaterFragOffsets(final UniformBlock _b) {

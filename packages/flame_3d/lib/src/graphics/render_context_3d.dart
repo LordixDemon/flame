@@ -26,6 +26,7 @@ part 'render_context_3d_shadows.dart';
 part 'render_context_3d_shadows_atlas.dart';
 part 'render_context_3d_shadows_cascades.dart';
 part 'render_context_3d_shadows_casters.dart';
+part 'render_context_3d_static_cache.dart';
 part 'render_context_3d_uniforms.dart';
 
 /// Fills a uniform block that the [RenderContext3D] uploads once per render
@@ -239,6 +240,26 @@ class RenderContext3D(super.device) extends RenderContext {
   late final _ShadowPass _shadows = _ShadowPass(this);
   late final _DepthNormalPass _depthNormal = _DepthNormalPass(this);
   late final _OitAndGrabPass _oitGrab = _OitAndGrabPass(this);
+  late final _StaticCachePass _staticCachePass = _StaticCachePass(this);
+
+  /// Traversal flag set by `Object3D._renderObjectTree` while inside a subtree
+  /// tagged [SceneCacheMotion.dynamic].
+  @internal
+  bool currentObjectDynamic = false;
+
+  /// When `true`, `drawSurface` / `drawInstances` / `drawRigidBatch` and
+  /// `Component3D.renderTree3D` skip pure-static draws/subtrees (cache hit).
+  @internal
+  bool skipStaticDraws = false;
+
+  /// When `true`, `Component3D.renderTree3D` records into
+  /// [subtreeRecordedDynamic] whether each subtree emitted any dynamic draw.
+  @internal
+  bool trackDynamicSubtrees = false;
+
+  /// Accumulator for [trackDynamicSubtrees].
+  @internal
+  bool subtreeRecordedDynamic = false;
 
   /// The model matrix of the draw being submitted.
   Matrix4 get model => _camera.modelMatrix;
@@ -537,12 +558,23 @@ class RenderContext3D(super.device) extends RenderContext {
         return;
       }
     }
+    var isStaticDraw = false;
+    if (!shadowPass && !depthNormalPass) {
+      isStaticDraw = _classifyStaticDraw(drawMaterial, jointTransforms);
+      if (!isStaticDraw && trackDynamicSubtrees) {
+        subtreeRecordedDynamic = true;
+      }
+      if (skipStaticDraws && isStaticDraw) {
+        return;
+      }
+    }
     final queue = _queue;
     final i = queue.count;
     if (i == queue.capacity) {
       queue.grow();
     }
     queue.count++;
+    queue.isStatic[i] = isStaticDraw ? 1 : 0;
 
     queue.surfaces[i] = surface;
     queue.materials[i] = drawMaterial;
@@ -734,6 +766,16 @@ class RenderContext3D(super.device) extends RenderContext {
         return;
       }
     }
+    var isStaticDraw = false;
+    if (!shadowPass && !depthNormalPass) {
+      isStaticDraw = _classifyStaticDraw(drawMaterial, jointTransforms);
+      if (!isStaticDraw && trackDynamicSubtrees) {
+        subtreeRecordedDynamic = true;
+      }
+      if (skipStaticDraws && isStaticDraw) {
+        return;
+      }
+    }
     DevicePipeline? pipeline;
     Shader? vertShader;
     Shader? fragShader;
@@ -755,6 +797,7 @@ class RenderContext3D(super.device) extends RenderContext {
       queue.grow();
     }
     queue.count++;
+    queue.isStatic[i] = isStaticDraw ? 1 : 0;
 
     queue.surfaces[i] = surface;
     queue.materials[i] = drawMaterial;
@@ -867,6 +910,16 @@ class RenderContext3D(super.device) extends RenderContext {
     if (_depthNormal.recording) {
       return;
     }
+    var isStaticDraw = false;
+    if (!shadowPass) {
+      isStaticDraw = _classifyStaticDraw(drawMaterial, jointTransforms);
+      if (!isStaticDraw && trackDynamicSubtrees) {
+        subtreeRecordedDynamic = true;
+      }
+      if (skipStaticDraws && isStaticDraw) {
+        return;
+      }
+    }
     DevicePipeline? pipeline;
     Shader? vertShader;
     Shader? fragShader;
@@ -882,6 +935,7 @@ class RenderContext3D(super.device) extends RenderContext {
       queue.grow();
     }
     queue.count++;
+    queue.isStatic[i] = isStaticDraw ? 1 : 0;
 
     queue.surfaces[i] = surface;
     queue.materials[i] = drawMaterial;
@@ -1161,6 +1215,90 @@ class RenderContext3D(super.device) extends RenderContext {
   ) => _probeSelector.select(worldPoint);
 
   int get shadowMapVersion => _shadows.version;
+
+  @internal
+  Texture? get stillShadowTexture => _shadows.active && !_shadows.atlasActive
+      ? _shadows.activeStillTexture
+      : null;
+
+  @internal
+  int get stillShadowVersion => _shadows.stillVersion;
+
+  @internal
+  Texture get activeShadowMapTexture => _ShadowPass.shadowMapTexture(this);
+
+  @internal
+  bool get isSingleDirectionalShadowActive =>
+      _shadows.active &&
+      !_shadows.atlasActive &&
+      _shadows._toLight.w >= 0 &&
+      _shadows._toLight.w < maxDirectionalLights;
+
+  @internal
+  void setStaticShadowOverride(Texture? texture) {
+    _shadows._shadowMapOverride = texture;
+    _bindingEpoch = -1;
+  }
+
+  @internal
+  bool get staticCacheShadersAvailable => _staticCachePass.shadersAvailable;
+
+  @internal
+  void flushStaticDepthOnly() => _staticCachePass.flushStaticDepthOnly();
+
+  @internal
+  void flushStaticColorOnly({required bool releaseAfter}) =>
+      _flushFiltered(staticFlag: 1, releaseAfter: releaseAfter);
+
+  @internal
+  void flushDynamicOnly({required bool releaseAfter}) =>
+      _flushFiltered(staticFlag: 0, releaseAfter: releaseAfter);
+
+  @internal
+  bool get hasStaticDraws => _hasStaticDraws;
+
+  @internal
+  void collectStaticMaterials(
+    List<Material> outMaterials,
+    List<int> outVersions,
+  ) => _collectStaticMaterials(outMaterials, outVersions);
+
+  @internal
+  Matrix4 get shadowLightViewProjection => _shadows._lightViewProjection;
+
+  @internal
+  double get shadowMapInvSize => _shadows._map.z;
+
+  @internal
+  double get shadowFilterRadius => _shadows._bias.w;
+
+  @internal
+  void drawStaticRestore({
+    required Texture staticColor,
+    required Texture staticDepth,
+    required double zNear,
+    required double zFar,
+    required bool projectMovingShadows,
+    required Vector4 movingBounds,
+  }) => _staticCachePass.drawStaticRestore(
+    staticColor: staticColor,
+    staticDepth: staticDepth,
+    zNear: zNear,
+    zFar: zFar,
+    projectMovingShadows: projectMovingShadows,
+    movingBounds: movingBounds,
+  );
+
+  bool _classifyStaticDraw(Material drawMaterial, List<Matrix4>? joints) {
+    final rs = drawMaterial.renderState;
+    return !currentObjectDynamic &&
+        activeDepthLayer == 0 &&
+        !drawMaterial.isStaticCacheDynamic &&
+        !rs.translucent &&
+        rs.depthWrite &&
+        drawMaterial.instancesHoldModelMatrices &&
+        (joints == null || joints.isEmpty);
+  }
 
   /// Whether the shadow map of the last [beginShadowPass] depends on the
   /// cameras it was fitted to: a directional light with [ShadowFit.view]

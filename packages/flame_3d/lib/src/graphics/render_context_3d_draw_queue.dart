@@ -41,6 +41,7 @@ class _DrawQueue() {
   Int32List prepassGroups = Int32List(0);
   Int32List probeSlots = Int32List(0);
   Float64List probeWeights = Float64List(0);
+  Uint8List isStatic = Uint8List(0);
   Int32List opaque = Int32List(0);
   Int32List translucent = Int32List(0);
   Int32List sortScratch = Int32List(0);
@@ -129,6 +130,7 @@ class _DrawQueue() {
       ..setRange(0, probeSlots.length, probeSlots);
     probeWeights = Float64List(nextCapacity)
       ..setRange(0, probeWeights.length, probeWeights);
+    isStatic = Uint8List(nextCapacity)..setRange(0, isStatic.length, isStatic);
     sortDepths = Float64List(nextCapacity);
     opaque = Int32List(nextCapacity);
     translucent = Int32List(nextCapacity);
