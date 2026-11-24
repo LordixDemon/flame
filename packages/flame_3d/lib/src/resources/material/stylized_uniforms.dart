@@ -126,6 +126,8 @@ extension _StylizedUniforms on StylizedMaterial {
     final isTextured = baseColor != null && _textured;
     final matCap = matCapTexture;
     final gemMatCap = gemMatCapTexture;
+    final matCapAtlas = matCapAtlasTexture;
+    final usesAtlas = matCapAtlas != null && _usesAtlasFragment;
     final samplers = _samplersFor(frag);
     if (isTextured) {
       if (samplers._baseColor >= 0) {
@@ -134,15 +136,23 @@ extension _StylizedUniforms on StylizedMaterial {
         frag.setTexture('baseColorTexture', baseColor);
       }
     }
-    if (samplers._matCap >= 0) {
-      frag.setTextureAt(samplers._matCap, matCap ?? Texture.empty);
+    if (usesAtlas) {
+      if (samplers._matCapAtlas >= 0) {
+        frag.setTextureAt(samplers._matCapAtlas, matCapAtlas);
+      } else {
+        frag.setTexture('matCapAtlasTexture', matCapAtlas);
+      }
     } else {
-      frag.setTexture('matCapTexture', matCap ?? Texture.empty);
-    }
-    if (samplers._gemMatCap >= 0) {
-      frag.setTextureAt(samplers._gemMatCap, gemMatCap ?? Texture.empty);
-    } else {
-      frag.setTexture('gemMatCapTexture', gemMatCap ?? Texture.empty);
+      if (samplers._matCap >= 0) {
+        frag.setTextureAt(samplers._matCap, matCap ?? Texture.empty);
+      } else {
+        frag.setTexture('matCapTexture', matCap ?? Texture.empty);
+      }
+      if (samplers._gemMatCap >= 0) {
+        frag.setTextureAt(samplers._gemMatCap, gemMatCap ?? Texture.empty);
+      } else {
+        frag.setTexture('gemMatCapTexture', gemMatCap ?? Texture.empty);
+      }
     }
 
     final matIdx = frag.blockIndexOf('Material');
@@ -267,10 +277,12 @@ extension _StylizedUniforms on StylizedMaterial {
     if (off._rimPower >= 0) {
       matBlock.writeFloatAt(off._rimPower, rimPower);
     }
+    final hasCoat = usesAtlas || matCap != null;
+    final hasGem = usesAtlas || gemMatCap != null;
     if (off._matCapStrength >= 0) {
       matBlock.writeFloatAt(
         off._matCapStrength,
-        matCap == null ? 0 : matCapStrength,
+        hasCoat ? matCapStrength : 0,
       );
     }
     // Without a MatCap texture no vertex gets one: a metallic material
@@ -278,7 +290,7 @@ extension _StylizedUniforms on StylizedMaterial {
     if (off._matCapThreshold >= 0) {
       matBlock.writeFloatAt(
         off._matCapThreshold,
-        matCap == null ? StylizedMaterial._never : matCapThreshold,
+        hasCoat ? matCapThreshold : StylizedMaterial._never,
       );
     }
     if (off._matCapGlossWeight >= 0) {
@@ -287,7 +299,7 @@ extension _StylizedUniforms on StylizedMaterial {
     if (off._gemMatCapStrength >= 0) {
       matBlock.writeFloatAt(
         off._gemMatCapStrength,
-        gemMatCap == null ? 0 : gemMatCapStrength,
+        hasGem ? gemMatCapStrength : 0,
       );
     }
     // Without a gem texture no vertex is a gem: every glossy vertex gets
@@ -295,7 +307,7 @@ extension _StylizedUniforms on StylizedMaterial {
     if (off._gemThreshold >= 0) {
       matBlock.writeFloatAt(
         off._gemThreshold,
-        gemMatCap == null ? StylizedMaterial._never : gemThreshold,
+        hasGem ? gemThreshold : StylizedMaterial._never,
       );
     }
     if (off._matCapMetallic >= 0) {
@@ -324,6 +336,7 @@ extension _StylizedUniforms on StylizedMaterial {
       _samplerCache = _StylizedSamplerIndices(
         frag.samplerIndexOf('matCapTexture'),
         frag.samplerIndexOf('gemMatCapTexture'),
+        frag.samplerIndexOf('matCapAtlasTexture'),
         frag.samplerIndexOf('baseColorTexture'),
       );
     }
@@ -447,6 +460,7 @@ void _unitOrZero(Vector3 target, Vector3 direction, double scale) {
 class _StylizedSamplerIndices(
   final int _matCap,
   final int _gemMatCap,
+  final int _matCapAtlas,
   final int _baseColor,
 );
 

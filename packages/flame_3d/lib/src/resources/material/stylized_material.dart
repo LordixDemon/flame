@@ -310,6 +310,7 @@ class StylizedMaterial({
   var Texture? _gemMatCapTexture,
   var double _gemMatCapStrength = 1.0,
   var double _gemThreshold = 1.0,
+  var Texture? _matCapAtlasTexture,
   var double _matCapMetallic = 0,
   var double _saturation = 1,
   var Color _overlayColor = const Color(0x00000000),
@@ -389,7 +390,13 @@ class StylizedMaterial({
     }
     _plainFragment = super.fragmentShader;
     if (baseColorTexture != null) {
-      _texturedFragment.checkDeviceSupport(owner: runtimeType);
+      if (_matCapAtlasTexture != null) {
+        _texturedAtlasFragment.checkDeviceSupport(owner: runtimeType);
+      } else {
+        _texturedFragment.checkDeviceSupport(owner: runtimeType);
+      }
+    } else if (_matCapAtlasTexture != null) {
+      _atlasFragment.checkDeviceSupport(owner: runtimeType);
     }
     if (translucent) {
       setInitialState(
@@ -560,6 +567,15 @@ class StylizedMaterial({
   double get gemThreshold => _gemThreshold;
   set gemThreshold(double value) =>
       _gemThreshold = noteChange(_gemThreshold, value);
+
+  /// An optional packed 2×1 horizontal MatCap atlas texture containing the coat
+  /// sphere in the left half `[0, 0.5]` and the gem sphere in the right half
+  /// `[0.5, 1.0]`. When non-null (and the material keeps its own fragment
+  /// shader), switches to the 1-sampler atlas fragment shader variant instead
+  /// of binding [matCapTexture] and [gemMatCapTexture] separately.
+  Texture? get matCapAtlasTexture => _matCapAtlasTexture;
+  set matCapAtlasTexture(Texture? value) =>
+      _matCapAtlasTexture = noteChange(_matCapAtlasTexture, value);
 
   /// How the MatCap textures combine with the lit surface: `0` (the
   /// default) adds them, as a sheen; `1` multiplies the lit surface (at most
@@ -926,15 +942,41 @@ class StylizedMaterial({
 
   static const _texturedBundle =
       'packages/flame_3d/assets/shaders/stylized_material_textured.shaderbundle';
+  static const _atlasBundle =
+      'packages/flame_3d/assets/shaders/stylized_material_atlas.shaderbundle';
+  static const _texturedAtlasBundle =
+      'packages/flame_3d/assets/shaders/'
+      'stylized_material_textured_atlas.shaderbundle';
 
-  // The fragment stage the material was created with, and the textured one,
-  // made when a texture is first drawn.
+  // The fragment stage the material was created with, and the textured/atlas
+  // variants, made when first drawn.
   late final Shader _plainFragment;
   late final Shader _texturedFragment = FragmentShader.fromAsset(
     _texturedBundle,
     slots: [
       'matCapTexture',
       'gemMatCapTexture',
+      'baseColorTexture',
+      'Material',
+      RenderContext3D.stylizedPassBlock,
+      RenderContext3D.shadowMapSampler,
+      RenderContext3D.lightGridSampler,
+    ],
+  );
+  late final Shader _atlasFragment = FragmentShader.fromAsset(
+    _atlasBundle,
+    slots: [
+      'matCapAtlasTexture',
+      'Material',
+      RenderContext3D.stylizedPassBlock,
+      RenderContext3D.shadowMapSampler,
+      RenderContext3D.lightGridSampler,
+    ],
+  );
+  late final Shader _texturedAtlasFragment = FragmentShader.fromAsset(
+    _texturedAtlasBundle,
+    slots: [
+      'matCapAtlasTexture',
       'baseColorTexture',
       'Material',
       RenderContext3D.stylizedPassBlock,
@@ -977,12 +1019,19 @@ class StylizedMaterial({
       baseColorTexture != null &&
       identical(super.fragmentShader, _plainFragment);
 
-  /// The fragment stage this material draws with: the textured one while it
-  /// has a [baseColorTexture], unless its fragment shader was replaced by
-  /// another one.
+  bool get _usesAtlasFragment =>
+      _matCapAtlasTexture != null &&
+      identical(super.fragmentShader, _plainFragment);
+
+  /// The fragment stage this material draws with: textured and/or 1-sampler
+  /// MatCap atlas variants while its fragment shader was not replaced.
   @override
-  Shader get fragmentShader =>
-      _textured ? _texturedFragment : super.fragmentShader;
+  Shader get fragmentShader {
+    if (_textured) {
+      return _usesAtlasFragment ? _texturedAtlasFragment : _texturedFragment;
+    }
+    return _usesAtlasFragment ? _atlasFragment : super.fragmentShader;
+  }
 
   final VertexShaderLayoutCache _vertexLayoutCache = VertexShaderLayoutCache();
 
@@ -1138,6 +1187,9 @@ class StylizedMaterial({
       visitor(tex);
     }
     if (_gemMatCapTexture case final tex?) {
+      visitor(tex);
+    }
+    if (_matCapAtlasTexture case final tex?) {
       visitor(tex);
     }
     if (_baseColorTexture case final tex?) {

@@ -30,8 +30,12 @@ in vec2 fragTexCoord;
 
 out vec4 outColor;
 
+#ifdef FLAME_STYLIZED_MATCAP_ATLAS
+uniform sampler2D matCapAtlasTexture;
+#else
 uniform sampler2D matCapTexture;
 uniform sampler2D gemMatCapTexture;
+#endif
 #ifdef FLAME_STYLIZED_TEXTURED
 uniform sampler2D baseColorTexture;
 #endif
@@ -422,6 +426,22 @@ void main() {
     vec3 viewNormal = normalize(mat3(scene.Camera_view) * n);
     viewNormal.x *= pictureMirror();
     vec2 matCapUv = vec2(0.5 + 0.5 * viewNormal.x, 0.5 - 0.5 * viewNormal.y);
+#ifdef FLAME_STYLIZED_MATCAP_ATLAS
+    float clampedX = clamp(matCapUv.x, 0.004, 0.996);
+    if (hasCoat) {
+      coat = texture(
+        matCapAtlasTexture,
+        vec2(clampedX * 0.5, matCapUv.y)
+      ).rgb * material.matCapStrength *
+        mix(1.0, gloss, material.matCapGlossWeight);
+    }
+    if (hasGem) {
+      gem = texture(
+        matCapAtlasTexture,
+        vec2(0.5 + clampedX * 0.5, matCapUv.y)
+      ).rgb * material.gemMatCapStrength;
+    }
+#else
     if (hasCoat) {
       coat = texture(matCapTexture, matCapUv).rgb * material.matCapStrength *
         mix(1.0, gloss, material.matCapGlossWeight);
@@ -430,6 +450,7 @@ void main() {
       gem = texture(gemMatCapTexture, matCapUv).rgb *
         material.gemMatCapStrength;
     }
+#endif
   }
   float gemWeight = gloss > material.gemThreshold ? 1.0 : 0.0;
   float coatWeight = gloss > material.matCapThreshold ? 1.0 - gemWeight : 0.0;
