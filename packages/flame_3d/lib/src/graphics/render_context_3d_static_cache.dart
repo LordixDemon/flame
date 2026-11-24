@@ -138,7 +138,7 @@ class _StaticCachePass(final RenderContext3D _context) {
       queue.sort(order, depthCount);
     }
 
-    _writeStaticDepthParams();
+    _writeStaticDepthParams(order, depthCount);
 
     context
       .._boundMaterial = null
@@ -168,7 +168,7 @@ class _StaticCachePass(final RenderContext3D _context) {
         queue.mirrored[first] == queue.mirrored[other];
   }
 
-  void _writeStaticDepthParams() {
+  void _writeStaticDepthParams(Int32List order, int depthCount) {
     _depthFrag.resource;
     final block = _depthFrag.block(_paramsBlock);
     final off = _depthParamOffsets ??= _StaticDepthParamOffsets(block);
@@ -178,6 +178,21 @@ class _StaticCachePass(final RenderContext3D _context) {
 
     double luma(Color c) => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
 
+    StylizedMaterial? stylized;
+    final materials = context._queue.materials;
+    for (var i = 0; i < depthCount; i++) {
+      final mat = materials[order[i]];
+      if (mat is StylizedMaterial) {
+        stylized = mat;
+        break;
+      }
+    }
+    final ambientBaseFactor = stylized != null
+        ? luma(stylized.ambientBase)
+        : 0.65;
+    final skyFillFactor = stylized?.skyFill ?? 0.35;
+    final groundBounceFactor = stylized?.groundBounce ?? 0.10;
+
     final ambient = lightState.selAmbient;
     var ambBase = ambient != null
         ? luma(ambient.color) * ambient.intensity
@@ -186,9 +201,9 @@ class _StaticCachePass(final RenderContext3D _context) {
     var groundLuma = 0.0;
     final hemi = lightState.selHemisphere;
     if (hemi != null) {
-      ambBase += hemi.intensity * 0.35;
-      skyLuma = hemi.intensity * luma(hemi.skyColor) * 0.45;
-      groundLuma = hemi.intensity * luma(hemi.groundColor) * 0.20;
+      ambBase += hemi.intensity * ambientBaseFactor;
+      skyLuma = hemi.intensity * luma(hemi.skyColor) * skyFillFactor;
+      groundLuma = hemi.intensity * luma(hemi.groundColor) * groundBounceFactor;
       _hemiUpScratch.setFrom(hemi.up);
       if (_hemiUpScratch.length2 > 0) {
         _hemiUpScratch.normalize();

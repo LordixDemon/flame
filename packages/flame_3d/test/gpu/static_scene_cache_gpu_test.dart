@@ -62,6 +62,7 @@ void main() {
               shadows: ShadowSettings(
                 resolution: 512,
                 cacheStillCasters: true,
+                stillCasterFrames: 2,
               ),
             ),
             LightComponent.ambient(intensity: 0.35),
@@ -78,7 +79,7 @@ void main() {
         // Frame batch 1: dynamic cube in front of wall casting moving shadow.
         await renderGame(tester, game);
         mover.position.setValues(0.2, 0.6, 0.8);
-        final frontPx = await renderGame(tester, game, frames: 2);
+        final frontPx = await renderGame(tester, game);
         final frontHits = game.device.lastFrameStats.staticCacheHits;
         // Frame batch 2: dynamic cube moved behind the blue wall (occluded).
         mover.position.setValues(0.0, 0.5, -3.2);

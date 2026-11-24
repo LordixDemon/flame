@@ -276,9 +276,13 @@ abstract class Material({
   bool get instancesHoldModelMatrices => true;
 
   /// Whether draws using this material are treated as dynamic for
-  /// `StaticSceneCache3D` (for example translucent, animated, or wind-animated
-  /// materials).
+  /// `StaticSceneCache3D` (for example translucent or animated materials).
   bool get isStaticCacheDynamic => renderState.translucent || animated;
+
+  /// Whether a draw of [surface] using this material is dynamic for
+  /// `StaticSceneCache3D` (when the material is dynamic or [surface] carries
+  /// per-vertex shader animation that this material drives).
+  bool isStaticCacheDynamicForSurface(Surface surface) => isStaticCacheDynamic;
 
   /// Whether the draws of this material read the `ReflectionProbeVolume3D`
   /// around them, `false` unless overridden.

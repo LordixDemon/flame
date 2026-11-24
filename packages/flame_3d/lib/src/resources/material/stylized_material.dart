@@ -1024,10 +1024,10 @@ class StylizedMaterial({
       identical(super.fragmentShader, _plainFragment);
 
   @override
-  bool get isStaticCacheDynamic =>
-      renderState.translucent ||
-      windAmplitude != 0 ||
-      windFlutterAmplitude != 0;
+  bool isStaticCacheDynamicForSurface(Surface surface) =>
+      isStaticCacheDynamic ||
+      (surface.hasVertexAnimation &&
+          (windAmplitude != 0 || windFlutterAmplitude != 0));
 
   /// The fragment stage this material draws with: textured and/or 1-sampler
   /// MatCap atlas variants while its fragment shader was not replaced.

@@ -200,7 +200,101 @@ void main() {
         });
       },
     );
+
+    test(
+      'keeps non-wind surfaces cached across windTime ticks while keeping '
+      'wind-vertex surfaces dynamic',
+      () {
+        final windMat = StylizedMaterial(
+          albedoColor: const Color(0xFF4488CC),
+          windAmplitude: 0.05,
+        );
+        final staticSurface = StylizedMaterial.buildSurface(
+          positions: const [0, 0, 0, 1, 0, 0, 0, 1, 0],
+          normals: const [0, 0, 1, 0, 0, 1, 0, 0, 1],
+          indices: const [0, 1, 2],
+          material: windMat,
+        );
+        final windSurface = StylizedMaterial.buildSurface(
+          positions: const [0, 0, 0, 1, 0, 0, 0, 1, 0],
+          normals: const [0, 0, 1, 0, 0, 1, 0, 0, 1],
+          indices: const [0, 1, 2],
+          sway: const [0, 0.5, 0.5],
+          material: windMat,
+        );
+        expect(staticSurface.hasVertexAnimation, isFalse);
+        expect(windSurface.hasVertexAnimation, isTrue);
+
+        var staticDraws = 0;
+        var windDraws = 0;
+        final staticBox = _CountingSurfaceBox(
+          surface: staticSurface,
+          onDraw: () => staticDraws++,
+        );
+        final windBox = _CountingSurfaceBox(
+          surface: windSurface,
+          onDraw: () => windDraws++,
+        );
+        final world = World3D(
+          staticSceneCache: StaticSceneCacheSettings(stillFrames: 1),
+          children: [staticBox, windBox],
+        );
+        world.onMount();
+        staticBox.onMount();
+        windBox.onMount();
+        world.update(0.016);
+
+        world.renderWithHost(device, context, () {
+          void recordScene() => world.renderSceneNoCanvas(
+            overrideContext: context,
+          );
+
+          // Frame 1: warms staticSurface while windSurface stays dynamic.
+          final f1 = renderPass(world, record: recordScene);
+          expect(f1.staticCacheMisses, 1);
+          expect(f1.staticCacheHits, 0);
+          expect(staticBox.mayHaveDynamicDescendant, isFalse);
+          expect(windBox.mayHaveDynamicDescendant, isTrue);
+          expect(staticDraws, 1);
+          expect(windDraws, 1);
+
+          // Advance windTime only: static cache stays hot and skips staticBox.
+          windMat.windTime = 1.5;
+          final f2 = renderPass(world, record: recordScene);
+          expect(f2.staticCacheHits, 1);
+          expect(staticDraws, 1);
+          expect(windDraws, 2);
+
+          // Non-animation material change invalidates static cache.
+          windMat.albedoColor = const Color(0xFF223344);
+          final f3 = renderPass(world, record: recordScene);
+          expect(f3.staticCacheHits, 0);
+          expect(f3.staticCacheMisses, 1);
+        });
+      },
+    );
   });
+}
+
+class _CountingSurfaceBox({
+  required Surface surface,
+  required this.onDraw,
+}) extends Object3D {
+  final void Function() onDraw;
+  final Mesh _mesh = Mesh()..addSurface(surface);
+
+  @override
+  Aabb3 computeLocalAabb() =>
+      Aabb3.minMax(Vector3(-1, -1, -6), Vector3(2, 2, -4));
+
+  @override
+  void draw(RenderContext context) {
+    onDraw();
+    (context as RenderContext3D).drawMesh(
+      _mesh,
+      transform: Matrix4.translationValues(0, 0, -5),
+    );
+  }
 }
 
 class _CountingBox({

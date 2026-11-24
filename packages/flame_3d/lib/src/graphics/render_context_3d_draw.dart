@@ -607,7 +607,7 @@ extension _RenderContext3DDraw on RenderContext3D {
       }
       if (!seen) {
         outMaterials.add(mat);
-        outVersions.add(mat.version);
+        outVersions.add(mat.version - mat.animationVersion);
       }
     }
   }

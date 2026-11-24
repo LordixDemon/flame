@@ -426,23 +426,29 @@ extension _World3DPipeline on World3D {
         }
       } else {
         device.stats.staticCacheMisses++;
-        final shouldPopulate = _staticCache.advanceWarmup(
-          deviceGeneration: GpuBackend.deviceGeneration,
-          width: width,
-          height: height,
-          msaaSampleCount: msaaSampleCount,
-          sceneFormat: sceneFormat,
-          clearArgb: clearValue.toARGB32(),
-          hdrEnabled: nextHdr,
-          renderDebugMode: _renderDebugMode3D,
-          cameraMask: renderContext.cameraMask,
-          depthLayersSig: depthLayersSig,
-          projectMovingShadows: cacheSettings.projectMovingShadows,
-          staticKey: staticKey,
-          stillShadowVersion: stillShadowVer,
-          vp: vpStorage,
-          stillFrames: cacheSettings.stillFrames,
-        );
+        final unsettledShadows =
+            cacheSettings.projectMovingShadows &&
+            renderContext.stillShadowTexture != null &&
+            _hasUnsettledStaticCasters();
+        final shouldPopulate =
+            _staticCache.advanceWarmup(
+              deviceGeneration: GpuBackend.deviceGeneration,
+              width: width,
+              height: height,
+              msaaSampleCount: msaaSampleCount,
+              sceneFormat: sceneFormat,
+              clearArgb: clearValue.toARGB32(),
+              hdrEnabled: nextHdr,
+              renderDebugMode: _renderDebugMode3D,
+              cameraMask: renderContext.cameraMask,
+              depthLayersSig: depthLayersSig,
+              projectMovingShadows: cacheSettings.projectMovingShadows,
+              staticKey: staticKey,
+              stillShadowVersion: stillShadowVer,
+              vp: vpStorage,
+              stillFrames: cacheSettings.stillFrames,
+            ) &&
+            !unsettledShadows;
         final prevHdr = _pipelineHdrOverride;
         _pipelineHdrOverride = nextHdr;
         renderContext.trackDynamicSubtrees = shouldPopulate;
@@ -1046,7 +1052,7 @@ class _StaticSceneCacheState() {
     for (var i = 0; i < staticMaterials.length; i++) {
       final mat = staticMaterials[i];
       if (mat.isStaticCacheDynamic ||
-          mat.version != staticMaterialVersions[i]) {
+          (mat.version - mat.animationVersion) != staticMaterialVersions[i]) {
         return false;
       }
     }
@@ -1185,6 +1191,25 @@ class _StaticSceneCacheState() {
 }
 
 extension _WorldStaticCacheBounds on World3D {
+  bool _hasUnsettledStaticCasters() {
+    if (_versions.shadowCasters.hasUnsettledAutoCasters) {
+      return true;
+    }
+    final group = shadowGroup;
+    if (group == null) {
+      return false;
+    }
+    final worlds = group.worlds;
+    for (var i = 0; i < worlds.length; i++) {
+      final member = worlds[i];
+      if (!identical(member, this) &&
+          member._versions.shadowCasters.hasUnsettledAutoCasters) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   void _computeMovingShadowBounds(RenderContext3D ctx, Vector4 out) {
     final casters = _versions.shadowCasters;
     if (!casters.moversComplete) {

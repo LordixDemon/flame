@@ -70,8 +70,14 @@ Surface _buildStylizedSurface({
   // come joints and weights.
   final skinOffset = textured ? 20 : 18;
   final data = Float32List(count * stride);
+  var hasWindVertex = false;
   for (var i = 0; i < count; i++) {
     final o = i * stride;
+    final swayVal = sway?[i] ?? 0;
+    final flutterVal = windFlutter?[i] ?? 0;
+    if (swayVal != 0 || flutterVal != 0) {
+      hasWindVertex = true;
+    }
     data
       ..[o] = positions[i * 3]
       ..[o + 1] = positions[i * 3 + 1]
@@ -88,9 +94,9 @@ Surface _buildStylizedSurface({
       ..[o + 12] = emissive?[i] ?? 0
       ..[o + 13] = gloss?[i] ?? 0
       ..[o + 14] = occlusion?[i] ?? 1
-      ..[o + 15] = sway?[i] ?? 0
+      ..[o + 15] = swayVal
       ..[o + 16] = windPhase?[i] ?? 0
-      ..[o + 17] = windFlutter?[i] ?? 0;
+      ..[o + 17] = flutterVal;
     if (textured) {
       data
         ..[o + 18] = texCoords[i * 2]
@@ -110,6 +116,7 @@ Surface _buildStylizedSurface({
     layout: layout,
     material: material,
     aabb: aabb,
+    hasVertexAnimation: hasWindVertex,
   );
 }
 
@@ -130,6 +137,7 @@ Surface _buildBatchedStylizedSurface({
   }
   var totalVertices = 0;
   var totalIndices = 0;
+  var hasVertexAnimation = false;
   for (var i = 0; i < surfaces.length; i++) {
     final s = surfaces[i];
     if (s.layout != StylizedMaterial.vertexLayout) {
@@ -145,6 +153,9 @@ Surface _buildBatchedStylizedSurface({
         'surfaces[$i]',
         'Rigid batches merge triangle lists only',
       );
+    }
+    if (s.hasVertexAnimation) {
+      hasVertexAnimation = true;
     }
     totalVertices += s.vertexCount;
     totalIndices += s.indexCount;
@@ -187,6 +198,7 @@ Surface _buildBatchedStylizedSurface({
     layout: StylizedMaterial.batchedVertexLayout,
     material: material,
     aabb: aabb,
+    hasVertexAnimation: hasVertexAnimation,
   );
 }
 
@@ -216,6 +228,7 @@ Surface _buildSkinnedBatchedStylizedSurface({
   }
   var totalVertices = 0;
   var totalIndices = 0;
+  var hasVertexAnimation = false;
   for (var i = 0; i < surfaces.length; i++) {
     final s = surfaces[i];
     if (s.layout != StylizedMaterial.skinnedVertexLayout) {
@@ -238,6 +251,9 @@ Surface _buildSkinnedBatchedStylizedSurface({
         'jointOffsets[$i]',
         'Joint offset must be in 0..${StylizedMaterial.maxJoints - 1}',
       );
+    }
+    if (s.hasVertexAnimation) {
+      hasVertexAnimation = true;
     }
     totalVertices += s.vertexCount;
     totalIndices += s.indexCount;
@@ -300,5 +316,6 @@ Surface _buildSkinnedBatchedStylizedSurface({
     layout: StylizedMaterial.skinnedBatchedVertexLayout,
     material: material,
     aabb: aabb,
+    hasVertexAnimation: hasVertexAnimation,
   );
 }

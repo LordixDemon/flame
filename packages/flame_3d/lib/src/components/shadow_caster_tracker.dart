@@ -51,6 +51,19 @@ class ShadowCasterTracker() {
   /// Active non-still mounted casters in this world.
   List<Object3D> get movers => _movers;
 
+  /// Whether any auto-tracked shadow caster is still waiting to settle into
+  /// the kept still-shadow layer.
+  bool get hasUnsettledAutoCasters {
+    for (var i = 0; i < _movers.length; i++) {
+      final caster = _movers[i];
+      if (caster.shadowMotion == ShadowCasterMotion.auto &&
+          caster.castsShadows) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// Whether [movers] is guaranteed to contain every mounted non-still
   /// [Object3D] in the world.
   bool get moversComplete => _cutoff >= _maxPrunedClock;

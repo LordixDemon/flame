@@ -560,7 +560,11 @@ class RenderContext3D(super.device) extends RenderContext {
     }
     var isStaticDraw = false;
     if (!shadowPass && !depthNormalPass) {
-      isStaticDraw = _classifyStaticDraw(drawMaterial, jointTransforms);
+      isStaticDraw = _classifyStaticDraw(
+        surface,
+        drawMaterial,
+        jointTransforms,
+      );
       if (!isStaticDraw && trackDynamicSubtrees) {
         subtreeRecordedDynamic = true;
       }
@@ -768,7 +772,11 @@ class RenderContext3D(super.device) extends RenderContext {
     }
     var isStaticDraw = false;
     if (!shadowPass && !depthNormalPass) {
-      isStaticDraw = _classifyStaticDraw(drawMaterial, jointTransforms);
+      isStaticDraw = _classifyStaticDraw(
+        surface,
+        drawMaterial,
+        jointTransforms,
+      );
       if (!isStaticDraw && trackDynamicSubtrees) {
         subtreeRecordedDynamic = true;
       }
@@ -912,7 +920,11 @@ class RenderContext3D(super.device) extends RenderContext {
     }
     var isStaticDraw = false;
     if (!shadowPass) {
-      isStaticDraw = _classifyStaticDraw(drawMaterial, jointTransforms);
+      isStaticDraw = _classifyStaticDraw(
+        surface,
+        drawMaterial,
+        jointTransforms,
+      );
       if (!isStaticDraw && trackDynamicSubtrees) {
         subtreeRecordedDynamic = true;
       }
@@ -1289,11 +1301,15 @@ class RenderContext3D(super.device) extends RenderContext {
     movingBounds: movingBounds,
   );
 
-  bool _classifyStaticDraw(Material drawMaterial, List<Matrix4>? joints) {
+  bool _classifyStaticDraw(
+    Surface surface,
+    Material drawMaterial,
+    List<Matrix4>? joints,
+  ) {
     final rs = drawMaterial.renderState;
     return !currentObjectDynamic &&
         activeDepthLayer == 0 &&
-        !drawMaterial.isStaticCacheDynamic &&
+        !drawMaterial.isStaticCacheDynamicForSurface(surface) &&
         !rs.translucent &&
         rs.depthWrite &&
         drawMaterial.instancesHoldModelMatrices &&

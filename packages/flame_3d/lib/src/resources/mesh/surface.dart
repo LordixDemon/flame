@@ -55,6 +55,7 @@ class Surface extends Resource<GpuBuffer> {
     List<MorphTargetData> morphTargets = const [],
     bool calculateNormals = true,
     this.topology = PrimitiveTopology.triangles,
+    this.hasVertexAnimation = false,
     Map<String, SurfaceAttribute> customAttributes = const {},
   }) : _material = material ?? Material.defaultMaterial,
        morphTargets = List.unmodifiable(morphTargets),
@@ -98,6 +99,7 @@ class Surface extends Resource<GpuBuffer> {
     List<MorphTargetData> morphTargets = const [],
     Aabb3? aabb,
     this.topology = PrimitiveTopology.triangles,
+    this.hasVertexAnimation = false,
     Map<String, SurfaceAttribute> customAttributes = const {},
   }) : _material = material ?? Material.defaultMaterial,
        _layout = layout ?? VertexLayout.standard,
@@ -160,6 +162,10 @@ class Surface extends Resource<GpuBuffer> {
 
   /// Optional blend-shape / morph targets displacing [vertexData].
   final List<MorphTargetData> morphTargets;
+
+  /// Whether vertices carry non-zero shader animation attributes (such as wind
+  /// sway or flutter) that displace them over time.
+  final bool hasVertexAnimation;
 
   /// Per-vertex attributes the surface keeps beside its vertex buffer, by
   /// name: data no material reads, kept on the CPU only (the glTF readers
@@ -378,6 +384,7 @@ class Surface extends Resource<GpuBuffer> {
       jointMap: jointMap,
       morphTargets: morphTargets,
       topology: topology,
+      hasVertexAnimation: hasVertexAnimation,
       customAttributes: customAttributes,
     );
   }
