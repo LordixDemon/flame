@@ -314,7 +314,8 @@ class _StaticCachePass(final RenderContext3D _context) {
     required double zNear,
     required double zFar,
     required bool projectMovingShadows,
-    required Vector4 movingBounds,
+    required List<Vector4> movingBounds,
+    int movingBoundsCount = 1,
   }) {
     final context = _context;
     final device = context.device;
@@ -362,7 +363,7 @@ class _StaticCachePass(final RenderContext3D _context) {
         zNear,
         zFar,
         projectMovingShadows ? 1.0 : 0.0,
-        0.0,
+        movingBoundsCount.toDouble(),
       );
     }
     if (off.shadowToLight >= 0) {
@@ -411,13 +412,20 @@ class _StaticCachePass(final RenderContext3D _context) {
       );
     }
     if (off.movingBounds >= 0) {
-      block.writeVec4ValuesAt(
-        off.movingBounds,
-        movingBounds.x,
-        movingBounds.y,
-        movingBounds.z,
-        movingBounds.w,
-      );
+      final dataLen = block.data.length;
+      final activeCount = movingBoundsCount.clamp(0, 4);
+      for (var i = 0; i < 4; i++) {
+        final floatOffset = off.movingBounds + i * 4;
+        if (floatOffset + 4 > dataLen) {
+          break;
+        }
+        if (i < activeCount && i < movingBounds.length) {
+          final b = movingBounds[i];
+          block.writeVec4ValuesAt(floatOffset, b.x, b.y, b.z, b.w);
+        } else {
+          block.writeVec4ValuesAt(floatOffset, 2.0, 2.0, -1.0, -1.0);
+        }
+      }
     }
 
     final liveShadow = _ShadowPass.shadowMapTexture(context);

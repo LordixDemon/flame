@@ -407,9 +407,23 @@ void main() {
       },
     );
 
-    test(
+    testWithGame<_FakeGame3D>(
       'Object3D.shadowAabb tightens movingBounds and skips inverted boxes',
-      () {
+      () => _FakeGame3D(device, context),
+      (game) async {
+        final layer = Scene3DComponent(
+          projection: Scene3DProjection.affine(
+            origin: Vector2(32, 32),
+            xAxis: Vector2(20, 10),
+            yAxis: Vector2(-20, 10),
+            zAxis: Vector2(0, -20),
+            towardsViewer: Vector3(1, 1, 1),
+            near: -20,
+            far: 20,
+          ),
+        );
+        final world = layer.world
+          ..staticSceneCache = StaticSceneCacheSettings(stillFrames: 1);
         final sun = LightComponent.directional(
           direction: Vector3(0.3, -0.4, -0.85)..normalize(),
           shadows: ShadowSettings(
@@ -421,30 +435,36 @@ void main() {
               Vector3(12, 12, 4),
             ),
             cacheStillCasters: true,
+            stillCasterFrames: 1,
           ),
         );
-        final staticBox = _CountingBox(onDraw: () {});
-        final tightMover = _ShadowAabbBox(
-          bounds: Aabb3.minMax(Vector3(-9, -9, -1), Vector3(9, 9, 1)),
-          shadowBounds: Aabb3.minMax(
-            Vector3(-0.5, -0.5, 0),
-            Vector3(0.5, 0.5, 1),
-          ),
-        )..sceneCacheMotion = SceneCacheMotion.dynamic;
-        final nonCastingMover = _ShadowAabbBox(
-          bounds: Aabb3.minMax(Vector3(-9, -9, -1), Vector3(9, 9, 1)),
-          shadowBounds: Aabb3.minMax(Vector3(1, 1, 1), Vector3(-1, -1, -1)),
-        )..sceneCacheMotion = SceneCacheMotion.dynamic;
+        final staticBox = _CountingBox(onDraw: () {})
+          ..position.setValues(0, 0, -5);
+        final tightMover =
+            _ShadowAabbBox(
+                bounds: Aabb3.minMax(Vector3(-9, -9, -1), Vector3(9, 9, 1)),
+                shadowBounds: Aabb3.minMax(
+                  Vector3(-0.5, -0.5, 0),
+                  Vector3(0.5, 0.5, 1),
+                ),
+              )
+              ..shadowMotion = ShadowCasterMotion.moving
+              ..sceneCacheMotion = SceneCacheMotion.dynamic;
+        final nonCastingMover =
+            _ShadowAabbBox(
+                bounds: Aabb3.minMax(Vector3(-9, -9, -1), Vector3(9, 9, 1)),
+                shadowBounds: Aabb3.minMax(
+                  Vector3(1, 1, 1),
+                  Vector3(-1, -1, -1),
+                ),
+              )
+              ..shadowMotion = ShadowCasterMotion.moving
+              ..sceneCacheMotion = SceneCacheMotion.dynamic;
 
-        final world = World3D(
-          staticSceneCache: StaticSceneCacheSettings(stillFrames: 1),
-          children: [sun, staticBox, tightMover, nonCastingMover],
-        );
-        world.onMount();
-        for (final c in [sun, staticBox, tightMover, nonCastingMover]) {
-          c.onMount();
-        }
-        world.update(0.016);
+        await game.ensureAdd(layer);
+        await world.ensureAddAll([sun, staticBox, tightMover, nonCastingMover]);
+        await game.ready();
+        game.update(0.016);
 
         void runFrame() {
           context.setCamera(Matrix4.identity(), perspective);
@@ -471,6 +491,7 @@ void main() {
           runFrame();
           runFrame();
           final bTight = world.staticSceneCacheMovingBounds.clone();
+          expect(bTight.z, greaterThan(bTight.x));
           expect(bTight.z - bTight.x, lessThan(0.25));
           expect(bTight.w - bTight.y, lessThan(0.25));
 
@@ -480,6 +501,117 @@ void main() {
           final bAfterSkipped = world.staticSceneCacheMovingBounds;
           expect(bAfterSkipped.x, closeTo(bTight.x, 1e-6));
           expect(bAfterSkipped.z, closeTo(bTight.z, 1e-6));
+        });
+      },
+    );
+
+    testWithGame<_FakeGame3D>(
+      'Object3D.shadowAabbs keeps sparse boxes separate, merges > 4 to 4, '
+      'and handles 0 movers',
+      () => _FakeGame3D(device, context),
+      (game) async {
+        final layer = Scene3DComponent(
+          projection: Scene3DProjection.affine(
+            origin: Vector2(32, 32),
+            xAxis: Vector2(20, 10),
+            yAxis: Vector2(-20, 10),
+            zAxis: Vector2(0, -20),
+            towardsViewer: Vector3(1, 1, 1),
+            near: -20,
+            far: 20,
+          ),
+        );
+        final world = layer.world
+          ..staticSceneCache = StaticSceneCacheSettings(stillFrames: 1);
+        final sun = LightComponent.directional(
+          direction: Vector3(0.3, -0.4, -0.85)..normalize(),
+          shadows: ShadowSettings(
+            resolution: 256,
+            fit: ShadowFit.fixed,
+            bounds: Aabb3.minMax(Vector3(-12, -12, -2), Vector3(12, 12, 2)),
+            casterBounds: Aabb3.minMax(
+              Vector3(-14, -14, -4),
+              Vector3(14, 14, 4),
+            ),
+            cacheStillCasters: true,
+            stillCasterFrames: 1,
+          ),
+        );
+        final staticBox = _CountingBox(onDraw: () {})
+          ..position.setValues(0, 0, -5);
+        final multiBoxMover =
+            _ShadowAabbsBox(
+                bounds: Aabb3.minMax(Vector3(-10, -10, -1), Vector3(10, 10, 1)),
+                boxes: [
+                  Aabb3.minMax(
+                    Vector3(-7.0, -7.0, 0),
+                    Vector3(-6.2, -6.2, 0.8),
+                  ),
+                  Aabb3.minMax(Vector3(6.2, 6.2, 0), Vector3(7.0, 7.0, 0.8)),
+                ],
+              )
+              ..shadowMotion = ShadowCasterMotion.moving
+              ..sceneCacheMotion = SceneCacheMotion.dynamic;
+
+        await game.ensureAdd(layer);
+        await world.ensureAddAll([sun, staticBox, multiBoxMover]);
+        await game.ready();
+        game.update(0.016);
+
+        void runFrame() {
+          context.setCamera(Matrix4.identity(), perspective);
+          device.begin();
+          world.renderShadowsNoCanvas(overrideContext: context);
+          world
+              .executeWorldRenderPipeline(
+                device: device,
+                renderContext: context,
+                width: 64,
+                height: 64,
+                msaaSampleCount: 1,
+                clearValue: const Color(0x00000000),
+                recordDraws: () =>
+                    world.renderSceneNoCanvas(overrideContext: context),
+              )
+              .dispose();
+          device.end();
+        }
+
+        world.renderWithHost(device, context, () {
+          // Settle static caster and populate cache with 2 separated boxes.
+          runFrame();
+          runFrame();
+          final twoBoxes = world.staticSceneCacheMovingBoundsList;
+          expect(twoBoxes.length, 2);
+          final union = world.staticSceneCacheMovingBounds;
+          final areaSum = twoBoxes.fold<double>(
+            0.0,
+            (s, b) => s + (b.z - b.x) * (b.w - b.y),
+          );
+          final unionArea = (union.z - union.x) * (union.w - union.y);
+          expect(areaSum, lessThan(unionArea * 0.5));
+
+          // > 4 input boxes greedily merge down to 4 covering all 6 inputs.
+          final sixInputs = [
+            Aabb3.minMax(Vector3(-8.0, -8.0, 0), Vector3(-7.4, -7.4, 0.6)),
+            Aabb3.minMax(Vector3(-7.2, -8.0, 0), Vector3(-6.6, -7.4, 0.6)),
+            Aabb3.minMax(Vector3(7.4, -8.0, 0), Vector3(8.0, -7.4, 0.6)),
+            Aabb3.minMax(Vector3(-8.0, 7.4, 0), Vector3(-7.4, 8.0, 0.6)),
+            Aabb3.minMax(Vector3(7.4, 7.4, 0), Vector3(8.0, 8.0, 0.6)),
+            Aabb3.minMax(Vector3(-0.3, -0.3, 0), Vector3(0.3, 0.3, 0.6)),
+          ];
+          multiBoxMover.boxes = sixInputs;
+          runFrame();
+          final merged = world.staticSceneCacheMovingBoundsList;
+          expect(merged.length, 4);
+
+          // 0 active moving casters -> empty list + inverted sentinel bounds.
+          multiBoxMover.boxes = const [];
+          runFrame();
+          expect(world.staticSceneCacheMovingBoundsList, isEmpty);
+          final empty = world.staticSceneCacheMovingBounds;
+          expect(empty.x, 2.0);
+          expect(empty.z, -1.0);
         });
       },
     );
@@ -575,6 +707,32 @@ class _ShadowAabbBox({
 
   @override
   Aabb3? get shadowAabb => shadowBounds;
+
+  @override
+  void draw(RenderContext context) {
+    (context as RenderContext3D).drawMesh(
+      _mesh,
+      transform: worldTransformMatrix,
+    );
+  }
+}
+
+class _ShadowAabbsBox({
+  required this.bounds,
+  required this.boxes,
+}) extends Object3D {
+  final Aabb3 bounds;
+  List<Aabb3> boxes;
+  final Mesh _mesh = CuboidMesh(
+    size: Vector3.all(1),
+    material: StylizedMaterial(windAmplitude: 0),
+  );
+
+  @override
+  Aabb3 computeLocalAabb() => bounds;
+
+  @override
+  List<Aabb3>? get shadowAabbs => boxes;
 
   @override
   void draw(RenderContext context) {

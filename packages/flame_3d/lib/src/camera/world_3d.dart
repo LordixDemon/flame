@@ -503,10 +503,47 @@ class World3D({
   /// `staticSceneCache` (null when the last rendered frame hit).
   String? get staticSceneCacheMissReason => _staticCache.lastMissReason;
 
-  /// Screen-light-space UV bounds (`minU, minV, maxU, maxV`) computed for
-  /// active moving shadow casters during the most recent static cache restore.
+  /// Combined screen-light-space UV bounds (`minU, minV, maxU, maxV`) across
+  /// all active moving shadow-caster boxes during the most recent static cache
+  /// restore.
   @visibleForTesting
-  Vector4 get staticSceneCacheMovingBounds => _staticCache.movingBounds;
+  Vector4 get staticSceneCacheMovingBounds {
+    final count = _staticCache.movingBoundsCount;
+    if (count <= 0) {
+      return Vector4(2.0, 2.0, -1.0, -1.0);
+    }
+    final boxes = _staticCache.movingBounds;
+    final first = boxes[0];
+    if (count == 1) {
+      return first.clone();
+    }
+    var minU = first.x;
+    var minV = first.y;
+    var maxU = first.z;
+    var maxV = first.w;
+    for (var i = 1; i < count; i++) {
+      final b = boxes[i];
+      if (b.x < minU) {
+        minU = b.x;
+      }
+      if (b.y < minV) {
+        minV = b.y;
+      }
+      if (b.z > maxU) {
+        maxU = b.z;
+      }
+      if (b.w > maxV) {
+        maxV = b.w;
+      }
+    }
+    return Vector4(minU, minV, maxU, maxV);
+  }
+
+  /// Active per-box screen-light-space UV bounds (up to 4) computed for
+  /// moving shadow casters during the most recent static cache restore.
+  @visibleForTesting
+  List<Vector4> get staticSceneCacheMovingBoundsList =>
+      _staticCache.movingBounds.sublist(0, _staticCache.movingBoundsCount);
 
   /// Rasterizes registered occluders of [occlusionCuller] once per unique
   /// main-camera view-projection and frame before traversal.

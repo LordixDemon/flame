@@ -157,6 +157,11 @@ abstract class Object3D({
   /// shadow-casting parts.
   Aabb3? get shadowAabb => null;
 
+  /// Optional tighter per-part world-space shadow AABBs for moving casters.
+  /// When non-null, overrides [shadowAabb] when computing tight moving-shadow
+  /// projection bounds in StaticSceneCache3D.
+  List<Aabb3>? get shadowAabbs => null;
+
   /// Whether [SceneSpatialIndex3D] has queued a pending transform/bounds update
   /// for this object.
   @internal

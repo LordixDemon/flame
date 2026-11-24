@@ -124,6 +124,36 @@ float flameSingleMapVisibility(vec3 worldPosition, vec3 normal) {
   vec2 texelPosition = uv * FLAME_SHADOWS(map).xy - 0.5;
   vec2 base = floor(texelPosition);
   vec2 f = texelPosition - base;
+  vec2 invSize = FLAME_SHADOWS(map).zw;
+  vec4 decode = FLAME_SHADOWS(decode);
+  if (radius < 0.5) {
+    float lit = 0.0;
+    for (int iy = 0; iy < 2; iy++) {
+      float wy = iy == 0 ? 1.0 - f.y : f.y;
+      float oy = float(iy);
+      for (int ix = 0; ix < 2; ix++) {
+        float wx = ix == 0 ? 1.0 - f.x : f.x;
+        vec2 sampleUv = (base + vec2(float(ix), oy) + 0.5) * invSize;
+        float stored = dot(texture(shadowMap, sampleUv), decode);
+        lit += wx * wy * step(depth, stored);
+      }
+    }
+    return lit;
+  }
+  if (radius < 1.5) {
+    float lit = 0.0;
+    for (int iy = 0; iy < 4; iy++) {
+      float wy = iy == 0 ? 1.0 - f.y : (iy == 3 ? f.y : 1.0);
+      float oy = float(iy) - 1.0;
+      for (int ix = 0; ix < 4; ix++) {
+        float wx = ix == 0 ? 1.0 - f.x : (ix == 3 ? f.x : 1.0);
+        vec2 sampleUv = (base + vec2(float(ix) - 1.0, oy) + 0.5) * invSize;
+        float stored = dot(texture(shadowMap, sampleUv), decode);
+        lit += wx * wy * step(depth, stored);
+      }
+    }
+    return lit / 9.0;
+  }
   float lit = 0.0;
   for (int row = 0; row < 8; row++) {
     float y = float(row) - 3.0;
@@ -134,9 +164,8 @@ float flameSingleMapVisibility(vec3 worldPosition, vec3 normal) {
         if (x >= -radius && x <= radius + 1.0) {
           float wx =
             x == -radius ? 1.0 - f.x : (x == radius + 1.0 ? f.x : 1.0);
-          vec2 sampleUv = (base + vec2(x, y) + 0.5) * FLAME_SHADOWS(map).zw;
-          float stored =
-            dot(texture(shadowMap, sampleUv), FLAME_SHADOWS(decode));
+          vec2 sampleUv = (base + vec2(x, y) + 0.5) * invSize;
+          float stored = dot(texture(shadowMap, sampleUv), decode);
           lit += wx * wy * step(depth, stored);
         }
       }

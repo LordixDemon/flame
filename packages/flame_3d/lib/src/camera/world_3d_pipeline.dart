@@ -556,7 +556,7 @@ extension _World3DPipeline on World3D {
       if (projectMovingShadows) {
         _computeMovingShadowBounds(
           renderContext,
-          _staticCache.movingBounds,
+          _staticCache,
         );
       }
     }
@@ -711,6 +711,7 @@ extension _World3DPipeline on World3D {
             zFar: layer0Far,
             projectMovingShadows: projectMovingShadows,
             movingBounds: _staticCache.movingBounds,
+            movingBoundsCount: _staticCache.movingBoundsCount,
           );
         }
         renderContext.flushDynamicOnly(releaseAfter: true);
@@ -760,6 +761,7 @@ extension _World3DPipeline on World3D {
           zFar: layer0Far,
           projectMovingShadows: projectMovingShadows,
           movingBounds: _staticCache.movingBounds,
+          movingBoundsCount: _staticCache.movingBoundsCount,
         );
       }
       renderContext.flushDynamicOnly(releaseAfter: true);
@@ -992,9 +994,19 @@ class _StaticSceneCacheState() {
   String? lastMissReason;
   String? lastCandidateResetReason;
 
+  static const int maxMovingBounds = 4;
+
   final List<Material> staticMaterials = [];
   final List<int> staticMaterialVersions = [];
-  final Vector4 movingBounds = Vector4(2, 2, -1, -1);
+  final List<Vector4> movingBounds = List.generate(
+    maxMovingBounds,
+    (_) => Vector4(2.0, 2.0, -1.0, -1.0),
+  );
+  int movingBoundsCount = 0;
+  final List<double> _projBoxMinU = [];
+  final List<double> _projBoxMinV = [];
+  final List<double> _projBoxMaxU = [];
+  final List<double> _projBoxMaxV = [];
 
   GpuTextureTarget? colorTarget;
   GpuTextureTarget? depthTarget;
@@ -1386,36 +1398,47 @@ extension _WorldStaticCacheBounds on World3D {
     return 'none';
   }
 
-  void _computeMovingShadowBounds(RenderContext3D ctx, Vector4 out) {
+  void _computeMovingShadowBounds(
+    RenderContext3D ctx,
+    _StaticSceneCacheState cache,
+  ) {
+    final boundsList = cache.movingBounds;
     final casters = _versions.shadowCasters;
     if (!casters.moversComplete) {
-      out.setValues(0.0, 0.0, 1.0, 1.0);
+      boundsList[0].setValues(0.0, 0.0, 1.0, 1.0);
+      for (var i = 1; i < _StaticSceneCacheState.maxMovingBounds; i++) {
+        boundsList[i].setValues(2.0, 2.0, -1.0, -1.0);
+      }
+      cache.movingBoundsCount = 1;
       return;
     }
     final movers = casters.movers;
     if (movers.isEmpty) {
-      out.setValues(2.0, 2.0, -1.0, -1.0);
+      for (var i = 0; i < _StaticSceneCacheState.maxMovingBounds; i++) {
+        boundsList[i].setValues(2.0, 2.0, -1.0, -1.0);
+      }
+      cache.movingBoundsCount = 0;
       return;
     }
     final lp = ctx.shadowLightViewProjection.storage;
     final passMask = ctx.cameraMask;
-    var minU = double.infinity;
-    var minV = double.infinity;
-    var maxU = double.negativeInfinity;
-    var maxV = double.negativeInfinity;
-    for (var i = 0; i < movers.length; i++) {
-      final obj = movers[i];
-      if (!obj.castsShadows ||
-          !obj.isEffectivelyVisible ||
-          !World3D._passesCameraMaskHierarchy(obj, passMask)) {
-        continue;
-      }
-      final b = obj.shadowAabb ?? obj.aabb;
+    final pad =
+        (ctx.shadowFilterRadius.clamp(0.0, 3.0) + 1.5) * ctx.shadowMapInvSize;
+    final minUs = cache._projBoxMinU..clear();
+    final minVs = cache._projBoxMinV..clear();
+    final maxUs = cache._projBoxMaxU..clear();
+    final maxVs = cache._projBoxMaxV..clear();
+
+    void projectBox(Aabb3 b) {
       final bMin = b.min;
       final bMax = b.max;
       if (bMin.x > bMax.x || bMin.y > bMax.y || bMin.z > bMax.z) {
-        continue;
+        return;
       }
+      var minU = double.infinity;
+      var minV = double.infinity;
+      var maxU = double.negativeInfinity;
+      var maxV = double.negativeInfinity;
       for (var c = 0; c < 8; c++) {
         final x = (c & 1) == 0 ? bMin.x : bMax.x;
         final y = (c & 2) == 0 ? bMin.y : bMax.y;
@@ -1439,18 +1462,101 @@ extension _WorldStaticCacheBounds on World3D {
           maxV = v;
         }
       }
+      if (!minU.isFinite) {
+        return;
+      }
+      final u0 = (minU - pad).clamp(0.0, 1.0);
+      final v0 = (minV - pad).clamp(0.0, 1.0);
+      final u1 = (maxU + pad).clamp(0.0, 1.0);
+      final v1 = (maxV + pad).clamp(0.0, 1.0);
+      if (u0 >= u1 || v0 >= v1) {
+        return;
+      }
+      minUs.add(u0);
+      minVs.add(v0);
+      maxUs.add(u1);
+      maxVs.add(v1);
     }
-    if (!minU.isFinite) {
-      out.setValues(2.0, 2.0, -1.0, -1.0);
-      return;
+
+    for (var i = 0; i < movers.length; i++) {
+      final obj = movers[i];
+      if (!obj.castsShadows ||
+          !obj.isEffectivelyVisible ||
+          !World3D._passesCameraMaskHierarchy(obj, passMask)) {
+        continue;
+      }
+      final boxes = obj.shadowAabbs;
+      if (boxes != null) {
+        for (var j = 0; j < boxes.length; j++) {
+          projectBox(boxes[j]);
+        }
+      } else {
+        projectBox(obj.shadowAabb ?? obj.aabb);
+      }
     }
-    final pad =
-        (ctx.shadowFilterRadius.clamp(0.0, 3.0) + 1.5) * ctx.shadowMapInvSize;
-    out.setValues(
-      (minU - pad).clamp(0.0, 1.0),
-      (minV - pad).clamp(0.0, 1.0),
-      (maxU + pad).clamp(0.0, 1.0),
-      (maxV + pad).clamp(0.0, 1.0),
-    );
+
+    while (minUs.length > _StaticSceneCacheState.maxMovingBounds) {
+      var bestA = 0;
+      var bestB = 1;
+      var bestWaste = double.infinity;
+      final n = minUs.length;
+      for (var a = 0; a < n - 1; a++) {
+        final aU0 = minUs[a];
+        final aV0 = minVs[a];
+        final aU1 = maxUs[a];
+        final aV1 = maxVs[a];
+        final areaA = (aU1 - aU0) * (aV1 - aV0);
+        for (var b = a + 1; b < n; b++) {
+          final bU0 = minUs[b];
+          final bV0 = minVs[b];
+          final bU1 = maxUs[b];
+          final bV1 = maxVs[b];
+          final areaB = (bU1 - bU0) * (bV1 - bV0);
+          final mU0 = aU0 < bU0 ? aU0 : bU0;
+          final mV0 = aV0 < bV0 ? aV0 : bV0;
+          final mU1 = aU1 > bU1 ? aU1 : bU1;
+          final mV1 = aV1 > bV1 ? aV1 : bV1;
+          final unionArea = (mU1 - mU0) * (mV1 - mV0);
+          final waste = unionArea - areaA - areaB;
+          if (waste < bestWaste) {
+            bestWaste = waste;
+            bestA = a;
+            bestB = b;
+          }
+        }
+      }
+      if (minUs[bestB] < minUs[bestA]) {
+        minUs[bestA] = minUs[bestB];
+      }
+      if (minVs[bestB] < minVs[bestA]) {
+        minVs[bestA] = minVs[bestB];
+      }
+      if (maxUs[bestB] > maxUs[bestA]) {
+        maxUs[bestA] = maxUs[bestB];
+      }
+      if (maxVs[bestB] > maxVs[bestA]) {
+        maxVs[bestA] = maxVs[bestB];
+      }
+      final lastIdx = n - 1;
+      if (bestB != lastIdx) {
+        minUs[bestB] = minUs[lastIdx];
+        minVs[bestB] = minVs[lastIdx];
+        maxUs[bestB] = maxUs[lastIdx];
+        maxVs[bestB] = maxVs[lastIdx];
+      }
+      minUs.removeLast();
+      minVs.removeLast();
+      maxUs.removeLast();
+      maxVs.removeLast();
+    }
+
+    final count = minUs.length;
+    for (var i = 0; i < count; i++) {
+      boundsList[i].setValues(minUs[i], minVs[i], maxUs[i], maxVs[i]);
+    }
+    for (var i = count; i < _StaticSceneCacheState.maxMovingBounds; i++) {
+      boundsList[i].setValues(2.0, 2.0, -1.0, -1.0);
+    }
+    cache.movingBoundsCount = count;
   }
 }

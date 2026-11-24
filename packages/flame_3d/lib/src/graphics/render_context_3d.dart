@@ -1291,7 +1291,8 @@ class RenderContext3D(super.device) extends RenderContext {
     required double zNear,
     required double zFar,
     required bool projectMovingShadows,
-    required Vector4 movingBounds,
+    required List<Vector4> movingBounds,
+    int movingBoundsCount = 1,
   }) => _staticCachePass.drawStaticRestore(
     staticColor: staticColor,
     staticDepth: staticDepth,
@@ -1299,6 +1300,7 @@ class RenderContext3D(super.device) extends RenderContext {
     zFar: zFar,
     projectMovingShadows: projectMovingShadows,
     movingBounds: movingBounds,
+    movingBoundsCount: movingBoundsCount,
   );
 
   bool _classifyStaticDraw(
