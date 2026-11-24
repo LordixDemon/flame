@@ -553,13 +553,21 @@ extension _World3DPipeline on World3D {
             renderContext.stillShadowTexture,
             renderContext.activeShadowMapTexture,
           );
-      if (projectMovingShadows) {
+      if (projectMovingShadows &&
+          _staticCache._movingBoundsShadowVersion !=
+              renderContext.shadowMapVersion) {
         _computeMovingShadowBounds(
           renderContext,
           _staticCache,
         );
+        _staticCache._movingBoundsShadowVersion =
+            renderContext.shadowMapVersion;
       }
     }
+    final liveMsaaSampleCount =
+        useStaticRestore && (cacheSettings?.restoreWithoutMsaa ?? false)
+        ? 1
+        : msaaSampleCount;
     final runGrab =
         !useStaticRestore &&
         supportsTexTargets &&
@@ -699,7 +707,7 @@ extension _World3DPipeline on World3D {
         sceneFormat,
         clearValue: clearValue,
         role: _SceneTarget.scene,
-        msaaSampleCount: msaaSampleCount,
+        msaaSampleCount: liveMsaaSampleCount,
       );
       device.beginTexturePass(texTarget, frontFace: renderContext.frontFace);
       if (useStaticRestore) {
@@ -748,7 +756,7 @@ extension _World3DPipeline on World3D {
     } else {
       device.beginPass(
         Size(width.toDouble(), height.toDouble()),
-        msaaSampleCount: msaaSampleCount,
+        msaaSampleCount: liveMsaaSampleCount,
         frontFace: renderContext.frontFace,
       );
     }
@@ -1003,6 +1011,7 @@ class _StaticSceneCacheState() {
     (_) => Vector4(2.0, 2.0, -1.0, -1.0),
   );
   int movingBoundsCount = 0;
+  int _movingBoundsShadowVersion = -1;
   final List<double> _projBoxMinU = [];
   final List<double> _projBoxMinV = [];
   final List<double> _projBoxMaxU = [];
@@ -1022,6 +1031,7 @@ class _StaticSceneCacheState() {
   void invalidate() {
     populated = false;
     _stillCount = 0;
+    _movingBoundsShadowVersion = -1;
     lastMissReason = null;
     lastCandidateResetReason = null;
     staticMaterials.clear();
@@ -1031,6 +1041,7 @@ class _StaticSceneCacheState() {
   void resetWarmup() {
     populated = false;
     _stillCount = 0;
+    _movingBoundsShadowVersion = -1;
     lastMissReason = null;
     lastCandidateResetReason = null;
   }
@@ -1201,6 +1212,7 @@ class _StaticSceneCacheState() {
     required int stillFrames,
   }) {
     populated = false;
+    _movingBoundsShadowVersion = -1;
     final candMismatch = _stillCount > 0
         ? _firstMismatchReason(
             prevDeviceGeneration: _candDeviceGeneration,
@@ -1328,6 +1340,7 @@ class _StaticSceneCacheState() {
     _targetMsaa = msaaSampleCount;
     _targetFormat = sceneFormat;
     _targetClearArgb = clearArgb;
+    _movingBoundsShadowVersion = -1;
     return (colorTarget: ct, depthTarget: dt);
   }
 }

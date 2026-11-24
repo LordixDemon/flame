@@ -644,8 +644,216 @@ void main() {
         expect(layer.lastRenderTime, Duration.zero);
       },
     );
+
+    test(
+      'StaticSceneCacheSettings.restoreWithoutMsaa uses full MSAA for cache '
+      'populate/miss and 1x for restore hits',
+      () {
+        final staticMesh = CuboidMesh(
+          size: Vector3.all(1),
+          material: StylizedMaterial(
+            albedoColor: const Color(0xFFCC4444),
+            windAmplitude: 0,
+          ),
+        );
+        final dynMesh = CuboidMesh(
+          size: Vector3.all(0.5),
+          material: StylizedMaterial(
+            albedoColor: const Color(0xFF44CC44),
+            windAmplitude: 0,
+          ),
+        );
+
+        final world = World3D(
+          staticSceneCache: StaticSceneCacheSettings(
+            restoreWithoutMsaa: true,
+          ),
+        );
+
+        void record() {
+          context.currentObjectDynamic = false;
+          context.drawMesh(
+            staticMesh,
+            transform: Matrix4.translationValues(0, 0, -5),
+          );
+          context.currentObjectDynamic = true;
+          context.drawMesh(
+            dynMesh,
+            transform: Matrix4.translationValues(1, 0, -5),
+          );
+          context.currentObjectDynamic = false;
+        }
+
+        Stats pass({double dx = 0}) {
+          final view = Matrix4.translationValues(dx, 0, 0);
+          context.setCamera(view, perspective);
+          device.begin();
+          world
+              .executeWorldRenderPipeline(
+                device: device,
+                renderContext: context,
+                width: 64,
+                height: 64,
+                msaaSampleCount: 4,
+                clearValue: const Color(0x00000000),
+                recordDraws: record,
+              )
+              .dispose();
+          device.end();
+          return (
+            stats: RenderStats()..setFrom(device.lastFrameStats),
+            targets: List.of(backend.renderTargets),
+            texSamples: List.of(backend.textureTargetSampleCounts),
+          );
+        }
+
+        // Frame 1: warmup miss -> creates 4x live renderTarget, 0 tex targets.
+        final f1 = pass();
+        expect(f1.stats.staticCacheMisses, 1);
+        expect(f1.targets, [(64, 64, 4)]);
+        expect(f1.texSamples, isEmpty);
+
+        // Frame 2: populate -> creates static colorTarget with 4x MSAA,
+        // static depthTarget with 1x, AND switches live renderTarget to 1x!
+        final f2 = pass();
+        expect(f2.stats.staticCacheMisses, 1);
+        expect(f2.texSamples, [4, 1]);
+        expect(f2.targets, [(64, 64, 4), (64, 64, 1)]);
+
+        // Frame 3: cache hit -> reuses 1x live renderTarget (no new target).
+        final f3 = pass();
+        expect(f3.stats.staticCacheHits, 1);
+        expect(f3.targets, [(64, 64, 4), (64, 64, 1)]);
+
+        // Frame 4: camera moves -> miss -> reuses pooled 4x live renderTarget.
+        final f4 = pass(dx: 0.5);
+        expect(f4.stats.staticCacheMisses, 1);
+        expect(f4.targets, [(64, 64, 4), (64, 64, 1)]);
+      },
+    );
+
+    testWithGame<_FakeGame3D>(
+      'ShadowSettings.movingCasterInterval skips moving shadow updates on '
+      'skipped frames while staying responsive to still casters and lights',
+      () => _FakeGame3D(device, context),
+      (game) async {
+        final layer = Scene3DComponent(
+          projection: Scene3DProjection.affine(
+            origin: Vector2(32, 32),
+            xAxis: Vector2(20, 10),
+            yAxis: Vector2(-20, 10),
+            zAxis: Vector2(0, -20),
+            towardsViewer: Vector3(1, 1, 1),
+            near: -20,
+            far: 20,
+          ),
+        );
+        final world = layer.world
+          ..staticSceneCache = StaticSceneCacheSettings(stillFrames: 1);
+        final sun = LightComponent.directional(
+          direction: Vector3(0.3, -0.4, -0.85)..normalize(),
+          shadows: ShadowSettings(
+            resolution: 256,
+            fit: ShadowFit.fixed,
+            bounds: Aabb3.minMax(Vector3(-10, -10, -2), Vector3(10, 10, 2)),
+            casterBounds: Aabb3.minMax(
+              Vector3(-12, -12, -4),
+              Vector3(12, 12, 4),
+            ),
+            cacheStillCasters: true,
+            stillCasterFrames: 1,
+            movingCasterInterval: 2,
+          ),
+        );
+        final staticBox = _CountingBox(onDraw: () {})
+          ..position.setValues(0, 0, -5);
+        final mover =
+            _ShadowAabbBox(
+                bounds: Aabb3.minMax(Vector3(-2, -2, -1), Vector3(2, 2, 1)),
+                shadowBounds: Aabb3.minMax(
+                  Vector3(-0.5, -0.5, 0),
+                  Vector3(0.5, 0.5, 1),
+                ),
+              )
+              ..shadowMotion = ShadowCasterMotion.moving
+              ..sceneCacheMotion = SceneCacheMotion.dynamic;
+
+        await game.ensureAdd(layer);
+        await world.ensureAddAll([sun, staticBox, mover]);
+        await game.ready();
+        game.update(0.016);
+
+        RenderStats runFrame() {
+          context.setCamera(Matrix4.identity(), perspective);
+          device.begin();
+          world.renderShadowsNoCanvas(overrideContext: context);
+          world
+              .executeWorldRenderPipeline(
+                device: device,
+                renderContext: context,
+                width: 64,
+                height: 64,
+                msaaSampleCount: 1,
+                clearValue: const Color(0x00000000),
+                recordDraws: () =>
+                    world.renderSceneNoCanvas(overrideContext: context),
+              )
+              .dispose();
+          device.end();
+          return RenderStats()..setFrom(device.lastFrameStats);
+        }
+
+        world.renderWithHost(device, context, () {
+          // Frames 1-2: settle still caster & populate live shadow map.
+          runFrame();
+          final s2 = runFrame();
+          expect(s2.shadowPasses, greaterThanOrEqualTo(1));
+          final verAfterF2 = context.shadowMapVersion;
+          final boundsAfterF2 = world.staticSceneCacheMovingBounds.clone();
+
+          // Frame 3: only mover changes -> interval 2 skips moving shadow pass!
+          mover.shadowBounds = Aabb3.minMax(
+            Vector3(2.0, 2.0, 0),
+            Vector3(3.0, 3.0, 1),
+          );
+          mover.markDrawDirty();
+          final s3 = runFrame();
+          expect(s3.shadowPasses, 0);
+          expect(context.shadowMapVersion, verAfterF2);
+          // movingBounds stay synced with the reused shadowMapVersion.
+          expect(
+            world.staticSceneCacheMovingBounds.x,
+            closeTo(boundsAfterF2.x, 1e-6),
+          );
+
+          // Frame 4: mover still changed -> triggers moving shadow pass and
+          // recomputes movingBounds for the new shadow map.
+          final s4 = runFrame();
+          expect(s4.shadowPasses, 1);
+          expect(context.shadowMapVersion, greaterThan(verAfterF2));
+          expect(
+            world.staticSceneCacheMovingBounds.x,
+            greaterThan(boundsAfterF2.x + 0.05),
+          );
+
+          // Frame 5: still caster changes on a skipped slot -> renders
+          // immediately.
+          staticBox.position.setValues(1, 0, -5);
+          staticBox.markDrawDirty();
+          mover.markDrawDirty();
+          final s5 = runFrame();
+          expect(s5.shadowPasses, greaterThanOrEqualTo(1));
+        });
+      },
+    );
   });
 }
+
+typedef Stats = ({
+  RenderStats stats,
+  List<(int, int, int)> targets,
+  List<int> texSamples,
+});
 
 class _CountingSurfaceBox({
   required Surface surface,
@@ -696,7 +904,7 @@ class _ShadowAabbBox({
   required this.shadowBounds,
 }) extends Object3D {
   final Aabb3 bounds;
-  final Aabb3 shadowBounds;
+  Aabb3 shadowBounds;
   final Mesh _mesh = CuboidMesh(
     size: Vector3.all(1),
     material: StylizedMaterial(windAmplitude: 0),

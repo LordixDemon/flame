@@ -215,6 +215,23 @@ extension _ShadowPassAtlas on _ShadowPass {
     final atlasHeight = atlas.height;
     _staticMaps[projection] = null;
     if (split) {
+      var movingInterval = primarySettings.movingCasterInterval;
+      if (dirSettings != null &&
+          dirSettings.movingCasterInterval < movingInterval) {
+        movingInterval = dirSettings.movingCasterInterval;
+      }
+      for (var k = 0; k < spotCount; k++) {
+        final sInterval = (_spotCasters[k]!.source as SpotLight)
+            .shadows!
+            .movingCasterInterval;
+        if (sInterval < movingInterval) {
+          movingInterval = sInterval;
+        }
+      }
+      if (pointSettings != null &&
+          pointSettings.movingCasterInterval < movingInterval) {
+        movingInterval = pointSettings.movingCasterInterval;
+      }
       _writeAtlasMap(atlasWidth, atlasHeight, primarySettings);
       return _beginSplit(
         owner: projection,
@@ -225,6 +242,7 @@ extension _ShadowPassAtlas on _ShadowPass {
         height: atlasHeight,
         float: float,
         format: format,
+        movingCasterInterval: movingInterval,
       );
     }
     _stillLayers[projection] = null;

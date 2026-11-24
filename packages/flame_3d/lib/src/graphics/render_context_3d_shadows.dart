@@ -569,6 +569,7 @@ class _ShadowPass(final RenderContext3D _context) {
         height: resolution,
         float: float,
         format: format,
+        movingCasterInterval: settings.movingCasterInterval,
       );
     }
     _stillLayers[projection] = null;

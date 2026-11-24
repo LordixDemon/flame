@@ -113,6 +113,12 @@ class ShadowSettings({
   /// token between two hops) out of it.
   int stillCasterFrames = 30,
 
+  /// With [cacheStillCasters], how many frames between moving-caster shadow
+  /// updates when still casters, lights, and projections have not changed
+  /// (`1`: every frame; `2`: every other frame, reusing the combined shadow map
+  /// in between while still/light changes always render immediately).
+  int movingCasterInterval = 1,
+
   /// Number of directional shadow cascades (`1`..`4`). The last cascade
   /// covers what a single map would; each other cascade covers a part of it
   /// (see [cascadeSplits]) with a map of the same resolution, so it is
@@ -142,6 +148,7 @@ class ShadowSettings({
     this.softness = softness;
     this.cascades = cascades;
     this.stillCasterFrames = stillCasterFrames;
+    this.movingCasterInterval = movingCasterInterval;
     final splits = cascadeSplits;
     if (splits != null) {
       if (splits.length != cascades && splits.length != cascades - 1) {
@@ -219,6 +226,22 @@ class ShadowSettings({
   }
 
   int _stillCasterFrames = 30;
+
+  /// With [cacheStillCasters], how many frames between moving-caster shadow
+  /// updates when only moving casters changed (`>= 1`).
+  int get movingCasterInterval => _movingCasterInterval;
+  set movingCasterInterval(int value) {
+    if (value < 1) {
+      throw ArgumentError.value(
+        value,
+        'movingCasterInterval',
+        'Must be 1 or more',
+      );
+    }
+    _movingCasterInterval = value;
+  }
+
+  int _movingCasterInterval = 1;
 
   /// Maximum number of directional shadow cascades supported.
   static const int maxCascades = 4;

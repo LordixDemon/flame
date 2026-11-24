@@ -68,6 +68,7 @@ extension _ShadowPassCascades on _ShadowPass {
     required int height,
     required bool float,
     required GpuPixelFormat format,
+    int movingCasterInterval = 1,
   }) {
     final context = _context;
     final device = context.device;
@@ -79,7 +80,9 @@ extension _ShadowPassCascades on _ShadowPass {
     if (layers.deviceGeneration != generation) {
       layers
         ..deviceGeneration = generation
-        ..liveKey = null;
+        ..liveKey = null
+        ..liveValid = false
+        ..movingFramesSkipped = 0;
       for (final view in layers.views) {
         view.valid = false;
       }
@@ -109,7 +112,9 @@ extension _ShadowPassCascades on _ShadowPass {
         ..liveWidth = width
         ..liveHeight = height
         ..livePacked = !float
-        ..liveKey = null;
+        ..liveKey = null
+        ..liveValid = false
+        ..movingFramesSkipped = 0;
     }
     if (atlasPath) {
       _writeAtlasSignature(width, height, float);
@@ -162,7 +167,34 @@ extension _ShadowPassCascades on _ShadowPass {
       view.storeLast(_tileSignature);
     }
 
-    if (reuseWhole) {
+    var effectiveReuseWhole = reuseWhole;
+    if (!effectiveReuseWhole &&
+        movingCasterInterval > 1 &&
+        layers.liveValid &&
+        layers.liveSignatureLength == _atlasSignatureLength &&
+        _ShadowPass._sameValues(
+          layers.liveSignature,
+          _atlasSignature,
+          _atlasSignatureLength,
+        )) {
+      var allStepOver = true;
+      for (var i = 0; i < viewCount; i++) {
+        if (_viewKinds[i] != _ShadowPass._stepOver) {
+          allStepOver = false;
+          break;
+        }
+      }
+      if (allStepOver &&
+          layers.movingFramesSkipped + 1 < movingCasterInterval) {
+        layers.movingFramesSkipped++;
+        effectiveReuseWhole = true;
+      }
+    }
+    if (!effectiveReuseWhole) {
+      layers.movingFramesSkipped = 0;
+    }
+
+    if (effectiveReuseWhole) {
       // The map of an earlier frame holds the same casters in the same
       // views: receive it again, without rendering.
       stats
@@ -539,7 +571,8 @@ extension _ShadowPassCascades on _ShadowPass {
       }
       layers
         ..liveDrawCalls = drawCalls
-        ..liveTriangles = triangles;
+        ..liveTriangles = triangles
+        ..liveValid = true;
       recording = false;
       _split = null;
       _recordingParaboloidTile = false;
@@ -782,6 +815,8 @@ class _StillLayers() {
   int liveWidth = 0;
   int liveHeight = 0;
   bool livePacked = false;
+  bool liveValid = false;
+  int movingFramesSkipped = 0;
   Object? liveKey;
   final Float64List liveSignature = Float64List(
     _StaticShadowAtlas.signatureCapacity,

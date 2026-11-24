@@ -70,7 +70,7 @@ class GraphicsDevice({
   /// The number of frames a render target size that is no longer used stays
   /// pooled, so that a scene whose size changes back and forth, or that skips
   /// a few frames, keeps its targets instead of creating new ones.
-  static const int targetRetainFrames = 30;
+  static const int targetRetainFrames = 300;
 
   // Pipelines, keyed by vertex shader -> fragment shader -> surface layout.
   final Map<GpuShader, Map<GpuShader, Map<VertexLayout, DevicePipeline>>>

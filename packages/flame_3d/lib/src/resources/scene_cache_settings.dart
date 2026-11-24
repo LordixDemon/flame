@@ -12,8 +12,8 @@ enum SceneCacheMotion() {
 }
 
 /// Configuration for `World3D.staticSceneCache`: caches opaque static layer-0
-/// geometry into reusable 1x color and packed clip-depth textures when the
-/// static scene and camera have held still for [stillFrames] frames.
+/// geometry into reusable color and packed clip-depth textures when the static
+/// scene and camera have held still for [stillFrames] frames.
 class StaticSceneCacheSettings({
   /// Whether static scene caching is active.
   bool enabled = true,
@@ -24,6 +24,12 @@ class StaticSceneCacheSettings({
   /// projects moving-caster shadows onto cached static surfaces inside the
   /// fullscreen restore pass.
   bool projectMovingShadows = true,
+
+  /// When `true`, cache population and cache-miss frames still render with the
+  /// layer's full MSAA sample count (keeping cached static surfaces
+  /// antialiased), while cache-hit restore passes render into a `1x` target to
+  /// avoid per-frame MSAA resolve bandwidth.
+  bool restoreWithoutMsaa = false,
 }) {
   /// Whether static scene caching is active.
   bool enabled = enabled;
@@ -37,4 +43,8 @@ class StaticSceneCacheSettings({
   /// projects moving-caster shadows onto cached static surfaces inside the
   /// fullscreen restore pass.
   bool projectMovingShadows = projectMovingShadows;
+
+  /// Whether cache-hit restore passes render into a `1x` (non-MSAA) target
+  /// while static cache population and cache-miss passes keep full MSAA.
+  bool restoreWithoutMsaa = restoreWithoutMsaa;
 }
