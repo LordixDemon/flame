@@ -174,6 +174,9 @@ class _ShadowPass(final RenderContext3D _context) {
       'packages/flame_3d/assets/shaders/shadow_caster_skinned.shaderbundle';
   static const _batchedBundle =
       'packages/flame_3d/assets/shaders/shadow_caster_batched.shaderbundle';
+  static const _skinnedBatchedBundle =
+      'packages/flame_3d/assets/shaders/'
+      'shadow_caster_skinned_batched.shaderbundle';
   static const _paraboloidBundle =
       'packages/flame_3d/assets/shaders/shadow_caster_paraboloid.shaderbundle';
   static const _paraboloidSkinnedBundle =
@@ -182,6 +185,9 @@ class _ShadowPass(final RenderContext3D _context) {
   static const _paraboloidBatchedBundle =
       'packages/flame_3d/assets/shaders/'
       'shadow_caster_paraboloid_batched.shaderbundle';
+  static const _paraboloidSkinnedBatchedBundle =
+      'packages/flame_3d/assets/shaders/'
+      'shadow_caster_paraboloid_skinned_batched.shaderbundle';
   late final Shader _vertexShader = VertexShader.fromAsset(
     _bundle,
     slots: [RenderContext3D.cameraMatricesBlock],
@@ -198,6 +204,14 @@ class _ShadowPass(final RenderContext3D _context) {
     slots: [
       RenderContext3D.cameraMatricesBlock,
       RenderContext3D.batchObjectsBlock,
+    ],
+  );
+  late final Shader _skinnedBatchedVertexShader = VertexShader.fromAsset(
+    _skinnedBatchedBundle,
+    slots: [
+      RenderContext3D.cameraMatricesBlock,
+      RenderContext3D.batchObjectsBlock,
+      RenderContext3D.jointMatricesBlock,
     ],
   );
   late final Shader _fragmentShader = FragmentShader.fromAsset(
@@ -223,6 +237,15 @@ class _ShadowPass(final RenderContext3D _context) {
       RenderContext3D.batchObjectsBlock,
     ],
   );
+  late final Shader _paraboloidSkinnedBatchedVertexShader =
+      VertexShader.fromAsset(
+        _paraboloidSkinnedBatchedBundle,
+        slots: [
+          'ParaboloidLight',
+          RenderContext3D.batchObjectsBlock,
+          RenderContext3D.jointMatricesBlock,
+        ],
+      );
   late final Shader _paraboloidFragmentShader = FragmentShader.fromAsset(
     _paraboloidBundle,
     slots: [RenderContext3D.shadowCasterBlock],
@@ -236,6 +259,9 @@ class _ShadowPass(final RenderContext3D _context) {
   static const _movingBatchedBundle =
       'packages/flame_3d/assets/shaders/'
       'shadow_caster_moving_batched.shaderbundle';
+  static const _movingSkinnedBatchedBundle =
+      'packages/flame_3d/assets/shaders/'
+      'shadow_caster_moving_skinned_batched.shaderbundle';
   static const _paraboloidMovingBundle =
       'packages/flame_3d/assets/shaders/'
       'shadow_caster_paraboloid_moving.shaderbundle';
@@ -245,6 +271,9 @@ class _ShadowPass(final RenderContext3D _context) {
   static const _paraboloidMovingBatchedBundle =
       'packages/flame_3d/assets/shaders/'
       'shadow_caster_paraboloid_moving_batched.shaderbundle';
+  static const _paraboloidMovingSkinnedBatchedBundle =
+      'packages/flame_3d/assets/shaders/'
+      'shadow_caster_paraboloid_moving_skinned_batched.shaderbundle';
   late final Shader _movingVertexShader = VertexShader.fromAsset(
     _movingBundle,
     slots: [RenderContext3D.cameraMatricesBlock],
@@ -261,6 +290,14 @@ class _ShadowPass(final RenderContext3D _context) {
     slots: [
       RenderContext3D.cameraMatricesBlock,
       RenderContext3D.batchObjectsBlock,
+    ],
+  );
+  late final Shader _movingSkinnedBatchedVertexShader = VertexShader.fromAsset(
+    _movingSkinnedBatchedBundle,
+    slots: [
+      RenderContext3D.cameraMatricesBlock,
+      RenderContext3D.batchObjectsBlock,
+      RenderContext3D.jointMatricesBlock,
     ],
   );
   late final Shader _movingFragmentShader = FragmentShader.fromAsset(
@@ -288,6 +325,15 @@ class _ShadowPass(final RenderContext3D _context) {
         slots: [
           'ParaboloidLight',
           RenderContext3D.batchObjectsBlock,
+        ],
+      );
+  late final Shader _paraboloidMovingSkinnedBatchedVertexShader =
+      VertexShader.fromAsset(
+        _paraboloidMovingSkinnedBatchedBundle,
+        slots: [
+          'ParaboloidLight',
+          RenderContext3D.batchObjectsBlock,
+          RenderContext3D.jointMatricesBlock,
         ],
       );
   late final Shader _paraboloidMovingFragmentShader = FragmentShader.fromAsset(

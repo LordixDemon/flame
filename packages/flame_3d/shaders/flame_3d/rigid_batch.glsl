@@ -9,11 +9,15 @@ in float vertexObjectId;
 // - data[0..39]: per-object instanceData vec4 (640 bytes)
 // Shadow casters define FLAME_RIGID_BATCH_TRANSFORMS_ONLY to declare only
 // modelRows[120] and bind offset 0 (first 1920 bytes) of the same buffer.
+#ifndef FLAME_RIGID_BATCH_MAX_OBJECTS
+#define FLAME_RIGID_BATCH_MAX_OBJECTS 40
+#endif
+
 uniform BatchObjects {
-  vec4 modelRows[120];
+  vec4 modelRows[FLAME_RIGID_BATCH_MAX_OBJECTS * 3];
 #ifndef FLAME_RIGID_BATCH_TRANSFORMS_ONLY
-  vec4 colors[40];
-  vec4 data[40];
+  vec4 colors[FLAME_RIGID_BATCH_MAX_OBJECTS];
+  vec4 data[FLAME_RIGID_BATCH_MAX_OBJECTS];
 #endif
 } batchObjects;
 

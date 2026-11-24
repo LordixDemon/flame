@@ -841,10 +841,20 @@ class RenderContext3D(super.device) extends RenderContext {
   void drawRigidBatch(
     Surface surface, {
     required RigidBatchBuffer batch,
+    List<Matrix4>? jointTransforms,
     Material? material,
     Vector3? center,
     bool mirrored = false,
   }) {
+    assert(
+      batch.capacity ==
+          (surface.layout.offsetOf(StylizedMaterial.jointsAttribute) != null
+              ? RigidBatchBuffer.maxSkinnedObjects
+              : RigidBatchBuffer.maxObjects),
+      'RigidBatchBuffer capacity (${batch.capacity}) must match surface '
+      'layout (maxSkinnedObjects=${RigidBatchBuffer.maxSkinnedObjects}, '
+      'maxObjects=${RigidBatchBuffer.maxObjects})',
+    );
     final drawMaterial = material ?? surface.material;
     final shadowPass = _shadows.recording;
     if (shadowPass) {
@@ -879,7 +889,9 @@ class RenderContext3D(super.device) extends RenderContext {
     queue.pipelines[i] = pipeline;
     queue.vertexShaders[i] = vertShader;
     queue.fragmentShaders[i] = fragShader;
-    queue.joints[i] = null;
+    queue.joints[i] = jointTransforms != null && jointTransforms.isNotEmpty
+        ? jointTransforms
+        : null;
     queue.external[i] = null;
     queue.batches[i] = batch;
     queue.mirrored[i] = mirrored ? 1 : 0;

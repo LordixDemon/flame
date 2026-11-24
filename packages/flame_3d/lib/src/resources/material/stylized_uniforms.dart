@@ -109,6 +109,14 @@ extension _StylizedUniforms on StylizedMaterial {
         _applyWind(_batchedVertexShader, space);
         _recordVertexFull(_batchedVertexShader, nonTimeVersion, deviceGen);
       }
+      if (_skinnedBatchedInUse) {
+        _applyWind(_skinnedBatchedVertexShader, space);
+        _recordVertexFull(
+          _skinnedBatchedVertexShader,
+          nonTimeVersion,
+          deviceGen,
+        );
+      }
     }
 
     if (fragClean) {

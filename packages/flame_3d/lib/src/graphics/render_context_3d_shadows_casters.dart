@@ -128,7 +128,9 @@ extension _ShadowPassCasters on _ShadowPass {
     RenderProfile.lap(RenderPhase.state);
     final batch = queue.batches[first];
     if (batch != null) {
-      context._bindBatchObjects(vertexShader, batch);
+      context
+        .._bindJoints(vertexShader, joints)
+        .._bindBatchObjects(vertexShader, batch);
       context.device
         ..bindSurface(surface)
         ..drawSurface(surface);
@@ -159,6 +161,7 @@ extension _ShadowPassCasters on _ShadowPass {
               _paraboloidMovingSkinnedVertexShader,
               _paraboloidMovingFragmentShader,
               batchedVertex: _paraboloidMovingBatchedVertexShader,
+              skinnedBatchedVertex: _paraboloidMovingSkinnedBatchedVertexShader,
             )
           : _casterIn(
               _movingPipelines,
@@ -167,6 +170,7 @@ extension _ShadowPassCasters on _ShadowPass {
               _movingSkinnedVertexShader,
               _movingFragmentShader,
               batchedVertex: _movingBatchedVertexShader,
+              skinnedBatchedVertex: _movingSkinnedBatchedVertexShader,
             );
     }
     return _recordingParaboloidTile
@@ -177,6 +181,7 @@ extension _ShadowPassCasters on _ShadowPass {
             _paraboloidSkinnedVertexShader,
             _paraboloidFragmentShader,
             batchedVertex: _paraboloidBatchedVertexShader,
+            skinnedBatchedVertex: _paraboloidSkinnedBatchedVertexShader,
           )
         : _casterIn(
             _pipelines,
@@ -185,6 +190,7 @@ extension _ShadowPassCasters on _ShadowPass {
             _skinnedVertexShader,
             _fragmentShader,
             batchedVertex: _batchedVertexShader,
+            skinnedBatchedVertex: _skinnedBatchedVertexShader,
           );
   }
 
@@ -195,6 +201,7 @@ extension _ShadowPassCasters on _ShadowPass {
     Shader skinnedVertex,
     Shader fragment, {
     Shader? batchedVertex,
+    Shader? skinnedBatchedVertex,
   }) => _CasterPipeline.resolve(
     _context.device,
     pipelines,
@@ -203,6 +210,7 @@ extension _ShadowPassCasters on _ShadowPass {
     skinnedVertex,
     fragment,
     batchedVertex: batchedVertex,
+    skinnedBatchedVertex: skinnedBatchedVertex,
   );
 }
 
@@ -231,6 +239,7 @@ class _CasterPipeline({
     Shader skinnedVertex,
     Shader fragment, {
     Shader? batchedVertex,
+    Shader? skinnedBatchedVertex,
   }) {
     var caster = pipelines[layout];
     if (caster == null) {
@@ -244,7 +253,10 @@ class _CasterPipeline({
         drawable:
             position != null &&
             position.components == 3 &&
-            (!batched || batchedVertex != null),
+            (!batched ||
+                (skinned
+                    ? skinnedBatchedVertex != null
+                    : batchedVertex != null)),
         skinned: skinned,
         batched: batched,
       );
@@ -253,7 +265,7 @@ class _CasterPipeline({
       return null;
     }
     final vertexShader = caster.batched
-        ? batchedVertex!
+        ? (caster.skinned ? skinnedBatchedVertex! : batchedVertex!)
         : (caster.skinned ? skinnedVertex : vertex);
     final fragmentShader = fragment;
     vertexShader.resource;

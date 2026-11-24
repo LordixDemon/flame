@@ -525,6 +525,7 @@ extension _RenderContext3DDraw on RenderContext3D {
         _jointCache.activeTransforms = joints;
         _applyMaterial(material, vertexShader, fragmentShader);
       }
+      _bindJoints(vertexShader, joints);
       _bindBatchObjects(vertexShader, batch);
       device
         ..bindSurface(surface)
