@@ -48,6 +48,7 @@ class World3D({
   LightGridSettings? lightGrid,
   bool depthPrepassEnabled = false,
   SceneOcclusionCuller3D? occlusionCuller,
+  List<DepthLayer3D>? depthLayers,
 }) extends flame.World {
   final _WorldLightRegistry _lighting = _WorldLightRegistry();
   final _WorldVersionState _versions = _WorldVersionState();
@@ -402,6 +403,61 @@ class World3D({
     markSceneDirty(shadows: false);
   }
 
+  /// Optional depth layers rendered inside a single color pass by switching
+  /// the viewport `[DepthLayer3D.zNear, DepthLayer3D.zFar]` range and optional
+  /// `waterVolume` between layer batches.
+  ///
+  /// When `null` or empty (the default), all draws share `[0.0, 1.0]`.
+  List<DepthLayer3D>? get depthLayers => _depthLayers;
+  List<DepthLayer3D>? _depthLayers = _normalizeDepthLayers(depthLayers);
+  set depthLayers(List<DepthLayer3D>? value) {
+    final normalized = _normalizeDepthLayers(value);
+    if (_depthLayersEqual(_depthLayers, normalized)) {
+      return;
+    }
+    _depthLayers = normalized;
+    markSceneDirty(shadows: false);
+  }
+
+  static List<DepthLayer3D>? _normalizeDepthLayers(List<DepthLayer3D>? layers) {
+    if (layers == null || layers.isEmpty) {
+      return layers == null ? null : const <DepthLayer3D>[];
+    }
+    final sorted = List<DepthLayer3D>.of(layers)
+      ..sort((a, b) => a.index.compareTo(b.index));
+    assert(() {
+      for (var i = 1; i < sorted.length; i++) {
+        if (sorted[i].index == sorted[i - 1].index) {
+          throw ArgumentError.value(
+            layers,
+            'depthLayers',
+            'Duplicate DepthLayer3D index ${sorted[i].index}',
+          );
+        }
+      }
+      return true;
+    }());
+    return UnmodifiableListView(sorted);
+  }
+
+  static bool _depthLayersEqual(
+    List<DepthLayer3D>? a,
+    List<DepthLayer3D>? b,
+  ) {
+    if (identical(a, b)) {
+      return true;
+    }
+    if (a == null || b == null || a.length != b.length) {
+      return false;
+    }
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   /// Rasterizes registered occluders of [occlusionCuller] once per unique
   /// main-camera view-projection and frame before traversal.
   @internal
@@ -705,6 +761,7 @@ class World3D({
       lightGrid: _lightGrid,
       lightGridBounds: bounds,
       hdrEnabled: resolvedHdr,
+      depthLayers: _depthLayers,
       owner: this,
     )) {
       return;
@@ -720,6 +777,7 @@ class World3D({
       ..prioritizeNearestLights = _prioritizeNearestLights
       ..lightGrid = _lightGrid
       ..lightGridBounds = bounds
+      ..depthLayers = _depthLayers
       ..bumpPassUniforms();
   }
 

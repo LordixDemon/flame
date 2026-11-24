@@ -21,6 +21,7 @@ class MeshComponent({
   super.rotation,
   super.children,
   super.castsShadows,
+  super.depthLayer,
   super.cameraMask,
 
   Color color = const Color(0xFFFFFFFF),

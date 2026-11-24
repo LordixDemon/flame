@@ -290,12 +290,16 @@ extension _World3DPipeline on World3D {
     prepareOcclusionCuller(ctx);
     if (_visibility.consumeReusableVisible(ctx, sceneVersion)) {
       _rendering = true;
+      final prevLayer = ctx.activeDepthLayer;
       try {
         final visible = _visibility.visibleObjects;
         for (var i = 0; i < visible.length; i++) {
-          visible[i].draw(ctx);
+          final obj = visible[i];
+          ctx.activeDepthLayer = obj.resolvedDepthLayer;
+          obj.draw(ctx);
         }
       } finally {
+        ctx.activeDepthLayer = prevLayer;
         _rendering = false;
       }
     } else {

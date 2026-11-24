@@ -37,6 +37,7 @@ class _DrawQueue() {
   Int32List groupKeysLo = Int32List(0);
   Uint8List mirrored = Uint8List(0);
   Int32List surfaceKeys = Int32List(0);
+  Int32List depthLayers = Int32List(0);
   Int32List prepassGroups = Int32List(0);
   Int32List probeSlots = Int32List(0);
   Float64List probeWeights = Float64List(0);
@@ -120,6 +121,8 @@ class _DrawQueue() {
     groupKeysHi = Int32List(nextCapacity);
     groupKeysLo = Int32List(nextCapacity);
     surfaceKeys = Int32List(nextCapacity);
+    depthLayers = Int32List(nextCapacity)
+      ..setRange(0, depthLayers.length, depthLayers);
     prepassGroups = Int32List(nextCapacity)
       ..setRange(0, prepassGroups.length, prepassGroups);
     probeSlots = Int32List(nextCapacity)

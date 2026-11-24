@@ -30,6 +30,7 @@ abstract class Object3D({
   super.tags3D,
   super.prefabId,
   bool castsShadows = true,
+  int? depthLayer,
   super.cameraMask,
 }) extends Component3D {
   /// Whether this object casts shadows, when the scene has a light that
@@ -81,6 +82,42 @@ abstract class Object3D({
   }
 
   ShadowCasterMotion _shadowMotion = ShadowCasterMotion.auto;
+
+  /// The [DepthLayer3D.index] this object draws into when enclosed by a
+  /// [World3D] with [World3D.depthLayers] (`0` by default).
+  ///
+  /// When set explicitly, this layer overrides any inherited ancestor layer for
+  /// this object and its descendants until another descendant overrides it.
+  int get depthLayer => _depthLayer;
+  set depthLayer(int value) {
+    if (value < 0) {
+      throw ArgumentError.value(value, 'depthLayer', 'Must be non-negative');
+    }
+    if (value == _depthLayer && _hasExplicitDepthLayer) {
+      return;
+    }
+    _depthLayer = value;
+    _hasExplicitDepthLayer = true;
+    markDrawDirty(shadows: false);
+  }
+
+  int _depthLayer = _checkDepthLayer(depthLayer);
+  bool _hasExplicitDepthLayer = depthLayer != null;
+
+  static int _checkDepthLayer(int? value) {
+    if (value == null) {
+      return 0;
+    }
+    if (value < 0) {
+      throw ArgumentError.value(value, 'depthLayer', 'Must be non-negative');
+    }
+    return value;
+  }
+
+  /// Effective depth layer resolved for this object during the last world
+  /// traversal (reused by `World3D`'s cached visible-object list).
+  @internal
+  int resolvedDepthLayer = 0;
 
   /// Index inside `ShadowCasterTracker`'s active movers list, or `-1`.
   @internal
@@ -188,10 +225,19 @@ abstract class Object3D({
       if (cullResult == CullResult.inside) {
         _ancestorFullyInside = true;
       }
-      if (fast3D) {
-        super.renderTree3D(world, context, canvas);
-      } else {
-        super.renderTree(canvas!);
+      final prevDepthLayerKids = context.activeDepthLayer;
+      final effectiveKidsLayer = _hasExplicitDepthLayer
+          ? _depthLayer
+          : prevDepthLayerKids;
+      context.activeDepthLayer = effectiveKidsLayer;
+      try {
+        if (fast3D) {
+          super.renderTree3D(world, context, canvas);
+        } else {
+          super.renderTree(canvas!);
+        }
+      } finally {
+        context.activeDepthLayer = prevDepthLayerKids;
       }
       _ancestorFullyInside = wasAncestorFullyInside;
       RenderProfile.lap(RenderPhase.traversal);
@@ -203,10 +249,20 @@ abstract class Object3D({
             usesDefaultFrustumVisibility ||
             isVisible(frustum));
     RenderProfile.lap(RenderPhase.culling);
+    final effectiveDepthLayer = _hasExplicitDepthLayer
+        ? _depthLayer
+        : context.activeDepthLayer;
+    resolvedDepthLayer = effectiveDepthLayer;
     if (inFrustum) {
       world.recordVisibleObject(this);
       if (fast3D ? visible : (!hasKids || isEffectivelyVisible)) {
-        draw(context);
+        final prevDepthLayer = context.activeDepthLayer;
+        context.activeDepthLayer = effectiveDepthLayer;
+        try {
+          draw(context);
+        } finally {
+          context.activeDepthLayer = prevDepthLayer;
+        }
       }
     }
   }

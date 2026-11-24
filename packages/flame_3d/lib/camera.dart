@@ -6,6 +6,7 @@ export 'src/camera/camera_component_3d.dart';
 export 'src/camera/camera_dolly_track_3d.dart';
 export 'src/camera/camera_shake_3d.dart';
 export 'src/camera/camera_stack_3d.dart';
+export 'src/camera/depth_layer_3d.dart';
 export 'src/camera/first_person_camera.dart';
 export 'src/camera/orbit_camera_controller_3d.dart';
 export 'src/camera/render_texture_3d.dart';

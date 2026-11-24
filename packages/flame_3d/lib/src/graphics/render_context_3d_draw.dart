@@ -159,6 +159,11 @@ extension _RenderContext3DDraw on RenderContext3D {
       _shadows.flushCasters();
       return;
     }
+    final layers = depthLayers;
+    if (layers != null && layers.isNotEmpty) {
+      _flushDepthLayers(layers);
+      return;
+    }
     final queue = _queue;
     final count = queue.count;
     final groupKeysHi = queue.groupKeysHi;
@@ -219,6 +224,121 @@ extension _RenderContext3DDraw on RenderContext3D {
 
     _submitBatches(queue.opaque, opaqueCount);
     _submitTranslucentBatches(queue.translucent, translucentCount);
+
+    _probeSelector.resetPass();
+    queue.release(count, _oitGrab);
+    _boundMaterial = null;
+    _jointCache.activeTransforms = null;
+    queue.lastDrawCount = count;
+    queue.count = 0;
+    queue.resetPrepassGroups();
+    RenderProfile.lap(RenderPhase.release);
+  }
+
+  void _flushDepthLayers(List<DepthLayer3D> layers) {
+    final queue = _queue;
+    final count = queue.count;
+    if (count == 0) {
+      _probeSelector.resetPass();
+      queue.release(0, _oitGrab);
+      _boundMaterial = null;
+      _jointCache.activeTransforms = null;
+      queue.lastDrawCount = 0;
+      queue.count = 0;
+      queue.resetPrepassGroups();
+      RenderProfile.lap(RenderPhase.release);
+      return;
+    }
+    final groupKeysHi = queue.groupKeysHi;
+    final groupKeysLo = queue.groupKeysLo;
+    final surfaceKeys = queue.surfaceKeys;
+    final sortDepths = queue.sortDepths;
+    final layerIds = queue.depthLayers;
+
+    final savedWaterVolume = waterVolume;
+    final targetW = device.renderTarget.width;
+    final targetH = device.renderTarget.height;
+    var restoredViewport = false;
+    var anySubmitted = false;
+
+    try {
+      for (var l = 0; l < layers.length; l++) {
+        final layer = layers[l];
+        final layerIndex = layer.index;
+        var oCount = 0;
+        var tCount = 0;
+        for (var i = 0; i < count; i++) {
+          if (layerIds[i] != layerIndex) {
+            continue;
+          }
+          final material = queue.materials[i]!;
+          if (material.renderState.translucent) {
+            queue.translucent[tCount++] = i;
+            groupKeysHi[i] = material.translucentOrder;
+            groupKeysLo[i] = 0;
+            surfaceKeys[i] = 0;
+            sortDepths[i] = -queue.depths[i];
+          } else {
+            queue.opaque[oCount++] = i;
+            groupKeysHi[i] = queue.pipelines[i]!.id;
+            groupKeysLo[i] = (material.id << 1) | queue.mirrored[i];
+            surfaceKeys[i] =
+                queue.surfaces[i]!.id * 2 + (queue.joints[i] == null ? 0 : 1);
+            sortDepths[i] = queue.depths[i];
+          }
+        }
+        if (oCount == 0 && tCount == 0) {
+          continue;
+        }
+        if (oCount > 1) {
+          queue.sort(
+            queue.opaque,
+            oCount,
+            sortByProbe: _probeSelector.anyProbeDraw,
+          );
+        }
+        if (tCount > 1) {
+          queue.sort(queue.translucent, tCount);
+        }
+        RenderProfile.lap(RenderPhase.sort);
+
+        device.setViewport(
+          0,
+          0,
+          targetW,
+          targetH,
+          zNear: layer.zNear,
+          zFar: layer.zFar,
+        );
+        if (layer.zNear != 0.0 || layer.zFar != 1.0) {
+          restoredViewport = true;
+        }
+
+        final targetWater = layer.applyWaterVolume ? savedWaterVolume : null;
+        final waterChanged = !identical(waterVolume, targetWater);
+        if (waterChanged) {
+          waterVolume = targetWater;
+          _passRegistry.bumpWaterVolume(++_nextPassEpoch);
+        }
+        if (!anySubmitted || waterChanged) {
+          _boundMaterial = null;
+          _bindingEpoch = -1;
+        }
+        _depthPrepassOverride = false;
+        anySubmitted = true;
+
+        _submitBatches(queue.opaque, oCount);
+        _submitTranslucentBatches(queue.translucent, tCount);
+      }
+    } finally {
+      if (!identical(waterVolume, savedWaterVolume)) {
+        waterVolume = savedWaterVolume;
+        _passRegistry.bumpWaterVolume(++_nextPassEpoch);
+      }
+      if (restoredViewport) {
+        device.setViewport(0, 0, targetW, targetH);
+      }
+    }
 
     _probeSelector.resetPass();
     queue.release(count, _oitGrab);

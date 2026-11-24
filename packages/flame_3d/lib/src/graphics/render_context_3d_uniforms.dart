@@ -77,6 +77,7 @@ class _LightPassState() {
     required LightGridSettings? lightGrid,
     required Aabb3? lightGridBounds,
     required bool hdrEnabled,
+    required List<DepthLayer3D>? depthLayers,
     Object? owner,
   }) {
     final fogVer = fog?.version ?? -1;
@@ -96,7 +97,8 @@ class _LightPassState() {
         this.prioritizeNearestLights == prioritizeNearestLights &&
         identical(this.lightGrid, lightGrid) &&
         this.lightGridBounds == lightGridBounds &&
-        context.hdrEnabled == hdrEnabled) {
+        context.hdrEnabled == hdrEnabled &&
+        identical(context.depthLayers, depthLayers)) {
       return false;
     }
     syncedOwner = owner;

@@ -41,6 +41,12 @@ class _PassUniformRegistry() {
     passKindEpochs[_passKindCustom] = epoch;
   }
 
+  void bumpWaterVolume(int epoch) {
+    passKindEpochs[_passKindWaterVolume] = epoch;
+    passKindEpochs[_passKindStylized] = epoch;
+    passKindEpochs[_passKindCustom] = epoch;
+  }
+
   void registerUniform(String name, PassUniformWriter? writer) {
     if (writer == null) {
       writers.remove(name);

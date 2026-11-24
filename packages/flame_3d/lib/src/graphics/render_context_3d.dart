@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
 
+import 'package:flame_3d/camera.dart' show DepthLayer3D;
 import 'package:flame_3d/core.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/resources.dart';
@@ -377,6 +378,14 @@ class RenderContext3D(super.device) extends RenderContext {
   set reflectionProbes(List<ReflectionProbeSource3D> value) =>
       _probeSelector.probes = value;
 
+  /// Optional depth layers rendered in a single pass with per-layer viewport
+  /// `[DepthLayer3D.zNear, DepthLayer3D.zFar]` and water-volume toggles.
+  List<DepthLayer3D>? depthLayers;
+
+  /// Active [DepthLayer3D.index] recorded onto newly enqueued draws.
+  @internal
+  int activeDepthLayer = 0;
+
   /// 32-bit layer bitmask filtering `Object3D.cameraMask` and `Light.lightMask`
   /// for the current pass (`0xFFFFFFFF` renders all layers by default).
   int cameraMask = 0xFFFFFFFF;
@@ -537,6 +546,7 @@ class RenderContext3D(super.device) extends RenderContext {
 
     queue.surfaces[i] = surface;
     queue.materials[i] = drawMaterial;
+    queue.depthLayers[i] = activeDepthLayer;
     queue.joints[i] = jointTransforms != null && jointTransforms.isNotEmpty
         ? jointTransforms
         : null;
@@ -748,6 +758,7 @@ class RenderContext3D(super.device) extends RenderContext {
 
     queue.surfaces[i] = surface;
     queue.materials[i] = drawMaterial;
+    queue.depthLayers[i] = activeDepthLayer;
     queue.pipelines[i] = pipeline;
     queue.vertexShaders[i] = vertShader;
     queue.fragmentShaders[i] = fragShader;
@@ -864,6 +875,7 @@ class RenderContext3D(super.device) extends RenderContext {
 
     queue.surfaces[i] = surface;
     queue.materials[i] = drawMaterial;
+    queue.depthLayers[i] = activeDepthLayer;
     queue.pipelines[i] = pipeline;
     queue.vertexShaders[i] = vertShader;
     queue.fragmentShaders[i] = fragShader;
@@ -1291,6 +1303,7 @@ class RenderContext3D(super.device) extends RenderContext {
     required LightGridSettings? lightGrid,
     required Aabb3? lightGridBounds,
     required bool hdrEnabled,
+    List<DepthLayer3D>? depthLayers,
     Object? owner,
   }) => _lightState.needsSyncOptions(
     context: this,
@@ -1305,6 +1318,7 @@ class RenderContext3D(super.device) extends RenderContext {
     lightGrid: lightGrid,
     lightGridBounds: lightGridBounds,
     hdrEnabled: hdrEnabled,
+    depthLayers: depthLayers,
     owner: owner,
   );
 }

@@ -1,3 +1,4 @@
+export 'src/camera/depth_layer_3d.dart' show DepthLayer3D;
 export 'src/components/billboard_batch_3d.dart';
 export 'src/components/component_3d.dart'
     hide ComponentBounds, ShadowCasterTracker;
