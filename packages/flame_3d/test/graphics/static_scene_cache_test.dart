@@ -1,12 +1,15 @@
-import 'dart:ui' show Color;
+import 'dart:typed_data';
+import 'dart:ui' show Color, Rect;
 
+import 'package:flame/game.dart' show FlameGame;
 import 'package:flame_3d/camera.dart';
 import 'package:flame_3d/components.dart';
-import 'package:flame_3d/core.dart';
 import 'package:flame_3d/game.dart';
 import 'package:flame_3d/graphics.dart';
 import 'package:flame_3d/particles.dart';
 import 'package:flame_3d/resources.dart';
+import 'package:flame_test/flame_test.dart';
+import 'package:flutter/painting.dart' show Canvas;
 import 'package:flutter_test/flutter_test.dart';
 
 import '../_fakes/fake_gpu_backend.dart';
@@ -403,6 +406,112 @@ void main() {
         );
       },
     );
+
+    test(
+      'Object3D.shadowAabb tightens movingBounds and skips inverted boxes',
+      () {
+        final sun = LightComponent.directional(
+          direction: Vector3(0.3, -0.4, -0.85)..normalize(),
+          shadows: ShadowSettings(
+            resolution: 256,
+            fit: ShadowFit.fixed,
+            bounds: Aabb3.minMax(Vector3(-10, -10, -2), Vector3(10, 10, 2)),
+            casterBounds: Aabb3.minMax(
+              Vector3(-12, -12, -4),
+              Vector3(12, 12, 4),
+            ),
+            cacheStillCasters: true,
+          ),
+        );
+        final staticBox = _CountingBox(onDraw: () {});
+        final tightMover = _ShadowAabbBox(
+          bounds: Aabb3.minMax(Vector3(-9, -9, -1), Vector3(9, 9, 1)),
+          shadowBounds: Aabb3.minMax(
+            Vector3(-0.5, -0.5, 0),
+            Vector3(0.5, 0.5, 1),
+          ),
+        )..sceneCacheMotion = SceneCacheMotion.dynamic;
+        final nonCastingMover = _ShadowAabbBox(
+          bounds: Aabb3.minMax(Vector3(-9, -9, -1), Vector3(9, 9, 1)),
+          shadowBounds: Aabb3.minMax(Vector3(1, 1, 1), Vector3(-1, -1, -1)),
+        )..sceneCacheMotion = SceneCacheMotion.dynamic;
+
+        final world = World3D(
+          staticSceneCache: StaticSceneCacheSettings(stillFrames: 1),
+          children: [sun, staticBox, tightMover, nonCastingMover],
+        );
+        world.onMount();
+        for (final c in [sun, staticBox, tightMover, nonCastingMover]) {
+          c.onMount();
+        }
+        world.update(0.016);
+
+        void runFrame() {
+          context.setCamera(Matrix4.identity(), perspective);
+          device.begin();
+          world.renderShadowsNoCanvas(overrideContext: context);
+          world
+              .executeWorldRenderPipeline(
+                device: device,
+                renderContext: context,
+                width: 64,
+                height: 64,
+                msaaSampleCount: 1,
+                clearValue: const Color(0x00000000),
+                recordDraws: () =>
+                    world.renderSceneNoCanvas(overrideContext: context),
+              )
+              .dispose();
+          device.end();
+        }
+
+        // Frame 1: settles static casters; frame 2: populates static cache &
+        // uses still+moving shadow maps -> computes tight movingBounds.
+        world.renderWithHost(device, context, () {
+          runFrame();
+          runFrame();
+          final bTight = world.staticSceneCacheMovingBounds.clone();
+          expect(bTight.z - bTight.x, lessThan(0.25));
+          expect(bTight.w - bTight.y, lessThan(0.25));
+
+          // Expanding only the inverted caster does not widen movingBounds.
+          nonCastingMover.position.setValues(5, 5, 0);
+          runFrame();
+          final bAfterSkipped = world.staticSceneCacheMovingBounds;
+          expect(bAfterSkipped.x, closeTo(bTight.x, 1e-6));
+          expect(bAfterSkipped.z, closeTo(bTight.z, 1e-6));
+        });
+      },
+    );
+
+    testWithGame<_FakeGame3D>(
+      'Scene3DComponent.measureRenderTime = false skips timing',
+      () => _FakeGame3D(device, context),
+      (game) async {
+        var draws = 0;
+        final layer = Scene3DComponent(
+          projection: Scene3DProjection.affine(
+            origin: Vector2(64, 64),
+            xAxis: Vector2(20, 10),
+            yAxis: Vector2(-20, 10),
+            zAxis: Vector2(0, -20),
+            towardsViewer: Vector3(1, 1, 1),
+            near: -20,
+            far: 20,
+          ),
+        )..measureRenderTime = false;
+        await game.ensureAdd(layer);
+        await layer.world.ensureAdd(_CountingBox(onDraw: () => draws++));
+        await game.ready();
+        game.update(0.016);
+
+        game.render(_FakeCanvas());
+
+        expect(draws, greaterThan(0));
+        expect(layer.measureRenderTime, isFalse);
+        expect(layer.lastRenderTime, Duration.zero);
+      },
+    );
   });
 }
 
@@ -448,4 +557,73 @@ class _CountingBox({
       transform: worldTransformMatrix,
     );
   }
+}
+
+class _ShadowAabbBox({
+  required this.bounds,
+  required this.shadowBounds,
+}) extends Object3D {
+  final Aabb3 bounds;
+  final Aabb3 shadowBounds;
+  final Mesh _mesh = CuboidMesh(
+    size: Vector3.all(1),
+    material: StylizedMaterial(windAmplitude: 0),
+  );
+
+  @override
+  Aabb3 computeLocalAabb() => bounds;
+
+  @override
+  Aabb3? get shadowAabb => shadowBounds;
+
+  @override
+  void draw(RenderContext context) {
+    (context as RenderContext3D).drawMesh(
+      _mesh,
+      transform: worldTransformMatrix,
+    );
+  }
+}
+
+class _FakeGame3D(this.fakeDevice, this.fakeContext)
+    extends FlameGame
+    with Game3D {
+  final GraphicsDevice fakeDevice;
+  final RenderContext3D fakeContext;
+
+  @override
+  GraphicsDevice get device => fakeDevice;
+
+  @override
+  RenderContext3D get context => fakeContext;
+}
+
+class _FakeCanvas() implements Canvas {
+  final Float64List _identity = Float64List.fromList([
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+  ]);
+
+  @override
+  Float64List getTransform() => _identity;
+
+  @override
+  Rect getDestinationClipBounds() => const Rect.fromLTWH(0, 0, 128, 128);
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
 }

@@ -503,6 +503,11 @@ class World3D({
   /// `staticSceneCache` (null when the last rendered frame hit).
   String? get staticSceneCacheMissReason => _staticCache.lastMissReason;
 
+  /// Screen-light-space UV bounds (`minU, minV, maxU, maxV`) computed for
+  /// active moving shadow casters during the most recent static cache restore.
+  @visibleForTesting
+  Vector4 get staticSceneCacheMovingBounds => _staticCache.movingBounds;
+
   /// Rasterizes registered occluders of [occlusionCuller] once per unique
   /// main-camera view-projection and frame before traversal.
   @internal

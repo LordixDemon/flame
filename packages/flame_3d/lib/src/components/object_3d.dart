@@ -151,6 +151,12 @@ abstract class Object3D({
   @internal
   int shadowMoverIndex = -1;
 
+  /// Optional tighter world-space bounds covering only this object's
+  /// shadow-casting geometry. When `null`, [aabb] is used. Return an
+  /// inverted box (`min.x > max.x`) when the object has no active
+  /// shadow-casting parts.
+  Aabb3? get shadowAabb => null;
+
   /// Whether [SceneSpatialIndex3D] has queued a pending transform/bounds update
   /// for this object.
   @internal

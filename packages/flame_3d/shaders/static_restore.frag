@@ -63,25 +63,21 @@ void main() {
       vec2 f = texelPos - base;
       float stillLit = 0.0;
       float combLit = 0.0;
-      for (int row = 0; row < 8; row++) {
-        float y = float(row) - 3.0;
-        if (y >= -radius && y <= radius + 1.0) {
-          float wy = y == -radius ? 1.0 - f.y : (y == radius + 1.0 ? f.y : 1.0);
-          for (int column = 0; column < 8; column++) {
-            float x = float(column) - 3.0;
-            if (x >= -radius && x <= radius + 1.0) {
-              float wx =
-                x == -radius ? 1.0 - f.x : (x == radius + 1.0 ? f.x : 1.0);
-              float w = wx * wy;
-              vec2 sampleUv = (base + vec2(x, y) + 0.5) * restore.shadowMapSize.zw;
-              float storedStill =
-                dot(texture(stillShadowMap, sampleUv), restore.shadowDecode);
-              float storedComb =
-                dot(texture(shadowMap, sampleUv), restore.shadowDecode);
-              stillLit += w * step(ldepth, storedStill);
-              combLit += w * step(ldepth, storedComb);
-            }
-          }
+      int r = int(radius);
+      for (int iy = -r; iy <= r + 1; iy++) {
+        float y = float(iy);
+        float wy = iy == -r ? (1.0 - f.y) : (iy == r + 1 ? f.y : 1.0);
+        for (int ix = -r; ix <= r + 1; ix++) {
+          float x = float(ix);
+          float wx = ix == -r ? (1.0 - f.x) : (ix == r + 1 ? f.x : 1.0);
+          float w = wx * wy;
+          vec2 sampleUv = (base + vec2(x, y) + 0.5) * restore.shadowMapSize.zw;
+          float storedStill =
+            dot(texture(stillShadowMap, sampleUv), restore.shadowDecode);
+          float storedComb =
+            dot(texture(shadowMap, sampleUv), restore.shadowDecode);
+          stillLit += w * step(ldepth, storedStill);
+          combLit += w * step(ldepth, storedComb);
         }
       }
       float side = 2.0 * radius + 1.0;

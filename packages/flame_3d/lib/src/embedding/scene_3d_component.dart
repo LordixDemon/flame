@@ -185,6 +185,9 @@ class Scene3DComponent({
   Rect get renderedRect => _renderedRect;
   Rect _renderedRect = Rect.zero;
 
+  /// Whether [render] records CPU timing into [lastRenderTime].
+  bool measureRenderTime = true;
+
   /// The time the last render took on the CPU.
   Duration get lastRenderTime => Duration(microseconds: _renderMicroseconds);
   int _renderMicroseconds = 0;
@@ -338,6 +341,12 @@ class Scene3DComponent({
     _renderedRect = Rect.zero;
     _renderMicroseconds = 0;
     if (!world.isMounted || world.children.isEmpty) {
+      return;
+    }
+    if (!measureRenderTime) {
+      RenderProfile.start();
+      _renderScene(canvas);
+      _renderMicroseconds = 0;
       return;
     }
     final stopwatch = _renderState.stopwatch

@@ -1410,9 +1410,12 @@ extension _WorldStaticCacheBounds on World3D {
           !World3D._passesCameraMaskHierarchy(obj, passMask)) {
         continue;
       }
-      final b = obj.aabb;
+      final b = obj.shadowAabb ?? obj.aabb;
       final bMin = b.min;
       final bMax = b.max;
+      if (bMin.x > bMax.x || bMin.y > bMax.y || bMin.z > bMax.z) {
+        continue;
+      }
       for (var c = 0; c < 8; c++) {
         final x = (c & 1) == 0 ? bMin.x : bMax.x;
         final y = (c & 2) == 0 ? bMin.y : bMax.y;
