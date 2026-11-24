@@ -1192,7 +1192,7 @@ class _StaticSceneCacheState() {
 
 extension _WorldStaticCacheBounds on World3D {
   bool _hasUnsettledStaticCasters() {
-    if (_versions.shadowCasters.hasUnsettledAutoCasters) {
+    if (_versions.shadowCasters.hasUnsettledStaticCasters) {
       return true;
     }
     final group = shadowGroup;
@@ -1203,7 +1203,7 @@ extension _WorldStaticCacheBounds on World3D {
     for (var i = 0; i < worlds.length; i++) {
       final member = worlds[i];
       if (!identical(member, this) &&
-          member._versions.shadowCasters.hasUnsettledAutoCasters) {
+          member._versions.shadowCasters.hasUnsettledStaticCasters) {
         return true;
       }
     }

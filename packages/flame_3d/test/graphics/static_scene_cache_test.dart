@@ -273,6 +273,41 @@ void main() {
         });
       },
     );
+
+    test(
+      'hasUnsettledStaticCasters ignores SceneCacheMotion.dynamic movers and '
+      'tracks auto static casters until settled',
+      () {
+        final dynamicCaster = _CountingBox(
+          onDraw: () {},
+          sceneCacheMotion: SceneCacheMotion.dynamic,
+        );
+        final staticCaster = _CountingBox(onDraw: () {});
+        final world = World3D(children: [dynamicCaster, staticCaster]);
+        world.onMount();
+        dynamicCaster.onMount();
+        staticCaster.onMount();
+
+        final casters = world.shadowCasters;
+        expect(casters.hasUnsettledStaticCasters, isTrue);
+
+        // Advance and prepare across 2 frames: staticCaster settles, while a
+        // freshly moved dynamicCaster stays in movers without blocking.
+        casters
+          ..prepare(2)
+          ..advance()
+          ..prepare(2)
+          ..advance()
+          ..prepare(2);
+        expect(casters.hasUnsettledStaticCasters, isFalse);
+
+        dynamicCaster.position.setValues(1, 0, 0);
+        expect(casters.hasUnsettledStaticCasters, isFalse);
+
+        staticCaster.position.setValues(0, 1, 0);
+        expect(casters.hasUnsettledStaticCasters, isTrue);
+      },
+    );
   });
 }
 

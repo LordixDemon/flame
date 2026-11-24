@@ -51,15 +51,30 @@ class ShadowCasterTracker() {
   /// Active non-still mounted casters in this world.
   List<Object3D> get movers => _movers;
 
-  /// Whether any auto-tracked shadow caster is still waiting to settle into
-  /// the kept still-shadow layer.
-  bool get hasUnsettledAutoCasters {
+  /// Whether any auto-tracked static shadow caster (one that participates in
+  /// `StaticSceneCache3D`) is still waiting to settle into the kept
+  /// still-shadow layer.
+  bool get hasUnsettledStaticCasters {
     for (var i = 0; i < _movers.length; i++) {
       final caster = _movers[i];
       if (caster.shadowMotion == ShadowCasterMotion.auto &&
-          caster.castsShadows) {
+          caster.castsShadows &&
+          caster.isEffectivelyVisible &&
+          caster.affectsStaticSceneCache &&
+          !_hasDynamicStaticCacheAncestor(caster)) {
         return true;
       }
+    }
+    return false;
+  }
+
+  static bool _hasDynamicStaticCacheAncestor(Object3D caster) {
+    var parent = caster.parent;
+    while (parent is Component3D) {
+      if (!parent.affectsStaticSceneCache) {
+        return true;
+      }
+      parent = parent.parent;
     }
     return false;
   }
